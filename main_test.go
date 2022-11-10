@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestFibonaci(t *testing.T) {
@@ -12,6 +13,37 @@ func TestFibonaci(t *testing.T) {
 	}
 
 	fmt.Printf("%d\n", fibonaci2(500))
+}
+
+func TestRecover(t *testing.T) {
+
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				t.Errorf("%s", err)
+			}
+		}()
+		raisePanic()
+	}()
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				t.Errorf("%s", err)
+			}
+		}()
+		raisePanic()
+	}()
+	time.Sleep(time.Duration(1000))
+	t.Logf("%s", "还是可以执行的，应该能说明panic是goroutine层的活动")
+	// var ch chan int = make(chan int, 10)
+	// close(ch)
+	// ch <- 1
+}
+
+func raisePanic() {
+	var i, j uint8 = 0, 0
+	c := i / j
+	fmt.Print(c)
 }
 
 func fibonaci(i int) int {
