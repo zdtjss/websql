@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,13 +19,13 @@ import (
 var (
 	httpClient = &http.Client{}
 	port       *string
-	isHttps    *string
+	isHttps    *bool
 )
 
 func main() {
 
-	port = flag.String("port", "443", "")
-	isHttps = flag.String("https", "true", "")
+	port = flag.String("port", "80", "")
+	isHttps = flag.Bool("https", false, "")
 	flag.Parse()
 
 	// 注册静态文件
@@ -36,7 +37,11 @@ func main() {
 	go sLsn()
 
 	var err error
-	if strings.EqualFold(*isHttps, "true") {
+	if *isHttps {
+		// https 默认端口 443
+		if *port == "80" {
+			*port = "443"
+		}
 		// 初始化 TLS 证书
 		https.InitCertificateFile()
 		err = http.ListenAndServeTLS(":"+*port, https.PemName, https.KeyName, nil)
@@ -124,14 +129,14 @@ func sLsn() {
 				InsecureSkipVerify: true,
 			},
 		}}
-		protocol := "https"
-		if !strings.EqualFold(*isHttps, "true") {
-			protocol = "http"
+		protocol := "http"
+		if *isHttps {
+			protocol = "https"
 		}
 		r, _ := client.Get(protocol + "://localhost:" + *port)
 		if r != nil {
 			r.Body.Close()
-			log.Println("==================== 系统已启动完成，端口：" + *port + " ====================")
+			log.Println("==================== 系统已启动完成，端口：" + *port + " 、 https：" + strconv.FormatBool(*isHttps) + " ====================")
 			runtime.Goexit()
 		}
 	}

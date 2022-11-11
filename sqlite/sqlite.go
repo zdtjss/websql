@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"log"
+	"strconv"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -42,7 +43,7 @@ func ReadFromDB() []*User {
 	stmt, err = db.Prepare("update userinfo set username=? where uid=?")
 	checkErr(err)
 
-	res, err = stmt.Exec("wangshubo_new", id)
+	res, err = stmt.Exec("wangshubo_new"+strconv.FormatInt(time.Now().UnixNano(), 10), id)
 	checkErr(err)
 
 	affect, err := res.RowsAffected()
@@ -56,13 +57,10 @@ func ReadFromDB() []*User {
 
 	userList := []*User{}
 	for rows.Next() {
-		var uid int
-		var username string
-		var department string
-		var created time.Time
-		err = rows.Scan(&uid, &username, &department, &created)
+		user := &User{}
+		err = rows.Scan(&user.Uid, &user.Username, &user.Uepartment, &user.Created)
 		checkErr(err)
-		user := &User{uid, username, department, created}
+		// user := &User{uid, username, department, created}
 		userList = append(userList, user)
 	}
 
