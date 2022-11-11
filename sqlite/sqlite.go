@@ -12,7 +12,7 @@ import (
 func ReadFromDB() []*User {
 
 	//打开数据库，如果不存在，则创建
-	db, err := sql.Open("sqlite3", "./foo.db")
+	db, err := sql.Open("sqlite3", "./nway.s3db")
 	checkErr(err)
 
 	//创建表
