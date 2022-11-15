@@ -17,3 +17,4 @@ go.sum
 nway.key
 nway.pem
 .vscode/
+static/package-lock.json
