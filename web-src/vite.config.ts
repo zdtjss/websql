@@ -10,6 +10,7 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   build: {
     sourcemap: true,
+    outDir: "../static"
   },
   plugins: [
     vue(),
