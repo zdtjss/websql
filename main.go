@@ -29,8 +29,8 @@ func main() {
 	flag.Parse()
 
 	// 注册静态文件
-	fsRegister("/static/")
-	http.HandleFunc("/", mainHandler)
+	fsRegister("/")
+	http.HandleFunc("/api/", mainHandler)
 	http.HandleFunc("/sqlite", dbTest)
 
 	// 检测是否启动成功
@@ -56,17 +56,16 @@ func main() {
 
 }
 
+// /api/
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 
 	uri := r.URL.Path
 
-	if strings.HasPrefix(uri, "/api/") {
+	if strings.HasPrefix(uri, "/api/ext/") {
 
+		// 默认处理 /api/ 前缀请求
+	} else {
 		processSys(w, r)
-
-		// 人脸识别接口
-	} else if strings.HasPrefix(uri, "/faceid/") {
-		proxy(w, r)
 	}
 }
 
