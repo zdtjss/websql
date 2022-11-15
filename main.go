@@ -20,6 +20,8 @@ var (
 	httpClient = &http.Client{}
 	port       *string
 	isHttps    *bool
+	// 不需要以/结尾
+	destAddr string = ""
 )
 
 func main() {
@@ -31,6 +33,7 @@ func main() {
 	// 注册静态文件
 	fsRegister("/")
 	http.HandleFunc("/api/", mainHandler)
+	http.HandleFunc("/ext/", proxy)
 	http.HandleFunc("/sqlite", dbTest)
 
 	// 检测是否启动成功
@@ -59,19 +62,6 @@ func main() {
 // /api/
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 
-	uri := r.URL.Path
-
-	if strings.HasPrefix(uri, "/api/ext/") {
-
-		// 默认处理 /api/ 前缀请求
-	} else {
-		processSys(w, r)
-	}
-}
-
-// 业务服务接口
-func processSys(w http.ResponseWriter, r *http.Request) {
-
 	if strings.EqualFold(r.URL.Path, "/api/receiveNotify") {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -84,9 +74,7 @@ func processSys(w http.ResponseWriter, r *http.Request) {
 // 对外代理的接口注册
 func proxy(w http.ResponseWriter, r *http.Request) {
 
-	faceIdHost := "https://api.megvii.com"
-
-	req, _ := http.NewRequest(r.Method, faceIdHost+r.RequestURI, r.Body)
+	req, _ := http.NewRequest(r.Method, destAddr+r.RequestURI, r.Body)
 	defer r.Body.Close()
 	for k, vv := range r.Header {
 		for _, v := range vv {
