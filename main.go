@@ -34,7 +34,7 @@ func main() {
 	fsRegister("/")
 	http.HandleFunc("/api/", mainHandler)
 	http.HandleFunc("/ext/", proxy)
-	http.HandleFunc("/sqlite", dbTest)
+	http.HandleFunc("/api/sqlite", dbTest)
 
 	// 检测是否启动成功
 	go sLsn()
