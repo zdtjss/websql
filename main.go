@@ -72,8 +72,8 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	s := <-c
-	log.Printf("接收信号：%s\n", s)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Printf("服务正在关闭 %s......", s)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		log.Println("服务关闭异常，err：" + err.Error())
