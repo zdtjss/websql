@@ -1,18 +1,23 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"go-web/https"
 	"go-web/sqlite"
+	"go-web/utils"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,32 +36,49 @@ func main() {
 	flag.Parse()
 
 	// 注册静态文件
-	fsRegister("/")
+	fsRegister("/go-web/")
 	http.HandleFunc("/api/", mainHandler)
 	http.HandleFunc("/ext/", proxy)
 	http.HandleFunc("/api/sqlite", dbTest)
 
+	utils.RegistRouter()
+
 	// 检测是否启动成功
 	go sLsn()
 
-	var err error
-	if *isHttps {
-		// https 默认端口 443
-		if *port == "80" {
-			*port = "443"
+	// https 默认端口 443
+	if *isHttps && *port == "80" {
+		*port = "443"
+	}
+	server := http.Server{Addr: ":" + *port}
+
+	// 启动服务
+	go func() {
+		var err error
+		if *isHttps {
+			// 初始化 TLS 证书
+			https.InitCertificateFile()
+			err = server.ListenAndServeTLS(https.PemName, https.KeyName)
+		} else {
+			err = server.ListenAndServe()
 		}
-		// 初始化 TLS 证书
-		https.InitCertificateFile()
-		err = http.ListenAndServeTLS(":"+*port, https.PemName, https.KeyName, nil)
-	} else {
-		err = http.ListenAndServe(":"+*port, nil)
-	}
 
-	if err != nil {
-		log.Println("********************* 系统启动失败，端口：" + *port + " *********************")
-		log.Println(err)
-	}
+		if err != nil && !strings.Contains(err.Error(), "Server closed") {
+			log.Println("********************* 系统启动失败，端口：" + *port + " *********************")
+			log.Println(err)
+		}
+	}()
 
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	s := <-c
+	log.Printf("接收信号：%s\n", s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Println("服务关闭异常，err：" + err.Error())
+	}
+	log.Println("服务已关闭")
 }
 
 // /api/
