@@ -1,0 +1,27 @@
+package utils
+
+import "log"
+
+func Println(err error) {
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func Printf(format string, err error) {
+	if err != nil {
+		log.Printf(format, err)
+	}
+}
+
+func Panicln(err error) {
+	if err != nil {
+		log.Panicln(err)
+	}
+}
+
+func Panicf(format string, err error) {
+	if err != nil {
+		log.Panicf(format, err)
+	}
+}

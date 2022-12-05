@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/exp/maps"
 )
 
 var (
@@ -26,7 +28,7 @@ var (
 	port       *string
 	isHttps    *bool
 	// 不需要以/结尾
-	destAddr string = ""
+	destAddr string = "http://localhost:8083"
 )
 
 func main() {
@@ -40,8 +42,6 @@ func main() {
 	http.HandleFunc("/api/", mainHandler)
 	http.HandleFunc("/ext/", proxy)
 	http.HandleFunc("/api/sqlite", dbTest)
-
-	utils.RegistRouter()
 
 	// 检测是否启动成功
 	go sLsn()
@@ -96,22 +96,17 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 // 对外代理的接口注册
 func proxy(w http.ResponseWriter, r *http.Request) {
 
-	req, _ := http.NewRequest(r.Method, destAddr+r.RequestURI, r.Body)
+	req, _ := http.NewRequest(r.Method, destAddr+r.RequestURI[4:], r.Body)
 	defer r.Body.Close()
-	for k, vv := range r.Header {
-		for _, v := range vv {
-			req.Header.Add(k, v)
-		}
-	}
+	*&req.Header = r.Header
 	resp, err := httpClient.Do(req)
-	if err != nil {
-		fmt.Println(err)
-	}
+	utils.Panicln(err)
+
+	maps.Copy(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
+
 	_, err2 := io.Copy(w, resp.Body)
-	if err2 != nil {
-		fmt.Println(err2)
-	}
+	utils.Panicln(err2)
 	defer resp.Body.Close()
 }
 
