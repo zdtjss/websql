@@ -9,17 +9,20 @@ import (
 	"go-web/https"
 	"go-web/sqlite"
 	"go-web/utils"
+	webapi "go-web/web-api"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/julienschmidt/httprouter"
 	"golang.org/x/exp/maps"
 )
 
@@ -29,6 +32,7 @@ var (
 	isHttps    *bool
 	// 不需要以/结尾
 	destAddr string = "http://localhost:8083"
+	router          = httprouter.New()
 )
 
 func main() {
@@ -38,10 +42,14 @@ func main() {
 	flag.Parse()
 
 	// 注册静态文件
-	fsRegister("/go-web/")
-	http.HandleFunc("/api/", mainHandler)
-	http.HandleFunc("/ext/", proxy)
-	http.HandleFunc("/api/sqlite", dbTest)
+	router.Handler("GET", "/", staticHandler("/"))
+	router.HandlerFunc("GET", "/api/", mainHandler)
+	router.HandlerFunc("GET", "/ext/", proxy)
+	router.HandlerFunc("GET", "/api/sqlite", dbTest)
+
+	webapi.MainRegister(router)
+
+	// router.NotFound = &NotFound{}
 
 	// 检测是否启动成功
 	go sLsn()
@@ -50,7 +58,7 @@ func main() {
 	if *isHttps && *port == "80" {
 		*port = "443"
 	}
-	server := http.Server{Addr: ":" + *port}
+	server := http.Server{Addr: ":" + *port, Handler: router}
 
 	// 启动服务
 	go func() {
@@ -117,9 +125,28 @@ func dbTest(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonData)
 }
 
-func fsRegister(baseUrl string) {
+func staticHandler(baseUrl string) http.Handler {
 	fs := http.FileServer(http.Dir("static/"))
-	http.Handle(baseUrl, http.StripPrefix(baseUrl, fs))
+	return http.StripPrefix(baseUrl, fs)
+}
+
+type NotFound struct {
+}
+
+func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	exec, err := os.Executable()
+	if err != nil {
+		println(err)
+	}
+	configFile := filepath.Join(filepath.Dir(exec), "../static/index.html")
+	fileData, err := os.Open(configFile)
+	if err != nil {
+		configFile = filepath.Join(filepath.Dir(exec), "static/index.html")
+		fileData, err = os.Open(configFile)
+	}
+	w.Header().Add("content-type", "text/html; charset=utf-8")
+	io.Copy(w, fileData)
 }
 
 // 启动状态监听
