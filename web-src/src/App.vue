@@ -30,6 +30,7 @@ function parsUrlVar() {
           <RouterLink to="/">Home</RouterLink>
           <RouterLink to="/about">About</RouterLink>
           <RouterLink to="/sqlEditor">SQLEditor</RouterLink>
+          <RouterLink to="/export">导表</RouterLink>
         </nav>
       </div>
     </header>
