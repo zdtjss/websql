@@ -3,11 +3,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
-	"fmt"
 	"go-web/https"
-	"go-web/sqlite"
 	"go-web/utils"
 	webapi "go-web/web-api"
 	"io"
@@ -15,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,16 +19,12 @@ import (
 	"time"
 
 	"github.com/julienschmidt/httprouter"
-	"golang.org/x/exp/maps"
 )
 
 var (
-	httpClient = &http.Client{}
-	port       *string
-	isHttps    *bool
-	// 不需要以/结尾
-	destAddr string = "http://localhost:8083"
-	router          = httprouter.New()
+	port    *string
+	isHttps *bool
+	router  = httprouter.New()
 )
 
 func main() {
@@ -41,15 +33,9 @@ func main() {
 	isHttps = flag.Bool("https", false, "")
 	flag.Parse()
 
-	// 注册静态文件
-	router.Handler("GET", "/", staticHandler("/"))
-	router.HandlerFunc("GET", "/api/", mainHandler)
-	router.HandlerFunc("GET", "/ext/", proxy)
-	router.HandlerFunc("GET", "/api/sqlite", dbTest)
-
 	webapi.MainRegister(router)
 
-	// router.NotFound = &NotFound{}
+	router.NotFound = &NotFound{}
 
 	// 检测是否启动成功
 	go sLsn()
@@ -89,64 +75,13 @@ func main() {
 	log.Println("服务已关闭")
 }
 
-// /api/
-func mainHandler(w http.ResponseWriter, r *http.Request) {
-
-	if strings.EqualFold(r.URL.Path, "/api/receiveNotify") {
-		data, err := io.ReadAll(r.Body)
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println(string(data))
-	}
-}
-
-// 对外代理的接口注册
-func proxy(w http.ResponseWriter, r *http.Request) {
-
-	req, _ := http.NewRequest(r.Method, destAddr+r.RequestURI[4:], r.Body)
-	defer r.Body.Close()
-	*&req.Header = r.Header
-	resp, err := httpClient.Do(req)
-	utils.Panicln(err)
-
-	maps.Copy(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-
-	_, err2 := io.Copy(w, resp.Body)
-	utils.Panicln(err2)
-	defer resp.Body.Close()
-}
-
-func dbTest(w http.ResponseWriter, r *http.Request) {
-	userList := sqlite.ReadFromDB()
-	jsonData, _ := json.Marshal(userList)
-	w.Header().Add("content-type", "application/json;charset=UTF-8")
-	w.Write(jsonData)
-}
-
-func staticHandler(baseUrl string) http.Handler {
-	fs := http.FileServer(http.Dir("static/"))
-	return http.StripPrefix(baseUrl, fs)
-}
-
 type NotFound struct {
 }
 
 func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
-	exec, err := os.Executable()
-	if err != nil {
-		println(err)
-	}
-	configFile := filepath.Join(filepath.Dir(exec), "../static/index.html")
-	fileData, err := os.Open(configFile)
-	if err != nil {
-		configFile = filepath.Join(filepath.Dir(exec), "static/index.html")
-		fileData, err = os.Open(configFile)
-	}
+	file := utils.Find("static/index.html")
 	w.Header().Add("content-type", "text/html; charset=utf-8")
-	io.Copy(w, fileData)
+	io.Copy(w, file)
 }
 
 // 启动状态监听

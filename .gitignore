@@ -21,3 +21,4 @@ static/package-lock.json
 nway.s3db
 web-src/package-lock.json
 static/
+config.json

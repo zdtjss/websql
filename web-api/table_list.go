@@ -5,11 +5,9 @@ import (
 	"go-web/utils"
 	"net/http"
 	"strings"
-
-	"github.com/julienschmidt/httprouter"
 )
 
-func ListTable(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func ListTable(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	dbParam := &config.DBParam{Env: r.Form.Get("env"), Db: r.Form.Get("db")}
 	tables := queryTableInfo(dbParam)
