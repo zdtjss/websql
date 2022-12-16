@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"flag"
+	"go-web/config"
 	"go-web/https"
 	"go-web/utils"
 	webapi "go-web/web-api"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,6 +36,8 @@ func main() {
 	port = flag.String("port", "80", "")
 	isHttps = flag.Bool("https", false, "")
 	flag.Parse()
+
+	config.Cfg = config.ReadConfig()
 
 	webapi.MainRegister(router)
 
@@ -79,9 +85,19 @@ type NotFound struct {
 }
 
 func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	file := utils.Find("static/index.html")
-	w.Header().Add("content-type", "text/html; charset=utf-8")
-	io.Copy(w, file)
+	idx := strings.Index(r.RequestURI, "?")
+	reqPath := r.RequestURI
+	if idx != -1 {
+		reqPath = r.RequestURI[:idx]
+	}
+	file, err := utils.Find("static" + reqPath)
+	if err != nil || strings.EqualFold("/", reqPath) {
+		file, err = utils.Find("static/index.html")
+		utils.Println(err)
+	}
+	defer file.Close()
+	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
+	io.Copy(w, bufio.NewReader(file))
 }
 
 // 启动状态监听

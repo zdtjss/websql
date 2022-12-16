@@ -2,9 +2,18 @@
     <el-table :data="tableData" stripe="true" highlight-current-row="true" style="width: 100%">
         <el-table-column prop="name" label="表名" />
         <el-table-column prop="comment" label="注释" />
-        <el-table-column label="操作" style="text-align: center;">
+        <el-table-column label="操作" style="text-align: center; " width="130px">
             <template #default="scope">
-                <el-button size="small" @click="exportCsv(scope.row.name)">导出</el-button>
+                <el-row :gutter="10">
+                    <el-col :span="12">
+                        <el-button size="small" @click="exportCsv(scope.row.name)">导出</el-button>
+                    </el-col>
+                    <el-col :span="12">
+                        <el-upload v-model="fileList" action="/importCsv" :limit="1" :data="data" :on-success="onSuccess()">
+                            <el-button  size="small" @click="data.table = scope.row.name">导入</el-button>
+                        </el-upload>
+                    </el-col>
+                </el-row>
             </template>
         </el-table-column>
     </el-table>
@@ -17,14 +26,29 @@ import axios from 'axios'
 
 defineProps(['env', 'db'])
 
+const fileList = ref([])
 const tableData = ref([])
+const upload = ref()
+const data = ref({
+    start: 2,
+    env: "test",
+    db: "mat",
+    table: "undo_log"
+})
 
 const params = parsUrlVar()
 
-onMounted(() => queryData())
+onMounted(() => {
+
+    queryData()
+
+    data.value.start = params.get("start")
+    data.value.env = params.get("env")
+    data.value.db = params.get("db")
+})
 
 function queryData() {
-    axios.get("/api/listTable?env=" + params.get("env") + "&db=" + params.get("db"))
+    axios.get("/listTable?env=" + params.get("env") + "&db=" + params.get("db"))
         .then((resp) => {
             tableData.value = resp.data
         })
@@ -34,7 +58,15 @@ function queryData() {
 }
 
 function exportCsv(table) {
-    location.href = "/api/exportCsv?env=" + params.get("env") + "&db=" + params.get("db") + "&table=" + table
+    location.href = "/exportCsv?env=" + params.get("env") + "&db=" + params.get("db") + "&table=" + table
+}
+
+const submitUpload = () => {
+    upload.value.submit()
+}
+
+function onSuccess() {
+    fileList.value = []
 }
 
 function parsUrlVar() {

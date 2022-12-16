@@ -28,6 +28,14 @@ func queryAndWrite(table string, out io.Writer, dbParam *config.DBParam) {
 	columns, err := rows.Columns()
 	utils.Panicln(err)
 
+	columnCommons := make([]string, len(columns))
+	columnMap := columnMap(table, dbParam)
+	for i := 0; i < len(columns); i++ {
+		columnCommons[i] = columnMap[columns[i]]
+	}
+
+	writeToCSV(out, [][]string{columns, columnCommons})
+
 	//values：一行的所有值,把每一行的各个字段放到values中，values长度==列数
 	values := make([]sql.RawBytes, len(columns))
 
@@ -36,9 +44,14 @@ func queryAndWrite(table string, out io.Writer, dbParam *config.DBParam) {
 		scanArgs[i] = &values[i]
 	}
 
+	count := -1
+	maxLines := 100
+
 	//存所有行的内容totalValues
-	totalValues := make([][]string, 0)
+	totalValues := make([][]string, maxLines)
 	for rows.Next() {
+
+		count++
 
 		//存每一行的内容
 		var s []string
@@ -50,18 +63,20 @@ func queryAndWrite(table string, out io.Writer, dbParam *config.DBParam) {
 		for _, v := range values {
 			s = append(s, string(v))
 		}
-		totalValues = append(totalValues, s)
+		totalValues[count] = s
+		if count+1 >= maxLines {
+			writeToCSV(out, totalValues)
+			count = -1
+		}
 	}
 
 	if err = rows.Err(); err != nil {
 		panic(err.Error())
 	}
-	columnCommons := make([]string, len(columns))
-	columnMap := columnMap(table, dbParam)
-	for i := 0; i < len(columns); i++ {
-		columnCommons[i] = columnMap[columns[i]]
+
+	if count != -1 {
+		writeToCSV(out, totalValues[:count+1])
 	}
-	writeToCSV(out, columns, columnCommons, totalValues)
 }
 
 func columnMap(table string, dbParam *config.DBParam) map[string]string {
@@ -79,14 +94,9 @@ func columnMap(table string, dbParam *config.DBParam) map[string]string {
 }
 
 // writeToCSV
-func writeToCSV(out io.Writer, columns, columnCommons []string, totalValues [][]string) {
+func writeToCSV(out io.Writer, totalValues [][]string) {
 	w := csv.NewWriter(out)
-	for i, row := range totalValues {
-		//第一次写列名+第一行数据
-		if i == 0 {
-			w.Write(columns)
-			w.Write(columnCommons)
-		}
+	for _, row := range totalValues {
 		w.Write(row)
 	}
 	w.Flush()

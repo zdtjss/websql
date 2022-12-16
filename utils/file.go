@@ -5,11 +5,9 @@ import (
 	"path/filepath"
 )
 
-func Find(path string) *os.File {
-	exec, err := os.Executable()
-	Println(err)
+func Find(path string) (*os.File, error) {
+	exec, _ := os.Executable()
 	configFile := filepath.Join(filepath.Dir(exec), path)
 	file, err := os.Open(configFile)
-	Println(err)
-	return file
+	return file, err
 }
