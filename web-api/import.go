@@ -11,11 +11,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"golang.org/x/exp/slices"
 )
 
 func ImportCsv(w http.ResponseWriter, r *http.Request) {
 	r.ParseMultipartForm(30 * 1024 * 1024)
 	table := r.Form.Get("table")
+	operType := r.Form.Get("opt")
 	start, _ := strconv.Atoi(r.Form.Get("start"))
 	file, _, err := r.FormFile("file")
 	utils.Panicln(err)
@@ -47,13 +50,21 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 		utils.Panicln(err)
 		totalValues[count] = record
 		if count+1 >= maxLines {
-			insertToDb(table, columns, totalValues, tx)
+			if strings.EqualFold(operType, "insert") {
+				insertToDb(table, columns, totalValues, tx)
+			} else {
+				updateToDb(table, columns, totalValues, tx, dbParam)
+			}
 			count = -1
 		}
 	}
 
 	if count != -1 {
-		insertToDb(table, columns, totalValues[:count+1], tx)
+		if strings.EqualFold(operType, "insert") {
+			insertToDb(table, columns, totalValues[:count+1], tx)
+		} else {
+			updateToDb(table, columns, totalValues[:count+1], tx, dbParam)
+		}
 	}
 
 	tx.Commit()
@@ -89,4 +100,86 @@ func insertToDb(table string, columns []string, data [][]string, tx *sql.Tx) {
 		utils.Panicln(err)
 	}
 
+}
+
+func updateToDb(table string, columns []string, data [][]string, tx *sql.Tx, dbParam *config.DBParam) {
+
+	if len(data) == 0 {
+		return
+	}
+
+	keys := queryKey(dbParam, table, tx)
+	keyIdx := keyIdx(keys, columns)
+
+	sql := bytes.Buffer{}
+	where := bytes.Buffer{}
+	where.WriteString(" where ")
+
+	sql.WriteString("update ")
+	sql.WriteString(table)
+	sql.WriteString(" set ")
+
+	for i, val := range columns {
+		if !slices.Contains(keyIdx, i) {
+			sql.WriteString(val)
+			sql.WriteString(" = ?,")
+		} else {
+			where.WriteString(val)
+			where.WriteString(" = ? and ")
+		}
+	}
+
+	realSql := strings.TrimRight(sql.String(), ",") + strings.TrimRight(where.String(), " and ")
+
+	log.Println(realSql)
+
+	stmt, err := tx.Prepare(realSql)
+	utils.Panicln(err)
+
+	valCount := -1
+	paramCount := -1
+
+	anyVal := make([]interface{}, len(columns))
+	for _, val := range data {
+		for i, v := range val {
+			if !slices.Contains(keyIdx, i) {
+				valCount++
+				anyVal[valCount] = v
+			} else {
+				paramCount++
+				anyVal[len(columns)-len(keys)+paramCount] = v
+			}
+		}
+
+		valCount = -1
+		paramCount = -1
+
+		_, err = stmt.Exec(anyVal...)
+		utils.Panicln(err)
+	}
+
+}
+
+func keyIdx(keys, columns []string) []int {
+	keyIdx := make([]int, 0)
+	for i := 0; i < len(columns); i++ {
+		if slices.Contains(keys, columns[i]) {
+			keyIdx = append(keyIdx, i)
+		}
+	}
+	return keyIdx
+}
+
+func queryKey(dbParam *config.DBParam, table string, tx *sql.Tx) []string {
+	primaryKeys := make([]string, 0)
+	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
+	utils.Println(err)
+	rs, err2 := stmt.Query(getSchema(dbParam), table)
+	utils.Println(err2)
+	var name string
+	for rs.Next() {
+		rs.Scan(&name)
+		primaryKeys = append(primaryKeys, name)
+	}
+	return primaryKeys
 }
