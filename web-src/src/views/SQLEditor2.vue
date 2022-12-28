@@ -2,6 +2,7 @@
     <el-container>
         <el-header height="30px" class="toolbar">
             <el-button @click="exec">执行</el-button>
+            <el-button @click="exportDb">导表</el-button>
         </el-header>
         <el-main class="sql_area">
             <div ref="codemirror" class="codemirror"></div>
@@ -19,7 +20,10 @@ import { standardKeymap, insertTab, history } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, watch, onMounted } from 'vue';
+import { useRouter } from 'vue-router'
 import { ElButton, ElTag, TableV2FixedDir, TableV2SortOrder } from 'element-plus'
+
+const router = useRouter()
 
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
@@ -118,6 +122,14 @@ const getEditorDoc = (): string | null => {
 function exec() {
     alert(getSelection())
 }
+
+function exportDb() {
+    router.push({
+        path: "/export", query: {
+            env: "test", db: "nway", start: 3, opt: "insert"
+        }
+    })
+}
 </script>
 <style>
 .cm-editor {
@@ -141,7 +153,7 @@ function exec() {
 .codemirror {}
 
 .toolbar {
-    text-align: right;
+    padding: 0px;
 }
 </style>
   

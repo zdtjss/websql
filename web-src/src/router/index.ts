@@ -5,13 +5,11 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'home',
       component: () => import('../views/SQLEditor2.vue')
     },
     {
       path: '/export',
-      name: 'export',
-      component: () => import('../views/DBExport.vue')
+      component: () => import('../views/DBExport.vue'),
     }
   ]
 })
