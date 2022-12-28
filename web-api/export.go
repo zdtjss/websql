@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"go-web/config"
 	"go-web/utils"
-	"io"
 	"log"
 	"net/http"
 )
@@ -15,12 +14,13 @@ func ExportCsv(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	table := r.Form.Get("table")
 	dbParam := &config.DBParam{Env: r.Form.Get("env"), Db: r.Form.Get("db")}
-	w.Header().Add("content-type", "application/octet-stream")
+	w.Header().Add("content-type", "text/csv;charset=UTF-8")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".csv")
-	queryAndWrite(table, w, dbParam)
+	out := csv.NewWriter(w)
+	queryAndWrite(table, out, dbParam)
 }
 
-func queryAndWrite(table string, out io.Writer, dbParam *config.DBParam) {
+func queryAndWrite(table string, out *csv.Writer, dbParam *config.DBParam) {
 	log.Println("正在导出：", table)
 	rows, err := config.GetConn(dbParam).Query(fmt.Sprintf("SELECT * from %s", table))
 	utils.Panicln(err)
@@ -94,10 +94,9 @@ func columnMap(table string, dbParam *config.DBParam) map[string]string {
 }
 
 // writeToCSV
-func writeToCSV(out io.Writer, totalValues [][]string) {
-	w := csv.NewWriter(out)
+func writeToCSV(out *csv.Writer, totalValues [][]string) {
 	for _, row := range totalValues {
-		w.Write(row)
+		out.Write(row)
 	}
-	w.Flush()
+	out.Flush()
 }
