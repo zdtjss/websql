@@ -20,20 +20,23 @@ func GetConn(param *DBParam) *sqlx.DB {
 }
 
 func initDBConn(param *DBParam) {
-	db, err := sqlx.Connect("mysql", Cfg.DB[param.Db][param.Env])
+	db, err := sqlx.Connect("mysql", param.User+":"+param.Pwd+"@"+param.Url)
 	if err != nil {
 		panic("连接数据库失败，err :" + err.Error())
 	}
 	db.SetMaxOpenConns(5)
 	DBMap[createKey(param)] = db
-	log.Printf("数据库连接成功, env = %s, db = %s", param.Env, param.Db)
+	log.Printf("数据库连接成功, env = %s, db = %s", param.Name, param.User)
 }
 
 func createKey(param *DBParam) string {
-	return param.Db + "_" + param.Env
+	return param.Id
 }
 
 type DBParam struct {
-	Db  string
-	Env string
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	User string `json:"user"`
+	Pwd  string `json:"pwd"`
+	Url  string `json:"url"`
 }

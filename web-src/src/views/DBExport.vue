@@ -34,7 +34,7 @@
 <script setup>
 
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 
 import axios from 'axios'
 
@@ -60,23 +60,24 @@ const dataUpdate = ref({
     table: "undo_log"
 })
 
-const params = parsUrlVar()
+const route = useRoute()
 
 onMounted(() => {
 
     queryData()
 
-    dataInsert.value.start = params.get("start")
-    dataInsert.value.env = params.get("env")
-    dataInsert.value.db = params.get("db")
+    dataInsert.value.start = route.query.start
+    dataInsert.value.env = route.query.env
+    dataInsert.value.db = route.query.db
 
-    dataUpdate.value.start = params.get("start")
-    dataUpdate.value.env = params.get("env")
-    dataUpdate.value.db = params.get("db")
+    dataUpdate.value.start = route.query.start
+    dataUpdate.value.env = route.query.env
+    dataUpdate.value.db = route.query.db
 })
 
 function queryData() {
-    axios.get("/listTable?env=" + params.get("env") + "&db=" + params.get("db"))
+    debugger
+    axios.get("/listTable?env=" + route.query.env + "&db=" + route.query.db)
         .then((resp) => {
             tableData.value = resp.data
         })
@@ -86,24 +87,11 @@ function queryData() {
 }
 
 function exportCsv(table) {
-    location.href = "/exportCsv?env=" + params.get("env") + "&db=" + params.get("db") + "&table=" + table
+    location.href = "/exportCsv?env=" + route.query.env + "&db=" + route.query.db + "&table=" + table
 }
 
 function toSql() {
     router.push("/")
-}
-
-function parsUrlVar() {
-    var paramMap = new Map();
-    var query = location.search;
-    if (query && query.charAt(0) === '?') {
-        let str = query.substring(1)
-        let params = str.split("&");
-        for (let i = 0; i < params.length; i++) {
-            paramMap.set(params[i].split("=")[0], decodeURI(params[i].split("=")[1]))
-        }
-    }
-    return paramMap
 }
 </script>
   

@@ -1,24 +1,21 @@
 package webapi
 
 import (
-	"go-web/config"
 	"go-web/utils"
 	"net/http"
-	"strings"
 )
 
 func ListTable(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	dbParam := &config.DBParam{Env: r.Form.Get("env"), Db: r.Form.Get("db")}
-	tables := queryTableInfo(dbParam)
+	tables := queryTableInfo(r.Form.Get("connId"), r.Form.Get("schema"))
 	utils.WriteJson(w, tables)
 }
 
-func queryTableInfo(dbParam *config.DBParam) []*Table {
+func queryTableInfo(key, schema string) []*Table {
 	tables := make([]*Table, 0)
-	stmt, err := config.GetConn(dbParam).Prepare("SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?")
+	stmt, err := getConn(key).Prepare("SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?")
 	utils.Println(err)
-	rs, err2 := stmt.Query(getSchema(dbParam))
+	rs, err2 := stmt.Query(schema)
 	utils.Println(err2)
 	var name, comment string
 	for rs.Next() {
@@ -27,16 +24,6 @@ func queryTableInfo(dbParam *config.DBParam) []*Table {
 		tables = append(tables, table)
 	}
 	return tables
-}
-
-func getSchema(dbParam *config.DBParam) string {
-	dsn := config.Cfg.DB[dbParam.Db][dbParam.Env]
-	start := strings.LastIndex(dsn, ")/")
-	end := strings.Index(dsn[start:], "?")
-	if end != -1 {
-		return dsn[start+2 : start+end]
-	}
-	return dsn[start:]
 }
 
 type Table struct {

@@ -1,65 +1,15 @@
 <template>
   <el-container class="layout-container-demo">
     <el-aside>
-      <el-scrollbar>
-        <el-menu :default-openeds="['1', '3']">
-          <el-sub-menu index="1">
-            <template #title>
-              <el-icon>
-                <message />
-              </el-icon>Navigator One
-            </template>
-            <el-menu-item-group>
-              <template #title>Group 1</template>
-              <el-menu-item index="1-1">Option 1</el-menu-item>
-              <el-menu-item index="1-2">Option 2</el-menu-item>
-            </el-menu-item-group>
-            <el-menu-item-group title="Group 2">
-              <el-menu-item index="1-3">Option 3</el-menu-item>
-            </el-menu-item-group>
-            <el-sub-menu index="1-4">
-              <template #title>Option4</template>
-              <el-menu-item index="1-4-1">Option 4-1</el-menu-item>
-            </el-sub-menu>
-          </el-sub-menu>
-          <el-sub-menu index="2">
-            <template #title>
-              <el-icon><icon-menu /></el-icon>Navigator Two
-            </template>
-            <el-menu-item-group>
-              <template #title>Group 1</template>
-              <el-menu-item index="2-1">Option 1</el-menu-item>
-              <el-menu-item index="2-2">Option 2</el-menu-item>
-            </el-menu-item-group>
-            <el-menu-item-group title="Group 2">
-              <el-menu-item index="2-3">Option 3</el-menu-item>
-            </el-menu-item-group>
-            <el-sub-menu index="2-4">
-              <template #title>Option 4</template>
-              <el-menu-item index="2-4-1">Option 4-1</el-menu-item>
-            </el-sub-menu>
-          </el-sub-menu>
-          <el-sub-menu index="3">
-            <template #title>
-              <el-icon>
-                <setting />
-              </el-icon>Navigator Three
-            </template>
-            <el-menu-item-group>
-              <template #title>Group 1</template>
-              <el-menu-item index="3-1">Option 1</el-menu-item>
-              <el-menu-item index="3-2">Option 2</el-menu-item>
-            </el-menu-item-group>
-            <el-menu-item-group title="Group 2">
-              <el-menu-item index="3-3">Option 3</el-menu-item>
-            </el-menu-item-group>
-            <el-sub-menu index="3-4">
-              <template #title>Option 4</template>
-              <el-menu-item index="3-4-1">Option 4-1</el-menu-item>
-            </el-sub-menu>
-          </el-sub-menu>
-        </el-menu>
-      </el-scrollbar>
+      <el-tree :data="treeData" highlight-current="true" :load="loadTree" :lazy="true">
+        <template #default="{ node, data }">
+          <span class="custom-tree-node">
+            <span>
+              <a>{{ node.label }}</a>
+            </span>
+          </span>
+        </template>
+      </el-tree>
     </el-aside>
 
     <el-container>
@@ -70,40 +20,53 @@
   </el-container>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import { ref, onMounted } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import { Menu as IconMenu, Message, Setting } from '@element-plus/icons-vue'
 
+import http from './js/utils/httpProxy.js'
+
 onMounted(() => {
+  // loadTree()
   router.push("/")
 })
 
 const router = useRouter()
 
-const item = {
-  date: '2016-05-02',
-  name: 'Tom',
-  address: 'No. 189, Grove St, Los Angeles',
-}
-const tableData = ref(Array.from({ length: 20 }).fill(item))
+const treeData = ref([{
+  label: "",
+  type: "",
+  data: {},
+  children: []
+}])
 
-for (const [key, value] of parsUrlVar()) {
-  sessionStorage.setItem(key, value)
+function queryNest(data) {
+  console.log(data)
 }
 
-function parsUrlVar() {
-  var paramMap = new Map();
-  var query = window.location.search;
-  if (query && query.charAt(0) === '?') {
-    let str = query.substring(1)
-    let params = str.split("&");
-    for (let i = 0; i < params.length; i++) {
-      paramMap.set(params[i].split("=")[0], decodeURI(params[i].split("=")[1]))
-    }
+function loadTree(node, resolve) {
+  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type } })
+    .then((resp) => {
+      resolve(resp.data.data)
+    })
+    .catch(function (error) {
+      console.log(error);
+    });
+}
+
+function findConn(node) {
+  let connId = ""
+  if (node.level === 0) {
+    return connId
+  } else if (node.level === 1) {
+    connId = node.data.data.id
+  } else {
+    connId = findConn(node.parent)
   }
-  return paramMap
+  return connId
 }
+
 </script>
 
 <style scoped>
@@ -114,13 +77,11 @@ function parsUrlVar() {
 
 .layout-container-demo .el-header {
   position: relative;
-  background-color: var(--el-color-primary-light-7);
   color: var(--el-text-color-primary);
 }
 
 .layout-container-demo .el-aside {
   color: var(--el-text-color-primary);
-  background: var(--el-color-primary-light-8);
 }
 
 .layout-container-demo .el-menu {

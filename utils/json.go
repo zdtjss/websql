@@ -15,9 +15,9 @@ func ToJsonString(v any) []byte {
 	return str
 }
 
-func WriteJson(w http.ResponseWriter, v *any) {
+func WriteJson(w http.ResponseWriter, v any) {
 	w.Header().Add("content-type", "application/json;charset=UTF-8")
-	w.Write(ToJsonString(v))
+	w.Write(ToJsonString(Result{Code: 200, Data: v}))
 }
 
 func UnmarshalJson[T any](r io.Reader, v *T) {
@@ -25,4 +25,10 @@ func UnmarshalJson[T any](r io.Reader, v *T) {
 	Println(err)
 	err = json.Unmarshal(jsonData, v)
 	Println(err)
+}
+
+type Result struct {
+	Code uint8  `json:"code"`
+	Data any    `json:"data"`
+	Msg  string `json:"msg"`
 }

@@ -1,15 +1,99 @@
 package webapi
 
 import (
-	"database/sql"
+	"go-web/config"
+	"go-web/utils"
 	"net/http"
+	"strconv"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // 打开数据库，如果不存在，则创建
-var db, _ = sql.Open("sqlite3", "./nway.sqlite3.db")
+var db *sqlx.DB
+
+func init() {
+	sqlxDb, err := sqlx.Connect("sqlite3", "./nway.sqlite3.db")
+	utils.Panicln(err)
+	db = sqlxDb
+}
 
 func SaveConn(w http.ResponseWriter, r *http.Request) {
+	cfg := &ConnCfg{}
+	utils.UnmarshalJson(r.Body, cfg)
+	if cfg.Id == "" {
+		doInsert(cfg)
+	} else {
+		doUpdate(cfg)
+	}
+}
 
+func ShowTree(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	connId := r.Form.Get("connId")
+	key := r.Form.Get("key")
+	curType := r.Form.Get("type")
+	nextType := getNextType(curType)
+
+	var data any
+	switch nextType {
+	case TREE_NODE_TYPE_CONN:
+		data = listConn()
+	case TREE_NODE_TYPE_SCHEMA:
+		data = listSchema(connId)
+	case TREE_NODE_TYPE_TABLE:
+		data = listTable(connId, key)
+	default:
+		data = make([]any, 0)
+	}
+	utils.WriteJson(w, data)
+}
+
+func listConn() []*Tree {
+
+	type NodeData struct {
+		Id string `json:"id"`
+	}
+
+	cfgList := []ConnCfg{}
+	err := db.Select(&cfgList, "select * from t_config_dbconn")
+	utils.Println(err)
+	tree := make([]*Tree, len(cfgList))
+	for i, cfg := range cfgList {
+		tree[i] = &Tree{Label: cfg.Name, Data: NodeData{Id: cfg.Id}, Type: TREE_NODE_TYPE_CONN}
+	}
+	return tree
+}
+
+func listSchema(key string) []*Tree {
+	schemaName := ""
+	row, err := getConn(key).Query("select schema_name from information_schema.schemata")
+	utils.Println(err)
+	tree := make([]*Tree, 0)
+	for row.Next() {
+		row.Scan(&schemaName)
+		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA})
+	}
+	return tree
+}
+
+func listTable(key, schema string) []*Tree {
+
+	type NodeData struct {
+		Text string `json:"text"`
+	}
+
+	tableName, tableComment := "", ""
+	row, err := getConn(key).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
+	utils.Println(err)
+	tree := make([]*Tree, 0)
+	for row.Next() {
+		row.Scan(&tableName, &tableComment)
+		tree = append(tree, &Tree{Label: tableName, Data: NodeData{Text: tableComment}, Type: TREE_NODE_TYPE_TABLE})
+	}
+	return tree
 }
 
 func doInsert(cfg *ConnCfg) {
@@ -20,10 +104,31 @@ func doInsert(cfg *ConnCfg) {
 	stmt.Exec(&cfg.Name, &cfg.User, &cfg.Pwd, &cfg.Url)
 }
 
-func doInsert(cfg *ConnCfg) {
+func doUpdate(cfg *ConnCfg) {
+	stmt, _ := db.Prepare("update t_config_dbconn set name = ?, user = ?, pwd = ?, url = ? where id = ?")
+	stmt.Exec(&cfg.Name, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+}
 
-	stmt, _ := db.Prepare("insert into t_config_dbconn (name, user, pwd, url) values (?, ?, ?, ?)")
-	stmt.Exec(&cfg.Name, &cfg.User, &cfg.Pwd, &cfg.Url)
+func getNextType(curType string) string {
+	t := TREE_NODE_TYPE_CONN
+	switch curType {
+	case TREE_NODE_TYPE_CONN:
+		t = TREE_NODE_TYPE_SCHEMA
+	case TREE_NODE_TYPE_SCHEMA:
+		t = TREE_NODE_TYPE_TABLE
+	case TREE_NODE_TYPE_TABLE:
+		t = ""
+	}
+	return t
+}
+
+func getConn(id string) *sqlx.DB {
+	cfgList := []ConnCfg{}
+	iid, _ := strconv.Atoi(id)
+	err := db.Select(&cfgList, "select * from t_config_dbconn where id = ?", iid)
+	utils.Panicln(err)
+	cfg := cfgList[0]
+	return config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
 }
 
 func initConfigTable() {
@@ -31,7 +136,7 @@ func initConfigTable() {
 	//创建表
 	sql_table := `
 		CREATE TABLE IF NOT EXISTS t_config_dbconn (
-			uid INTEGER PRIMARY KEY AUTOINCREMENT,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name VARCHAR(64) NULL,
 			user VARCHAR(64) NULL,
 			pwd VARCHAR(128) NULL,
@@ -42,8 +147,25 @@ func initConfigTable() {
 }
 
 type ConnCfg struct {
-	Name string
-	User string
-	Pwd  string
-	Url  string
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	User string `json:"user"`
+	Pwd  string `json:"pwd"`
+	Url  string `json:"url"`
 }
+
+type Tree struct {
+	Label    string `json:"label"`
+	Type     string `json:"type"`
+	Data     any    `json:"data"`
+	Children []Tree `json:"children"`
+}
+
+const (
+	// conn
+	TREE_NODE_TYPE_CONN = "conn"
+	// schema
+	TREE_NODE_TYPE_SCHEMA = "schema"
+	// table
+	TREE_NODE_TYPE_TABLE = "table"
+)

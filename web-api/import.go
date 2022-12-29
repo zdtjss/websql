@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/csv"
-	"go-web/config"
 	"go-web/utils"
 	"io"
 	"log"
@@ -18,18 +17,20 @@ import (
 func ImportCsv(w http.ResponseWriter, r *http.Request) {
 	log.Println("收到新增/更新请求")
 	r.ParseMultipartForm(30 * 1024 * 1024)
+
+	connId := r.Form.Get("connId")
+	schema := r.Form.Get("schema")
 	table := r.Form.Get("table")
 	operType := r.Form.Get("opt")
 	start, _ := strconv.Atoi(r.Form.Get("start"))
+
 	file, _, err := r.FormFile("file")
 	utils.Panicln(err)
 	defer file.Close()
 
 	reader := csv.NewReader(file)
 
-	dbParam := &config.DBParam{Env: r.Form.Get("env"), Db: r.Form.Get("db")}
-
-	tx, _ := config.GetConn(dbParam).Begin()
+	tx, _ := getConn(connId).Begin()
 	defer tx.Rollback()
 
 	count := -1
@@ -54,9 +55,9 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 		totalValues[count] = record
 		if count+1 >= maxLines {
 			if strings.EqualFold(operType, "insert") {
-				insertToDb(table, columns, totalValues, tx)
+				insertToDb(schema, table, columns, totalValues, tx)
 			} else {
-				updateToDb(table, columns, totalValues, tx, dbParam)
+				updateToDb(schema, table, columns, totalValues, tx)
 			}
 			count = -1
 		}
@@ -64,9 +65,9 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 
 	if count != -1 {
 		if strings.EqualFold(operType, "insert") {
-			insertToDb(table, columns, totalValues[:count+1], tx)
+			insertToDb(schema, table, columns, totalValues[:count+1], tx)
 		} else {
-			updateToDb(table, columns, totalValues[:count+1], tx, dbParam)
+			updateToDb(schema, table, columns, totalValues[:count+1], tx)
 		}
 	}
 
@@ -81,7 +82,7 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func insertToDb(table string, columns []string, data [][]string, tx *sql.Tx) {
+func insertToDb(schema, table string, columns []string, data [][]string, tx *sql.Tx) {
 
 	if len(data) == 0 {
 		return
@@ -90,6 +91,8 @@ func insertToDb(table string, columns []string, data [][]string, tx *sql.Tx) {
 	sql := bytes.Buffer{}
 
 	sql.WriteString("insert into ")
+	sql.WriteString(schema)
+	sql.WriteString(".")
 	sql.WriteString(table)
 	sql.WriteString(" (")
 	sql.WriteString(strings.Join(columns, ","))
@@ -113,13 +116,13 @@ func insertToDb(table string, columns []string, data [][]string, tx *sql.Tx) {
 
 }
 
-func updateToDb(table string, columns []string, data [][]string, tx *sql.Tx, dbParam *config.DBParam) {
+func updateToDb(schema, table string, columns []string, data [][]string, tx *sql.Tx) {
 
 	if len(data) == 0 {
 		return
 	}
 
-	keys := queryKey(dbParam, table, tx)
+	keys := queryKey(schema, table, tx)
 	keyIdx := keyIdx(keys, columns)
 
 	sql := bytes.Buffer{}
@@ -181,11 +184,11 @@ func keyIdx(keys, columns []string) []int {
 	return keyIdx
 }
 
-func queryKey(dbParam *config.DBParam, table string, tx *sql.Tx) []string {
+func queryKey(table, schema string, tx *sql.Tx) []string {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
 	utils.Println(err)
-	rs, err2 := stmt.Query(getSchema(dbParam), table)
+	rs, err2 := stmt.Query(schema, table)
 	utils.Println(err2)
 	var name string
 	for rs.Next() {

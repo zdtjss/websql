@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
-	"go-web/config"
 	"go-web/utils"
 	"log"
 	"net/http"
@@ -13,23 +12,23 @@ import (
 func ExportCsv(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	table := r.Form.Get("table")
-	dbParam := &config.DBParam{Env: r.Form.Get("env"), Db: r.Form.Get("db")}
+	connId := r.Form.Get("connId")
 	w.Header().Add("content-type", "text/csv;charset=UTF-8")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".csv")
 	out := csv.NewWriter(w)
-	queryAndWrite(table, out, dbParam)
+	queryAndWrite(table, out, connId)
 }
 
-func queryAndWrite(table string, out *csv.Writer, dbParam *config.DBParam) {
+func queryAndWrite(table string, out *csv.Writer, connId string) {
 	log.Println("正在导出：", table)
-	rows, err := config.GetConn(dbParam).Query(fmt.Sprintf("SELECT * from %s", table))
+	rows, err := getConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
 	utils.Panicln(err)
 
 	columns, err := rows.Columns()
 	utils.Panicln(err)
 
 	columnCommons := make([]string, len(columns))
-	columnMap := columnMap(table, dbParam)
+	columnMap := columnMap(table, connId)
 	for i := 0; i < len(columns); i++ {
 		columnCommons[i] = columnMap[columns[i]]
 	}
@@ -79,9 +78,9 @@ func queryAndWrite(table string, out *csv.Writer, dbParam *config.DBParam) {
 	}
 }
 
-func columnMap(table string, dbParam *config.DBParam) map[string]string {
+func columnMap(table string, connId string) map[string]string {
 	columnMap := make(map[string]string)
-	stmt, err := config.GetConn(dbParam).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
+	stmt, err := getConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
 	utils.Println(err)
 	rs, err2 := stmt.Query(table)
 	utils.Println(err2)
