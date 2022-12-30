@@ -13,10 +13,11 @@ func ExportCsv(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	table := r.Form.Get("table")
 	connId := r.Form.Get("connId")
+	schema := r.Form.Get("schema")
 	w.Header().Add("content-type", "text/csv;charset=UTF-8")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".csv")
 	out := csv.NewWriter(w)
-	queryAndWrite(table, out, connId)
+	queryAndWrite(schema+"."+table, out, connId)
 }
 
 func queryAndWrite(table string, out *csv.Writer, connId string) {

@@ -15,6 +15,9 @@
                 </template>
             </el-auto-resizer>
         </el-footer>
+        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" destroy-on-close center>
+            <DBExport :connId="props.connId" :schema="props.schema" start="3" opt="insert" />
+        </el-dialog>
     </el-container>
 </template>
   
@@ -28,6 +31,7 @@ import { ref, watch, onMounted, defineProps } from 'vue';
 import { useRouter } from 'vue-router'
 import { useDBStore } from '../stores/sql'
 
+import DBExport from './DBExport.vue'
 
 import http from '../js/utils/httpProxy.js'
 
@@ -42,6 +46,7 @@ const columns = ref([])
 const result = ref([])
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
+const exportDialogVisible = ref(false)
 
 const dbStore = useDBStore()
 
@@ -110,11 +115,12 @@ function exec() {
 }
 
 function exportDb() {
-    router.push({
-        path: "/export", query: {
-            connId: props.connId, schema: props.schema, start: 3, opt: "insert"
-        }
-    })
+    exportDialogVisible.value = true
+    /*  router.push({
+         path: "/export", query: {
+             connId: props.connId, schema: props.schema, start: 3, opt: "insert"
+         }
+     }) */
 }
 </script>
 <style>
