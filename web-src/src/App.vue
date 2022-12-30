@@ -2,10 +2,10 @@
   <el-container class="layout-container-demo">
     <el-aside>
       <el-tree :data="treeData" highlight-current="true" :load="loadTree" :lazy="true">
-        <template #default="{ node, data }">
+        <template #default="{ node }">
           <span class="custom-tree-node">
             <span>
-              <a>{{ node.label }}</a>
+              <a @click="addTab(node)">{{ node.label }}</a>
             </span>
           </span>
         </template>
@@ -14,25 +14,20 @@
 
     <el-container>
       <el-main>
-        <RouterView></RouterView>
+        <el-tabs v-model="editableTabsValue" type="card" class="demo-tabs" closable @tab-remove="removeTab">
+          <el-tab-pane v-for="item in editableTabs" :key="item.name" :label="item.title" :name="item.name">
+            <component :is="item.component" :connId="item.connId" :schema="item.schema" />
+          </el-tab-pane>
+        </el-tabs>
       </el-main>
     </el-container>
   </el-container>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { RouterView, useRouter } from 'vue-router'
-import { Menu as IconMenu, Message, Setting } from '@element-plus/icons-vue'
-
+import { ref } from 'vue'
+import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
-
-onMounted(() => {
-  // loadTree()
-  router.push("/")
-})
-
-const router = useRouter()
 
 const treeData = ref([{
   label: "",
@@ -41,8 +36,39 @@ const treeData = ref([{
   children: []
 }])
 
-function queryNest(data) {
-  console.log(data)
+let tabIndex = 0
+const editableTabsValue = ref('')
+const editableTabs = ref([])
+
+const addTab = (node) => {
+  if (node.data.type !== "schema") {
+    return
+  }
+  const newTabName = `${++tabIndex}`
+  editableTabs.value.push({
+    title: node.data.label,
+    name: newTabName,
+    connId: findConn(node),
+    schema: node.data.label,
+    component: SQLEditor2,
+  })
+  editableTabsValue.value = newTabName
+}
+const removeTab = (targetName) => {
+  const tabs = editableTabs.value
+  let activeName = editableTabsValue.value
+  if (activeName === targetName) {
+    tabs.forEach((tab, index) => {
+      if (tab.name === targetName) {
+        const nextTab = tabs[index + 1] || tabs[index - 1]
+        if (nextTab) {
+          activeName = nextTab.name
+        }
+      }
+    })
+  }
+  editableTabsValue.value = activeName
+  editableTabs.value = tabs.filter((tab) => tab.name !== targetName)
 }
 
 function loadTree(node, resolve) {

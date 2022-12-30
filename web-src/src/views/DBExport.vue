@@ -38,8 +38,6 @@ import { useRouter, useRoute } from 'vue-router'
 
 import axios from 'axios'
 
-defineProps(['env', 'db'])
-
 const router = useRouter()
 
 const fileList = ref([])
@@ -47,15 +45,15 @@ const tableData = ref([])
 const upload = ref()
 const dataInsert = ref({
     start: 2,
-    env: "test",
-    db: "mat",
+    connId: "test",
+    schema: "mat",
     opt: "insert",
     table: "undo_log"
 })
 const dataUpdate = ref({
     start: 2,
-    env: "test",
-    db: "mat",
+    connId: "test",
+    schema: "mat",
     opt: "update",
     table: "undo_log"
 })
@@ -67,17 +65,17 @@ onMounted(() => {
     queryData()
 
     dataInsert.value.start = route.query.start
-    dataInsert.value.env = route.query.env
-    dataInsert.value.db = route.query.db
+    dataInsert.value.connId = route.query.connId
+    dataInsert.value.schema = route.query.schema
 
     dataUpdate.value.start = route.query.start
-    dataUpdate.value.env = route.query.env
-    dataUpdate.value.db = route.query.db
+    dataUpdate.value.connId = route.query.connId
+    dataUpdate.value.schema = route.query.schema
 })
 
 function queryData() {
     debugger
-    axios.get("/listTable?env=" + route.query.env + "&db=" + route.query.db)
+    axios.get("/listTable?connId=" + route.query.connId + "&schema=" + route.query.schema)
         .then((resp) => {
             tableData.value = resp.data
         })
@@ -87,7 +85,7 @@ function queryData() {
 }
 
 function exportCsv(table) {
-    location.href = "/exportCsv?env=" + route.query.env + "&db=" + route.query.db + "&table=" + table
+    location.href = "/exportCsv?env=" + route.query.env + "&schema=" + route.query.schema + "&table=" + table
 }
 
 function toSql() {

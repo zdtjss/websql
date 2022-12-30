@@ -19,49 +19,22 @@ import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
-import { ref, watch, onMounted } from 'vue';
+import { ref, watch, onMounted, defineProps } from 'vue';
 import { useRouter } from 'vue-router'
-import { ElButton, ElTag, TableV2FixedDir, TableV2SortOrder } from 'element-plus'
+
+import http from '../js/utils/httpProxy.js'
+
+const props = defineProps<{
+    connId: string,
+    schema: string
+}>()
 
 const router = useRouter()
 
+const columns = ref([])
+const result = ref([])
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
-
-const longText =
-    'Quaerat ipsam necessitatibus eum quibusdam est id voluptatem cumque mollitia.'
-const midText = 'Corrupti doloremque a quos vero delectus consequatur.'
-const shortText = 'Eius optio fugiat.'
-const textList = [shortText, midText, longText]
-
-let id = 0
-const dataGenerator = () => ({
-    id: `random:${++id}`,
-    name: 'Tom',
-    date: '2016-05-03',
-})
-
-const columns = [
-    {
-        key: 'id',
-        title: 'Id',
-        dataKey: 'id',
-        width: 150,
-        fixed: TableV2FixedDir.LEFT,
-    },
-    {
-        key: 'name',
-        title: 'Name',
-        dataKey: 'name',
-        width: 150,
-        align: 'center'
-    }]
-
-const result = ref(
-    Array.from({ length: 200 })
-        .map(dataGenerator)
-        .sort((a, b) => (a.name > b.name ? 1 : -1))
-)
 
 //监听对应sql的代码补全信息,如果更新,则重置editor
 watch(
@@ -120,13 +93,27 @@ const getEditorDoc = (): string | null => {
 };
 
 function exec() {
-    alert(getSelection())
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: getSelection() } })
+        .then((resp) => {
+            columns.value = resp.data.data.columns.map((col: any) => {
+                return {
+                    key: col.name,
+                    title: col.name,
+                    dataKey: col.name,
+                    width: 150
+                }
+            })
+            result.value = resp.data.data.data
+        })
+        .catch(function (error) {
+            console.log(error);
+        });
 }
 
 function exportDb() {
     router.push({
         path: "/export", query: {
-            env: "test", db: "nway", start: 3, opt: "insert"
+            connId: props.connId, schema: props.schema, start: 3, opt: "insert"
         }
     })
 }
@@ -139,7 +126,7 @@ function exportDb() {
 }
 
 .sql_area {
-    height: calc(100vh * 0.5);
+    height: calc(100vh * 0.4);
     padding: 0px;
     margin-top: 10px;
     border-top: solid 1px gray;
