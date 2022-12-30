@@ -3,6 +3,7 @@
         <el-header height="30px" class="toolbar">
             <el-button @click="exec">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
+            <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main class="sql_area">
             <div ref="codemirror" class="codemirror"></div>
@@ -25,6 +26,8 @@ import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, watch, onMounted, defineProps } from 'vue';
 import { useRouter } from 'vue-router'
+import { useDBStore } from '../stores/sql'
+
 
 import http from '../js/utils/httpProxy.js'
 
@@ -34,15 +37,18 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
-
+const maxLine = ref(10)
 const columns = ref([])
 const result = ref([])
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
 
+const dbStore = useDBStore()
+
+
 //监听对应sql的代码补全信息,如果更新,则重置editor
 watch(
-    () => ['user', 'app_user', 'app_user_user'],
+    () => dbStore.tableList,
     () => {
         let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
         const editorContainer = codemirror.value;
@@ -74,10 +80,7 @@ function createEditor(editorContainer: any, doc: any) {
                 schema: {
                     apom: ['user', 'app_user', 'app_user_user'],
                 },
-                tables: [
-                    { label: "user1" },
-                    { label: "app_user2" }
-                ]
+                tables: dbStore.tableList
             }),
             history(),
             lineNumbers(),
@@ -97,7 +100,7 @@ const getEditorDoc = (): string | null => {
 };
 
 function exec() {
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: getSelection() } })
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: getSelection(), maxLine: maxLine.value } })
         .then((resp) => {
             columns.value = resp.data.data.columns.map((col: any) => {
                 return {

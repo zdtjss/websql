@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"go-web/utils"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -12,11 +13,19 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	connId := r.Form.Get("connId")
 	// schema := r.Form.Get("schema")
 	sqlStr := r.Form.Get("sql")
+	maxLine := r.Form.Get("maxLine")
 
 	sqlStr = strings.TrimSpace(sqlStr)
 
+	params := make([]any, 0)
+	if strings.LastIndex(sqlStr, " limit ") == -1 {
+		sqlStr = sqlStr + " limit ?"
+		maxLineI, _ := strconv.Atoi(maxLine)
+		params = append(params, maxLineI)
+	}
+
 	if strings.HasPrefix(sqlStr, "select ") {
-		rows, err2 := getConn(connId).Query(sqlStr)
+		rows, err2 := getConn(connId).Query(sqlStr, params...)
 		utils.Panicln(err2)
 		cts, err3 := rows.ColumnTypes()
 		utils.Panicln(err3)

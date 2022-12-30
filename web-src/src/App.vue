@@ -1,11 +1,11 @@
 <template>
   <el-container class="layout-container-demo">
     <el-aside>
-      <el-tree :data="treeData" highlight-current="true" :load="loadTree" :lazy="true">
-        <template #default="{ node }">
+      <el-tree highlight-current="true" :load="loadTree" :lazy="true">
+        <template #default="{ node, data }">
           <span class="custom-tree-node">
             <span>
-              <a @click="addTab(node)">{{ node.label }}</a>
+              <a @click="addTab(node)" :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
             </span>
           </span>
         </template>
@@ -28,13 +28,9 @@
 import { ref } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
+import { useDBStore } from '@/stores/sql'
 
-const treeData = ref([{
-  label: "",
-  type: "",
-  data: {},
-  children: []
-}])
+const dbStore = useDBStore()
 
 let tabIndex = 0
 const editableTabsValue = ref('')
@@ -74,9 +70,10 @@ const removeTab = (targetName) => {
 function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type } })
     .then((resp) => {
+      dbStore.addTable(resp.data.data.map(e => e.label))
       resolve(resp.data.data)
     })
-    .catch(function (error) {
+    .catch((error) => {
       console.log(error);
     });
 }
