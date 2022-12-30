@@ -70,7 +70,9 @@ const removeTab = (targetName) => {
 function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type } })
     .then((resp) => {
-      dbStore.addTable(resp.data.data.map(e => e.label))
+      if (node.data.type === "schema") {
+        dbStore.addTable(node.data.label, resp.data.data.map(e => e.label))
+      }
       resolve(resp.data.data)
     })
     .catch((error) => {

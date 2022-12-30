@@ -45,16 +45,10 @@ const codemirror = ref(null);
 
 const dbStore = useDBStore()
 
-
-//监听对应sql的代码补全信息,如果更新,则重置editor
-watch(
-    () => dbStore.tableList,
-    () => {
-        let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
-        const editorContainer = codemirror.value;
-        createEditor(editorContainer, doc);
-    }
-)
+dbStore.$subscribe((mutation, state) => {
+    let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
+    createEditor(codemirror, doc);
+})
 
 onMounted(() => {
     createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
@@ -77,10 +71,8 @@ function createEditor(editorContainer: any, doc: any) {
             ]),
             sql({
                 dialect: MySQL,
-                schema: {
-                    apom: ['user', 'app_user', 'app_user_user'],
-                },
-                tables: dbStore.tableList
+                schema: dbStore.getAll(),
+                tables: dbStore.getTable(props.schema)
             }),
             history(),
             lineNumbers(),
