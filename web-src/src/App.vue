@@ -1,11 +1,11 @@
 <template>
   <el-container class="layout-container-demo">
     <el-aside>
-      <el-tree highlight-current="true" :load="loadTree" :lazy="true">
+      <el-tree :highlight-current="true" :load="loadTree" :lazy="true">
         <template #default="{ node, data }">
           <span class="custom-tree-node">
             <span>
-              <a @click="addTab(node)" :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
+              <a :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
             </span>
           </span>
         </template>
@@ -25,18 +25,19 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { useDBStore } from '@/stores/sql'
 
+const sqlEditor = shallowRef(SQLEditor2)
 const dbStore = useDBStore()
 
 let tabIndex = 0
 const editableTabsValue = ref('')
 const editableTabs = ref([])
 
-const addTab = (node) => {
+const addTab = (data, node) => {
   if (node.data.type !== "schema") {
     return
   }
@@ -46,7 +47,7 @@ const addTab = (node) => {
     name: newTabName,
     connId: findConn(node),
     schema: node.data.label,
-    component: SQLEditor2,
+    component: sqlEditor,
   })
   editableTabsValue.value = newTabName
 }
@@ -71,7 +72,12 @@ function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type } })
     .then((resp) => {
       if (node.data.type === "schema") {
-        dbStore.addTable(node.data.label, resp.data.data.map(e => e.label))
+        dbStore.addTable(node.data.label, resp.data.data)
+        addTab(node.data, node)
+        /* http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: "table" } })
+          .then((resp) => {
+            dbStore.addTable(node.data.label + "_col", resp.data.data)
+          }) */
       }
       resolve(resp.data.data)
     })

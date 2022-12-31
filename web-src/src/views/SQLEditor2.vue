@@ -27,8 +27,7 @@ import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
-import { ref, watch, onMounted, defineProps } from 'vue';
-import { useRouter } from 'vue-router'
+import { ref, onMounted, watch, defineProps } from 'vue';
 import { useDBStore } from '../stores/sql'
 
 import DBExport from './DBExport.vue'
@@ -40,7 +39,6 @@ const props = defineProps<{
     schema: string
 }>()
 
-const router = useRouter()
 const maxLine = ref(10)
 const columns = ref([])
 const result = ref([])
@@ -49,11 +47,22 @@ const codemirror = ref(null);
 const exportDialogVisible = ref(false)
 
 const dbStore = useDBStore()
+let schemaDD:any = {}
+let tablesDD:any = []
 
+/* let count = 0
 dbStore.$subscribe((mutation, state) => {
+    console.log(count++)
+    schemaDD = dbStore.getAll()
+    tablesDD = dbStore.getTable(props.schema)
     let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
     createEditor(codemirror, doc);
-})
+}) */
+
+/* watch(schemaDD, () => {
+    let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
+    createEditor(codemirror, doc);
+}) */
 
 onMounted(() => {
     createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");

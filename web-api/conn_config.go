@@ -37,7 +37,7 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	curType := r.Form.Get("type")
 	nextType := getNextType(curType)
 
-	var data any
+	var data []*Tree
 	switch nextType {
 	case TREE_NODE_TYPE_CONN:
 		data = listConn()
@@ -45,8 +45,10 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 		data = listSchema(connId)
 	case TREE_NODE_TYPE_TABLE:
 		data = listTable(connId, key)
+	case TREE_NODE_TYPE_COLUMN:
+		data = listColumns(connId, key)
 	default:
-		data = make([]any, 0)
+		data = make([]*Tree, 0)
 	}
 	utils.WriteJson(w, data)
 }
@@ -81,17 +83,25 @@ func listSchema(key string) []*Tree {
 
 func listTable(key, schema string) []*Tree {
 
-	type NodeData struct {
-		Text string `json:"text"`
-	}
-
 	tableName, tableComment := "", ""
 	row, err := getConn(key).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
 	utils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&tableName, &tableComment)
-		tree = append(tree, &Tree{Label: tableName, Data: NodeData{Text: tableComment}, Type: TREE_NODE_TYPE_TABLE})
+		tree = append(tree, &Tree{Label: tableName, Data: map[string]string{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE})
+	}
+	return tree
+}
+
+func listColumns(key, schema string) []*Tree {
+	columnName, columnComment := "", ""
+	row, err := getConn(key).Query("select distinct column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_SCHEMA = ?", schema)
+	utils.Println(err)
+	tree := make([]*Tree, 0)
+	for row.Next() {
+		row.Scan(&columnName, &columnComment)
+		tree = append(tree, &Tree{Label: columnName, Data: map[string]string{"text": columnComment}, Type: TREE_NODE_TYPE_SCHEMA})
 	}
 	return tree
 }
@@ -117,7 +127,7 @@ func getNextType(curType string) string {
 	case TREE_NODE_TYPE_SCHEMA:
 		t = TREE_NODE_TYPE_TABLE
 	case TREE_NODE_TYPE_TABLE:
-		t = ""
+		t = TREE_NODE_TYPE_COLUMN
 	}
 	return t
 }
@@ -168,4 +178,6 @@ const (
 	TREE_NODE_TYPE_SCHEMA = "schema"
 	// table
 	TREE_NODE_TYPE_TABLE = "table"
+	// column
+	TREE_NODE_TYPE_COLUMN = "column"
 )

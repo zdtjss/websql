@@ -37,7 +37,7 @@ import http from '../js/utils/httpProxy.js'
 const props = defineProps({
     connId: String,
     schema: String,
-    start: Number,
+    start: String,
     opt: String
 })
 

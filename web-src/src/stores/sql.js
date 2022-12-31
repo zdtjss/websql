@@ -6,7 +6,8 @@ export const useDBStore = defineStore('db', {
         addTable(schema, names) {
             const tables = names.map(n => {
                 return {
-                    label: n
+                    label: n.label,
+                    info: n.data.text
                 }
             })
             this.schema[schema] = tables
@@ -15,7 +16,7 @@ export const useDBStore = defineStore('db', {
             let schemas = this.schema[schema]
             const schemaNames = Object.keys(this.schema).map(n => {
                 return {
-                    label: n
+                    label: n,
                 }
             })
             if (schemas) {
