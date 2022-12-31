@@ -5,6 +5,7 @@ import (
 	"go-web/utils"
 	"net/http"
 	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -40,15 +41,17 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	var data []*Tree
 	switch nextType {
 	case TREE_NODE_TYPE_CONN:
-		data = listConn()
+		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
+			data = listConn()
+		} else {
+			data = make([]*Tree, 0)
+		}
 	case TREE_NODE_TYPE_SCHEMA:
 		data = listSchema(connId)
 	case TREE_NODE_TYPE_TABLE:
 		data = listTable(connId, key)
 	case TREE_NODE_TYPE_COLUMN:
 		data = listColumns(connId, key)
-	default:
-		data = make([]*Tree, 0)
 	}
 	utils.WriteJson(w, data)
 }
@@ -94,14 +97,14 @@ func listTable(key, schema string) []*Tree {
 	return tree
 }
 
-func listColumns(key, schema string) []*Tree {
+func listColumns(key, table string) []*Tree {
 	columnName, columnComment := "", ""
-	row, err := getConn(key).Query("select distinct column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_SCHEMA = ?", schema)
+	row, err := getConn(key).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
 	utils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&columnName, &columnComment)
-		tree = append(tree, &Tree{Label: columnName, Data: map[string]string{"text": columnComment}, Type: TREE_NODE_TYPE_SCHEMA})
+		tree = append(tree, &Tree{Label: columnName, Data: map[string]string{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
 	return tree
 }
