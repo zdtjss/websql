@@ -20,6 +20,7 @@ func MainRegister(router *httprouter.Router) {
 	router.HandlerFunc("POST", "/importCsv", ImportCsv)
 
 	router.HandlerFunc("POST", "/saveConn", SaveConn)
+	router.HandlerFunc("GET", "/listConn2", ListConn2)
 	router.HandlerFunc("GET", "/showTree", ShowTree)
 	router.HandlerFunc("GET", "/execSQL", ExecSQL)
 

@@ -72,6 +72,13 @@ func listConn() []*Tree {
 	return tree
 }
 
+func ListConn2(w http.ResponseWriter, r *http.Request) {
+	cfgList := []ConnCfg{}
+	err := db.Select(&cfgList, "select * from t_config_dbconn")
+	utils.Panicln(err)
+	utils.WriteJson(w, cfgList)
+}
+
 func listSchema(key string) []*Tree {
 	schemaName := ""
 	row, err := getConn(key).Query("select schema_name from information_schema.schemata")
