@@ -5,7 +5,8 @@
         <el-icon color="#409EFC" @click="conCfgAddDialogVisible = true" style="cursor: pointer;">
           <Plus />
         </el-icon>
-        <el-icon color="#409EFC" @click="conCfgListDialogVisible = true; listConnCfg()" style="cursor: pointer;margin-left: 8px;">
+        <el-icon color="#409EFC" @click="conCfgListDialogVisible = true; listConnCfg()"
+          style="cursor: pointer;margin-left: 8px;">
           <List />
         </el-icon>
       </div>
@@ -51,12 +52,17 @@
         </span>
       </template>
     </el-dialog>
-    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" width="800px">
+    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" width="860px">
       <el-table :data="connCfgList" style="width: 100%">
-        <el-table-column prop="name" label="连接名称" width="150"/>
-        <el-table-column prop="user" label="用户名"  width="150"/>
-        <el-table-column prop="pwd" label="密码" width="180"/>
+        <el-table-column prop="name" label="连接名称" width="150" />
+        <el-table-column prop="user" label="用户名" width="150" />
+        <el-table-column prop="pwd" label="密码" width="180" />
         <el-table-column prop="url" label="连接信息" />
+        <el-table-column label="操作" style="text-align: center; " width="80">
+          <template #default="scope">
+            <el-button size="small" @click="delConnCfg(scope.row.id)">删除</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <template #footer>
         <span class="dialog-footer">
@@ -160,6 +166,13 @@ function listConnCfg() {
   http.get("/listConn2")
     .then((resp) => {
       connCfgList.value = resp.data.data
+    })
+}
+
+function delConnCfg(id) {
+  http.get("/delConn", { params: { id: id } })
+    .then((resp) => {
+      listConnCfg()
     })
 }
 

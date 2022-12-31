@@ -31,6 +31,13 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func DelConn(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	id := r.Form.Get("id")
+	db.Exec("delete from t_config_dbconn where id = ?", id)
+	utils.WriteJson(w, "")
+}
+
 func ShowTree(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	connId := r.Form.Get("connId")
