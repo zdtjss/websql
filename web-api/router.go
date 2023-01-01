@@ -28,6 +28,12 @@ func MainRegister(router *httprouter.Router) {
 	router.HandlerFunc("GET", "/ext/", proxy)
 	router.HandlerFunc("POST", "/ext/", proxy)
 
+	router.PanicHandler = func(w http.ResponseWriter, r *http.Request, err interface{}) {
+		w.Header().Add("content-type", "application/json;charset=UTF-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
+	}
+
 	log.Println("路由注册完成")
 }
 

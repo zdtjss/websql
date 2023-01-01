@@ -11,4 +11,11 @@ http.interceptors.request.use((config) => {
     return config
 });
 
+http.interceptors.response.use(function (response) {
+    return response;
+}, function (error) {
+    ElMessage({ message: error.response.data.msg, type: "error" })
+    return Promise.reject(error);
+});
+
 export default http

@@ -28,7 +28,7 @@ func UnmarshalJson[T any](r io.Reader, v *T) {
 }
 
 type Result struct {
-	Code uint8  `json:"code"`
+	Code uint16 `json:"code"`
 	Data any    `json:"data"`
-	Msg  string `json:"msg"`
+	Msg  any    `json:"msg"`
 }

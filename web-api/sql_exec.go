@@ -40,6 +40,10 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		rspData := TableDataList{Columns: columnList, Data: data}
 
 		utils.WriteJson(w, rspData)
+	} else {
+		_, err2 := getConn(connId).Exec(sqlStr, params...)
+		utils.Panicln(err2)
+		utils.WriteJson(w, "")
 	}
 
 }
