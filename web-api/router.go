@@ -1,10 +1,14 @@
 package webapi
 
 import (
+	"bufio"
 	"go-web/utils"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/julienschmidt/httprouter"
 	"golang.org/x/exp/maps"
@@ -52,4 +56,23 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 	_, err2 := io.Copy(w, resp.Body)
 	utils.Panicln(err2)
 	defer resp.Body.Close()
+}
+
+type NotFound struct {
+}
+
+func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	idx := strings.Index(r.RequestURI, "?")
+	reqPath := r.RequestURI
+	if idx != -1 {
+		reqPath = r.RequestURI[:idx]
+	}
+	file, err := utils.Find("static" + reqPath)
+	if err != nil || strings.EqualFold("/", reqPath) {
+		file, err = utils.Find("static/index.html")
+		utils.Println(err)
+	}
+	defer file.Close()
+	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
+	io.Copy(w, bufio.NewReader(file))
 }
