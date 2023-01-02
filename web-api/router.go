@@ -29,6 +29,8 @@ func MainRegister(router *httprouter.Router) {
 	router.HandlerFunc("GET", "/showTree", ShowTree)
 	router.HandlerFunc("GET", "/execSQL", ExecSQL)
 
+	router.HandlerFunc("POST", "/saveTree", SaveTree)
+
 	router.HandlerFunc("GET", "/ext/", proxy)
 	router.HandlerFunc("POST", "/ext/", proxy)
 

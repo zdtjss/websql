@@ -47,12 +47,14 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 
 	var data []*Tree
 	switch nextType {
-	case TREE_NODE_TYPE_CONN:
+	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
-			data = listConn()
+			data = ListDirTree()
 		} else {
 			data = make([]*Tree, 0)
 		}
+	case TREE_NODE_TYPE_CONN:
+		data = listConn()
 	case TREE_NODE_TYPE_SCHEMA:
 		data = listSchema(connId)
 	case TREE_NODE_TYPE_TABLE:
@@ -137,8 +139,10 @@ func doUpdate(cfg *ConnCfg) {
 }
 
 func getNextType(curType string) string {
-	t := TREE_NODE_TYPE_CONN
+	t := TREE_NODE_TYPE_DIR
 	switch curType {
+	case TREE_NODE_TYPE_DIR:
+		t = TREE_NODE_TYPE_CONN
 	case TREE_NODE_TYPE_CONN:
 		t = TREE_NODE_TYPE_SCHEMA
 	case TREE_NODE_TYPE_SCHEMA:
@@ -184,13 +188,16 @@ type ConnCfg struct {
 }
 
 type Tree struct {
-	Label    string `json:"label"`
-	Type     string `json:"type"`
-	Data     any    `json:"data"`
-	Children []Tree `json:"children"`
+	Label    string         `json:"label"`
+	Type     string         `json:"type"`
+	Data     map[string]any `json:"data"`
+	Parent   string
+	Children []*Tree `json:"children"`
 }
 
 const (
+	// dir
+	TREE_NODE_TYPE_DIR = "dir"
 	// conn
 	TREE_NODE_TYPE_CONN = "conn"
 	// schema
