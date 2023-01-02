@@ -71,7 +71,7 @@ func listConn() []*Tree {
 
 	cfgList := []ConnCfg{}
 	err := db.Select(&cfgList, "select * from t_config_dbconn")
-	utils.Println(err)
+	utils.Panicln(err)
 	tree := make([]*Tree, len(cfgList))
 	for i, cfg := range cfgList {
 		tree[i] = &Tree{Label: cfg.Name, Data: NodeData{Id: cfg.Id}, Type: TREE_NODE_TYPE_CONN}
@@ -155,7 +155,7 @@ func getConn(id string) *sqlx.DB {
 	err := db.Select(&cfgList, "select * from t_config_dbconn where id = ?", iid)
 	utils.Panicln(err)
 	cfg := cfgList[0]
-	return config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
+	return config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
 }
 
 func initConfigTable() {
@@ -164,6 +164,7 @@ func initConfigTable() {
 	sql_table := `
 		CREATE TABLE IF NOT EXISTS t_config_dbconn (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			db_type VARCHAR(64) NULL,
 			name VARCHAR(64) NULL,
 			user VARCHAR(64) NULL,
 			pwd VARCHAR(128) NULL,
@@ -174,11 +175,12 @@ func initConfigTable() {
 }
 
 type ConnCfg struct {
-	Id   string `json:"id"`
-	Name string `json:"name"`
-	User string `json:"user"`
-	Pwd  string `json:"pwd"`
-	Url  string `json:"url"`
+	Id     string `json:"id"`
+	DbType string `json:"dbType" db:"db_type"`
+	Name   string `json:"name"`
+	User   string `json:"user"`
+	Pwd    string `json:"pwd"`
+	Url    string `json:"url"`
 }
 
 type Tree struct {

@@ -20,7 +20,7 @@ func GetConn(param *DBParam) *sqlx.DB {
 }
 
 func initDBConn(param *DBParam) {
-	db, err := sqlx.Connect("mysql", param.User+":"+param.Pwd+"@"+param.Url)
+	db, err := sqlx.Connect(param.DbType, param.User+":"+param.Pwd+"@"+param.Url)
 	if err != nil {
 		panic("连接数据库失败，err :" + err.Error())
 	}
@@ -34,9 +34,10 @@ func createKey(param *DBParam) string {
 }
 
 type DBParam struct {
-	Id   string `json:"id"`
-	Name string `json:"name"`
-	User string `json:"user"`
-	Pwd  string `json:"pwd"`
-	Url  string `json:"url"`
+	Id     string `json:"id"`
+	Name   string `json:"name"`
+	User   string `json:"user"`
+	Pwd    string `json:"pwd"`
+	Url    string `json:"url"`
+	DbType string `json:"dbType"`
 }

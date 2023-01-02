@@ -34,21 +34,25 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName()}
 		}
 
-		data, err := GetResultRows(rows)
-		utils.Panicln(err)
+		data := GetResultRows(rows)
 
 		rspData := TableDataList{Columns: columnList, Data: data}
 
 		utils.WriteJson(w, rspData)
 	} else {
-		_, err2 := getConn(connId).Exec(sqlStr, params...)
+		rs, err2 := getConn(connId).Exec(sqlStr, params...)
 		utils.Panicln(err2)
-		utils.WriteJson(w, "")
+		affected, err := rs.RowsAffected()
+		utils.Panicln(err)
+		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}, Data: []map[string]interface{}{{"受影响行数": affected}}}
+		utils.WriteJson(w, rspData)
 	}
 
 }
 
-func GetResultRows(rows *sql.Rows) (dataMaps []map[string]interface{}, err error) {
+func GetResultRows(rows *sql.Rows) []map[string]interface{} {
+
+	dataMaps := make([]map[string]interface{}, 0)
 	// 1. 查询到的数据列名、返回值
 	columns, _ := rows.Columns() //列名
 	count := len(columns)
@@ -89,7 +93,7 @@ func GetResultRows(rows *sql.Rows) (dataMaps []map[string]interface{}, err error
 		// 将product归到集合中
 		dataMaps = append(dataMaps, row)
 	}
-	return
+	return dataMaps
 }
 
 type Column struct {

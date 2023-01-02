@@ -158,7 +158,7 @@ function saveConnCfg() {
   http.post("/saveConn", connCfg.value)
     .then((resp) => {
       conCfgDialogVisible.value = false
-      alert("添加成功")
+      ElMessage("添加成功")
     })
 }
 

@@ -11,11 +11,11 @@
         <el-footer class="result">
             <el-auto-resizer>
                 <template #default="{ height, width }">
-                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed />
+                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed :header-class="data_table_header"/>
                 </template>
             </el-auto-resizer>
         </el-footer>
-        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" destroy-on-close center>
+        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" >
             <DBExport :connId="props.connId" :schema="props.schema" start="3" opt="insert" />
         </el-dialog>
     </el-container>
@@ -39,6 +39,7 @@ const props = defineProps<{
     schema: string
 }>()
 
+const data_table_header = "data_table_header"
 const maxLine = ref(10)
 const columns = ref([])
 const result = ref([])
@@ -155,6 +156,10 @@ function exportDb() {
 
 .toolbar {
     padding: 0px;
+}
+
+.data_table_header {
+    user-select: text;
 }
 </style>
   
