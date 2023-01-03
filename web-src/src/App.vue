@@ -91,7 +91,7 @@
       </template>
     </el-dialog>
     <el-dialog v-model="treeListDialogVisible" @close="treeListDialogVisible = false" width="350px">
-      <el-tree :data="conCfgTreeData" show-checkbox default-expand-all :expand-on-click-node="false">
+      <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
         <template #default="{ node, data }">
           <span>
             <span>
@@ -242,7 +242,7 @@ function saveTree() {
 function listDirTree() {
   http.get("/listDirTree")
     .then((resp) => {
-      conCfgTreeData.value = resp.data.data
+      conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "" }] : resp.data.data
     })
 }
 

@@ -114,8 +114,8 @@ func initTreeTable() {
 }
 
 type DirTree struct {
-	Id       string     `json:"id"`
-	Label    string     `json:"label"`
-	Parent   string     `json:"parent"`
+	Id       string     `json:"id" db:"id"`
+	Label    string     `json:"label" db:"label"`
+	Parent   string     `json:"parent" db:"parent"`
 	Children []*DirTree `json:"children"`
 }
