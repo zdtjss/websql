@@ -30,6 +30,7 @@ func MainRegister(router *httprouter.Router) {
 	router.HandlerFunc("GET", "/execSQL", ExecSQL)
 
 	router.HandlerFunc("POST", "/saveTree", SaveTree)
+	router.HandlerFunc("GET", "/listDirTree", ListDirTree)
 
 	router.HandlerFunc("GET", "/ext/", proxy)
 	router.HandlerFunc("POST", "/ext/", proxy)

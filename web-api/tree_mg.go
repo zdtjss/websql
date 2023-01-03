@@ -6,13 +6,9 @@ import (
 )
 
 func SaveTree(w http.ResponseWriter, r *http.Request) {
-	tree := &DirTree{}
-	utils.UnmarshalJson(r.Body, tree)
-	if tree.Id == "" {
-		doTreeInsert(tree)
-	} else {
-		doTreeUpdate(tree)
-	}
+	tree := []*DirTree{}
+	utils.UnmarshalJson(r.Body, &tree)
+	doTreeInsert(tree)
 }
 
 func DelTreeNode(w http.ResponseWriter, r *http.Request) {
@@ -21,46 +17,88 @@ func DelTreeNode(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, "")
 }
 
-func ListDirTree() []*Tree {
-
-	treeList := []DirTree{}
-	err := db.Select(&treeList, "select * from t_tree")
+func findByParent(parentId string) []*Tree {
+	treeList := []*DirTree{}
+	err := db.Select(&treeList, "select * from t_tree where parent = ?", parentId)
 	utils.Panicln(err)
 	tree := make([]*Tree, len(treeList))
 	for i, cfg := range treeList {
-		if cfg.Parent == "" {
-			tree[i] = &Tree{Label: cfg.Name, Parent: cfg.Parent, Data: map[string]any{"id": cfg.Id}, Type: TREE_NODE_TYPE_DIR}
-		}
-	}
-	for _, cfg := range tree {
-		cfg.Children = findChild(cfg, tree)
+		tree[i] = &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR}
 	}
 	return tree
+}
+
+func ListDirTree(w http.ResponseWriter, r *http.Request) {
+
+	treeList := []*DirTree{}
+	err := db.Select(&treeList, "select * from t_tree")
+	utils.Panicln(err)
+	tree := []*Tree{}
+	for _, cfg := range treeList {
+		tree = append(tree, &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR})
+	}
+	firstLevel := []*Tree{}
+	for _, cfg := range tree {
+		if cfg.Parent == "" {
+			firstLevel = append(firstLevel, cfg)
+		}
+	}
+	for _, cfg := range firstLevel {
+		cfg.Children = findChild(cfg, tree)
+	}
+	utils.WriteJson(w, firstLevel)
 }
 
 func findChild(curNode *Tree, nodes []*Tree) []*Tree {
 	child := make([]*Tree, 0)
 	for _, cfg := range nodes {
-		if cfg.Parent == curNode.Data["id"] {
+		if cfg.Parent == curNode.Label {
 			child = append(child, cfg)
-		} else {
-			curNode.Children = findChild(cfg, nodes)
+			cfg.Children = findChild(cfg, nodes)
 		}
 	}
 	return child
 }
 
-func doTreeInsert(tree *DirTree) {
+func doTreeInsert(tree []*DirTree) {
 
-	initConfigTable()
+	initTreeTable()
 
-	stmt, _ := db.Prepare("insert into t_tree (name, parent) values (?, ?)")
-	stmt.Exec(&tree.Name, &tree.Parent)
+	planeDir := expendDirTreeAll(tree)
+
+	tx, err := db.Beginx()
+	utils.Panicln(err)
+	defer tx.Rollback()
+
+	tx.Exec("delete from t_tree")
+
+	stmt, err := tx.Prepare("insert into t_tree (label, parent) values (?, ?)")
+	utils.Panicln(err)
+	for _, t := range planeDir {
+		stmt.Exec(&t.Label, &t.Parent)
+	}
+	tx.Commit()
 }
 
-func doTreeUpdate(tree *DirTree) {
-	stmt, _ := db.Prepare("update t_tree set name = ?, parent = ?where id = ?")
-	stmt.Exec(&tree.Name, &tree.Name, &tree.Parent, &tree.Id)
+func expendDirTreeAll(root []*DirTree) []*DirTree {
+	all := []*DirTree{}
+	for _, t := range root {
+		all = append(all, t)
+		all = append(all, expendDirTree(t)...)
+	}
+	return all
+}
+
+func expendDirTree(p *DirTree) []*DirTree {
+	child := []*DirTree{}
+	for _, t := range p.Children {
+		t.Parent = p.Label
+		child = append(child, t)
+		if t.Children != nil {
+			child = append(child, expendDirTree(t)...)
+		}
+	}
+	return child
 }
 
 func initTreeTable() {
@@ -68,15 +106,16 @@ func initTreeTable() {
 	sql_table := `
 		CREATE TABLE IF NOT EXISTS t_tree (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT,
-			parent TEXT,
+			label TEXT,
+			parent TEXT
 		  );
 		`
 	db.Exec(sql_table)
 }
 
 type DirTree struct {
-	Id     string `json:"id"`
-	Name   string `json:"name"`
-	Parent string `json:"parent"`
+	Id       string     `json:"id"`
+	Label    string     `json:"label"`
+	Parent   string     `json:"parent"`
+	Children []*DirTree `json:"children"`
 }

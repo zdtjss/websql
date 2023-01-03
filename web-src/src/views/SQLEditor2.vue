@@ -11,7 +11,7 @@
         <el-footer class="result">
             <el-auto-resizer>
                 <template #default="{ height, width }">
-                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed :header-class="data_table_header"/>
+                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed />
                 </template>
             </el-auto-resizer>
         </el-footer>
@@ -27,7 +27,7 @@ import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
-import { ref, onMounted, watch, defineProps } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useDBStore } from '../stores/sql'
 
 import DBExport from './DBExport.vue'
@@ -39,7 +39,6 @@ const props = defineProps<{
     schema: string
 }>()
 
-const data_table_header = "data_table_header"
 const maxLine = ref(10)
 const columns = ref([])
 const result = ref([])
@@ -150,16 +149,15 @@ function exportDb() {
 .result {
     height: calc(100vh * 0.4);
 }
+
+/** 表头可选择复制 */
+.el-table-v2__header-cell-text {
+    user-select: text;
+}
 </style>
 <style lang="less" scoped>
-.codemirror {}
-
 .toolbar {
     padding: 0px;
-}
-
-.data_table_header {
-    user-select: text;
 }
 </style>
   
