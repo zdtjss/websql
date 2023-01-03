@@ -67,7 +67,7 @@
       </template>
     </el-dialog>
     <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" width="860px">
-      <el-table :data="connCfgList" style="width: 100%">
+      <el-table :data="connCfgList" style="width: 100%;max-height: 500px;overflow-y: auto;">
         <el-table-column prop="name" label="连接名称" width="100" />
         <el-table-column prop="dbType" label="数据库类型" width="100" />
         <el-table-column prop="user" label="用户名" width="150" />
@@ -175,7 +175,11 @@ const removeTab = (targetName) => {
 }
 
 function loadTree(node, resolve) {
-  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type } })
+  if (node.data.type === 'column') {
+    resolve([])
+    return
+  }
+  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
         dbStore.addTable(node.data.label, resp.data.data)

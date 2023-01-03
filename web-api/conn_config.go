@@ -45,6 +45,7 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	connId := r.Form.Get("connId")
 	key := r.Form.Get("key")
 	curType := r.Form.Get("type")
+	level := r.Form.Get("level")
 	nextType := getNextType(curType)
 
 	var data []*Tree
@@ -54,6 +55,9 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 			data = findByParent(key)
 			if len(data) == 0 || data[0] == nil {
 				data = listConn(key)
+			}
+			if level == "0" {
+				data = append(data, listConn("noneParent")...)
 			}
 		} else {
 			data = make([]*Tree, 0)
@@ -74,7 +78,9 @@ func listConn(treeNode string) []*Tree {
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_config_dbconn")
-	if treeNode != "" {
+	if strings.EqualFold(treeNode, "noneParent") {
+		sql.WriteString(" where tree_node = '' or tree_node is null")
+	} else if treeNode != "" {
 		param = append(param, treeNode)
 		sql.WriteString(" where tree_node = ?")
 	}
