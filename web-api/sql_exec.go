@@ -18,13 +18,33 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	sqlStr = strings.TrimSpace(sqlStr)
 
 	params := make([]any, 0)
-	if strings.LastIndex(sqlStr, " limit ") == -1 {
-		sqlStr = sqlStr + " limit ?"
-		maxLineI, _ := strconv.Atoi(maxLine)
-		params = append(params, maxLineI)
-	}
 
-	if strings.HasPrefix(sqlStr, "select ") {
+	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
+		sqlArr := strings.Split(sqlStr, ";")
+		tx, err := getConn(connId).DB.Begin()
+		defer tx.Rollback()
+		utils.Panicf("事务开启失败， %s", err)
+		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
+		resultData := []map[string]any{}
+		for _, relSql := range sqlArr {
+			if relSql == "" {
+				continue
+			}
+			rs, err2 := tx.Exec(relSql, params...)
+			utils.Panicln(err2)
+			affected, err := rs.RowsAffected()
+			utils.Panicln(err)
+			resultData = append(resultData, map[string]any{"受影响行数": affected})
+		}
+		tx.Commit()
+		rspData.Data = resultData
+		utils.WriteJson(w, rspData)
+	} else {
+		if (strings.HasPrefix(sqlStr, "select ") || strings.HasPrefix(sqlStr, "SELECT ")) && (strings.Contains(sqlStr, " from ") || strings.Contains(sqlStr, " FROM ")) && (strings.LastIndex(sqlStr, " limit ") == -1 || strings.LastIndex(sqlStr, " LIMIT ") == -1) {
+			sqlStr = sqlStr + " limit ?"
+			maxLineI, _ := strconv.Atoi(maxLine)
+			params = append(params, maxLineI)
+		}
 		rows, err2 := getConn(connId).Query(sqlStr, params...)
 		utils.Panicln(err2)
 		cts, err3 := rows.ColumnTypes()
@@ -38,13 +58,6 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		rspData := TableDataList{Columns: columnList, Data: data}
 
-		utils.WriteJson(w, rspData)
-	} else {
-		rs, err2 := getConn(connId).Exec(sqlStr, params...)
-		utils.Panicln(err2)
-		affected, err := rs.RowsAffected()
-		utils.Panicln(err)
-		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}, Data: []map[string]interface{}{{"受影响行数": affected}}}
 		utils.WriteJson(w, rspData)
 	}
 
