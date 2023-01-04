@@ -36,6 +36,8 @@ func main() {
 
 	webapi.MainRegister(router)
 
+	webapi.InitTable()
+
 	router.NotFound = &webapi.NotFound{}
 
 	// 检测是否启动成功

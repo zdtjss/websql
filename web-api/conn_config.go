@@ -174,10 +174,10 @@ func getConn(id string) *sqlx.DB {
 	return config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
 }
 
-func InitTable(w http.ResponseWriter, r *http.Request) {
+// 初始化表结构
+func InitTable() {
 	initConfigTable()
 	initTreeTable()
-	utils.WriteJson(w, "")
 }
 
 func initConfigTable() {
