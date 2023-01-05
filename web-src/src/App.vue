@@ -242,12 +242,12 @@ function saveTree() {
 function listDirTree() {
   http.get("/listDirTree")
     .then((resp) => {
-      conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "" }] : resp.data.data
+      conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "", value: "" }] : resp.data.data
     })
 }
 
 const appendTreeNode = (data) => {
-  const newChild = { disable: false, label: '', children: [] }
+  const newChild = { label: "", value: "", children: [] }
   if (!data.children) {
     data.children = []
   }

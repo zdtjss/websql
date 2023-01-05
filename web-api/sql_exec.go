@@ -66,9 +66,19 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 
 	dataMaps := make([]map[string]interface{}, 0)
+	cts, err := rows.ColumnTypes()
+	utils.Panicf("获取字段类型失败，%x", err)
+
+	colTypeMap := map[string]string{}
+	for _, ct := range cts {
+		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
+	}
+
 	// 1. 查询到的数据列名、返回值
 	columns, _ := rows.Columns() //列名
 	count := len(columns)
+	// values, valuesPoints := make([]interface{}, count), make([]interface{}, count)
+
 	values, valuesPoints := make([]interface{}, count), make([]interface{}, count)
 
 	// 2. 遍历Rows读取每一行
@@ -92,9 +102,31 @@ func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 
 			// 判断val的值的类型
 			var v interface{}
+
 			b, ok := val.([]byte) //判断是否为[]byte
 			if ok {
-				v = string(b)
+				switch colTypeMap[key] {
+				case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
+					iv, err := strconv.ParseInt(string(b), 10, 32)
+					utils.Printf("转换类型失败， %x", err)
+					v = int(iv)
+				case "BIGINT":
+					iv, err := strconv.ParseInt(string(b), 10, 64)
+					utils.Printf("转换类型失败， %x", err)
+					v = iv
+				case "FLOAT":
+					iv, err := strconv.ParseFloat(string(b), 32)
+					utils.Printf("转换类型失败， %x", err)
+					v = float32(iv)
+				case "DOUBLE", "DECIMAL":
+					iv, err := strconv.ParseFloat(string(b), 64)
+					utils.Printf("转换类型失败， %x", err)
+					v = iv
+				case "BIT":
+					v = b[0] == byte(1)
+				default:
+					v = string(b)
+				}
 			} else {
 				v = val
 			}
