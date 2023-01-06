@@ -2,11 +2,15 @@ package webapi
 
 import (
 	"database/sql"
-	"encoding/csv"
 	"fmt"
 	"go-web/utils"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/xuri/excelize/v2"
 )
 
 func ExportCsv(w http.ResponseWriter, r *http.Request) {
@@ -14,13 +18,12 @@ func ExportCsv(w http.ResponseWriter, r *http.Request) {
 	table := r.Form.Get("table")
 	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
-	w.Header().Add("content-type", "text/csv;charset=UTF-8")
-	w.Header().Add("content-disposition", "attachment;filename="+table+".csv")
-	out := csv.NewWriter(w)
-	queryAndWrite(schema+"."+table, out, connId)
+	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Add("content-disposition", "attachment;filename="+table+".xlsx")
+	queryAndWrite(schema+"."+table, w, connId)
 }
 
-func queryAndWrite(table string, out *csv.Writer, connId string) {
+func queryAndWrite(table string, out io.Writer, connId string) {
 	log.Println("正在导出：", table)
 	rows, err := getConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
 	utils.Panicln(err)
@@ -28,13 +31,21 @@ func queryAndWrite(table string, out *csv.Writer, connId string) {
 	columns, err := rows.Columns()
 	utils.Panicln(err)
 
-	columnCommons := make([]string, len(columns))
+	columnComment := make([]string, len(columns))
 	columnMap := columnMap(table, connId)
 	for i := 0; i < len(columns); i++ {
-		columnCommons[i] = columnMap[columns[i]]
+		columnComment[i] = columnMap[columns[i]]
 	}
 
-	writeToCSV(out, [][]string{columns, columnCommons})
+	excel := excelize.NewFile()
+	defer func() {
+		if err := excel.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
+
+	excel.SetSheetRow("Sheet1", "A1", &columns)
+	excel.SetSheetRow("Sheet1", "A2", &columnComment)
 
 	//values：一行的所有值,把每一行的各个字段放到values中，values长度==列数
 	values := make([]sql.RawBytes, len(columns))
@@ -44,46 +55,36 @@ func queryAndWrite(table string, out *csv.Writer, connId string) {
 		scanArgs[i] = &values[i]
 	}
 
-	count := -1
-	maxLines := 100
-
+	count := 2
 	//存所有行的内容totalValues
-	totalValues := make([][]string, maxLines)
 	for rows.Next() {
-
-		count++
-
-		//存每一行的内容
-		var s []string
 
 		//把每行的内容添加到scanArgs，也添加到了values
 		err = rows.Scan(scanArgs...)
 		utils.Panicln(err)
 
+		//存每一行的内容
+		var row []string
 		for _, v := range values {
-			s = append(s, string(v))
+			row = append(row, string(v))
 		}
-		totalValues[count] = s
-		if count+1 >= maxLines {
-			writeToCSV(out, totalValues)
-			count = -1
-		}
+
+		count++
+		excel.SetSheetRow("Sheet1", "A"+strconv.Itoa(count), &row)
 	}
 
 	if err = rows.Err(); err != nil {
-		panic(err.Error())
+		utils.Panicln(err)
 	}
 
-	if count != -1 {
-		writeToCSV(out, totalValues[:count+1])
-	}
+	excel.Write(out)
 }
 
 func columnMap(table string, connId string) map[string]string {
 	columnMap := make(map[string]string)
 	stmt, err := getConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
 	utils.Println(err)
-	rs, err2 := stmt.Query(table)
+	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
 	utils.Println(err2)
 	var name, comment string
 	for rs.Next() {
@@ -91,12 +92,4 @@ func columnMap(table string, connId string) map[string]string {
 		columnMap[name] = comment
 	}
 	return columnMap
-}
-
-// writeToCSV
-func writeToCSV(out *csv.Writer, totalValues [][]string) {
-	for _, row := range totalValues {
-		out.Write(row)
-	}
-	out.Flush()
 }
