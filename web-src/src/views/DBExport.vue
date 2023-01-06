@@ -8,16 +8,18 @@
                     <template #default="scope">
                         <el-row :gutter="10">
                             <el-col :span="6">
-                                <el-button size="small" @click="exportCsv(scope.row.name)">导出</el-button>
+                                <el-button size="small" @click="exportXlsx(scope.row.name)">导出</el-button>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload v-model="fileList" action="/importCsv" :limit="1" :data="dataInsert">
-                                    <el-button size="small" @click="dataInsert.table = scope.row.name">导入/新增</el-button>
+                                <el-upload ref="fileListInsert" :http-request="uplod" :limit="1"
+                                    :show-file-list="false">
+                                    <el-button size="small" @click="uploadTableName = scope.row.name">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload v-model="fileList" action="/importCsv" :limit="1" :data="dataUpdate">
-                                    <el-button size="small" @click="dataUpdate.table = scope.row.name">导入/修改</el-button>
+                                <el-upload ref="fileListUpdate" :http-request="uplod" :limit="1"
+                                    :show-file-list="false">
+                                    <el-button size="small" @click="uploadTableName = scope.row.name">导入/修改</el-button>
                                 </el-upload>
                             </el-col>
                         </el-row>
@@ -27,7 +29,7 @@
         </el-main>
     </el-container>
 </template>
-  
+
 <script setup>
 
 import { onMounted, ref } from 'vue'
@@ -41,35 +43,14 @@ const props = defineProps({
     opt: String
 })
 
-const fileList = ref([])
+const fileListInsert = ref([])
+const fileListUpdate = ref([])
+let uploadTableName = ""
+
 const tableData = ref([])
-const upload = ref()
-const dataInsert = ref({
-    start: 2,
-    connId: "test",
-    schema: "mat",
-    opt: "insert",
-    table: "undo_log"
-})
-const dataUpdate = ref({
-    start: 2,
-    connId: "test",
-    schema: "mat",
-    opt: "update",
-    table: "undo_log"
-})
 
 onMounted(() => {
-
     queryData()
-
-    dataInsert.value.start = props.start
-    dataInsert.value.connId = props.connId
-    dataInsert.value.schema = props.schema
-
-    dataUpdate.value.start = props.start
-    dataUpdate.value.connId = props.connId
-    dataUpdate.value.schema = props.schema
 })
 
 function queryData() {
@@ -82,8 +63,8 @@ function queryData() {
         });
 }
 
-function exportCsv(table) {
-    http.get("/exportCsv?connId=" + props.connId + "&schema=" + props.schema + "&table=" + table, { responseType: 'blob' }).then((res) => {
+function exportXlsx(table) {
+    http.get("/exportXlsx?connId=" + props.connId + "&schema=" + props.schema + "&table=" + table, { responseType: 'blob' }).then((res) => {
         if (!res) {
             this.$message.error("下载模板文件失败");
             return false;
@@ -104,5 +85,37 @@ function exportCsv(table) {
         window.URL.revokeObjectURL(href); //释放掉blob对象
     })
 }
+
+function uplod(options) {
+
+    let param = new FormData();
+    param.append('file', options.file);
+    param.append("start", props.start)
+    param.append("connId", props.connId)
+    param.append("schema", props.schema)
+    param.append("table", uploadTableName)
+
+    Object.keys(options.data).forEach(key => {
+        param.append(key, options.data[key])
+    })
+
+    http.post("/importXlsx", param, {
+        headers: { "content-type": "multipart/form-data" }
+    }).then((res) => {
+        if (res && res.data.code === 200) {
+            ElMessage.success(res.data.data);
+        } else {
+            if (res && res.data.msg) {
+                ElMessage.error(res.data.msg);
+            } else {
+                ElMessage.error('导入失败');
+            }
+        }
+    }).finally((e) => {
+        uploadTableName = ""
+        fileListInsert.value.clear()
+        fileListUpdate.value.clear()
+    })
+
+}
 </script>
-  

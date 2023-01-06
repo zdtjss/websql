@@ -3,18 +3,18 @@ package webapi
 import (
 	"bytes"
 	"database/sql"
-	"encoding/csv"
+	"fmt"
 	"go-web/utils"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/xuri/excelize/v2"
 	"golang.org/x/exp/slices"
 )
 
-func ImportCsv(w http.ResponseWriter, r *http.Request) {
+func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	log.Println("收到新增/更新请求")
 	r.ParseMultipartForm(30 * 1024 * 1024)
 
@@ -28,36 +28,53 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 	utils.Panicln(err)
 	defer file.Close()
 
-	reader := csv.NewReader(file)
+	excel, err := excelize.OpenReader(file)
+	utils.Panicln(err)
+
+	defer func() {
+		if err := excel.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
 
 	tx, _ := getConn(connId).Begin()
 	defer tx.Rollback()
 
+	rows, err := excel.Rows("Sheet1")
+	utils.Panicln(err)
+	defer rows.Close()
+
+	header := make([]string, 0)
+	if rows.Next() {
+		row, err := rows.Columns()
+		utils.Panicln(err)
+		header = append(header, row...)
+	}
+
 	count := -1
 	maxLines := 100
+
+	for count < start-1 {
+		count++
+		rows.Next()
+	}
 
 	//存所有行的内容totalValues
 	totalValues := make([][]string, maxLines)
 
-	columns, err := reader.Read()
-	utils.Panicln(err)
-	for i := 2; i < start; i++ {
-		_, _ = reader.Read()
-	}
-
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
+	for rows.Next() {
 		count++
 		utils.Panicln(err)
-		totalValues[count] = record
+		columns := []string{}
+		row, err := rows.Columns()
+		utils.Panicln(err)
+		columns = append(columns, row...)
+		totalValues[count-start] = columns
 		if count+1 >= maxLines {
 			if strings.EqualFold(operType, "insert") {
-				insertToDb(schema, table, columns, totalValues, tx)
+				insertToDb(schema, table, header, totalValues, tx)
 			} else {
-				updateToDb(schema, table, columns, totalValues, tx)
+				updateToDb(schema, table, header, totalValues, tx)
 			}
 			count = -1
 		}
@@ -65,19 +82,21 @@ func ImportCsv(w http.ResponseWriter, r *http.Request) {
 
 	if count != -1 {
 		if strings.EqualFold(operType, "insert") {
-			insertToDb(schema, table, columns, totalValues[:count+1], tx)
+			insertToDb(schema, table, header, totalValues[:count+1], tx)
 		} else {
-			updateToDb(schema, table, columns, totalValues[:count+1], tx)
+			updateToDb(schema, table, header, totalValues[:count+1], tx)
 		}
 	}
 
 	if err = tx.Commit(); err != nil {
-		log.Println("导入失败")
+		utils.Panicf("导入失败, %x", err)
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
+			utils.WriteJson(w, "导入完成")
 		} else {
 			log.Println("更新完成")
+			utils.WriteJson(w, "更新完成")
 		}
 	}
 }
@@ -105,10 +124,13 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	stmt, err := tx.Prepare(sql.String())
 	utils.Panicln(err)
+
+	colTypeMap := queryColType(schema, table, tx)
+
 	anyVal := make([]interface{}, len(columns))
 	for _, val := range data {
 		for i, v := range val {
-			anyVal[i] = v
+			anyVal[i] = parseVal(colTypeMap[columns[i]], v)
 		}
 		_, err = stmt.Exec(anyVal...)
 		utils.Panicln(err)
@@ -130,7 +152,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	where.WriteString(" where ")
 
 	sql.WriteString("update ")
-	sql.WriteString(table)
+	sql.WriteString(schema + "." + table)
 	sql.WriteString(" set ")
 
 	for i, val := range columns {
@@ -153,15 +175,17 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	valCount := -1
 	paramCount := -1
 
-	anyVal := make([]interface{}, len(columns))
+	colTypeMap := queryColType(schema, table, tx)
+
+	anyVal := make([]any, len(columns))
 	for _, val := range data {
 		for i, v := range val {
 			if !slices.Contains(keyIdx, i) {
 				valCount++
-				anyVal[valCount] = v
+				anyVal[valCount] = parseVal(colTypeMap[columns[i]], v)
 			} else {
 				paramCount++
-				anyVal[len(columns)-len(keys)+paramCount] = v
+				anyVal[len(columns)-len(keys)+paramCount] = parseVal(colTypeMap[columns[i]], v)
 			}
 		}
 
@@ -184,7 +208,7 @@ func keyIdx(keys, columns []string) []int {
 	return keyIdx
 }
 
-func queryKey(table, schema string, tx *sql.Tx) []string {
+func queryKey(schema, table string, tx *sql.Tx) []string {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
 	utils.Println(err)
@@ -195,5 +219,47 @@ func queryKey(table, schema string, tx *sql.Tx) []string {
 		rs.Scan(&name)
 		primaryKeys = append(primaryKeys, name)
 	}
+	if len(primaryKeys) == 0 {
+		msg := fmt.Sprintf("%s 没有主键", table)
+		log.Println(msg)
+		panic(msg)
+	}
 	return primaryKeys
+}
+
+func queryColType(schema, table string, tx *sql.Tx) map[string]string {
+	colTypeMap := make(map[string]string, 0)
+	stmt, err := tx.Prepare("select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?")
+	utils.Println(err)
+	rs, err2 := stmt.Query(schema, table)
+	utils.Println(err2)
+	var colName, colType string
+	for rs.Next() {
+		rs.Scan(&colName, &colType)
+		colTypeMap[colName] = colType
+	}
+	return colTypeMap
+}
+
+func parseVal(colType string, val string) (retVal any) {
+	if slices.Contains([]string{"float", "double", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
+		return nil
+	}
+	switch colType {
+	case "float", "double", "decimal":
+		f, err := strconv.ParseFloat(val, 64)
+		utils.Panicln(err)
+		retVal = f
+	case "int", "bigint", "smallint", "tinyint":
+		f, err := strconv.ParseInt(val, 10, 64)
+		utils.Panicln(err)
+		retVal = f
+	case "bit":
+		f, err := strconv.ParseBool(val)
+		utils.Panicln(err)
+		retVal = f
+	default:
+		retVal = val
+	}
+	return retVal
 }

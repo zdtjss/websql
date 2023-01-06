@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"database/sql"
 	"fmt"
 	"go-web/utils"
 	"io"
@@ -13,7 +12,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-func ExportCsv(w http.ResponseWriter, r *http.Request) {
+func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	table := r.Form.Get("table")
 	connId := r.Form.Get("connId")
@@ -37,6 +36,14 @@ func queryAndWrite(table string, out io.Writer, connId string) {
 		columnComment[i] = columnMap[columns[i]]
 	}
 
+	cts, err := rows.ColumnTypes()
+	utils.Panicf("获取字段类型失败，%x", err)
+
+	colTypeMap := map[string]string{}
+	for _, ct := range cts {
+		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
+	}
+
 	excel := excelize.NewFile()
 	defer func() {
 		if err := excel.Close(); err != nil {
@@ -48,9 +55,8 @@ func queryAndWrite(table string, out io.Writer, connId string) {
 	excel.SetSheetRow("Sheet1", "A2", &columnComment)
 
 	//values：一行的所有值,把每一行的各个字段放到values中，values长度==列数
-	values := make([]sql.RawBytes, len(columns))
-
-	scanArgs := make([]interface{}, len(values))
+	values := make([]any, len(columns))
+	scanArgs := make([]any, len(values))
 	for i := range values {
 		scanArgs[i] = &values[i]
 	}
@@ -64,9 +70,9 @@ func queryAndWrite(table string, out io.Writer, connId string) {
 		utils.Panicln(err)
 
 		//存每一行的内容
-		var row []string
-		for _, v := range values {
-			row = append(row, string(v))
+		var row []any
+		for i, v := range values {
+			row = append(row, ConvertCol(colTypeMap[columns[i]], v))
 		}
 
 		count++

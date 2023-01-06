@@ -3,7 +3,7 @@
         <el-header height="30px" class="toolbar">
             <el-button @click="exec" :loading="exectingSql">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
-            <el-button @click="exportCurrentToXlsx">xlsx</el-button>
+            <el-button @click="exportCurrentToXlsx">excel</el-button>
             <el-button @click="exportCurrentToSqlInsert">SQL-insert</el-button>
             <el-button @click="exportCurrentToSqlUpdate">SQL-update</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>

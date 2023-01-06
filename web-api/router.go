@@ -20,8 +20,8 @@ var destAddr string = "http://localhost:8083"
 func MainRegister(router *httprouter.Router) {
 
 	router.HandlerFunc("GET", "/listTable", ListTable)
-	router.HandlerFunc("GET", "/exportCsv", ExportCsv)
-	router.HandlerFunc("POST", "/importCsv", ImportCsv)
+	router.HandlerFunc("GET", "/exportXlsx", ExportXlsx)
+	router.HandlerFunc("POST", "/importXlsx", ImportXlsx)
 
 	router.HandlerFunc("POST", "/saveConn", SaveConn)
 	router.HandlerFunc("GET", "/delConn", DelConn)
