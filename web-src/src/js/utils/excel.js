@@ -1,4 +1,3 @@
-/* eslint-disable */
 /* 导出excel文件 */
 
 /**
@@ -12,7 +11,7 @@
  * 6.通过XLSX.utils.book_append_sheet(),生成实际excel工作蒲，并使用XLSX.writeFile()生成excel文件。
  */
 
-import XLSX from 'xlsx'
+import * as XLSX from 'xlsx'
 
 // 自动计算col列宽
 function auto_width(ws, data) {

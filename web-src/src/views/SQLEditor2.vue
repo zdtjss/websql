@@ -3,7 +3,7 @@
         <el-header height="30px" class="toolbar">
             <el-button @click="exec" :loading="exectingSql">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
-            <el-button @click="exportCurrentToCsv">导出当前结果--csv</el-button>
+            <el-button @click="exportCurrentToXlsx">xlsx</el-button>
             <el-button @click="exportCurrentToSqlInsert">SQL-insert</el-button>
             <el-button @click="exportCurrentToSqlUpdate">SQL-update</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
@@ -150,25 +150,19 @@ function exportDb() {
     exportDialogVisible.value = true
 }
 
-function exportCurrentToCsv() {
-    csvExport({
-        title: columns.value.map(col => col["title"]),
-        data: result.value,
-        fileName: `${currentSelectTable}.csv`,
-    });
+function exportCurrentToXlsx() {
 
-    const tableField = columns.value.map(col => col["title"]),
-        tableHeader =  result.value,
-        tableTitle = '导出表格',
-        templateData = result.value,
-        obj = {
-            header: tableHeader,
-            data: templateData,
-            key: tableField,
-            title: '',
-            filename: '团队成员导入模板',
-            autoWidth: true
-        }
+    let header = {}
+    columns.value.forEach(col => header[col["title"]] = col["title"])
+
+    const obj = {
+        header: header,
+        data: result.value,
+        key: columns.value.map(col => col["title"]),
+        title: '',
+        filename: currentSelectTable,
+        autoWidth: false
+    }
     excel.exportJsonToExcel(obj)
 }
 
