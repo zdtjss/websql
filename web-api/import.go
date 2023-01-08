@@ -21,7 +21,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
 	table := r.Form.Get("table")
-	operType := r.Form.Get("opt")
+	operType := r.Form.Get("optType")
 	start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	file, _, err := r.FormFile("file")
@@ -242,7 +242,7 @@ func queryColType(schema, table string, tx *sql.Tx) map[string]string {
 }
 
 func parseVal(colType string, val string) (retVal any) {
-	if slices.Contains([]string{"float", "double", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
+	if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
 		return nil
 	}
 	switch colType {

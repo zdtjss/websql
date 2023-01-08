@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func ExecSQL(w http.ResponseWriter, r *http.Request) {
@@ -110,30 +111,32 @@ func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 
 func ConvertCol(colType string, val any) any {
 	var v any
-	b, ok := val.([]byte) //判断是否为[]byte
-	if ok {
+	//判断是否为[]byte
+	if b, ok := val.([]byte); ok {
 		switch colType {
 		case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
 			iv, err := strconv.ParseInt(string(b), 10, 32)
-			utils.Printf("转换类型失败， %x", err)
+			utils.Panicf("转换类型失败， %x", err)
 			v = int(iv)
 		case "BIGINT":
 			iv, err := strconv.ParseInt(string(b), 10, 64)
-			utils.Printf("转换类型失败， %x", err)
+			utils.Panicf("转换类型失败， %x", err)
 			v = iv
 		case "FLOAT":
 			iv, err := strconv.ParseFloat(string(b), 32)
-			utils.Printf("转换类型失败， %x", err)
+			utils.Panicf("转换类型失败， %x", err)
 			v = float32(iv)
 		case "DOUBLE", "DECIMAL":
 			iv, err := strconv.ParseFloat(string(b), 64)
-			utils.Printf("转换类型失败， %x", err)
+			utils.Panicf("转换类型失败， %x", err)
 			v = iv
 		case "BIT":
 			v = b[0] == byte(1)
 		default:
 			v = string(b)
 		}
+	} else if t, ok := val.(time.Time); ok {
+		v = t.Format("2006-01-02 15:04:05")
 	} else {
 		v = val
 	}

@@ -11,15 +11,17 @@
                                 <el-button size="small" @click="exportXlsx(scope.row.name)">导出</el-button>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload ref="fileListInsert" :http-request="uplod" :limit="1"
+                                <el-upload ref="fileListInsert" :http-request="upload" :limit="1"
                                     :show-file-list="false">
-                                    <el-button size="small" @click="uploadTableName = scope.row.name">导入/新增</el-button>
+                                    <el-button size="small"
+                                        @click="currentOpt = { table: scope.row.name, optType: 'insert' }">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload ref="fileListUpdate" :http-request="uplod" :limit="1"
+                                <el-upload ref="fileListUpdate" :http-request="upload" :limit="1"
                                     :show-file-list="false">
-                                    <el-button size="small" @click="uploadTableName = scope.row.name">导入/修改</el-button>
+                                    <el-button size="small"
+                                        @click="currentOpt = { table: scope.row.name, optType: 'update' }">导入/修改</el-button>
                                 </el-upload>
                             </el-col>
                         </el-row>
@@ -45,7 +47,11 @@ const props = defineProps({
 
 const fileListInsert = ref([])
 const fileListUpdate = ref([])
-let uploadTableName = ""
+
+let currentOpt = {
+    table: "",
+    optType: ""
+}
 
 const tableData = ref([])
 
@@ -86,17 +92,20 @@ function exportXlsx(table) {
     })
 }
 
-function uplod(options) {
+function upload(options) {
 
     let param = new FormData();
     param.append('file', options.file);
     param.append("start", props.start)
     param.append("connId", props.connId)
     param.append("schema", props.schema)
-    param.append("table", uploadTableName)
 
     Object.keys(options.data).forEach(key => {
         param.append(key, options.data[key])
+    })
+
+    Object.keys(currentOpt).forEach(key => {
+        param.append(key, currentOpt[key])
     })
 
     http.post("/importXlsx", param, {
