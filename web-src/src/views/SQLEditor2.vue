@@ -31,7 +31,7 @@ import { standardKeymap, insertTab, history } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
-import { useDBStore } from '../stores/sql'
+import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 
 import DBExport from './DBExport.vue'
@@ -51,10 +51,6 @@ let editorView = ref<EditorView>();
 const codemirror = ref(null);
 const exportDialogVisible = ref(false)
 
-const dbStore = useDBStore()
-let schemaDD: any = {}
-let tablesDD: any = []
-
 const exectingSql = ref(false)
 let currentSelectTable = ""
 
@@ -73,7 +69,16 @@ dbStore.$subscribe((mutation, state) => {
 }) */
 
 onMounted(() => {
-    createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    console.log(dbSchemaProxy.schemaProxy)
+    dbSchemaProxy.registLsn((schema:any) => {
+        debugger
+        if (schema === props.schema) {
+            let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
+            createEditor(codemirror, doc);
+        }
+        console.log(schema)
+    })
+    createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
 })
 
 function createEditor(editorContainer: any, doc: any) {
@@ -93,8 +98,8 @@ function createEditor(editorContainer: any, doc: any) {
             ]),
             sql({
                 dialect: MySQL,
-                schema: dbStore.getAll(),
-                tables: dbStore.getTable(props.schema)
+                schema: dbSchemaProxy.getAll(),
+                tables: dbSchemaProxy.getTable(props.schema)
             }),
             history(),
             lineNumbers(),
@@ -114,6 +119,8 @@ const getEditorDoc = (): string | null => {
 };
 
 function exec() {
+    dbSchemaProxy.addTable("df_rdm_project_test", [{label:"cust_tts",data:{text:"abcc"}}])
+
     const sqlExec = getSelection()?.toString()
     if (!sqlExec) {
         ElMessage({ message: "请先选择SQL", type: "error" })
@@ -124,7 +131,7 @@ function exec() {
         const subSql = sqlExec.substring(fromIdx)
         const blankLengh = subSql.length - subSql.trim().length
         const tableNameLength = subSql.trim().indexOf(" ") === -1 ? subSql.trim().length : subSql.trim().indexOf(" ")
-        currentSelectTable = sqlExec.substring(fromIdx, fromIdx + blankLengh - 1 + tableNameLength)
+        currentSelectTable = sqlExec.substring(fromIdx, fromIdx + blankLengh + tableNameLength)
     }
     exectingSql.value = true
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlExec, maxLine: maxLine.value } })
@@ -172,14 +179,14 @@ function exportCurrentToSqlInsert() {
         return
     }
     let sqlArr = []
-    let valueArr = []
-    const columnArr = []
+    const columnArr: any = []
     let sql = `insert into ${currentSelectTable} (`
     for (const i in columns.value) {
-        columnArr.push(columns.value[i].key)
+        columnArr.push(columns.value[i]["key"])
     }
-    let rowVal = []
     for (const j in result.value) {
+        let rowVal = []
+        let valueArr = []
         for (const i in columns.value) {
             let val = result.value[j][columns.value[i]["key"]]
             rowVal.push(fmtValForInsert(val))
@@ -206,9 +213,9 @@ function exportCurrentToSqlUpdate() {
         return
     }
     let sqlArr = []
-    let rowVal = []
     let sql = `update ${currentSelectTable} set `
     for (let j = 0; j < result.value.length; j++) {
+        let rowVal = []
         for (let i = 1; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
@@ -232,7 +239,7 @@ function exportCurrentToSqlUpdate() {
     window.URL.revokeObjectURL(url);
 }
 
-function fmtValForInsert(val) {
+function fmtValForInsert(val: any) {
     if (val === null) {
         return "null"
     } else if (typeof val === "string") {
@@ -241,7 +248,7 @@ function fmtValForInsert(val) {
     return val
 }
 
-function fmtValForUpdate(val) {
+function fmtValForUpdate(val: any) {
     if (val === null) {
         return " is null"
     } else if (typeof val === "string") {

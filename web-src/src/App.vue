@@ -123,10 +123,9 @@
 import { ref, shallowRef } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
-import { useDBStore } from '@/stores/sql'
+import { dbSchemaProxy } from '@/stores/sql'
 
 const sqlEditor = shallowRef(SQLEditor2)
-const dbStore = useDBStore()
 
 let tabIndex = 0
 const editableTabsValue = ref('')
@@ -182,11 +181,15 @@ function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
-        dbStore.addTable(node.data.label, resp.data.data)
+        debugger
+        dbSchemaProxy.addTable(node.data.label, resp.data.data)
+        console.log(dbSchemaProxy)
+
         addTab(node.data, node)
-        /* http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: "table" } })
-          .then((resp) => {
-            dbStore.addTable(node.data.label + "_col", resp.data.data)
+        
+        /* http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: "all_column" } })
+          .then((resp2) => {
+            dbSchemaProxy.addTable(node.data.label + "_col", resp2.data.data)
           }) */
       }
       resolve(resp.data.data)

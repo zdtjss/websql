@@ -70,6 +70,8 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 		data = listTable(connId, key)
 	case TREE_NODE_TYPE_COLUMN:
 		data = listColumns(connId, key)
+	case TREE_NODE_TYPE_ALLCOLUMN:
+		data = listAllColumns(connId, key)
 	}
 	utils.WriteJson(w, data)
 }
@@ -137,6 +139,18 @@ func listColumns(key, table string) []*Tree {
 	return tree
 }
 
+func listAllColumns(key, schema string) []*Tree {
+	columnName, columnComment := "", ""
+	row, err := getConn(key).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
+	utils.Println(err)
+	tree := make([]*Tree, 0)
+	for row.Next() {
+		row.Scan(&columnName, &columnComment)
+		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
+	}
+	return tree
+}
+
 func doInsert(cfg *ConnCfg) {
 
 	initConfigTable()
@@ -161,6 +175,8 @@ func getNextType(curType string) string {
 		t = TREE_NODE_TYPE_TABLE
 	case TREE_NODE_TYPE_TABLE:
 		t = TREE_NODE_TYPE_COLUMN
+	case TREE_NODE_TYPE_ALLCOLUMN:
+		t = TREE_NODE_TYPE_ALLCOLUMN
 	}
 	return t
 }
@@ -227,4 +243,6 @@ const (
 	TREE_NODE_TYPE_TABLE = "table"
 	// column
 	TREE_NODE_TYPE_COLUMN = "column"
+	// all column
+	TREE_NODE_TYPE_ALLCOLUMN = "all_column"
 )
