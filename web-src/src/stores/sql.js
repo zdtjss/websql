@@ -12,7 +12,6 @@ export const dbSchemaProxy = {
                 info: n.data.text
             }
         })
-        debugger
         if (schema.endsWith("_col")) {
             const currentSchema = this.schemaProxy[schema.substring(0, schema.length - 4)]
             currentSchema.push(...tables)

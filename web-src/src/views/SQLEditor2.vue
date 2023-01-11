@@ -54,29 +54,12 @@ const exportDialogVisible = ref(false)
 const exectingSql = ref(false)
 let currentSelectTable = ""
 
-/* let count = 0
-dbStore.$subscribe((mutation, state) => {
-  console.log(count++)
-  schemaDD = dbStore.getAll()
-  tablesDD = dbStore.getTable(props.schema)
-  let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
-  createEditor(codemirror, doc);
-}) */
-
-/* watch(schemaDD, () => {
-  let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
-  createEditor(codemirror, doc);
-}) */
-
 onMounted(() => {
-    console.log(dbSchemaProxy.schemaProxy)
     dbSchemaProxy.registLsn((schema: any) => {
-        debugger
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
             createEditor(codemirror, doc);
         }
-        console.log(schema)
     })
     createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
 })
