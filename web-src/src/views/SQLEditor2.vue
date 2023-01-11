@@ -70,7 +70,7 @@ dbStore.$subscribe((mutation, state) => {
 
 onMounted(() => {
     console.log(dbSchemaProxy.schemaProxy)
-    dbSchemaProxy.registLsn((schema:any) => {
+    dbSchemaProxy.registLsn((schema: any) => {
         debugger
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -98,7 +98,7 @@ function createEditor(editorContainer: any, doc: any) {
             ]),
             sql({
                 dialect: MySQL,
-                schema: dbSchemaProxy.getAll(),
+                schema: <any>dbSchemaProxy.getAll(),
                 tables: dbSchemaProxy.getTable(props.schema)
             }),
             history(),
@@ -119,8 +119,6 @@ const getEditorDoc = (): string | null => {
 };
 
 function exec() {
-    dbSchemaProxy.addTable("df_rdm_project_test", [{label:"cust_tts",data:{text:"abcc"}}])
-
     const sqlExec = getSelection()?.toString()
     if (!sqlExec) {
         ElMessage({ message: "请先选择SQL", type: "error" })
