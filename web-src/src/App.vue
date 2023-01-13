@@ -142,7 +142,7 @@ const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
 const connCfg = ref({})
 
-const addTab = (data, node) => {
+const addTab = (node) => {
   if (node.data.type !== "schema") {
     return
   }
@@ -181,18 +181,17 @@ function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
-        debugger
         dbSchemaProxy.addTable(node.data.label, resp.data.data)
-        console.log(dbSchemaProxy)
 
-        addTab(node.data, node)
-        
+        addTab(node)
+
         /* http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: "all_column" } })
           .then((resp2) => {
             dbSchemaProxy.addTable(node.data.label + "_col", resp2.data.data)
           }) */
       }
       resolve(resp.data.data)
+      node.loaded = false
     })
     .catch((error) => {
       console.log(error);
