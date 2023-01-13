@@ -11,15 +11,13 @@
                                 <el-button size="small" @click="exportXlsx(scope.row.name)">导出</el-button>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload ref="fileListInsert" :http-request="upload" :limit="1"
-                                    :show-file-list="false">
+                                <el-upload :file-list="fileListInsert" :http-request="upload" :show-file-list="false" :limit="1">
                                     <el-button size="small"
                                         @click="currentOpt = { table: scope.row.name, optType: 'insert' }">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload ref="fileListUpdate" :http-request="upload" :limit="1"
-                                    :show-file-list="false">
+                                <el-upload :file-list="fileListUpdate" :http-request="upload" :show-file-list="false" :limit="1">
                                     <el-button size="small"
                                         @click="currentOpt = { table: scope.row.name, optType: 'update' }">导入/修改</el-button>
                                 </el-upload>
@@ -121,10 +119,9 @@ function upload(options) {
             }
         }
     }).finally((e) => {
-        uploadTableName = ""
-        fileListInsert.value.clear()
-        fileListUpdate.value.clear()
+        fileListInsert.value = []
+        fileListUpdate.value = []
     })
-
 }
+
 </script>
