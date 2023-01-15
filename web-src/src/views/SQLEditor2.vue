@@ -140,6 +140,11 @@ function exportDb() {
 
 function exportCurrentToXlsx() {
 
+    if (result.value.length === 0) {
+        ElMessage({ message: "请先执行查询，在导出", type: "warning" })
+        return
+    }
+
     let header = {}
     columns.value.forEach(col => header[col["title"]] = col["title"])
 
@@ -156,7 +161,7 @@ function exportCurrentToXlsx() {
 
 function exportCurrentToSqlInsert() {
     if (result.value.length === 0) {
-        ElMessage({ message: "请先执行查询，在导出SQL", type: "error" })
+        ElMessage({ message: "请先执行查询，在导出SQL", type: "warning" })
         return
     }
     let sqlArr = []
@@ -190,7 +195,7 @@ function exportCurrentToSqlInsert() {
 
 function exportCurrentToSqlUpdate() {
     if (result.value.length === 0) {
-        ElMessage({ message: "请先执行查询，在导出SQL", type: "error" })
+        ElMessage({ message: "请先执行查询，在导出SQL", type: "warning" })
         return
     }
     let sqlArr = []
@@ -237,40 +242,6 @@ function fmtValForUpdate(val: any) {
     }
     return val
 }
-
-const csvExport2 = (obj: any) => {
-    //处理数据
-    const title = obj?.title;
-    const data = obj?.data;
-    let str: string[] = [];
-    str.push(title.join(",") + "\r\n");
-    if (data?.length) {
-        for (let i = 0; i < data?.length; i++) {
-            let temp = [];
-            const dataKey = Object.keys(data[i]);
-            for (let j = 0; j < dataKey.length; j++) {
-                const value = data[i][dataKey[j]];
-                if (value) {
-                    // csv导出 如果数字大于12位，会自动转化为科学计数法，为避免转化科学计数法，转化成String。
-                    temp.push(`${value}\t`);
-                } else {
-                    temp.push(undefined);
-                }
-            }
-            str.push(temp.join(",") + "\r\n");
-        }
-    }
-    const blob = new Blob(["\uFEFF" + str.join("")], {
-        type: "text/csv;charset=utf-8",
-    });
-    //导出
-    const url = window.URL.createObjectURL(blob);
-    const downloadLink = document.createElement("a");
-    downloadLink.href = url;
-    downloadLink.download = obj.fileName;
-    downloadLink.click();
-    window.URL.revokeObjectURL(url);
-};
 
 </script>
 <style>
