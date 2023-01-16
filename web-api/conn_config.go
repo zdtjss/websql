@@ -77,6 +77,9 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 }
 
 func listConn(treeNode string) []*Tree {
+	if treeNode == "" {
+		return nil
+	}
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_config_dbconn")
