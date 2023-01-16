@@ -40,14 +40,14 @@
         <el-form-item label="连接名称" :label-width="formLabelWidth">
           <el-input v-model="connCfg.name" />
         </el-form-item>
-        <el-form-item label="所属层级" :label-width="formLabelWidth">
-          <el-tree-select v-model="connCfg.treeNode" :data="conCfgTreeData" :render-after-expand="false"
-            value-key="label" placeholder="请选择" />
-        </el-form-item>
         <el-form-item label="数据库类型" :label-width="formLabelWidth">
           <el-select v-model="connCfg.dbType" placeholder="请选择">
             <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="所属层级" :label-width="formLabelWidth">
+          <el-tree-select v-model="connCfg.treeNode" :data="conCfgTreeData" :render-after-expand="false" clearable
+            value-key="label" placeholder="请选择" />
         </el-form-item>
         <el-form-item label="用户名" :label-width="formLabelWidth">
           <el-input v-model="connCfg.user" :label-width="formLabelWidth" />
@@ -66,19 +66,58 @@
         </span>
       </template>
     </el-dialog>
-    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" width="860px">
-      <el-table :data="connCfgList" style="width: 100%;max-height: 500px;overflow-y: auto;">
-        <el-table-column prop="name" label="连接名称" width="100" />
-        <el-table-column prop="dbType" label="数据库类型" width="100" />
-        <el-table-column prop="user" label="用户名" width="150" />
-        <el-table-column prop="pwd" label="密码" width="180" />
-        <el-table-column prop="url" label="连接信息" />
+    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" width="1000px">
+      <el-table :data="connCfgList" style="width: 100%;max-height: 500px;overflow-y: auto;"
+        @cell-dblclick="(row) => row.editable = true">
+        <el-table-column prop="name" label="连接名称" width="120" :show-overflow-tooltip="true">
+          <template #default="scope">
+            <el-input v-show="scope.row.editable" v-model="scope.row.name"/>
+            <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="dbType" label="数据库类型" width="120">
+          <template #default="scope">
+            <span v-show="!scope.row.editable">{{ scope.row.dbType }}</span>
+            <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
+              <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column prop="treeNode" label="所属层级" width="130">
+          <template #default="scope">
+            <span v-show="!scope.row.editable">{{ scope.row.treeNode }}</span>
+            <el-tree-select v-show="scope.row.editable" v-model="scope.row.treeNode" :data="conCfgTreeData" clearable
+              value-key="label" placeholder="未指定" />
+          </template>
+        </el-table-column>
+        <el-table-column prop="user" label="用户名" width="150" :show-overflow-tooltip="true">
+          <template #default="scope">
+            <el-input v-show="scope.row.editable" v-model="scope.row.user" />
+            <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
+          <template #default="scope">
+            <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
+            <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="url" label="连接信息" :show-overflow-tooltip="true">
+          <template #default="scope">
+            <el-input v-show="scope.row.editable" v-model="scope.row.url" type="textarea" />
+            <span v-show="!scope.row.editable">{{ scope.row.url }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" style="text-align: center; " width="80">
           <template #default="scope">
+            <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
+              style="margin-right:5px;"><Select /></el-icon>
             <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
               cancel-button-text="否">
               <template #reference>
-                <el-button size="small">删除</el-button>
+                <el-icon>
+                  <Delete />
+                </el-icon>
               </template>
             </el-popconfirm>
           </template>
@@ -210,19 +249,20 @@ function findConn(node) {
   return connId
 }
 
-function saveConnCfg() {
-  http.post("/saveConn", connCfg.value)
+function saveConnCfg(row) {
+  http.post("/saveConn", row.target ? connCfg.value : row)
     .then((resp) => {
       connCfg.value = {}
       conCfgAddDialogVisible.value = false
-      ElMessage("添加成功")
+      ElMessage("保存成功")
     })
 }
 
 function listConnCfg() {
   http.get("/listConn2")
     .then((resp) => {
-      connCfgList.value = resp.data.data
+      connCfgList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+      setTimeout(listDirTree(), 1000)
     })
 }
 
