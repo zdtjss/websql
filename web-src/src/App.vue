@@ -110,12 +110,14 @@
         </el-table-column>
         <el-table-column label="操作" style="text-align: center; " width="80">
           <template #default="scope">
-            <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
-              style="margin-right:5px;"><Select /></el-icon>
+            <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false" title="保存"
+              style="margin-right:5px;cursor: pointer;">
+              <Select />
+            </el-icon>
             <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
               cancel-button-text="否">
               <template #reference>
-                <el-icon>
+                <el-icon style="cursor: pointer;" title="删除">
                   <Delete />
                 </el-icon>
               </template>
