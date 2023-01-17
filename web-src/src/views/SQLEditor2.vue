@@ -19,7 +19,7 @@
             </el-auto-resizer>
         </el-footer>
         <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true">
-            <DBExport :connId="props.connId" :schema="props.schema" start="3" opt="insert" />
+            <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
         </el-dialog>
     </el-container>
 </template>
@@ -255,7 +255,7 @@ function fmtValForUpdate(val: any) {
     height: calc(100vh * 0.4);
     padding: 0px;
     margin-top: 10px;
-    border-top: solid 1px gray;
+    border-top: dashed 1px gray;
 }
 
 .result {

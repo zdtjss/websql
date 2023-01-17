@@ -39,7 +39,6 @@ import http from '../js/utils/httpProxy.js'
 const props = defineProps({
     connId: String,
     schema: String,
-    start: String,
     opt: String
 })
 
@@ -94,7 +93,6 @@ function upload(options) {
 
     let param = new FormData();
     param.append('file', options.file);
-    param.append("start", props.start)
     param.append("connId", props.connId)
     param.append("schema", props.schema)
 
