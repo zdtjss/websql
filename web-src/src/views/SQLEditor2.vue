@@ -26,9 +26,11 @@
 
 <script lang="ts" setup>
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
+import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorState } from '@codemirror/state';
-import { standardKeymap, insertTab, history } from '@codemirror/commands';
+import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
+import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
@@ -77,7 +79,13 @@ function createEditor(editorContainer: any, doc: any) {
                 {
                     key: 'Tab',
                     run: insertTab,
-                },
+                }, {
+                    key: "ctrl-y", 
+                    run: redo
+                }, {
+                    key: "ctrl-z",
+                    run: undo
+                }
             ]),
             sql({
                 dialect: MySQL,
@@ -87,6 +95,7 @@ function createEditor(editorContainer: any, doc: any) {
             history(),
             lineNumbers(),
             highlightActiveLineGutter(),
+            syntaxHighlighting(oneDarkHighlightStyle),
             autocompletion(),
             EditorView.editable.of(true),
         ],
