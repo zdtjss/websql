@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bufio"
+	"compress/gzip"
 	"go-web/utils"
 	"io"
 	"log"
@@ -38,7 +39,8 @@ func MainRegister(router *mux.Router) {
 	router.Use(panicMiddleware)
 
 	// router.NotFoundHandler = &NotFound{}
-	router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
+	// router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
+	router.PathPrefix("/").Handler(&notFound{})
 
 	log.Println("路由注册完成")
 }
@@ -76,7 +78,14 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
-	io.Copy(w, bufio.NewReader(file))
+	if st, _ := file.Stat(); st.Size() <= 4096 {
+		io.Copy(w, bufio.NewReader(file))
+	} else {
+		w.Header().Add("Content-Encoding", "gzip")
+		w2 := gzip.NewWriter(w)
+		defer w2.Close()
+		io.Copy(w2, bufio.NewReader(file))
+	}
 }
 
 // 一定是最后一个引入的
