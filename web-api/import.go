@@ -22,7 +22,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	schema := r.Form.Get("schema")
 	table := r.Form.Get("table")
 	operType := r.Form.Get("optType")
-	start, _ := strconv.Atoi(r.Form.Get("start"))
+	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	file, _, err := r.FormFile("file")
 	utils.Panicln(err)
@@ -40,7 +40,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	tx, _ := getConn(connId).Begin()
 	defer tx.Rollback()
 
-	rows, err := excel.Rows("Sheet1")
+	rows, err := excel.Rows(table)
 	utils.Panicln(err)
 	defer rows.Close()
 
@@ -54,11 +54,6 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	count := -1
 	maxLines := 100
 
-	for count < start-1 {
-		count++
-		rows.Next()
-	}
-
 	//存所有行的内容totalValues
 	totalValues := make([][]string, maxLines)
 
@@ -69,7 +64,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		row, err := rows.Columns()
 		utils.Panicln(err)
 		columns = append(columns, row...)
-		totalValues[count-start] = columns
+		totalValues[count] = columns
 		if count+1 >= maxLines {
 			if strings.EqualFold(operType, "insert") {
 				insertToDb(schema, table, header, totalValues, tx)
@@ -191,7 +186,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 		valCount = -1
 		paramCount = -1
-
+		log.Println(anyVal...)
 		_, err = stmt.Exec(anyVal...)
 		utils.Panicln(err)
 	}
