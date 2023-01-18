@@ -210,16 +210,16 @@ const removeTab = (targetName) => {
   let activeName = editableTabsValue.value
   if (activeName === targetName) {
     tabs.forEach((tab, index) => {
-      if (tab.name === targetName) {
+      if (tab.tabId === targetName) {
         const nextTab = tabs[index + 1] || tabs[index - 1]
         if (nextTab) {
-          activeName = nextTab.name
+          activeName = nextTab.tabId
         }
       }
     })
   }
   editableTabsValue.value = activeName
-  editableTabs.value = tabs.filter((tab) => tab.name !== targetName)
+  editableTabs.value = tabs.filter((tab) => tab.tabId !== targetName)
   restoreTab()
 }
 
