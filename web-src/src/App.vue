@@ -184,7 +184,6 @@ const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 const connCfg = ref({})
 
 onMounted(() => {
-  debugger
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
   storedTabs.forEach(tab => tab.component = sqlEditor)
   editableTabs.value.push(...storedTabs)

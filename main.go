@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
-	"go-web/config"
 	"go-web/https"
 	webapi "go-web/web-api"
 	"log"
@@ -32,7 +31,7 @@ func main() {
 	isHttps = flag.Bool("https", false, "")
 	flag.Parse()
 
-	config.Cfg = config.ReadConfig()
+	// config.Cfg = config.ReadConfig()
 
 	webapi.MainRegister(router)
 
