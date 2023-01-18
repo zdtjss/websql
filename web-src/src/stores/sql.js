@@ -1,4 +1,4 @@
-const schemaStore = {}
+const schemaStore = JSON.parse(localStorage.getItem("go-web-sql-dbSchemaProxy") || "{}")
 
 export const dbSchemaProxy = {
     callback: [],
@@ -19,6 +19,7 @@ export const dbSchemaProxy = {
         } else {
             this.schemaProxy[schema] = tables
         }
+        localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(this.schemaProxy))
     },
     getTable(schema) {
         let schemas = this.schemaProxy[schema]
