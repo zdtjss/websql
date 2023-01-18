@@ -29,8 +29,8 @@
     <el-container>
       <el-main>
         <el-tabs v-model="editableTabsValue" type="card" class="demo-tabs" closable @tab-remove="removeTab">
-          <el-tab-pane v-for="item in editableTabs" :key="item.name" :label="item.title" :name="item.name">
-            <component :is="item.component" :connId="item.connId" :schema="item.schema" />
+          <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :label="item.title" :name="item.tabId">
+            <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" />
           </el-tab-pane>
         </el-tabs>
       </el-main>
@@ -161,14 +161,14 @@
 </template>
 
 <script setup>
-import { ref, shallowRef } from 'vue'
+import { ref, shallowRef, onMounted } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
+import dayjs from 'dayjs'
 
 const sqlEditor = shallowRef(SQLEditor2)
 
-let tabIndex = 0
 const editableTabsValue = ref('')
 const editableTabs = ref([])
 
@@ -183,19 +183,28 @@ const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
 const connCfg = ref({})
 
+onMounted(() => {
+  debugger
+  const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
+  storedTabs.forEach(tab => tab.component = sqlEditor)
+  editableTabs.value.push(...storedTabs)
+  editableTabsValue.value = localStorage.getItem("editableTabsValue") || ""
+})
+
 const addTab = (node) => {
   if (node.data.type !== "schema") {
     return
   }
-  const newTabName = `${++tabIndex}`
+  const tabId = dayjs().format("YYYYMMDDHHmmssSSS")
   editableTabs.value.push({
+    tabId: tabId,
     title: node.data.label,
-    name: newTabName,
     connId: findConn(node),
     schema: node.data.label,
     component: sqlEditor,
   })
-  editableTabsValue.value = newTabName
+  editableTabsValue.value = tabId
+  restoreTab()
 }
 const removeTab = (targetName) => {
   const tabs = editableTabs.value
@@ -212,6 +221,16 @@ const removeTab = (targetName) => {
   }
   editableTabsValue.value = activeName
   editableTabs.value = tabs.filter((tab) => tab.name !== targetName)
+  restoreTab()
+}
+
+function restoreTab() {
+  if (editableTabs.value.length > 0) {
+    const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
+    waitStoredTabs.forEach(tab => tab.component = null)
+    localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
+  }
+  localStorage.setItem("editableTabsValue", editableTabsValue.value)
 }
 
 function loadTree(node, resolve) {

@@ -9,7 +9,7 @@
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main class="sql_area">
-            <div ref="codemirror" class="codemirror"></div>
+            <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
         <el-footer class="result">
             <el-auto-resizer>
@@ -30,7 +30,7 @@ import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
 import { sql, MySQL } from '@codemirror/lang-sql';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { syntaxHighlighting } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
@@ -42,6 +42,7 @@ import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
 
 const props = defineProps<{
+    tabId: string,
     connId: string,
     schema: string
 }>()
@@ -63,7 +64,8 @@ onMounted(() => {
             createEditor(codemirror, doc);
         }
     })
-    createEditor(codemirror, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+    createEditor(codemirror, doc);
 })
 
 function createEditor(editorContainer: any, doc: any) {
@@ -106,9 +108,13 @@ function createEditor(editorContainer: any, doc: any) {
     });
 }
 //获取编辑器里的文本内容
-const getEditorDoc = (): string | null => {
-    return (editorView.value as EditorView).state.doc.toString();
+const getEditorDoc = (): string => {
+    return (editorView.value as EditorView).state.doc.toString() || "";
 };
+
+function getSqlKey() {
+    return "go-web-sql-" + props.tabId
+}
 
 function exec() {
     const sqlExec = getSelection()?.toString()
@@ -232,6 +238,10 @@ function exportCurrentToSqlUpdate() {
     downloadLink.download = currentSelectTable + "-update.sql";
     downloadLink.click();
     window.URL.revokeObjectURL(url);
+}
+
+function onKeyup() {
+    localStorage.setItem(getSqlKey(), getEditorDoc())
 }
 
 function fmtValForInsert(val: any) {
