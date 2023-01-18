@@ -165,6 +165,7 @@ func doInsert(cfg *ConnCfg) {
 func doUpdate(cfg *ConnCfg) {
 	stmt, _ := db.Prepare("update t_config_dbconn set name = ?, db_type = ?, tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
 	stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+	config.RealseConn(convertToDBParam(cfg))
 }
 
 func getNextType(curType string) string {
@@ -189,8 +190,11 @@ func getConn(id string) *sqlx.DB {
 	iid, _ := strconv.Atoi(id)
 	err := db.Select(&cfgList, "select * from t_config_dbconn where id = ?", iid)
 	utils.Panicln(err)
-	cfg := cfgList[0]
-	return config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
+	return config.GetConn(convertToDBParam(&cfgList[0]))
+}
+
+func convertToDBParam(cfg *ConnCfg) *config.DBParam {
+	return &config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url}
 }
 
 // 初始化表结构

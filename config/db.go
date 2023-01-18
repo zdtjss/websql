@@ -29,6 +29,14 @@ func initDBConn(param *DBParam) {
 	log.Printf("数据库连接成功, env = %s, db = %s", param.Name, param.User)
 }
 
+func RealseConn(param *DBParam) {
+	val, ok := DBMap[createKey(param)]
+	if ok {
+		val.Close()
+		delete(DBMap, createKey(param))
+	}
+}
+
 func createKey(param *DBParam) string {
 	return param.Id
 }
