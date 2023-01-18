@@ -16,13 +16,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/julienschmidt/httprouter"
+	"github.com/gorilla/mux"
 )
 
 var (
 	port    *string
 	isHttps *bool
-	router  = httprouter.New()
+	router  = mux.NewRouter()
 )
 
 func main() {
@@ -36,8 +36,6 @@ func main() {
 	webapi.MainRegister(router)
 
 	webapi.InitTable()
-
-	router.NotFound = &webapi.NotFound{}
 
 	// 检测是否启动成功
 	go sLsn()

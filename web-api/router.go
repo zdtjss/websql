@@ -7,39 +7,39 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/julienschmidt/httprouter"
+	"github.com/gorilla/mux"
 	"golang.org/x/exp/maps"
 )
 
 // 不需要以/结尾
 var destAddr string = "http://localhost:8083"
 
-func MainRegister(router *httprouter.Router) {
+func MainRegister(router *mux.Router) {
 
-	router.HandlerFunc("GET", "/listTable", ListTable)
-	router.HandlerFunc("GET", "/exportXlsx", ExportXlsx)
-	router.HandlerFunc("POST", "/importXlsx", ImportXlsx)
+	router.HandleFunc("/listTable", ListTable).Methods("GET")
+	router.HandleFunc("/exportXlsx", ExportXlsx).Methods("GET")
+	router.HandleFunc("/importXlsx", ImportXlsx).Methods("POST")
 
-	router.HandlerFunc("POST", "/saveConn", SaveConn)
-	router.HandlerFunc("GET", "/delConn", DelConn)
-	router.HandlerFunc("GET", "/listConn2", ListConn2)
-	router.HandlerFunc("GET", "/showTree", ShowTree)
-	router.HandlerFunc("GET", "/execSQL", ExecSQL)
+	router.HandleFunc("/saveConn", SaveConn).Methods("POST")
+	router.HandleFunc("/delConn", DelConn).Methods("GET")
+	router.HandleFunc("/listConn2", ListConn2).Methods("GET")
+	router.HandleFunc("/showTree", ShowTree).Methods("GET")
+	router.HandleFunc("/execSQL", ExecSQL).Methods("GET")
 
-	router.HandlerFunc("POST", "/saveTree", SaveTree)
-	router.HandlerFunc("GET", "/listDirTree", ListDirTree)
+	router.HandleFunc("/saveTree", SaveTree).Methods("POST")
+	router.HandleFunc("/listDirTree", ListDirTree).Methods("GET")
 
-	router.HandlerFunc("GET", "/ext/", proxy)
-	router.HandlerFunc("POST", "/ext/", proxy)
+	router.HandleFunc("/ext/", proxy)
 
-	router.PanicHandler = func(w http.ResponseWriter, r *http.Request, err interface{}) {
-		w.Header().Add("content-type", "application/json;charset=UTF-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
-	}
+	router.Use(panicMiddleware)
+
+	// router.NotFoundHandler = &NotFound{}
+	spa := spaHandler{staticPath: "static", indexPath: "index.html"}
+	router.PathPrefix("/").Handler(spa)
 
 	log.Println("路由注册完成")
 }
@@ -61,10 +61,10 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 }
 
-type NotFound struct {
+type notFound struct {
 }
 
-func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	idx := strings.Index(r.RequestURI, "?")
 	reqPath := r.RequestURI
 	if idx != -1 {
@@ -78,4 +78,62 @@ func (n *NotFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
 	io.Copy(w, bufio.NewReader(file))
+}
+
+// 一定是最后一个引入的
+func panicMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				w.Header().Add("content-type", "application/json;charset=UTF-8")
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
+			}
+		}()
+		// Call the next handler, which can be another middleware in the chain, or the final handler.
+		next.ServeHTTP(w, r)
+	})
+}
+
+// spaHandler implements the http.Handler interface, so we can use it
+// to respond to HTTP requests. The path to the static directory and
+// path to the index file within that static directory are used to
+// serve the SPA in the given static directory.
+type spaHandler struct {
+	staticPath string
+	indexPath  string
+}
+
+// ServeHTTP inspects the URL path to locate a file within the static dir
+// on the SPA handler. If a file is found, it will be served. If not, the
+// file located at the index path on the SPA handler will be served. This
+// is suitable behavior for serving an SPA (single page application).
+func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// get the absolute path to prevent directory traversal
+	path, err := filepath.Abs(r.URL.Path)
+	if err != nil {
+		// if we failed to get the absolute path respond with a 400 bad request
+		// and stop
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// prepend the path with the path to the static directory
+	path = filepath.Join(h.staticPath, path)
+
+	// check whether a file exists at the given path
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		// file does not exist, serve index.html
+		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
+		return
+	} else if err != nil {
+		// if we got an error (that wasn't that the file doesn't exist) stating the
+		// file, return a 500 internal server error and stop
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// otherwise, use http.FileServer to serve the static dir
+	http.FileServer(http.Dir(h.staticPath)).ServeHTTP(w, r)
 }
