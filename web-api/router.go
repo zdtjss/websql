@@ -38,8 +38,7 @@ func MainRegister(router *mux.Router) {
 	router.Use(panicMiddleware)
 
 	// router.NotFoundHandler = &NotFound{}
-	spa := spaHandler{staticPath: "static", indexPath: "index.html"}
-	router.PathPrefix("/").Handler(spa)
+	router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
 
 	log.Println("路由注册完成")
 }
