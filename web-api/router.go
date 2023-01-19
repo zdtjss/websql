@@ -74,15 +74,15 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	file, err := utils.Find("static" + reqPath)
 	if err != nil || strings.EqualFold("/", reqPath) {
 		file, err = utils.Find("static/index.html")
-		utils.Println(err)
+		utils.Panicln(err)
 	}
 	defer file.Close()
 	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
-	if st, _ := file.Stat(); st.Size() <= 4096 {
+	if st, _ := file.Stat(); st.Size() <= 20 {
 		io.Copy(w, bufio.NewReader(file))
 	} else {
 		w.Header().Add("Content-Encoding", "gzip")
-		w2 := gzip.NewWriter(w)
+		w2, _ := gzip.NewWriterLevel(w, 1)
 		defer w2.Close()
 		io.Copy(w2, bufio.NewReader(file))
 	}

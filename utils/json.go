@@ -21,11 +21,11 @@ func WriteJson(w http.ResponseWriter, v any) {
 	w.Header().Add("content-type", "application/json;charset=UTF-8")
 	data := ToJsonString(Result{Code: 200, Data: v})
 	length := len(data)
-	if length > 4096 {
+	if length > 20 {
 		w.Header().Add("Content-Encoding", "gzip")
-		w2 := gzip.NewWriter(w)
-		defer w2.Close()
-		w2.Write(data)
+		gw, _ := gzip.NewWriterLevel(w, 1)
+		defer gw.Close()
+		gw.Write(data)
 	} else {
 		w.Header().Add("Content-Length", strconv.Itoa(length))
 		w.Write(data)
