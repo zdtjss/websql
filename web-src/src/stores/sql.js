@@ -36,6 +36,9 @@ export const dbSchemaProxy = {
     getAll() {
         return this.schemaProxy
     },
+    cleanCache() {
+        localStorage.removeItem("go-web-sql-dbSchemaProxy")
+    },
     schemaProxy: new Proxy(schemaStore, {
         set: (target, property, value) => {
             Reflect.set(target, property, value);

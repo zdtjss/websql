@@ -224,12 +224,15 @@ const removeTab = (targetName) => {
 }
 
 function restoreTab() {
-  if (editableTabs.value.length > 0) {
-    const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
-    waitStoredTabs.forEach(tab => tab.component = null)
-    localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
-  }
+  const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
+  waitStoredTabs.forEach(tab => tab.component = null)
+  localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
   localStorage.setItem("editableTabsValue", editableTabsValue.value)
+  if (editableTabs.value.length == 0) {
+    // 清空可能带来负面清理
+    localStorage.clear()
+    dbSchemaProxy.cleanCache()
+  }
 }
 
 function loadTree(node, resolve) {
