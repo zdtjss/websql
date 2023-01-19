@@ -77,11 +77,11 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		utils.Panicln(err)
 	}
 	defer file.Close()
-	w.Header().Add("content-type", mime.TypeByExtension(filepath.Ext(file.Name())))
+	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))
 	if st, _ := file.Stat(); st.Size() <= 20 {
 		io.Copy(w, bufio.NewReader(file))
 	} else {
-		w.Header().Add("Content-Encoding", "gzip")
+		w.Header().Set("Content-Encoding", "gzip")
 		w2, _ := gzip.NewWriterLevel(w, 1)
 		defer w2.Close()
 		io.Copy(w2, bufio.NewReader(file))
@@ -93,7 +93,7 @@ func panicMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				w.Header().Add("content-type", "application/json;charset=UTF-8")
+				w.Header().Set("content-type", "application/json;charset=UTF-8")
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
 			}
