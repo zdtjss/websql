@@ -1,10 +1,12 @@
 package utils
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 )
 
 func ToJsonString(v any) []byte {
@@ -17,7 +19,17 @@ func ToJsonString(v any) []byte {
 
 func WriteJson(w http.ResponseWriter, v any) {
 	w.Header().Add("content-type", "application/json;charset=UTF-8")
-	w.Write(ToJsonString(Result{Code: 200, Data: v}))
+	data := ToJsonString(Result{Code: 200, Data: v})
+	length := len(data)
+	if length > 4096 {
+		w.Header().Add("Content-Encoding", "gzip")
+		w2 := gzip.NewWriter(w)
+		defer w2.Close()
+		w2.Write(data)
+	} else {
+		w.Header().Add("Content-Length", strconv.Itoa(length))
+		w.Write(data)
+	}
 }
 
 func UnmarshalJson[T any](r io.Reader, v *T) {
