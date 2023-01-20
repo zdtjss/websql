@@ -6,6 +6,7 @@
             <el-button @click="exportCurrentToXlsx">excel</el-button>
             <el-button @click="exportCurrentToSqlInsert">SQL-insert</el-button>
             <el-button @click="exportCurrentToSqlUpdate">SQL-update</el-button>
+            <el-button @click="formatSql">美化</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main class="sql_area">
@@ -35,6 +36,7 @@ import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
+import { format } from 'sql-formatter';
 
 import DBExport from './DBExport.vue'
 
@@ -116,19 +118,23 @@ function getSqlKey() {
     return "go-web-sql-" + props.tabId
 }
 
+function formatSql() {
+    const sql = getSelection()?.toString()
+    if (!sql) {
+        ElMessage({ message: "请先选择SQL", type: "error" })
+        return
+    }
+    const editorState = <EditorState>editorView.value?.state
+    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: "mysql" }) + "\n"))
+}
+
 function exec() {
     const sqlExec = getSelection()?.toString()
     if (!sqlExec) {
         ElMessage({ message: "请先选择SQL", type: "error" })
         return
     }
-    if (sqlExec.trim().startsWith("select ") || sqlExec.trim().startsWith("select ")) {
-        const fromIdx = sqlExec.toLowerCase().indexOf(" from ") + 6
-        const subSql = sqlExec.substring(fromIdx)
-        const blankLengh = subSql.length - subSql.trim().length
-        const tableNameLength = subSql.trim().indexOf(" ") === -1 ? subSql.trim().length : subSql.trim().indexOf(" ")
-        currentSelectTable = sqlExec.substring(fromIdx, fromIdx + blankLengh + tableNameLength)
-    }
+    currentSelectTable = extractTableName(sqlExec)
     exectingSql.value = true
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlExec, maxLine: maxLine.value } })
         .then((resp) => {
@@ -147,6 +153,27 @@ function exec() {
             console.log(error);
             exectingSql.value = false
         });
+}
+
+function extractTableName(sqlExec: string) {
+    let currentSelectTable = ""
+    if (sqlExec.trim().startsWith("select ") || sqlExec.trim().startsWith("select\n")) {
+        let fromIdx = sqlExec.toLowerCase().indexOf(" from ") + 6
+        if (fromIdx === 5) {
+            fromIdx = sqlExec.toLowerCase().indexOf("\nfrom\n") + 6
+        }
+        const tableNameArr = []
+        for (let i = fromIdx; i < sqlExec.length; i++) {
+            if (sqlExec.charAt(i) != ' ' && sqlExec.charAt(i) != '\n') {
+                tableNameArr.push(sqlExec.charAt(i))
+            }
+            else if (tableNameArr.length !== 0 && (sqlExec.charAt(i) === ' ' || sqlExec.charAt(i) === '\n')) {
+                break
+            }
+        }
+        currentSelectTable = tableNameArr.join("")
+    }
+    return currentSelectTable
 }
 
 function exportDb() {
