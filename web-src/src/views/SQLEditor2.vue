@@ -55,7 +55,7 @@ const props = defineProps<{
 
 const maxLine = ref(10)
 const columns: any = ref([])
-const result : any = ref([])
+const result: any = ref([])
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
 const exportDialogVisible = ref(false)
@@ -157,14 +157,11 @@ function exec() {
                     width: 150
                 }
             })
-            result.value = resp.data.data.data
-
             columns.value.unshift({
-                key: "",
-                title: "",
                 dataKey: "col-idx",
                 width: 50
             })
+            result.value = resp.data.data.data
             result.value.forEach((row: any, idx: number) => {
                 row["col-idx"] = idx + 1
             });
@@ -211,13 +208,13 @@ function exportCurrentToXlsx() {
         return
     }
 
-    let header = {}
-    columns.value.forEach(col => header[col["title"]] = col["title"])
+    let header: any = {}
+    columns.value.forEach((col: any) => header[col["title"]] = col["title"])
 
     const obj = {
         header: header,
         data: result.value,
-        key: columns.value.map(col => col["title"]),
+        key: columns.value.map((col: any) => col["title"]),
         title: '',
         filename: currentSelectTable,
         autoWidth: false
@@ -310,8 +307,6 @@ function toggleResult() {
 }
 
 function calHeight() {
-    const sqlAreaHeight = document.getElementById("sqlArea")?.clientHeight || document.body.clientHeight * 0.5
-    const resultHeight = document.getElementById("result")?.clientHeight || document.body.clientHeight * 0.4 
     return document.body.scrollHeight - 100
 }
 
@@ -351,8 +346,7 @@ function fmtValForUpdate(val: any) {
     height: 100%;
 }
 
-.result {
-}
+.result {}
 
 /** 表头可选择复制 */
 .el-table-v2__header-cell-text {
