@@ -9,10 +9,14 @@
             <el-button @click="formatSql">美化</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
-        <el-main class="sql_area">
+        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }">
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
-        <el-footer class="result">
+        <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
+            <el-icon @click="toggleResult" style="right: 0px;position: absolute;">
+                <ArrowDown v-if="showResult" />
+                <ArrowUp v-if="resultHide" />
+            </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
                     <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed />
@@ -50,16 +54,23 @@ const props = defineProps<{
 }>()
 
 const maxLine = ref(10)
-const columns = ref([])
-const result = ref([])
+const columns: any = ref([])
+const result : any = ref([])
 let editorView = ref<EditorView>();
 const codemirror = ref(null);
 const exportDialogVisible = ref(false)
+
+const showResult = ref(false)
+const resultHide = ref(false)
+const sqlDivHeight = ref("")
+const resultDivHeight = ref("")
 
 const exectingSql = ref(false)
 let currentSelectTable = ""
 
 onMounted(() => {
+    // 默认高度
+    sqlDivHeight.value = (calHeight() - 60) + "px"
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -84,7 +95,7 @@ function createEditor(editorContainer: any, doc: any) {
                     key: 'Tab',
                     run: insertTab,
                 }, {
-                    key: "ctrl-y", 
+                    key: "ctrl-y",
                     run: redo
                 }, {
                     key: "ctrl-z",
@@ -147,7 +158,20 @@ function exec() {
                 }
             })
             result.value = resp.data.data.data
+
+            columns.value.unshift({
+                key: "",
+                title: "",
+                dataKey: "col-idx",
+                width: 50
+            })
+            result.value.forEach((row: any, idx: number) => {
+                row["col-idx"] = idx + 1
+            });
             exectingSql.value = false
+
+            showResult.value = false
+            toggleResult()
         })
         .catch(function (error) {
             console.log(error);
@@ -271,6 +295,26 @@ function onKeyup() {
     localStorage.setItem(getSqlKey(), getEditorDoc())
 }
 
+function toggleResult() {
+    if (showResult.value) {
+        resultHide.value = true
+        showResult.value = false
+        sqlDivHeight.value = (calHeight() - 15) + "px"
+        resultDivHeight.value = "15px"
+    } else {
+        resultHide.value = false
+        showResult.value = true
+        sqlDivHeight.value = (calHeight() * 0.3) + "px"
+        resultDivHeight.value = (calHeight() * 0.7) + "px"
+    }
+}
+
+function calHeight() {
+    const sqlAreaHeight = document.getElementById("sqlArea")?.clientHeight || document.body.clientHeight * 0.5
+    const resultHeight = document.getElementById("result")?.clientHeight || document.body.clientHeight * 0.4 
+    return document.body.scrollHeight - 100
+}
+
 function fmtValForInsert(val: any) {
     if (val === null) {
         return "null"
@@ -298,14 +342,16 @@ function fmtValForUpdate(val: any) {
 }
 
 .sql_area {
-    height: calc(100vh * 0.4);
     padding: 0px;
     margin-top: 10px;
     border-top: dashed 1px gray;
 }
 
+.codemirror {
+    height: 100%;
+}
+
 .result {
-    height: calc(100vh * 0.4);
 }
 
 /** 表头可选择复制 */
