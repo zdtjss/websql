@@ -13,9 +13,9 @@
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
         <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
-            <el-icon @click="toggleResult" style="right: 0px;position: absolute;">
-                <ArrowDown v-if="showResult" />
-                <ArrowUp v-if="resultHide" />
+            <el-icon @click="toggleResult" style="right: 0px;position: absolute;" :title="toggleResultTitle" :size="22">
+                <ArrowDown v-if="showResult" style="margin-top:15px;" />
+                <ArrowUp v-if="resultHide"/>
             </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
@@ -64,13 +64,14 @@ const showResult = ref(false)
 const resultHide = ref(false)
 const sqlDivHeight = ref("")
 const resultDivHeight = ref("")
+const toggleResultTitle = ref("")
 
 const exectingSql = ref(false)
 let currentSelectTable = ""
 
 onMounted(() => {
     // 默认高度
-    sqlDivHeight.value = (calHeight() - 60) + "px"
+    sqlDivHeight.value = (calHeight() - 65) + "px"
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -298,11 +299,13 @@ function toggleResult() {
         showResult.value = false
         sqlDivHeight.value = (calHeight() - 15) + "px"
         resultDivHeight.value = "15px"
+        toggleResultTitle.value = "显示结果"
     } else {
         resultHide.value = false
         showResult.value = true
         sqlDivHeight.value = (calHeight() * 0.3) + "px"
         resultDivHeight.value = (calHeight() * 0.7) + "px"
+        toggleResultTitle.value = "隐藏结果"
     }
 }
 
