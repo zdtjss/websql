@@ -181,7 +181,7 @@ const conCfgTreeData = ref([])
 const treeListDialogVisible = ref(false)
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
-const connCfg = ref({})
+const connCfg = ref({ dbType: "mysql" })
 
 onMounted(() => {
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
