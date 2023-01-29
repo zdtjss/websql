@@ -57,9 +57,9 @@ function json_to_array(key, jsonData) {
  */
 export const exportJsonToExcel = ({
     header,
-    data,
-    key,
     title,
+    key,
+    data,
     filename,
     autoWidth
 }) => {

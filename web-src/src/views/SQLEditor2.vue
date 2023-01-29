@@ -210,13 +210,19 @@ function exportCurrentToXlsx() {
     }
 
     let header: any = {}
-    columns.value.forEach((col: any) => header[col["title"]] = col["title"])
+    let keys: any = []
+    columns.value.forEach((col: any, idx: number) => {
+        if (idx > 0) {
+            keys.push(col["title"])
+            header[col["title"]] = col["title"]
+        }
+    })
 
     const obj = {
         header: header,
-        data: result.value,
-        key: columns.value.map((col: any) => col["title"]),
         title: '',
+        key: keys,
+        data: [...result.value],
         filename: currentSelectTable,
         autoWidth: false
     }
@@ -231,13 +237,13 @@ function exportCurrentToSqlInsert() {
     let sqlArr = []
     const columnArr: any = []
     let sql = `insert into ${currentSelectTable} (`
-    for (const i in columns.value) {
+    for (let i = 1; i < columns.value.length; i++) {
         columnArr.push(columns.value[i]["key"])
     }
-    for (const j in result.value) {
+    for (let j = 1; j < result.value.length; j++) {
         let rowVal = []
         let valueArr = []
-        for (const i in columns.value) {
+        for (let i = 1; i < columns.value.length; i++) {
             let val = result.value[j][columns.value[i]["key"]]
             rowVal.push(fmtValForInsert(val))
         }
@@ -266,11 +272,11 @@ function exportCurrentToSqlUpdate() {
     let sql = `update ${currentSelectTable} set `
     for (let j = 0; j < result.value.length; j++) {
         let rowVal = []
-        for (let i = 1; i < columns.value.length; i++) {
+        for (let i = 2; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
             if (i === columns.value.length - 1) {
-                rowVal.push((column + fmtValForUpdate(val)) + " where " + columns.value[0]["key"] + fmtValForUpdate(result.value[j][columns.value[0]["key"]]))
+                rowVal.push((column + fmtValForUpdate(val)) + " where " + columns.value[1]["key"] + fmtValForUpdate(result.value[j][columns.value[1]["key"]]))
             } else {
                 rowVal.push(column + fmtValForUpdate(val))
             }
