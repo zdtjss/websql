@@ -332,8 +332,8 @@ const removeTreeNode = (node, data) => {
 
 <style scoped>
 .layout-container-demo {
-  width: calc(100vw * 0.99);
-  height: calc(100vh * 0.98);
+  /* width: calc(100vw * 0.98); */
+  height: calc(100vh * 0.97);
 }
 
 .layout-container-demo .el-header {
