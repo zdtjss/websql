@@ -173,7 +173,7 @@ const sqlEditor = shallowRef(SQLEditor2)
 const editableTabsValue = ref('')
 const editableTabs = ref([])
 
-const treeDivWidth = ref("350px")
+const treeDivWidth = ref("300px")
 const resizeTreeAreaFlag = ref(false)
 
 const formLabelWidth = '100px'
