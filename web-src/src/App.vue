@@ -1,6 +1,6 @@
 <template>
   <el-container class="layout-container-demo">
-    <el-aside width="350px">
+    <el-aside :width="treeDivWidth">
       <div>
         <el-icon color="#409EFC" @click="treeListDialogVisible = true; listDirTree()" style="cursor: pointer;"
           title="添加目录">
@@ -25,7 +25,7 @@
         </template>
       </el-tree>
     </el-aside>
-
+    <div style="height: 100%; border: 1px solid  gray; cursor: col-resize;" @mousedown="resizeTreeArea"></div>
     <el-container>
       <el-main>
         <el-tabs v-model="editableTabsValue" type="card" class="demo-tabs" closable @tab-remove="removeTab">
@@ -164,6 +164,7 @@
 import { ref, shallowRef, onMounted } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
+import dragSize from './js/utils/dragSize.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import dayjs from 'dayjs'
 
@@ -171,6 +172,9 @@ const sqlEditor = shallowRef(SQLEditor2)
 
 const editableTabsValue = ref('')
 const editableTabs = ref([])
+
+const treeDivWidth = ref("350px")
+const resizeTreeAreaFlag = ref(false)
 
 const formLabelWidth = '100px'
 const conCfgAddDialogVisible = ref(false)
@@ -233,6 +237,26 @@ function restoreTab() {
     localStorage.clear()
     dbSchemaProxy.cleanCache()
   }
+}
+
+function resizeTreeArea(event) {
+  const ogiWidth = new Number(treeDivWidth.value.substring(0, treeDivWidth.value.length - 2))
+  let deviation = 0
+  if (event.clientX > ogiWidth) {
+    deviation = event.clientX - ogiWidth
+  }
+  document.onmousemove = (e) => {
+      treeDivWidth.value = (e.clientX - deviation) + "px"
+  }
+  document.onmouseup = () => {
+    document.onmouseup = null
+    document.onmousemove = null
+  }
+}
+
+function mouseUp() {
+  resizeTreeAreaFlag.value = false
+  document.removeEventListener('mousemove', this.mouseMove)
 }
 
 function loadTree(node, resolve) {
