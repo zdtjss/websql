@@ -164,7 +164,6 @@
 import { ref, shallowRef, onMounted } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
-import dragSize from './js/utils/dragSize.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import dayjs from 'dayjs'
 
