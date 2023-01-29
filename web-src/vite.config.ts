@@ -12,7 +12,20 @@ export default defineConfig({
   build: {
     sourcemap: true,
     outDir: "../static",
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 1800,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('vue') || id.includes('pinia') || id.includes("element-plus")) {
+            return 'vue';
+          }
+          if (id.includes('node_modules')) {
+            return 'vendor';
+          }
+        }
+      }
+    }
   },
   server: {
     proxy: {
