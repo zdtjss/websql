@@ -41,7 +41,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		rspData.Data = resultData
 		utils.WriteJson(w, rspData)
 	} else {
-		if (strings.HasPrefix(sqlStr, "select ") || strings.HasPrefix(sqlStr, "SELECT ")) && (strings.Contains(sqlStr, " from ") || strings.Contains(sqlStr, " FROM ")) && (strings.LastIndex(sqlStr, " limit ") == -1 || strings.LastIndex(sqlStr, " LIMIT ") == -1) {
+		if checkPrefx(sqlStr, []string{"select ", "SELECT ", "select\n", "SELECT\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
 			sqlStr = sqlStr + " limit ?"
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
@@ -62,6 +62,24 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJson(w, rspData)
 	}
 
+}
+
+func checkPrefx(src string, prefix []string) bool {
+	for _, p := range prefix {
+		if strings.HasPrefix(src, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkContains(src string, suffix []string) bool {
+	for _, p := range suffix {
+		if strings.LastIndex(src, p) != -1 {
+			return true
+		}
+	}
+	return false
 }
 
 func GetResultRows(rows *sql.Rows) []map[string]interface{} {
