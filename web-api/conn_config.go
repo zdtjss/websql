@@ -163,8 +163,8 @@ func doInsert(cfg *ConnCfg) {
 }
 
 func doUpdate(cfg *ConnCfg) {
-	stmt, _ := db.Prepare("update t_config_dbconn set name = ?, db_type = ?, tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
-	stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+	stmt, _ := db.Prepare("update t_config_dbconn set name = ?, tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
+	stmt.Exec(&cfg.Name, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
 	config.RealseConn(convertToDBParam(cfg))
 }
 
@@ -235,8 +235,8 @@ type Tree struct {
 	Label    string         `json:"label"`
 	Type     string         `json:"type"`
 	Data     map[string]any `json:"data"`
-	Parent   string
-	Children []*Tree `json:"children"`
+	Parent   string         `json:"parent"`
+	Children []*Tree        `json:"children"`
 }
 
 const (

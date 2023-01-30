@@ -34,6 +34,11 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/saveTree", SaveTree).Methods("POST")
 	router.HandleFunc("/listDirTree", ListDirTree).Methods("GET")
 
+	router.HandleFunc("/roleList", RoleList).Methods("GET")
+	router.HandleFunc("/findUserByRole", FindUserByRole).Methods("GET")
+	router.HandleFunc("/findUser", FindUser).Methods("GET")
+	router.HandleFunc("/findConnByRole", FindConnByRole).Methods("GET")
+
 	router.HandleFunc("/ext/", proxy)
 
 	router.Use(panicMiddleware)

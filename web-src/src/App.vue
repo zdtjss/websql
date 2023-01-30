@@ -6,10 +6,6 @@
           title="添加目录">
           <FolderAdd />
         </el-icon>
-        <el-icon color="#409EFC" @click="conCfgAddDialogVisible = true; listDirTree()"
-          style="cursor: pointer;margin-left: 8px;" title="添加连接">
-          <Plus />
-        </el-icon>
         <el-icon color="#409EFC" @click="conCfgListDialogVisible = true; listConnCfg()"
           style="cursor: pointer;margin-left: 8px;" title="连接列表">
           <List />
@@ -35,7 +31,7 @@
         </el-tabs>
       </el-main>
     </el-container>
-    <el-dialog v-model="conCfgAddDialogVisible" @close="conCfgAddDialogVisible = false" width="600px">
+    <el-dialog v-model="conCfgAddDialogVisible" @close="conCfgAddDialogVisible = false" :draggable="true" width="600px">
       <el-form v-model="connCfg">
         <el-form-item label="连接名称" :label-width="formLabelWidth">
           <el-input v-model="connCfg.name" />
@@ -66,19 +62,51 @@
         </span>
       </template>
     </el-dialog>
-    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" :draggable="true" width="1000px"
-      style="height:650px;">
+    <el-dialog v-model="userAddDialogVisible" @close="userAddDialogVisible = false" :draggable="true" width="600px">
+      <el-form v-model="user">
+        <el-form-item label="姓名" :label-width="formLabelWidth">
+          <el-input v-model="user.name" />
+        </el-form-item>
+        <el-form-item label="登录名" :label-width="formLabelWidth">
+          <el-input v-model="user.loginName" />
+        </el-form-item>
+        <el-form-item label="密码" :label-width="formLabelWidth">
+          <el-input type="password" v-model="user.pwd" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button type="primary" @click="saveConnCfg">保存</el-button>
+          <el-button @click="userAddDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="roleAddDialogVisible" @close="roleAddDialogVisible = false" :draggable="true" width="600px">
+      <el-form v-model="role">
+        <el-form-item label="角色名" :label-width="formLabelWidth">
+          <el-input v-model="role.name" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button type="primary" @click="saveConnCfg">保存</el-button>
+          <el-button @click="roleAddDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" :draggable="true"
+      width="1000px" style="height:650px;">
       <el-tabs v-model="defaultTabAdmin" type="card" style="height:500px;">
         <el-tab-pane label="角色" name="role">
           <el-table :data="connCfgList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
-            <el-table-column prop="name" label="角色名" width="120" :show-overflow-tooltip="true">
+            <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="dbType" label="用户" width="120">
+            <el-table-column prop="dbType" label="用户">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.dbType }}</span>
                 <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
@@ -86,14 +114,21 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column prop="treeNode" label="连接" width="130">
+            <el-table-column prop="treeNode" label="连接">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.treeNode }}</span>
                 <el-tree-select v-show="scope.row.editable" v-model="scope.row.treeNode" :data="conCfgTreeData"
                   clearable value-key="label" placeholder="未指定" />
               </template>
             </el-table-column>
-            <el-table-column label="操作" style="text-align: center; " width="80">
+            <el-table-column style="text-align: center; " width="80">
+              <template #header>
+                <span>操作</span>
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
+                  @click="roleAddDialogVisible = true; listDirTree()">
+                  <Plus />
+                </el-icon>
+              </template>
               <template #default="scope">
                 <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
                   title="保存" style="margin-right:5px;cursor: pointer;">
@@ -112,27 +147,47 @@
           </el-table>
         </el-tab-pane>
         <el-tab-pane label="用户" name="user">
-          <el-table :data="connCfgList" :max-height="450" style="width: 100%;overflow-y: auto;"
+          <el-form v-model="userQuery">
+            <el-row>
+              <el-form-item label="姓名" :label-width="formLabelWidth">
+                <el-input v-model="userQuery.name" />
+              </el-form-item>
+              <el-form-item label="登录名" :label-width="formLabelWidth">
+                <el-input v-model="userQuery.loginName" />
+              </el-form-item>
+              <el-form-item>
+                <el-button @click="findUser" style="margin-left:12px;">查询</el-button>
+              </el-form-item>
+            </el-row>
+          </el-form>
+          <el-table :data="userList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
-            <el-table-column prop="name" label="姓名" width="150" :show-overflow-tooltip="true">
+            <el-table-column prop="name" label="姓名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.user" />
                 <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="loginName" label="登录名" width="150" :show-overflow-tooltip="true">
+            <el-table-column prop="loginName" label="登录名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.user" />
                 <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
+            <el-table-column prop="pwd" label="密码" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" style="text-align: center; " width="80">
+            <el-table-column style="text-align: center; " width="80">
+              <template #header>
+                <span>操作</span>
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
+                  @click="userAddDialogVisible = true; listDirTree()">
+                  <Plus />
+                </el-icon>
+              </template>
               <template #default="scope">
                 <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
                   title="保存" style="margin-right:5px;cursor: pointer;">
@@ -159,14 +214,14 @@
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="dbType" label="数据库类型" width="120">
+            <!-- <el-table-column prop="dbType" label="数据库类型" width="120">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.dbType }}</span>
                 <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
                   <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
                 </el-select>
               </template>
-            </el-table-column>
+            </el-table-column> -->
             <el-table-column prop="treeNode" label="所属层级" width="130">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.treeNode }}</span>
@@ -192,7 +247,14 @@
                 <span v-show="!scope.row.editable">{{ scope.row.url }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" style="text-align: center; " width="80">
+            <el-table-column style="text-align: center; " width="80">
+              <template #header>
+                <span>操作</span>
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
+                  @click="conCfgAddDialogVisible = true; listDirTree()">
+                  <Plus />
+                </el-icon>
+              </template>
               <template #default="scope">
                 <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
                   title="保存" style="margin-right:5px;cursor: pointer;">
@@ -266,6 +328,16 @@ const resizeTreeAreaFlag = ref(false)
 const formLabelWidth = '100px'
 const conCfgAddDialogVisible = ref(false)
 const conCfgListDialogVisible = ref(false)
+const roleAddDialogVisible = ref(false)
+const userAddDialogVisible = ref(false)
+const userList = ref([])
+const roleList = ref([])
+const userQuery = ref({
+  name: "",
+  loginName: ""
+})
+const role = ref({})
+const user = ref({})
 const connCfgList = ref([])
 
 const conCfgTreeData = ref([])
@@ -438,6 +510,17 @@ const removeTreeNode = (node, data) => {
   const index = children.findIndex((d) => d.id === data.id)
   children.splice(index, 1)
   conCfgTreeData.value = [...conCfgTreeData.value]
+}
+
+function findUser() {
+  if (!userQuery.value.name && !userQuery.value.loginName) {
+    ElMessage("请指定查询条件")
+    return
+  }
+  http.get("/findUser", { params: userQuery.value })
+    .then((resp) => {
+      userList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+    })
 }
 
 </script>

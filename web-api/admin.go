@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"bytes"
 	"go-web/utils"
 	"net/http"
 )
@@ -20,10 +21,23 @@ func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, userList)
 }
 
-func FindUserByName(w http.ResponseWriter, r *http.Request) {
+func FindUser(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
+	name := r.Form.Get("name")
+	loginName := r.Form.Get("loginName")
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select * from t_user where 1 = 1")
+	if name != "" {
+		sql.WriteString(" and like('%" + name + "', name)")
+	} else if loginName != "" {
+		param = append(param, loginName)
+		sql.WriteString(" and login_name = ?")
+	} else {
+		sql.WriteString(" and 1 = 2")
+	}
 	userList := []*User{}
-	err := db.Select(&userList, "select * from t_user where name like concat('%', ?, '%')", r.Form.Get("name"))
+	err := db.Select(&userList, sql.String(), param...)
 	utils.Panicln(err)
 	utils.WriteJson(w, userList)
 }

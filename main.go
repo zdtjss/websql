@@ -36,6 +36,7 @@ func main() {
 	webapi.MainRegister(router)
 
 	webapi.InitTable()
+	webapi.InitAdminTable()
 
 	// 检测是否启动成功
 	go sLsn()

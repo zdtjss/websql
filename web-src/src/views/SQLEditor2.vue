@@ -222,7 +222,10 @@ function exportCurrentToXlsx() {
         header: header,
         title: '',
         key: keys,
-        data: [...result.value],
+        data: [...result.value].map((row) => {
+            delete row["col-idx"]
+            return row
+        }),
         filename: currentSelectTable,
         autoWidth: false
     }
