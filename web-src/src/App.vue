@@ -280,6 +280,7 @@ function loadTree(node, resolve) {
     })
     .catch((error) => {
       console.log(error);
+      node.loading = false
     });
 }
 
