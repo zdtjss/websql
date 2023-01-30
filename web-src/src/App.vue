@@ -6,7 +6,7 @@
           title="添加目录">
           <FolderAdd />
         </el-icon>
-        <el-icon color="#409EFC" @click="conCfgListDialogVisible = true; listConnCfg()"
+        <el-icon color="#409EFC" @click="cfgDialogVisible = true; listConnCfg()"
           style="cursor: pointer;margin-left: 8px;" title="连接列表">
           <List />
         </el-icon>
@@ -31,74 +31,11 @@
         </el-tabs>
       </el-main>
     </el-container>
-    <el-dialog v-model="conCfgAddDialogVisible" @close="conCfgAddDialogVisible = false" :draggable="true" width="600px">
-      <el-form v-model="connCfg">
-        <el-form-item label="连接名称" :label-width="formLabelWidth">
-          <el-input v-model="connCfg.name" />
-        </el-form-item>
-        <el-form-item label="数据库类型" :label-width="formLabelWidth">
-          <el-select v-model="connCfg.dbType" placeholder="请选择">
-            <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="所属层级" :label-width="formLabelWidth">
-          <el-tree-select v-model="connCfg.treeNode" :data="conCfgTreeData" :render-after-expand="false" clearable
-            value-key="label" placeholder="请选择" />
-        </el-form-item>
-        <el-form-item label="用户名" :label-width="formLabelWidth">
-          <el-input v-model="connCfg.user" :label-width="formLabelWidth" />
-        </el-form-item>
-        <el-form-item label="密码" :label-width="formLabelWidth">
-          <el-input type="password" v-model="connCfg.pwd" />
-        </el-form-item>
-        <el-form-item label="连接信息" :label-width="formLabelWidth">
-          <el-input v-model="connCfg.url" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="saveConnCfg">保存</el-button>
-          <el-button @click="conCfgAddDialogVisible = false">关闭</el-button>
-        </span>
-      </template>
-    </el-dialog>
-    <el-dialog v-model="userAddDialogVisible" @close="userAddDialogVisible = false" :draggable="true" width="600px">
-      <el-form v-model="user">
-        <el-form-item label="姓名" :label-width="formLabelWidth">
-          <el-input v-model="user.name" />
-        </el-form-item>
-        <el-form-item label="登录名" :label-width="formLabelWidth">
-          <el-input v-model="user.loginName" />
-        </el-form-item>
-        <el-form-item label="密码" :label-width="formLabelWidth">
-          <el-input type="password" v-model="user.pwd" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="saveConnCfg">保存</el-button>
-          <el-button @click="userAddDialogVisible = false">关闭</el-button>
-        </span>
-      </template>
-    </el-dialog>
-    <el-dialog v-model="roleAddDialogVisible" @close="roleAddDialogVisible = false" :draggable="true" width="600px">
-      <el-form v-model="role">
-        <el-form-item label="角色名" :label-width="formLabelWidth">
-          <el-input v-model="role.name" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="saveConnCfg">保存</el-button>
-          <el-button @click="roleAddDialogVisible = false">关闭</el-button>
-        </span>
-      </template>
-    </el-dialog>
-    <el-dialog v-model="conCfgListDialogVisible" @close="conCfgListDialogVisible = false" :draggable="true"
-      width="1000px" style="height:650px;">
-      <el-tabs v-model="defaultTabAdmin" type="card" style="height:500px;">
+    <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
+      style="height:650px;">
+      <el-tabs v-model="defaultTabAdmin" type="card" style="height:500px;" @tab-click="loadCfgData">
         <el-tab-pane label="角色" name="role">
-          <el-table :data="connCfgList" :max-height="450" style="width: 100%;overflow-y: auto;"
+          <el-table :data="roleList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true">
               <template #default="scope">
@@ -124,8 +61,7 @@
             <el-table-column style="text-align: center; " width="80">
               <template #header>
                 <span>操作</span>
-                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
-                  @click="roleAddDialogVisible = true; listDirTree()">
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加" @click="addRole">
                   <Plus />
                 </el-icon>
               </template>
@@ -164,14 +100,14 @@
             @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="姓名" :show-overflow-tooltip="true">
               <template #default="scope">
-                <el-input v-show="scope.row.editable" v-model="scope.row.user" />
-                <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
+                <el-input v-show="scope.row.editable" v-model="scope.row.name" />
+                <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="loginName" label="登录名" :show-overflow-tooltip="true">
               <template #default="scope">
-                <el-input v-show="scope.row.editable" v-model="scope.row.user" />
-                <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
+                <el-input v-show="scope.row.editable" v-model="scope.row.loginName" />
+                <span v-show="!scope.row.editable">{{ scope.row.loginName }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="pwd" label="密码" :show-overflow-tooltip="true">
@@ -183,13 +119,12 @@
             <el-table-column style="text-align: center; " width="80">
               <template #header>
                 <span>操作</span>
-                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
-                  @click="userAddDialogVisible = true; listDirTree()">
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加" @click="addUser">
                   <Plus />
                 </el-icon>
               </template>
               <template #default="scope">
-                <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
+                <el-icon v-show="scope.row.editable" @click="saveUser(scope.row); scope.row.editable = false"
                   title="保存" style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
@@ -206,7 +141,7 @@
           </el-table>
         </el-tab-pane>
         <el-tab-pane label="连接" name="conn">
-          <el-table :data="connCfgList" :max-height="450" style="width: 100%;overflow-y: auto;"
+          <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="连接名称" width="120" :show-overflow-tooltip="true">
               <template #default="scope">
@@ -250,8 +185,7 @@
             <el-table-column style="text-align: center; " width="80">
               <template #header>
                 <span>操作</span>
-                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加"
-                  @click="conCfgAddDialogVisible = true; listDirTree()">
+                <el-icon style="cursor: pointer;position: relative;left: 8px;top: -5px;" title="添加" @click="addConn">
                   <Plus />
                 </el-icon>
               </template>
@@ -275,7 +209,7 @@
       </el-tabs>
       <template #footer>
         <span class="dialog-footer">
-          <el-button @click="conCfgListDialogVisible = false">关闭</el-button>
+          <el-button @click="cfgDialogVisible = false">关闭</el-button>
         </span>
       </template>
     </el-dialog>
@@ -326,10 +260,7 @@ const treeDivWidth = ref("300px")
 const resizeTreeAreaFlag = ref(false)
 
 const formLabelWidth = '100px'
-const conCfgAddDialogVisible = ref(false)
-const conCfgListDialogVisible = ref(false)
-const roleAddDialogVisible = ref(false)
-const userAddDialogVisible = ref(false)
+const cfgDialogVisible = ref(false)
 const userList = ref([])
 const roleList = ref([])
 const userQuery = ref({
@@ -338,13 +269,13 @@ const userQuery = ref({
 })
 const role = ref({})
 const user = ref({})
-const connCfgList = ref([])
+const connList = ref([])
 
 const conCfgTreeData = ref([])
 const treeListDialogVisible = ref(false)
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
-const connCfg = ref({ dbType: "mysql" })
+const conn = ref({ dbType: "mysql" })
 
 onMounted(() => {
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
@@ -456,11 +387,14 @@ function findConn(node) {
   return connId
 }
 
+function addConn() {
+  connList.value.push({ dbType: "mysql", editable: true })
+}
+
 function saveConnCfg(row) {
-  http.post("/saveConn", row.target ? connCfg.value : row)
+  http.post("/saveConn", row)
     .then((resp) => {
-      connCfg.value = {}
-      conCfgAddDialogVisible.value = false
+      row.editable = false
       ElMessage("保存成功")
     })
 }
@@ -468,7 +402,7 @@ function saveConnCfg(row) {
 function listConnCfg() {
   http.get("/listConn2")
     .then((resp) => {
-      connCfgList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+      connList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
       setTimeout(listDirTree(), 1000)
     })
 }
@@ -479,6 +413,49 @@ function delConnCfg(id) {
       listConnCfg()
     })
 }
+
+
+function addUser() {
+  userList.value.push({ editable: true })
+}
+
+function findUser() {
+  if (!userQuery.value.name && !userQuery.value.loginName) {
+    ElMessage("请指定查询条件")
+    return
+  }
+  http.get("/findUser", { params: userQuery.value })
+    .then((resp) => {
+      userList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+    })
+}
+
+function loadCfgData(roleList) {
+  http.get("/roleList")
+    .then((resp) => {
+      roleList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+    })
+}
+
+function saveUser(row) {
+  http.post("/saveConn", row)
+    .then((resp) => {
+      row.editable = false
+      ElMessage("保存成功")
+    })
+}
+
+function delUser(id) {
+  http.get("/delConn", { params: { id: id } })
+    .then((resp) => {
+      findUser()
+    })
+}
+
+function addRole() {
+  roleList.value.push({ editable: true })
+}
+
 
 function saveTree() {
   http.post("/saveTree", conCfgTreeData.value)
@@ -510,17 +487,6 @@ const removeTreeNode = (node, data) => {
   const index = children.findIndex((d) => d.id === data.id)
   children.splice(index, 1)
   conCfgTreeData.value = [...conCfgTreeData.value]
-}
-
-function findUser() {
-  if (!userQuery.value.name && !userQuery.value.loginName) {
-    ElMessage("请指定查询条件")
-    return
-  }
-  http.get("/findUser", { params: userQuery.value })
-    .then((resp) => {
-      userList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
-    })
 }
 
 </script>

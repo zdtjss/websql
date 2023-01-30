@@ -26,9 +26,12 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(r.Body, cfg)
 	if cfg.Id == "" {
-		doInsert(cfg)
+		stmt, _ := db.Prepare("insert into t_config_dbconn (name, db_type, tree_node, user, pwd, url) values (?, ?, ?, ?, ?, ?)")
+		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url)
 	} else {
-		doUpdate(cfg)
+		stmt, _ := db.Prepare("update t_config_dbconn set name = ?, db_type = ?,tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
+		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+		config.RealseConn(convertToDBParam(cfg))
 	}
 	utils.WriteJson(w, "")
 }
@@ -152,20 +155,6 @@ func listAllColumns(key, schema string) []*Tree {
 		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
 	return tree
-}
-
-func doInsert(cfg *ConnCfg) {
-
-	initConfigTable()
-
-	stmt, _ := db.Prepare("insert into t_config_dbconn (name, db_type, tree_node, user, pwd, url) values (?, ?, ?, ?, ?, ?)")
-	stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url)
-}
-
-func doUpdate(cfg *ConnCfg) {
-	stmt, _ := db.Prepare("update t_config_dbconn set name = ?, tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
-	stmt.Exec(&cfg.Name, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
-	config.RealseConn(convertToDBParam(cfg))
 }
 
 func getNextType(curType string) string {
