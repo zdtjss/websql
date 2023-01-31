@@ -9,15 +9,32 @@ import (
 )
 
 func SaveRole(w http.ResponseWriter, r *http.Request) {
-	user := &Role{}
-	utils.UnmarshalJson(r.Body, user)
-	if user.Id == 0 {
-		stmt, _ := db.Prepare("insert into t_role (name) values (?)")
-		stmt.Exec(&user.Name)
+	role := &RoleSave{}
+	utils.UnmarshalJson(r.Body, role)
+	tx, _ := db.Beginx()
+	defer tx.Rollback()
+	if role.Id == 0 {
+		stmt, _ := tx.Prepare("insert into t_role (name) values (?)")
+		stmt.Exec(&role.Name)
 	} else {
-		stmt, _ := db.Prepare("update t_role set name = ? where id = ?")
-		stmt.Exec(&user.Name, &user.Id)
+		stmt, _ := tx.Prepare("update t_role set name = ? where id = ?")
+		stmt.Exec(&role.Name, &role.Id)
+		tx.Exec("delete from t_power where role_id = ?", &role.Id)
+		tx.Exec("update t_user set role_id = '' where id = ?", &role.Id)
 	}
+	if len(role.PowerIdList) > 0 {
+		stmt, _ := tx.Prepare("insert into t_power (role_id, conn_id) values (?, ?)")
+		for _, connId := range role.PowerIdList {
+			stmt.Exec(&role.Id, connId)
+		}
+	}
+	if len(role.UserIdList) > 0 {
+		stmt, _ := tx.Prepare("update t_user set role_id = ? where id = ?")
+		for _, userId := range role.UserIdList {
+			stmt.Exec(&role.Id, userId)
+		}
+	}
+	tx.Commit()
 	utils.WriteJson(w, "")
 }
 
@@ -54,7 +71,7 @@ func RoleList(w http.ResponseWriter, r *http.Request) {
 	roleUserMap := findUserByRole(roleIdList)
 	rolePowerMap := findConnByRole(roleIdList)
 	for _, role := range roleList {
-		role.User = roleUserMap[role.Id]
+		role.UserList = roleUserMap[role.Id]
 		role.PowerList = rolePowerMap[role.Id]
 	}
 	utils.WriteJson(w, roleList)
@@ -72,11 +89,11 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	user := &User{}
 	utils.UnmarshalJson(r.Body, user)
 	if user.Id == 0 {
-		stmt, _ := db.Prepare("insert into t_user (role_id, name, login_name, pwd) values (?, ?, ?, ?, ?, ?)")
+		stmt, _ := db.Prepare("insert into t_user (role_id, name, login_name, pwd) values (?, ?, ?, ?)")
 		stmt.Exec(&user.RoleId, &user.Name, &user.LoginName, &user.Pwd)
 	} else {
 		stmt, _ := db.Prepare("update t_user set role_id = ?, name = ?, login_name = ?, pwd = ? where id = ?")
-		stmt.Exec(&user.Name, &user.RoleId, &user.Name, &user.LoginName, &user.Pwd, &user.Id)
+		stmt.Exec(&user.RoleId, &user.Name, &user.LoginName, &user.Pwd, &user.Id)
 	}
 	utils.WriteJson(w, "")
 }
@@ -90,8 +107,9 @@ func DelUser(w http.ResponseWriter, r *http.Request) {
 
 func FindUser(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	name := r.Form.Get("name")
-	loginName := r.Form.Get("loginName")
+	name := r.FormValue("name")
+	loginName := r.FormValue("loginName")
+	userIdList, _ := r.Form["userIdList[]"]
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
@@ -100,6 +118,13 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	} else if loginName != "" {
 		param = append(param, loginName)
 		sql.WriteString(" and login_name = ?")
+	} else if len(userIdList) > 0 {
+		for _, userId := range userIdList {
+			param = append(param, userId)
+		}
+		sql.WriteString(" and id in ( ")
+		sql.WriteString(strings.Repeat("?,", len(userIdList))[0 : len(userIdList)*2-1])
+		sql.WriteString(") ")
 	} else {
 		sql.WriteString(" and 1 = 2")
 	}
@@ -117,7 +142,7 @@ func findConnByRole(roleIdList []any) map[int][]*PowerDto {
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select p.*,c.name conn_name from t_config_dbconn c left join t_power p on c.id = p.conn_id where ")
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, c.name conn_name from t_config_dbconn c left join t_power p on c.id = p.conn_id where ")
 	sqlBuf.WriteString("role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") ")
@@ -129,9 +154,9 @@ func findConnByRole(roleIdList []any) map[int][]*PowerDto {
 		v, ok := rolePowerMap[power.RoleId]
 		if !ok {
 			v = []*PowerDto{}
-			rolePowerMap[power.Id] = v
 		}
-		*&v = append(v, power)
+		v = append(v, power)
+		rolePowerMap[power.RoleId] = v
 	}
 	return rolePowerMap
 }
@@ -144,7 +169,7 @@ func findUserByRole(roleIdList []any) map[int][]*User {
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select id,name,login_name t_user where ")
+	sqlBuf.WriteString("select id,role_id,name,login_name from t_user where ")
 	sqlBuf.WriteString("role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") ")
@@ -156,9 +181,9 @@ func findUserByRole(roleIdList []any) map[int][]*User {
 		v, ok := roleUserMap[user.RoleId]
 		if !ok {
 			v = []*User{}
-			roleUserMap[user.Id] = v
 		}
-		*&v = append(v, user)
+		v = append(v, user)
+		roleUserMap[user.RoleId] = v
 	}
 	return roleUserMap
 }
@@ -207,7 +232,14 @@ type Role struct {
 	Id        int         `json:"id"`
 	Name      string      `json:"name"`
 	PowerList []*PowerDto `json:"powerList"`
-	User      []*User     `json:"user"`
+	UserList  []*User     `json:"userList"`
+}
+
+type RoleSave struct {
+	Id          int       `json:"id"`
+	Name        string    `json:"name"`
+	PowerIdList []*string `json:"powerIdList"`
+	UserIdList  []*int    `json:"userIdList"`
 }
 
 type Power struct {
@@ -217,8 +249,8 @@ type Power struct {
 }
 
 type PowerDto struct {
-	Id       int `json:"id"`
-	RoleId   int `json:"roleId" db:"role_id"`
-	ConnId   int `json:"connId" db:"conn_id"`
-	ConnName int `json:"connName" db:"conn_name"`
+	Id       int    `json:"id"`
+	RoleId   int    `json:"roleId" db:"role_id"`
+	ConnId   int    `json:"connId" db:"conn_id"`
+	ConnName string `json:"connName" db:"conn_name"`
 }

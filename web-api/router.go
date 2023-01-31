@@ -34,6 +34,8 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/saveTree", SaveTree).Methods("POST")
 	router.HandleFunc("/listDirTree", ListDirTree).Methods("GET")
 
+	router.HandleFunc("/saveRole", SaveRole).Methods("POST")
+	router.HandleFunc("/delRole", DelRole).Methods("GET")
 	router.HandleFunc("/roleList", RoleList).Methods("GET")
 	router.HandleFunc("/findUserByRole", FindUserByRole).Methods("GET")
 

@@ -6,17 +6,15 @@
           title="添加目录">
           <FolderAdd />
         </el-icon>
-        <el-icon color="#409EFC" @click="cfgDialogVisible = true; listConnCfg()"
+        <el-icon color="#409EFC" @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
           style="cursor: pointer;margin-left: 8px;" title="连接列表">
           <List />
         </el-icon>
       </div>
-      <el-tree :highlight-current="true" :load="loadTree" :lazy="true">
+      <el-tree :highlight-current="true" :load="loadTree" :lazy="true" :props="{ isLeaf: 'isLeaf' }">
         <template #default="{ node, data }">
           <span>
-            <span>
-              <a :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
-            </span>
+            <a :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
           </span>
         </template>
       </el-tree>
@@ -36,26 +34,32 @@
       <el-tabs v-model="defaultTabAdmin" type="card" style="height:500px;" @tab-click="loadCfgData">
         <el-tab-pane label="角色" name="role">
           <el-table :data="roleList" :max-height="450" style="width: 100%;overflow-y: auto;"
-            @cell-dblclick="(row) => row.editable = true">
+            @cell-dblclick="roleDblClick">
             <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="dbType" label="用户">
+            <el-table-column label="用户">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.dbType }}</span>
-                <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
-                  <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
+                <span v-show="!scope.row.editable">{{ scope.row.userListStr }}</span>
+                <el-select v-show="scope.row.editable" v-model="scope.row.userIdList" multiple remote filterable
+                  :remote-method="findUser2" placeholder="请选择">
+                  <el-option v-for="item in userListSelect" :key="item.id" :value="item.id" :label="item.name">
+                    <span style="float: left">{{ item.name }}</span>
+                    <span style="float: right;color: var(--el-text-color-secondary);font-size: 13px;">{{
+                      item.loginName
+                    }}</span>
+                  </el-option>
                 </el-select>
               </template>
             </el-table-column>
             <el-table-column prop="treeNode" label="连接">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.treeNode }}</span>
-                <el-tree-select v-show="scope.row.editable" v-model="scope.row.treeNode" :data="conCfgTreeData"
-                  clearable value-key="label" placeholder="未指定" />
+                <span v-show="!scope.row.editable">{{ scope.row.powerListStr }}</span>
+                <el-tree-select v-show="scope.row.editable" v-model="scope.row.powerIdList" lazy multiple
+                  :load="loadTree2" :props="{ label: 'label', value: 'id', isLeaf: 'isLeaf' }" placeholder="请选择" />
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -66,8 +70,8 @@
                 </el-icon>
               </template>
               <template #default="scope">
-                <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
-                  title="保存" style="margin-right:5px;cursor: pointer;">
+                <el-icon v-show="scope.row.editable" @click="saveRole(scope.row); scope.row.editable = false" title="保存"
+                  style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
                 <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
@@ -124,8 +128,8 @@
                 </el-icon>
               </template>
               <template #default="scope">
-                <el-icon v-show="scope.row.editable" @click="saveUser(scope.row); scope.row.editable = false"
-                  title="保存" style="margin-right:5px;cursor: pointer;">
+                <el-icon v-show="scope.row.editable" @click="saveUser(scope.row); scope.row.editable = false" title="保存"
+                  style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
                 <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
@@ -262,6 +266,8 @@ const resizeTreeAreaFlag = ref(false)
 const formLabelWidth = '100px'
 const cfgDialogVisible = ref(false)
 const userList = ref([])
+const userListSelect = ref([])
+const connListSelect = ref([])
 const roleList = ref([])
 const userQuery = ref({
   name: "",
@@ -366,7 +372,33 @@ function loadTree(node, resolve) {
             dbSchemaProxy.addTable(node.data.label + "_col", resp2.data.data)
           }) */
       }
-      resolve(resp.data.data)
+      resolve(resp.data.data.map(e => {
+        if (e.type === "column") {
+          return Object.assign({ isLeaf: true }, e)
+        }
+        return e
+      }))
+      node.loaded = false
+    })
+    .catch((error) => {
+      console.log(error);
+      node.loading = false
+    });
+}
+
+function loadTree2(node, resolve) {
+  if (node.data.type === 'conn') {
+    resolve([])
+    return
+  }
+  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
+    .then((resp) => {
+      resolve(resp.data.data.map(e => {
+        if (e.type === "conn") {
+          return Object.assign({ isLeaf: true }, e)
+        }
+        return e
+      }))
       node.loaded = false
     })
     .catch((error) => {
@@ -414,7 +446,6 @@ function delConnCfg(id) {
     })
 }
 
-
 function addUser() {
   userList.value.push({ editable: true })
 }
@@ -430,15 +461,44 @@ function findUser() {
     })
 }
 
-function loadCfgData(roleList) {
-  http.get("/roleList")
+function findUser2(query) {
+  if (query === "") {
+    return
+  }
+  http.get("/findUser", { params: { name: query, loginName: query } })
     .then((resp) => {
-      roleList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+      userListSelect.value = resp.data.data
     })
 }
 
+function loadCfgData(pane) {
+  if (pane.props.name === "role") {
+    http.get("/roleList")
+      .then((resp) => {
+        roleList.value = resp.data.data.map(e => {
+          const row = Object.assign({ editable: false }, e)
+          if (row.userList) {
+            row.userListStr = row.userList.map(r => r.name).join("、")
+          }
+          if (row.powerList) {
+            row.powerListStr = row.userList.map(r => r.connName).join("、")
+          }
+          return row
+        })
+      })
+  } else if (pane.props.name === "user") {
+
+  } else if (pane.props.name === "conn") {
+    http.get("/listConn2")
+      .then((resp) => {
+        connList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
+        setTimeout(listDirTree(), 1000)
+      })
+  }
+}
+
 function saveUser(row) {
-  http.post("/saveConn", row)
+  http.post("/saveUser", row)
     .then((resp) => {
       row.editable = false
       ElMessage("保存成功")
@@ -446,7 +506,7 @@ function saveUser(row) {
 }
 
 function delUser(id) {
-  http.get("/delConn", { params: { id: id } })
+  http.get("/delUser", { params: { id: id } })
     .then((resp) => {
       findUser()
     })
@@ -456,6 +516,34 @@ function addRole() {
   roleList.value.push({ editable: true })
 }
 
+function roleDblClick(row) {
+  row.editable = true
+  if (row.userList) {
+    row.userIdList = row.userList.map(r => r.id)
+    http.get("/findUser", { params: { userIdList: row.userIdList } })
+      .then((resp) => {
+        userListSelect.value = resp.data.data
+      })
+  }
+  if (row.powerList) {
+    row.powerIdList = row.userList.map(r => r.connId)
+  }
+}
+
+function saveRole(row) {
+  http.post("/saveRole", row)
+    .then((resp) => {
+      row.editable = false
+      ElMessage("保存成功")
+    })
+}
+
+function delRole(id) {
+  http.get("/delRole", { params: { id: id } })
+    .then((resp) => {
+      // findUser()
+    })
+}
 
 function saveTree() {
   http.post("/saveTree", conCfgTreeData.value)
