@@ -22,9 +22,9 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 		tx.Exec("delete from t_power where role_id = ?", &role.Id)
 		tx.Exec("update t_user set role_id = '' where id = ?", &role.Id)
 	}
-	if len(role.PowerIdList) > 0 {
+	if len(role.ConnIdList) > 0 {
 		stmt, _ := tx.Prepare("insert into t_power (role_id, conn_id) values (?, ?)")
-		for _, connId := range role.PowerIdList {
+		for _, connId := range role.ConnIdList {
 			stmt.Exec(&role.Id, connId)
 		}
 	}
@@ -107,6 +107,7 @@ func DelUser(w http.ResponseWriter, r *http.Request) {
 
 func FindUser(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
+	key := r.FormValue("key")
 	name := r.FormValue("name")
 	loginName := r.FormValue("loginName")
 	userIdList, _ := r.Form["userIdList[]"]
@@ -114,10 +115,11 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
 	if name != "" {
-		sql.WriteString(" and like('%" + name + "', name)")
+		sql.WriteString(" and like('%" + name + "%', name)")
 	} else if loginName != "" {
-		param = append(param, loginName)
-		sql.WriteString(" and login_name = ?")
+		sql.WriteString(" and like('%" + loginName + "%', login_name)")
+	} else if key != "" {
+		sql.WriteString(" and (like('%" + key + "%', login_name) or like('%" + key + "%', name))")
 	} else if len(userIdList) > 0 {
 		for _, userId := range userIdList {
 			param = append(param, userId)
@@ -236,10 +238,10 @@ type Role struct {
 }
 
 type RoleSave struct {
-	Id          int       `json:"id"`
-	Name        string    `json:"name"`
-	PowerIdList []*string `json:"powerIdList"`
-	UserIdList  []*int    `json:"userIdList"`
+	Id         int    `json:"id"`
+	Name       string `json:"name"`
+	ConnIdList []*int `json:"connIdList"`
+	UserIdList []*int `json:"userIdList"`
 }
 
 type Power struct {

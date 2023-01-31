@@ -27,6 +27,7 @@ func MainRegister(router *mux.Router) {
 
 	router.HandleFunc("/saveConn", SaveConn).Methods("POST")
 	router.HandleFunc("/delConn", DelConn).Methods("GET")
+	router.HandleFunc("/listConnBase", ListConnBase).Methods("GET")
 	router.HandleFunc("/listConn2", ListConn2).Methods("GET")
 	router.HandleFunc("/showTree", ShowTree).Methods("GET")
 	router.HandleFunc("/execSQL", ExecSQL).Methods("GET")

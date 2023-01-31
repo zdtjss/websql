@@ -109,6 +109,13 @@ func ListConn2(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, cfgList)
 }
 
+func ListConnBase(w http.ResponseWriter, r *http.Request) {
+	cfgList := []*ConnCfgBase{}
+	err := db.Select(&cfgList, "select id,name,tree_node from t_config_dbconn")
+	utils.Panicln(err)
+	utils.WriteJson(w, cfgList)
+}
+
 func listSchema(key string) []*Tree {
 	schemaName := ""
 	row, err := getConn(key).Query("select schema_name from information_schema.schemata")
@@ -217,6 +224,12 @@ type ConnCfg struct {
 	User     string `json:"user"`
 	Pwd      string `json:"pwd"`
 	Url      string `json:"url"`
+}
+
+type ConnCfgBase struct {
+	Id       int    `json:"id"`
+	Name     string `json:"name"`
+	TreeNode string `json:"treeNode" db:"tree_node"`
 }
 
 type Tree struct {

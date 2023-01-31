@@ -2,7 +2,7 @@
   <el-container class="layout-container-demo">
     <el-aside :width="treeDivWidth">
       <div>
-        <el-icon color="#409EFC" @click="treeListDialogVisible = true; listDirTree()" style="cursor: pointer;"
+        <el-icon color="#409EFC" @click="dirDialogVisible = true; listDirTree()" style="cursor: pointer;"
           title="添加目录">
           <FolderAdd />
         </el-icon>
@@ -41,25 +41,32 @@
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="用户">
+            <el-table-column label="用户" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.userListStr }}</span>
-                <el-select v-show="scope.row.editable" v-model="scope.row.userIdList" multiple remote filterable
-                  :remote-method="findUser2" placeholder="请选择">
+                <el-select v-show="scope.row.editable" v-model="scope.row.userIdList" multiple remote filterable collapse-tags
+                  collapse-tags-tooltip :remote-method="findUser2" placeholder="请选择">
                   <el-option v-for="item in userListSelect" :key="item.id" :value="item.id" :label="item.name">
                     <span style="float: left">{{ item.name }}</span>
                     <span style="float: right;color: var(--el-text-color-secondary);font-size: 13px;">{{
                       item.loginName
-                    }}</span>
+                      }}</span>
                   </el-option>
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column prop="treeNode" label="连接">
+            <el-table-column prop="treeNode" label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.powerListStr }}</span>
-                <el-tree-select v-show="scope.row.editable" v-model="scope.row.powerIdList" lazy multiple
-                  :load="loadTree2" :props="{ label: 'label', value: 'id', isLeaf: 'isLeaf' }" placeholder="请选择" />
+                <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
+                <el-select v-show="scope.row.editable" v-model="scope.row.connIdList" multiple filterable collapse-tags
+                  collapse-tags-tooltip placeholder="请选择">
+                  <el-option v-for="item in connListSelect" :key="item.id" :value="item.id" :label="item.name">
+                    <span style="float: left">{{ item.name }}</span>
+                    <span style="float: right;color: var(--el-text-color-secondary);font-size: 13px;">{{
+                      item.treeNode
+                      }}</span>
+                  </el-option>
+                </el-select>
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -217,7 +224,7 @@
         </span>
       </template>
     </el-dialog>
-    <el-dialog v-model="treeListDialogVisible" @close="treeListDialogVisible = false" width="350px">
+    <el-dialog v-model="dirDialogVisible" @close="dirDialogVisible = false" width="350px">
       <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
         <template #default="{ node, data }">
           <span>
@@ -239,7 +246,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button type="primary" @click="saveTree">保存</el-button>
-          <el-button @click="treeListDialogVisible = false">关闭</el-button>
+          <el-button @click="dirDialogVisible = false">关闭</el-button>
         </span>
       </template>
     </el-dialog>
@@ -278,7 +285,7 @@ const user = ref({})
 const connList = ref([])
 
 const conCfgTreeData = ref([])
-const treeListDialogVisible = ref(false)
+const dirDialogVisible = ref(false)
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
 const conn = ref({ dbType: "mysql" })
@@ -386,27 +393,6 @@ function loadTree(node, resolve) {
     });
 }
 
-function loadTree2(node, resolve) {
-  if (node.data.type === 'conn') {
-    resolve([])
-    return
-  }
-  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
-    .then((resp) => {
-      resolve(resp.data.data.map(e => {
-        if (e.type === "conn") {
-          return Object.assign({ isLeaf: true }, e)
-        }
-        return e
-      }))
-      node.loaded = false
-    })
-    .catch((error) => {
-      console.log(error);
-      node.loading = false
-    });
-}
-
 function findConn(node) {
   let connId = ""
   if (node.level === 0) {
@@ -465,9 +451,19 @@ function findUser2(query) {
   if (query === "") {
     return
   }
-  http.get("/findUser", { params: { name: query, loginName: query } })
+  http.get("/findUser", { params: { key: query} })
     .then((resp) => {
       userListSelect.value = resp.data.data
+    })
+}
+
+function listConnBase(query) {
+  if (query === "") {
+    return
+  }
+  http.get("/listConnBase", { params: { name: query } })
+    .then((resp) => {
+      connListSelect.value = resp.data.data
     })
 }
 
@@ -481,7 +477,7 @@ function loadCfgData(pane) {
             row.userListStr = row.userList.map(r => r.name).join("、")
           }
           if (row.powerList) {
-            row.powerListStr = row.userList.map(r => r.connName).join("、")
+            row.connNameListStr = row.powerList.map(r => r.connName).join("、")
           }
           return row
         })
@@ -526,14 +522,20 @@ function roleDblClick(row) {
       })
   }
   if (row.powerList) {
-    row.powerIdList = row.userList.map(r => r.connId)
+    row.connIdList = row.powerList.map(r => r.connId)
+  }
+  if (connListSelect.value.length == 0) {
+    http.get("/listConnBase")
+      .then((resp) => {
+        connListSelect.value = resp.data.data
+      })
   }
 }
 
 function saveRole(row) {
   http.post("/saveRole", row)
     .then((resp) => {
-      row.editable = false
+      loadCfgData({ props: { name: 'role' } })
       ElMessage("保存成功")
     })
 }
@@ -548,7 +550,7 @@ function delRole(id) {
 function saveTree() {
   http.post("/saveTree", conCfgTreeData.value)
     .then((resp) => {
-      treeListDialogVisible.value = false
+      dirDialogVisible.value = false
       ElMessage("保存成功")
     })
 }
