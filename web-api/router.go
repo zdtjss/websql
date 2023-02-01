@@ -13,11 +13,13 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/sessions"
 	"golang.org/x/exp/maps"
 )
 
 // 不需要以/结尾
 var destAddr string = "http://localhost:8083"
+var store = sessions.NewCookieStore([]byte(os.Getenv("SESSION_KEY")))
 
 func MainRegister(router *mux.Router) {
 

@@ -140,6 +140,18 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, userList)
 }
 
+func findUserPower(userId uint64) []uint64 {
+	resIds := []uint64{}
+	rows, err := db.Query("select p.conn_id from t_power p left join t_role r on p.role_id = r.id left join t_user u on u.role_id where u.id = ?", userId)
+	utils.Println(err)
+	var resId uint64
+	for rows.Next() {
+		rows.Scan(&resId)
+		resIds = append(resIds, resId)
+	}
+	return resIds
+}
+
 func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
 	roleCount := len(roleIdList)
 	if roleCount == 0 {
