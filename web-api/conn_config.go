@@ -5,7 +5,6 @@ import (
 	"go-web/config"
 	"go-web/utils"
 	"net/http"
-	"strconv"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -25,12 +24,12 @@ func init() {
 func SaveConn(w http.ResponseWriter, r *http.Request) {
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(r.Body, cfg)
-	if cfg.Id == "" {
-		stmt, _ := db.Prepare("insert into t_config_dbconn (name, db_type, tree_node, user, pwd, url) values (?, ?, ?, ?, ?, ?)")
-		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url)
+	if cfg.Id == 0 {
+		stmt, _ := db.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
+		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url)
 	} else {
-		stmt, _ := db.Prepare("update t_config_dbconn set name = ?, db_type = ?,tree_node = ?, user = ?, pwd = ?, url = ? where id = ?")
-		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.TreeNode, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+		stmt, _ := db.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
+		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
 		config.RealseConn(convertToDBParam(cfg))
 	}
 	utils.WriteJson(w, "")
@@ -38,14 +37,14 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 
 func DelConn(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	id := r.Form.Get("id")
-	db.Exec("delete from t_config_dbconn where id = ?", id)
+	id := utils.AtoUint64(r.FormValue("id"))
+	db.Exec("delete from t_conn where id = ?", id)
 	utils.WriteJson(w, "")
 }
 
 func ShowTree(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	connId := r.Form.Get("connId")
+	connId := utils.AtoUint64(r.FormValue("connId"))
 	key := r.Form.Get("key")
 	curType := r.Form.Get("type")
 	level := r.Form.Get("level")
@@ -79,18 +78,22 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, data)
 }
 
-func listConn(treeNode string) []*Tree {
-	if treeNode == "" {
+func ShowTree2(w http.ResponseWriter, r *http.Request) {
+
+}
+
+func listConn(parentId string) []*Tree {
+	if parentId == "" {
 		return nil
 	}
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select * from t_config_dbconn")
-	if strings.EqualFold(treeNode, "noneParent") {
-		sql.WriteString(" where tree_node = '' or tree_node is null")
-	} else if treeNode != "" {
-		param = append(param, treeNode)
-		sql.WriteString(" where tree_node = ?")
+	sql.WriteString("select * from t_conn")
+	if strings.EqualFold(parentId, "noneParent") {
+		sql.WriteString(" where parent_id = 0 or parent_id is null")
+	} else if parentId != "" {
+		param = append(param, parentId)
+		sql.WriteString(" where parent_id = ?")
 	}
 	cfgList := []ConnCfg{}
 	err := db.Select(&cfgList, sql.String(), param...)
@@ -104,19 +107,35 @@ func listConn(treeNode string) []*Tree {
 
 func ListConn2(w http.ResponseWriter, r *http.Request) {
 	cfgList := []ConnCfg{}
-	err := db.Select(&cfgList, "select * from t_config_dbconn")
+	err := db.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
 	utils.Panicln(err)
 	utils.WriteJson(w, cfgList)
 }
 
 func ListConnBase(w http.ResponseWriter, r *http.Request) {
 	cfgList := []*ConnCfgBase{}
-	err := db.Select(&cfgList, "select id,name,tree_node from t_config_dbconn")
+	err := db.Select(&cfgList, "select id,name,parent_id from t_conn")
 	utils.Panicln(err)
 	utils.WriteJson(w, cfgList)
 }
 
-func listSchema(key string) []*Tree {
+func listConnBase() map[uint64][]*ConnCfgBase {
+	cfgList := []*ConnCfgBase{}
+	err := db.Select(&cfgList, "select id,name,parent_id from t_conn")
+	utils.Panicln(err)
+	rolePowerMap := make(map[uint64][]*ConnCfgBase, len(cfgList))
+	for _, conn := range cfgList {
+		v, ok := rolePowerMap[conn.ParentId]
+		if !ok {
+			v = []*ConnCfgBase{}
+		}
+		v = append(v, conn)
+		rolePowerMap[conn.ParentId] = v
+	}
+	return rolePowerMap
+}
+
+func listSchema(key uint64) []*Tree {
 	schemaName := ""
 	row, err := getConn(key).Query("select schema_name from information_schema.schemata")
 	utils.Panicln(err)
@@ -128,7 +147,7 @@ func listSchema(key string) []*Tree {
 	return tree
 }
 
-func listTable(key, schema string) []*Tree {
+func listTable(key uint64, schema string) []*Tree {
 	tableName, tableComment := "", ""
 	row, err := getConn(key).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
 	utils.Println(err)
@@ -140,7 +159,7 @@ func listTable(key, schema string) []*Tree {
 	return tree
 }
 
-func listColumns(key, table string) []*Tree {
+func listColumns(key uint64, table string) []*Tree {
 	columnName, columnComment := "", ""
 	row, err := getConn(key).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
 	utils.Println(err)
@@ -152,7 +171,7 @@ func listColumns(key, table string) []*Tree {
 	return tree
 }
 
-func listAllColumns(key, schema string) []*Tree {
+func listAllColumns(key uint64, schema string) []*Tree {
 	columnName, columnComment := "", ""
 	row, err := getConn(key).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
 	utils.Println(err)
@@ -181,10 +200,9 @@ func getNextType(curType string) string {
 	return t
 }
 
-func getConn(id string) *sqlx.DB {
+func getConn(id uint64) *sqlx.DB {
 	cfgList := []ConnCfg{}
-	iid, _ := strconv.Atoi(id)
-	err := db.Select(&cfgList, "select * from t_config_dbconn where id = ?", iid)
+	err := db.Select(&cfgList, "select * from t_conn where id = ?", id)
 	utils.Panicln(err)
 	return config.GetConn(convertToDBParam(&cfgList[0]))
 }
@@ -203,10 +221,10 @@ func initConfigTable() {
 
 	//创建表
 	sql_table := `
-		CREATE TABLE IF NOT EXISTS t_config_dbconn (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+		CREATE TABLE IF NOT EXISTS t_conn (
+			id BIGINT PRIMARY KEY,
 			db_type VARCHAR(64) NULL,
-			tree_node text(16),
+			parent_id BIGINT,
 			name VARCHAR(64) NULL,
 			user VARCHAR(64) NULL,
 			pwd VARCHAR(128) NULL,
@@ -217,27 +235,28 @@ func initConfigTable() {
 }
 
 type ConnCfg struct {
-	Id       string `json:"id"`
-	DbType   string `json:"dbType" db:"db_type"`
-	TreeNode string `json:"treeNode" db:"tree_node"`
-	Name     string `json:"name"`
-	User     string `json:"user"`
-	Pwd      string `json:"pwd"`
-	Url      string `json:"url"`
+	Id         uint64  `json:"id"`
+	DbType     string  `json:"dbType" db:"db_type"`
+	ParentId   uint64  `json:"parentId" db:"parent_id"`
+	ParentName *string `json:"parentName" db:"parent_name"`
+	Name       string  `json:"name"`
+	User       string  `json:"user"`
+	Pwd        string  `json:"pwd"`
+	Url        string  `json:"url"`
 }
 
 type ConnCfgBase struct {
-	Id       int    `json:"id"`
+	Id       uint64 `json:"id"`
 	Name     string `json:"name"`
-	TreeNode string `json:"treeNode" db:"tree_node"`
+	ParentId uint64 `json:"parentId" db:"parent_id"`
 }
 
 type Tree struct {
-	Id       string         `json:"id"`
+	Id       uint64         `json:"id"`
 	Label    string         `json:"label"`
 	Type     string         `json:"type"`
 	Data     map[string]any `json:"data"`
-	Parent   string         `json:"parent"`
+	Parent   uint64         `json:"parent"`
 	Children []*Tree        `json:"children"`
 }
 

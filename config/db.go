@@ -7,7 +7,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-var DBMap map[string]*sqlx.DB = make(map[string]*sqlx.DB)
+var DBMap map[uint64]*sqlx.DB = make(map[uint64]*sqlx.DB)
 
 func GetConn(param *DBParam) *sqlx.DB {
 	val, ok := DBMap[createKey(param)]
@@ -37,12 +37,12 @@ func RealseConn(param *DBParam) {
 	}
 }
 
-func createKey(param *DBParam) string {
+func createKey(param *DBParam) uint64 {
 	return param.Id
 }
 
 type DBParam struct {
-	Id     string `json:"id"`
+	Id     uint64 `json:"id"`
 	Name   string `json:"name"`
 	User   string `json:"user"`
 	Pwd    string `json:"pwd"`

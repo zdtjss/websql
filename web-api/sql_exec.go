@@ -11,7 +11,7 @@ import (
 
 func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	connId := r.Form.Get("connId")
+	connId := utils.AtoUint64(r.Form.Get("connId"))
 	// schema := r.Form.Get("schema")
 	sqlStr := r.Form.Get("sql")
 	maxLine := r.Form.Get("maxLine")

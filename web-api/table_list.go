@@ -7,11 +7,11 @@ import (
 
 func ListTable(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	tables := queryTableInfo(r.Form.Get("connId"), r.Form.Get("schema"))
+	tables := queryTableInfo(utils.AtoUint64(r.FormValue("connId")), r.Form.Get("schema"))
 	utils.WriteJson(w, tables)
 }
 
-func queryTableInfo(key, schema string) []*Table {
+func queryTableInfo(key uint64, schema string) []*Table {
 	tables := make([]*Table, 0)
 	stmt, err := getConn(key).Prepare("SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?")
 	utils.Println(err)

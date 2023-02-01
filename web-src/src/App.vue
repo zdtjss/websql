@@ -55,10 +55,10 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column prop="treeNode" label="连接" :show-overflow-tooltip="true">
+            <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                <el-select v-show="scope.row.editable" v-model="scope.row.connIdList" multiple filterable collapse-tags
+                <!-- <el-select v-show="scope.row.editable" v-model="scope.row.connIdList" multiple filterable collapse-tags
                   collapse-tags-tooltip placeholder="请选择">
                   <el-option v-for="item in connListSelect" :key="item.id" :value="item.id" :label="item.name">
                     <span style="float: left">{{ item.name }}</span>
@@ -66,7 +66,9 @@
                       item.treeNode
                       }}</span>
                   </el-option>
-                </el-select>
+                </el-select> -->
+                <el-tree-select v-show="scope.row.editable" v-model="scope.row.connIdList" :data="connListSelect" node-key="id" multiple
+                  collapse-tags collapse-tags-tooltip :render-after-expand="false" show-checkbox />
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -108,7 +110,7 @@
             </el-row>
           </el-form>
           <el-table :data="userList" :max-height="450" style="width: 100%;overflow-y: auto;"
-            @cell-dblclick="(row) => row.editable = true">
+          empty-text="请正确输入条件后查询" @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="姓名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
@@ -168,11 +170,11 @@
                 </el-select>
               </template>
             </el-table-column> -->
-            <el-table-column prop="treeNode" label="所属层级" width="130">
+            <el-table-column prop="parentId" label="所属层级" width="130">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.treeNode }}</span>
-                <el-tree-select v-show="scope.row.editable" v-model="scope.row.treeNode" :data="conCfgTreeData"
-                  clearable value-key="label" placeholder="未指定" />
+                <span v-show="!scope.row.editable">{{ scope.row.parentName }}</span>
+                <el-tree-select v-show="scope.row.editable" v-model="scope.row.parentId" :data="conCfgTreeData"
+                  clearable value-key="id" placeholder="未指定" />
               </template>
             </el-table-column>
             <el-table-column prop="user" label="用户名" width="150" :show-overflow-tooltip="true">
@@ -394,7 +396,7 @@ function loadTree(node, resolve) {
 }
 
 function findConn(node) {
-  let connId = ""
+  let connId = 0
   if (node.level === 0) {
     return connId
   } else if (node.data.type === 'conn') {
@@ -461,7 +463,7 @@ function listConnBase(query) {
   if (query === "") {
     return
   }
-  http.get("/listConnBase", { params: { name: query } })
+  http.get("/connBaseTree", { params: { name: query } })
     .then((resp) => {
       connListSelect.value = resp.data.data
     })
@@ -510,6 +512,7 @@ function delUser(id) {
 
 function addRole() {
   roleList.value.push({ editable: true })
+  roleDblClick({})
 }
 
 function roleDblClick(row) {
@@ -525,7 +528,7 @@ function roleDblClick(row) {
     row.connIdList = row.powerList.map(r => r.connId)
   }
   if (connListSelect.value.length == 0) {
-    http.get("/listConnBase")
+    http.get("/connBaseTree")
       .then((resp) => {
         connListSelect.value = resp.data.data
       })

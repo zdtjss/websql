@@ -15,14 +15,14 @@ import (
 func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	table := r.Form.Get("table")
-	connId := r.Form.Get("connId")
+	connId := utils.AtoUint64(r.Form.Get("connId"))
 	schema := r.Form.Get("schema")
 	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".xlsx")
 	queryAndWrite(schema+"."+table, w, connId)
 }
 
-func queryAndWrite(table string, out io.Writer, connId string) {
+func queryAndWrite(table string, out io.Writer, connId uint64) {
 	log.Println("正在导出：", table)
 	rows, err := getConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
 	utils.Panicln(err)
@@ -86,7 +86,7 @@ func queryAndWrite(table string, out io.Writer, connId string) {
 	excel.Write(out)
 }
 
-func columnMap(table string, connId string) map[string]string {
+func columnMap(table string, connId uint64) map[string]string {
 	columnMap := make(map[string]string)
 	stmt, err := getConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
 	utils.Println(err)

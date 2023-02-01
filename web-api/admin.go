@@ -6,6 +6,7 @@ import (
 	"go-web/utils"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func SaveRole(w http.ResponseWriter, r *http.Request) {
@@ -14,34 +15,38 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 	tx, _ := db.Beginx()
 	defer tx.Rollback()
 	if role.Id == 0 {
-		stmt, _ := tx.Prepare("insert into t_role (name) values (?)")
-		stmt.Exec(&role.Name)
+		stmt, _ := tx.Prepare("insert into t_role (id, name) values (?, ?)")
+		rs, _ := tx.Stmt(stmt).Exec(utils.RandomInt64(), &role.Name)
+		nid, _ := rs.LastInsertId()
+		*&role.Id = uint64(nid)
 	} else {
 		stmt, _ := tx.Prepare("update t_role set name = ? where id = ?")
-		stmt.Exec(&role.Name, &role.Id)
+		tx.Stmt(stmt).Exec(&role.Name, &role.Id)
 		tx.Exec("delete from t_power where role_id = ?", &role.Id)
-		tx.Exec("update t_user set role_id = '' where id = ?", &role.Id)
+		tx.Exec("update t_user set role_id = 0 where id = ?", &role.Id)
 	}
 	if len(role.ConnIdList) > 0 {
-		stmt, _ := tx.Prepare("insert into t_power (role_id, conn_id) values (?, ?)")
+		stmt, _ := tx.Prepare("insert into t_power (id, role_id, conn_id) values (?, ?, ?)")
 		for _, connId := range role.ConnIdList {
-			stmt.Exec(&role.Id, connId)
+			tx.Stmt(stmt).Exec(utils.RandomInt64(), role.Id, connId)
 		}
 	}
 	if len(role.UserIdList) > 0 {
 		stmt, _ := tx.Prepare("update t_user set role_id = ? where id = ?")
 		for _, userId := range role.UserIdList {
-			stmt.Exec(&role.Id, userId)
+			time.Sleep(10 * time.Millisecond)
+			tx.Stmt(stmt).Exec(&role.Id, userId)
 		}
 	}
-	tx.Commit()
+	err := tx.Commit()
+	utils.Panicf("修改角色失败 %x", err)
 	utils.WriteJson(w, "")
 }
 
 func DelRole(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
-	id := r.Form.Get("id")
+	id := utils.AtoUint64(r.FormValue("id"))
 
 	userCount := 0
 	db.Select(userCount, "select count(*) from t_user where role_id = ?", id)
@@ -80,7 +85,7 @@ func RoleList(w http.ResponseWriter, r *http.Request) {
 func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	userList := []*User{}
-	err := db.Select(&userList, "select * from t_user where role_id = ?", r.Form.Get("roleId"))
+	err := db.Select(&userList, "select * from t_user where role_id = ?", utils.AtoUint64(r.FormValue("roleId")))
 	utils.Panicln(err)
 	utils.WriteJson(w, userList)
 }
@@ -89,8 +94,8 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	user := &User{}
 	utils.UnmarshalJson(r.Body, user)
 	if user.Id == 0 {
-		stmt, _ := db.Prepare("insert into t_user (role_id, name, login_name, pwd) values (?, ?, ?, ?)")
-		stmt.Exec(&user.RoleId, &user.Name, &user.LoginName, &user.Pwd)
+		stmt, _ := db.Prepare("insert into t_user (id, role_id, name, login_name, pwd) values (?, ?, ?, ?, ?)")
+		stmt.Exec(utils.RandomInt64(), &user.RoleId, &user.Name, &user.LoginName, &user.Pwd)
 	} else {
 		stmt, _ := db.Prepare("update t_user set role_id = ?, name = ?, login_name = ?, pwd = ? where id = ?")
 		stmt.Exec(&user.RoleId, &user.Name, &user.LoginName, &user.Pwd, &user.Id)
@@ -100,8 +105,7 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 
 func DelUser(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	id := r.Form.Get("id")
-	db.Exec("delete from t_user where id = ?", id)
+	db.Exec("delete from t_user where id = ?", utils.AtoUint64(r.FormValue("id")))
 	utils.WriteJson(w, "")
 }
 
@@ -136,22 +140,22 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, userList)
 }
 
-func findConnByRole(roleIdList []any) map[int][]*PowerDto {
+func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
 	roleCount := len(roleIdList)
 	if roleCount == 0 {
-		return map[int][]*PowerDto{}
+		return map[uint64][]*PowerDto{}
 	}
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, c.name conn_name from t_config_dbconn c left join t_power p on c.id = p.conn_id where ")
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, c.name conn_name from t_conn c left join t_power p on c.id = p.conn_id where ")
 	sqlBuf.WriteString("role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") ")
 	powerList := []*PowerDto{}
 	err := db.Select(&powerList, sqlBuf.String(), roleIdList...)
 	utils.Panicln(err)
-	rolePowerMap := make(map[int][]*PowerDto, len(powerList))
+	rolePowerMap := make(map[uint64][]*PowerDto, len(powerList))
 	for _, power := range powerList {
 		v, ok := rolePowerMap[power.RoleId]
 		if !ok {
@@ -163,10 +167,10 @@ func findConnByRole(roleIdList []any) map[int][]*PowerDto {
 	return rolePowerMap
 }
 
-func findUserByRole(roleIdList []any) map[int][]*User {
+func findUserByRole(roleIdList []any) map[uint64][]*User {
 	roleCount := len(roleIdList)
 	if roleCount == 0 {
-		return map[int][]*User{}
+		return map[uint64][]*User{}
 	}
 	var (
 		sqlBuf = bytes.Buffer{}
@@ -178,7 +182,7 @@ func findUserByRole(roleIdList []any) map[int][]*User {
 	userList := []*User{}
 	err := db.Select(&userList, sqlBuf.String(), roleIdList...)
 	utils.Panicln(err)
-	roleUserMap := make(map[int][]*User, len(userList))
+	roleUserMap := make(map[uint64][]*User, len(userList))
 	for _, user := range userList {
 		v, ok := roleUserMap[user.RoleId]
 		if !ok {
@@ -195,8 +199,8 @@ func InitAdminTable() {
 
 	sql_table := `
 		CREATE TABLE IF NOT EXISTS t_user (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			role_id INTEGER,
+			id BIGINT PRIMARY KEY,
+			role_id BIGINT,
 			login_name VARCHAR(64),
 			name VARCHAR(64),
 			pwd VARCHAR(64)
@@ -206,7 +210,7 @@ func InitAdminTable() {
 
 	sql_table = `
 		CREATE TABLE IF NOT EXISTS t_role (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id BIGINT PRIMARY KEY,
 			name VARCHAR(64)
 		);
 		`
@@ -214,45 +218,45 @@ func InitAdminTable() {
 
 	sql_table = `
 		CREATE TABLE IF NOT EXISTS t_power (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			role_id INTEGER,
-			conn_id INTEGER
+			id BIGINT PRIMARY KEY,
+			role_id BIGINT,
+			conn_id BIGINT
 		);
 		`
 	db.Exec(sql_table)
 }
 
 type User struct {
-	Id        int    `json:"id"`
-	RoleId    int    `json:"roleId" db:"role_id"`
+	Id        uint64 `json:"id"`
+	RoleId    uint64 `json:"roleId" db:"role_id"`
 	LoginName string `json:"loginName" db:"login_name"`
 	Name      string `json:"name"`
 	Pwd       string `json:"pwd"`
 }
 
 type Role struct {
-	Id        int         `json:"id"`
+	Id        uint64      `json:"id"`
 	Name      string      `json:"name"`
 	PowerList []*PowerDto `json:"powerList"`
 	UserList  []*User     `json:"userList"`
 }
 
 type RoleSave struct {
-	Id         int    `json:"id"`
-	Name       string `json:"name"`
-	ConnIdList []*int `json:"connIdList"`
-	UserIdList []*int `json:"userIdList"`
+	Id         uint64    `json:"id"`
+	Name       string    `json:"name"`
+	ConnIdList []*uint64 `json:"connIdList"`
+	UserIdList []*uint64 `json:"userIdList"`
 }
 
 type Power struct {
-	Id     int `json:"id"`
-	RoleId int `json:"roleId" db:"role_id"`
-	ConnId int `json:"connId" db:"conn_id"`
+	Id     uint64 `json:"id"`
+	RoleId uint64 `json:"roleId" db:"role_id"`
+	ConnId uint64 `json:"connId" db:"conn_id"`
 }
 
 type PowerDto struct {
-	Id       int    `json:"id"`
-	RoleId   int    `json:"roleId" db:"role_id"`
-	ConnId   int    `json:"connId" db:"conn_id"`
+	Id       uint64 `json:"id"`
+	RoleId   uint64 `json:"roleId" db:"role_id"`
+	ConnId   uint64 `json:"connId" db:"conn_id"`
 	ConnName string `json:"connName" db:"conn_name"`
 }
