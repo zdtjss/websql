@@ -9,6 +9,10 @@
           style="cursor: pointer;margin-left: 8px;" title="连接列表">
           <List />
         </el-icon>
+        <el-icon color="#409EFC" @click="loginDialogVisible = true"
+          style="cursor: pointer;margin-left: 8px;" title="登录">
+          <User />
+        </el-icon>
       </div>
       <el-tree :highlight-current="true" :load="loadTree" :lazy="true" :props="{ isLeaf: 'isLeaf' }">
         <template #default="{ node, data }">
@@ -247,6 +251,22 @@
         </span>
       </template>
     </el-dialog>
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px">
+      <el-form :model="loginForm" label-width="80px">
+        <el-form-item label="用户名">
+          <el-input v-model="loginForm.name" />
+        </el-form-item>
+        <el-form-item label="密&nbsp;&nbsp;&nbsp;码">
+          <el-input v-model="loginForm.password" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button type="primary" @click="login">登录</el-button>
+          <el-button @click="loginDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 
@@ -266,6 +286,9 @@ const editableTabs = ref([])
 
 const treeDivWidth = ref("300px")
 const resizeTreeAreaFlag = ref(false)
+
+const loginForm = ref({ name: "", password: "" })
+const loginDialogVisible = ref(false)
 
 const formLabelWidth = '100px'
 const cfgDialogVisible = ref(false)
@@ -426,6 +449,19 @@ function delConnCfg(id) {
   http.get("/delConn", { params: { id: id } })
     .then((resp) => {
       listConnCfg()
+    })
+}
+
+function login() {
+  loginDialogVisible.value = true
+  const params = new URLSearchParams();
+  params.append("name", loginForm.value.name);
+  params.append("password", loginForm.value.password);
+  http.post("/login", params)
+    .then((resp) => {
+      debugger
+      ElMessage(resp.data.data)
+      loginDialogVisible.value = true
     })
 }
 
