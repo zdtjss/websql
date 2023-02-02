@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"go-web/config"
 	"go-web/https"
+	"go-web/utils/store"
 	webapi "go-web/web-api"
 	"log"
 	"net/http"
@@ -29,14 +31,19 @@ func main() {
 
 	port = flag.String("port", "80", "")
 	isHttps = flag.Bool("https", false, "")
+	initSqlFile := flag.String("sql", "", "")
+	bs := flag.Bool("bs", false, "")
 	flag.Parse()
-
-	// config.Cfg = config.ReadConfig()
 
 	webapi.MainRegister(router)
 
-	webapi.InitTable()
-	webapi.InitAdminTable()
+	if *initSqlFile != "" {
+		config.InitDB(*initSqlFile)
+	}
+
+	if *bs {
+		store.InitRedis()
+	}
 
 	// 检测是否启动成功
 	go sLsn()

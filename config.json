@@ -1,8 +1,11 @@
 {
   "db": {
-    "nway": {
-      "test": "nway:Nway@2022@tcp(localhost:3306)/nway?charset=UTF8",
-      "prd": "nway:Nway@2022@tcp(localhost:3306)/nway?charset=UTF8"
-    }
+    "type": "sqlite3",
+    "dsn": "./nway.sqlite3.db"
+  },
+  "redis": {
+    "addr": "",
+    "password":"",
+    "db": 0
   }
 }

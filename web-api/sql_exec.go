@@ -2,11 +2,15 @@ package webapi
 
 import (
 	"database/sql"
+	"go-web/logutils"
 	"go-web/utils"
+	admin "go-web/web-api/admin"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func ExecSQL(w http.ResponseWriter, r *http.Request) {
@@ -15,41 +19,23 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	// schema := r.Form.Get("schema")
 	sqlStr := r.Form.Get("sql")
 	maxLine := r.Form.Get("maxLine")
-
 	sqlStr = strings.TrimSpace(sqlStr)
 
-	params := make([]any, 0)
-
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
-		sqlArr := strings.Split(sqlStr, ";")
-		tx, err := getConn(connId).DB.Begin()
-		defer tx.Rollback()
-		utils.Panicf("事务开启失败， %s", err)
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		resultData := []map[string]any{}
-		for _, relSql := range sqlArr {
-			if relSql == "" {
-				continue
-			}
-			rs, err2 := tx.Exec(relSql, params...)
-			utils.Panicln(err2)
-			affected, err := rs.RowsAffected()
-			utils.Panicln(err)
-			resultData = append(resultData, map[string]any{"受影响行数": affected})
-		}
-		tx.Commit()
-		rspData.Data = resultData
+		rspData.Data = batchExec(&sqlStr, admin.GetConn(connId))
 		utils.WriteJson(w, rspData)
 	} else {
+		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select ", "SELECT ", "select\n", "SELECT\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
 			sqlStr = sqlStr + " limit ?"
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
-		rows, err2 := getConn(connId).Query(sqlStr, params...)
-		utils.Panicln(err2)
+		rows, err2 := admin.GetConn(connId).Query(sqlStr, params...)
+		logutils.Panicln(err2)
 		cts, err3 := rows.ColumnTypes()
-		utils.Panicln(err3)
+		logutils.Panicln(err3)
 		columnList := make([]Column, len(cts))
 		for idx, val := range cts {
 			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName()}
@@ -62,6 +48,28 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJson(w, rspData)
 	}
 
+}
+
+func batchExec(sql *string, db *sqlx.DB) []map[string]any {
+	sqlArr := strings.Split(*sql, ";")
+	tx, err := db.DB.Begin()
+	defer tx.Rollback()
+	logutils.Panicf("事务开启失败， %s", err)
+	resultData := []map[string]any{}
+	for _, s := range sqlArr {
+		relSql := utils.ExtractSql(s)
+		if relSql == "" {
+			continue
+		}
+		rs, err2 := tx.Exec(relSql)
+		logutils.Panicln(err2)
+		affected, err := rs.RowsAffected()
+		logutils.Panicln(err)
+		resultData = append(resultData, map[string]any{"受影响行数": affected})
+	}
+	err = tx.Commit()
+	logutils.Panicln(err)
+	return resultData
 }
 
 func checkPrefx(src string, prefix []string) bool {
@@ -86,7 +94,7 @@ func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 
 	dataMaps := make([]map[string]interface{}, 0)
 	cts, err := rows.ColumnTypes()
-	utils.Panicf("获取字段类型失败，%x", err)
+	logutils.Panicf("获取字段类型失败，%x", err)
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -134,19 +142,19 @@ func ConvertCol(colType string, val any) any {
 		switch colType {
 		case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
 			iv, err := strconv.ParseInt(string(b), 10, 32)
-			utils.Panicf("转换类型失败， %x", err)
+			logutils.Panicf("转换类型失败， %x", err)
 			v = int(iv)
 		case "BIGINT":
 			iv, err := strconv.ParseInt(string(b), 10, 64)
-			utils.Panicf("转换类型失败， %x", err)
+			logutils.Panicf("转换类型失败， %x", err)
 			v = iv
 		case "FLOAT":
 			iv, err := strconv.ParseFloat(string(b), 32)
-			utils.Panicf("转换类型失败， %x", err)
+			logutils.Panicf("转换类型失败， %x", err)
 			v = float32(iv)
 		case "DOUBLE", "DECIMAL":
 			iv, err := strconv.ParseFloat(string(b), 64)
-			utils.Panicf("转换类型失败， %x", err)
+			logutils.Panicf("转换类型失败， %x", err)
 			v = iv
 		case "BIT":
 			v = b[0] == byte(1)

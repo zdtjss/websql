@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"go-web/logutils"
 	"go-web/utils"
+	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
 	"strconv"
@@ -25,11 +27,11 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	file, _, err := r.FormFile("file")
-	utils.Panicln(err)
+	logutils.Panicln(err)
 	defer file.Close()
 
 	excel, err := excelize.OpenReader(file)
-	utils.Panicln(err)
+	logutils.Panicln(err)
 
 	defer func() {
 		if err := excel.Close(); err != nil {
@@ -37,17 +39,17 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	tx, _ := getConn(connId).Begin()
+	tx, _ := admin.GetConn(connId).Begin()
 	defer tx.Rollback()
 
 	rows, err := excel.Rows(table)
-	utils.Panicln(err)
+	logutils.Panicln(err)
 	defer rows.Close()
 
 	header := make([]string, 0)
 	if rows.Next() {
 		row, err := rows.Columns()
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		header = append(header, row...)
 	}
 
@@ -59,10 +61,10 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		count++
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		columns := []string{}
 		row, err := rows.Columns()
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		columns = append(columns, row...)
 		totalValues[count] = columns
 		if count+1 >= maxLines {
@@ -84,7 +86,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err = tx.Commit(); err != nil {
-		utils.Panicf("导入失败, %x", err)
+		logutils.Panicf("导入失败, %x", err)
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
@@ -118,7 +120,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	log.Println(sql.String())
 
 	stmt, err := tx.Prepare(sql.String())
-	utils.Panicln(err)
+	logutils.Panicln(err)
 
 	colTypeMap := queryColType(schema, table, tx)
 
@@ -128,7 +130,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 			anyVal[i] = parseVal(colTypeMap[columns[i]], v)
 		}
 		_, err = stmt.Exec(anyVal...)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 	}
 
 }
@@ -165,7 +167,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	log.Println(realSql)
 
 	stmt, err := tx.Prepare(realSql)
-	utils.Panicln(err)
+	logutils.Panicln(err)
 
 	valCount := -1
 	paramCount := -1
@@ -188,7 +190,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		paramCount = -1
 		log.Println(anyVal...)
 		_, err = stmt.Exec(anyVal...)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 	}
 
 }
@@ -206,9 +208,9 @@ func keyIdx(keys, columns []string) []int {
 func queryKey(schema, table string, tx *sql.Tx) []string {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
-	utils.Println(err)
+	logutils.Println(err)
 	rs, err2 := stmt.Query(schema, table)
-	utils.Println(err2)
+	logutils.Println(err2)
 	var name string
 	for rs.Next() {
 		rs.Scan(&name)
@@ -225,9 +227,9 @@ func queryKey(schema, table string, tx *sql.Tx) []string {
 func queryColType(schema, table string, tx *sql.Tx) map[string]string {
 	colTypeMap := make(map[string]string, 0)
 	stmt, err := tx.Prepare("select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?")
-	utils.Println(err)
+	logutils.Println(err)
 	rs, err2 := stmt.Query(schema, table)
-	utils.Println(err2)
+	logutils.Println(err2)
 	var colName, colType string
 	for rs.Next() {
 		rs.Scan(&colName, &colType)
@@ -243,15 +245,15 @@ func parseVal(colType string, val string) (retVal any) {
 	switch colType {
 	case "float", "double", "decimal":
 		f, err := strconv.ParseFloat(val, 64)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		retVal = f
 	case "int", "bigint", "smallint", "tinyint":
 		f, err := strconv.ParseInt(val, 10, 64)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		retVal = f
 	case "bit":
 		f, err := strconv.ParseBool(val)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 		retVal = f
 	default:
 		retVal = val

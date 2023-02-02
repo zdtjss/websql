@@ -5,9 +5,21 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
 )
 
+// 打开数据库，如果不存在，则创建
+var Mngtdb *sqlx.DB
 var DBMap map[uint64]*sqlx.DB = make(map[uint64]*sqlx.DB)
+
+func init() {
+	Cfg = ReadConfig()
+	sqlxDb, err := sqlx.Connect(Cfg.DB.DriverName, Cfg.DB.DataSourceName)
+	if err != nil {
+		panic(err)
+	}
+	Mngtdb = sqlxDb
+}
 
 func GetConn(param *DBParam) *sqlx.DB {
 	val, ok := DBMap[createKey(param)]

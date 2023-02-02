@@ -2,8 +2,7 @@
   <el-container class="layout-container-demo">
     <el-aside :width="treeDivWidth">
       <div>
-        <el-icon color="#409EFC" @click="dirDialogVisible = true; listDirTree()" style="cursor: pointer;"
-          title="添加目录">
+        <el-icon color="#409EFC" @click="dirDialogVisible = true; listDirTree()" style="cursor: pointer;" title="添加目录">
           <FolderAdd />
         </el-icon>
         <el-icon color="#409EFC" @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
@@ -41,20 +40,6 @@
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="用户" :show-overflow-tooltip="true">
-              <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.userListStr }}</span>
-                <el-select v-show="scope.row.editable" v-model="scope.row.userIdList" multiple remote filterable collapse-tags
-                  collapse-tags-tooltip :remote-method="findUser2" placeholder="请选择">
-                  <el-option v-for="item in userListSelect" :key="item.id" :value="item.id" :label="item.name">
-                    <span style="float: left">{{ item.name }}</span>
-                    <span style="float: right;color: var(--el-text-color-secondary);font-size: 13px;">{{
-                      item.loginName
-                      }}</span>
-                  </el-option>
-                </el-select>
-              </template>
-            </el-table-column>
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
@@ -67,8 +52,9 @@
                       }}</span>
                   </el-option>
                 </el-select> -->
-                <el-tree-select v-show="scope.row.editable" v-model="scope.row.connIdList" :data="connListSelect" node-key="id" multiple
-                  collapse-tags collapse-tags-tooltip :render-after-expand="false" show-checkbox />
+                <el-tree-select v-show="scope.row.editable" v-model="scope.row.connIdList" :data="connListSelect"
+                  node-key="id" multiple collapse-tags collapse-tags-tooltip :render-after-expand="false"
+                  show-checkbox />
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -109,8 +95,8 @@
               </el-form-item>
             </el-row>
           </el-form>
-          <el-table :data="userList" :max-height="450" style="width: 100%;overflow-y: auto;"
-          empty-text="请正确输入条件后查询" @cell-dblclick="(row) => row.editable = true">
+          <el-table :data="userList" :max-height="450" style="width: 100%;overflow-y: auto;" empty-text="请正确输入条件后查询"
+            @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="姓名" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
@@ -127,6 +113,15 @@
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="角色" :show-overflow-tooltip="true">
+              <template #default="scope">
+                <span v-show="!scope.row.editable">{{ scope.row.roleName.join("、") }}</span>
+                <el-select v-show="scope.row.editable" v-model="scope.row.roleId" multiple filterable collapse-tags
+                  collapse-tags-tooltip placeholder="请选择">
+                  <el-option v-for="item in roleList" :key="item.id" :label="item.name" :value="item.id" />
+                </el-select>
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -369,7 +364,7 @@ function loadTree(node, resolve) {
     resolve([])
     return
   }
-  http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: node.data.type, level: node.level } })
+  http.get("/showTree", { params: { connId: findConn(node), key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, resp.data.data)
@@ -449,16 +444,6 @@ function findUser() {
     })
 }
 
-function findUser2(query) {
-  if (query === "") {
-    return
-  }
-  http.get("/findUser", { params: { key: query} })
-    .then((resp) => {
-      userListSelect.value = resp.data.data
-    })
-}
-
 function listConnBase(query) {
   if (query === "") {
     return
@@ -475,9 +460,6 @@ function loadCfgData(pane) {
       .then((resp) => {
         roleList.value = resp.data.data.map(e => {
           const row = Object.assign({ editable: false }, e)
-          if (row.userList) {
-            row.userListStr = row.userList.map(r => r.name).join("、")
-          }
           if (row.powerList) {
             row.connNameListStr = row.powerList.map(r => r.connName).join("、")
           }
@@ -517,13 +499,6 @@ function addRole() {
 
 function roleDblClick(row) {
   row.editable = true
-  if (row.userList) {
-    row.userIdList = row.userList.map(r => r.id)
-    http.get("/findUser", { params: { userIdList: row.userIdList } })
-      .then((resp) => {
-        userListSelect.value = resp.data.data
-      })
-  }
   if (row.powerList) {
     row.connIdList = row.powerList.map(r => r.connId)
   }
@@ -567,11 +542,7 @@ function listDirTree() {
 
 const appendTreeNode = (data) => {
   const newChild = { label: "", value: "", children: [] }
-  if (!data.children) {
-    data.children = []
-  }
-  data.children.push(newChild)
-  conCfgTreeData.value = [...conCfgTreeData.value]
+  conCfgTreeData.value.push(newChild)
 }
 
 const removeTreeNode = (node, data) => {

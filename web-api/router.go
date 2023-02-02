@@ -3,7 +3,9 @@ package webapi
 import (
 	"bufio"
 	"compress/gzip"
+	"go-web/logutils"
 	"go-web/utils"
+	admin "go-web/web-api/admin"
 	"io"
 	"log"
 	"mime"
@@ -13,38 +15,37 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/gorilla/sessions"
 	"golang.org/x/exp/maps"
 )
 
 // 不需要以/结尾
 var destAddr string = "http://localhost:8083"
-var store = sessions.NewCookieStore([]byte(os.Getenv("SESSION_KEY")))
 
 func MainRegister(router *mux.Router) {
 
 	router.HandleFunc("/listTable", ListTable).Methods("GET")
 	router.HandleFunc("/exportXlsx", ExportXlsx).Methods("GET")
 	router.HandleFunc("/importXlsx", ImportXlsx).Methods("POST")
-
-	router.HandleFunc("/saveConn", SaveConn).Methods("POST")
-	router.HandleFunc("/delConn", DelConn).Methods("GET")
-	router.HandleFunc("/connBaseTree", ConnBaseTree).Methods("GET")
-	router.HandleFunc("/listConn2", ListConn2).Methods("GET")
-	router.HandleFunc("/showTree", ShowTree).Methods("GET")
 	router.HandleFunc("/execSQL", ExecSQL).Methods("GET")
 
-	router.HandleFunc("/saveTree", SaveTree).Methods("POST")
-	router.HandleFunc("/listDirTree", ListDirTree).Methods("GET")
+	router.HandleFunc("/saveConn", admin.SaveConn).Methods("POST")
+	router.HandleFunc("/delConn", admin.DelConn).Methods("GET")
+	router.HandleFunc("/connBaseTree", admin.ConnBaseTree).Methods("GET")
+	router.HandleFunc("/listConn2", admin.ListConn2).Methods("GET")
+	router.HandleFunc("/showTree", admin.ShowTree).Methods("GET")
 
-	router.HandleFunc("/saveRole", SaveRole).Methods("POST")
-	router.HandleFunc("/delRole", DelRole).Methods("GET")
-	router.HandleFunc("/roleList", RoleList).Methods("GET")
-	router.HandleFunc("/findUserByRole", FindUserByRole).Methods("GET")
+	router.HandleFunc("/saveTree", admin.SaveTree).Methods("POST")
+	router.HandleFunc("/listDirTree", admin.ListDirTree).Methods("GET")
 
-	router.HandleFunc("/findUser", FindUser).Methods("GET")
-	router.HandleFunc("/saveUser", SaveUser).Methods("POST")
-	router.HandleFunc("/delUser", DelUser).Methods("POST")
+	router.HandleFunc("/saveRole", admin.SaveRole).Methods("POST")
+	router.HandleFunc("/delRole", admin.DelRole).Methods("GET")
+	router.HandleFunc("/roleList", admin.RoleList).Methods("GET")
+	router.HandleFunc("/roleBaseList", admin.RoleBaseList).Methods("GET")
+	router.HandleFunc("/findUserByRole", admin.FindUserByRole).Methods("GET")
+
+	router.HandleFunc("/findUser", admin.FindUser).Methods("GET")
+	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
+	router.HandleFunc("/delUser", admin.DelUser).Methods("POST")
 
 	router.HandleFunc("/ext/", proxy)
 
@@ -64,13 +65,13 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	*&req.Header = r.Header
 	resp, err := http.DefaultClient.Do(req)
-	utils.Panicln(err)
+	logutils.Panicln(err)
 
 	maps.Copy(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	_, err2 := io.Copy(w, resp.Body)
-	utils.Panicln(err2)
+	logutils.Panicln(err2)
 	defer resp.Body.Close()
 }
 
@@ -86,7 +87,7 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	file, err := utils.Find("static" + reqPath)
 	if err != nil || strings.EqualFold("/", reqPath) {
 		file, err = utils.Find("static/index.html")
-		utils.Panicln(err)
+		logutils.Panicln(err)
 	}
 	defer file.Close()
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))

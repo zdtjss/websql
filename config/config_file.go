@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"go-web/logutils"
 	"os"
 	"path/filepath"
 )
@@ -9,28 +10,43 @@ import (
 var Cfg *Config
 
 func ReadConfig() *Config {
-
-	exec, err := os.Executable()
-	if err != nil {
-		println(err)
-	}
-	configFile := filepath.Join(filepath.Join(filepath.Dir(exec), "../"), "config.json")
+	configFile := FindFile("config.json")
 	fileData, err := os.ReadFile(configFile)
-	if err != nil {
-		configFile = filepath.Join(filepath.Dir(exec), "config.json")
-		fileData, err = os.ReadFile(configFile)
-	}
-	if err != nil {
-		print(err.Error())
-	}
 	var config Config
 	err = json.Unmarshal(fileData, &config)
-	if err != nil {
-		panic(err.Error())
-	}
+	logutils.Panicln(err)
 	return &config
 }
 
+func ReadSql(fileName string) *string {
+	configFile := FindFile(fileName)
+	fileData, err := os.ReadFile(configFile)
+	logutils.Panicln(err)
+	sql := string(fileData)
+	return &sql
+}
+
+func FindFile(fileName string) string {
+	exec, err := os.Executable()
+	logutils.Panicln(err)
+	configFile := filepath.Join(filepath.Join(filepath.Dir(exec), "../"), fileName)
+	_, err = os.Lstat(configFile)
+	if err != nil {
+		configFile = filepath.Join(filepath.Dir(exec), fileName)
+		_, err = os.Lstat(configFile)
+		logutils.Panicln(err)
+	}
+	return configFile
+}
+
 type Config struct {
-	DB map[string]map[string]string `json:"db"`
+	DB struct {
+		DriverName     string `json:"type"`
+		DataSourceName string `json:"dsn"`
+	} `json:"db"`
+	Redis struct {
+		Addr     string `json:"addr"`
+		Password string `json:"password"`
+		DB       int `json:"db"`
+	} `json:"redis"`
 }

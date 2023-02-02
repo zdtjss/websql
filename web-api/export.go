@@ -2,7 +2,9 @@ package webapi
 
 import (
 	"fmt"
+	"go-web/logutils"
 	"go-web/utils"
+	admin "go-web/web-api/admin"
 	"io"
 	"log"
 	"net/http"
@@ -24,11 +26,11 @@ func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 
 func queryAndWrite(table string, out io.Writer, connId uint64) {
 	log.Println("正在导出：", table)
-	rows, err := getConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
-	utils.Panicln(err)
+	rows, err := admin.GetConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
+	logutils.Panicln(err)
 
 	columns, err := rows.Columns()
-	utils.Panicln(err)
+	logutils.Panicln(err)
 
 	columnComment := make([]string, len(columns))
 	columnMap := columnMap(table, connId)
@@ -37,7 +39,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64) {
 	}
 
 	cts, err := rows.ColumnTypes()
-	utils.Panicf("获取字段类型失败，%x", err)
+	logutils.Panicf("获取字段类型失败，%x", err)
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -67,7 +69,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64) {
 
 		//把每行的内容添加到scanArgs，也添加到了values
 		err = rows.Scan(scanArgs...)
-		utils.Panicln(err)
+		logutils.Panicln(err)
 
 		//存每一行的内容
 		var row []any
@@ -80,7 +82,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64) {
 	}
 
 	if err = rows.Err(); err != nil {
-		utils.Panicln(err)
+		logutils.Panicln(err)
 	}
 
 	excel.Write(out)
@@ -88,10 +90,10 @@ func queryAndWrite(table string, out io.Writer, connId uint64) {
 
 func columnMap(table string, connId uint64) map[string]string {
 	columnMap := make(map[string]string)
-	stmt, err := getConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
-	utils.Println(err)
+	stmt, err := admin.GetConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
+	logutils.Println(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
-	utils.Println(err2)
+	logutils.Println(err2)
 	var name, comment string
 	for rs.Next() {
 		rs.Scan(&name, &comment)

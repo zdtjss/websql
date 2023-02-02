@@ -1,7 +1,9 @@
-package webapi
+package admin
 
 import (
 	"bytes"
+	"go-web/config"
+	"go-web/logutils"
 	"go-web/utils"
 	"net/http"
 )
@@ -14,7 +16,7 @@ func SaveTree(w http.ResponseWriter, r *http.Request) {
 
 func DelTreeNode(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	db.Exec("delete from t_tree where id = ?", utils.AtoUint64(r.FormValue("id")))
+	config.Mngtdb.Exec("delete from t_tree where id = ?", utils.AtoUint64(r.FormValue("id")))
 	utils.WriteJson(w, "")
 }
 
@@ -29,8 +31,8 @@ func findByParent(parentId string) []*Tree {
 		sql.WriteString(" parent = ?")
 	}
 	treeList := []*DirTree{}
-	err := db.Select(&treeList, sql.String(), param...)
-	utils.Panicln(err)
+	err := config.Mngtdb.Select(&treeList, sql.String(), param...)
+	logutils.Panicln(err)
 	tree := make([]*Tree, len(treeList))
 	for i, cfg := range treeList {
 		tree[i] = &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR}
@@ -41,8 +43,8 @@ func findByParent(parentId string) []*Tree {
 func ListDirTree(w http.ResponseWriter, r *http.Request) {
 
 	treeList := []*DirTree{}
-	err := db.Select(&treeList, "select * from t_tree")
-	utils.Panicln(err)
+	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
+	logutils.Panicln(err)
 	tree := []*Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR})
@@ -61,8 +63,8 @@ func ListDirTree(w http.ResponseWriter, r *http.Request) {
 
 func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 	treeList := []*DirTree{}
-	err := db.Select(&treeList, "select * from t_tree")
-	utils.Panicln(err)
+	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
+	logutils.Panicln(err)
 	tree := []*Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR})
@@ -101,20 +103,22 @@ func findChild(curNode *Tree, nodes []*Tree, connMap map[uint64][]*ConnCfgBase) 
 
 func doTreeInsert(tree []*DirTree) {
 
-	initTreeTable()
-
 	planeDir := expendDirTreeAll(tree)
 
-	tx, err := db.Beginx()
-	utils.Panicln(err)
+	tx, err := config.Mngtdb.Beginx()
+	logutils.Panicln(err)
 	defer tx.Rollback()
 
 	tx.Exec("delete from t_tree")
 
 	stmt, err := tx.Prepare("insert into t_tree (id, label, parent) values (?, ?, ?)")
-	utils.Panicln(err)
+	logutils.Panicln(err)
 	for _, t := range planeDir {
-		stmt.Exec(utils.RandomInt64(), &t.Label, &t.Parent)
+		id := t.Id
+		if id == 0 {
+			id = utils.RandomInt64()
+		}
+		stmt.Exec(id, &t.Label, &t.Parent)
 	}
 	tx.Commit()
 }
@@ -149,7 +153,7 @@ func initTreeTable() {
 			parent BIGINT
 		  );
 		`
-	db.Exec(sql_table)
+	config.Mngtdb.Exec(sql_table)
 }
 
 type DirTree struct {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"go-web/logutils"
 )
 
 func ToJsonString(v any) []byte {
@@ -34,9 +35,9 @@ func WriteJson(w http.ResponseWriter, v any) {
 
 func UnmarshalJson[T any](r io.Reader, v *T) {
 	jsonData, err := io.ReadAll(r)
-	Println(err)
+	logutils.Println(err)
 	err = json.Unmarshal(jsonData, v)
-	Println(err)
+	logutils.Println(err)
 }
 
 type Result struct {
