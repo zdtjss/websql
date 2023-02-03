@@ -144,18 +144,6 @@ func expendDirTree(p *DirTree) []*DirTree {
 	return child
 }
 
-func initTreeTable() {
-	//创建表
-	sql_table := `
-		CREATE TABLE IF NOT EXISTS t_tree (
-			id BIGINT PRIMARY KEY,
-			label TEXT,
-			parent BIGINT
-		  );
-		`
-	config.Mngtdb.Exec(sql_table)
-}
-
 type DirTree struct {
 	Id       uint64     `json:"id" db:"id"`
 	Label    string     `json:"label" db:"label"`

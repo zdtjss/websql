@@ -12,20 +12,16 @@ func InitDB(scriptFile string) {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := Mngtdb.DB.Begin()
 	defer tx.Rollback()
-	logutils.Panicf("事务开启失败， %s", err)
-	resultData := []map[string]any{}
+	logutils.Panicf("事务开启失败， %s\n", err)
 	for _, s := range sqlArr {
 		relSql := utils.ExtractSql(s)
 		if relSql == "" {
 			continue
 		}
-		rs, err2 := tx.Exec(relSql)
+		_, err2 := tx.Exec(relSql)
 		logutils.Panicln(err2)
-		affected, err := rs.RowsAffected()
-		logutils.Panicln(err)
-		resultData = append(resultData, map[string]any{"受影响行数": affected})
 	}
 	err = tx.Commit()
 	logutils.Panicln(err)
-	log.Println(resultData)
+	log.Println("数据库初始化完毕")
 }

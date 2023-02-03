@@ -153,29 +153,6 @@ func convertToDBParam(cfg *ConnCfg) *config.DBParam {
 	return &config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url}
 }
 
-// 初始化表结构
-func InitTable() {
-	initConfigTable()
-	initTreeTable()
-}
-
-func initConfigTable() {
-
-	//创建表
-	sql_table := `
-		CREATE TABLE IF NOT EXISTS t_conn (
-			id BIGINT PRIMARY KEY,
-			db_type VARCHAR(64) NULL,
-			parent_id BIGINT,
-			name VARCHAR(64) NULL,
-			user VARCHAR(64) NULL,
-			pwd VARCHAR(128) NULL,
-			url VARCHAR(512) NULL
-		);
-		`
-	config.Mngtdb.Exec(sql_table)
-}
-
 type ConnCfg struct {
 	Id         uint64  `json:"id"`
 	DbType     string  `json:"dbType" db:"db_type"`

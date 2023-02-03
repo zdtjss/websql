@@ -259,47 +259,6 @@ func findUserRole(userIdList []any) map[uint64][]*UserRole {
 	return roleUserMap
 }
 
-// 初始化表结构
-func InitAdminTable() {
-
-	sql_table := `
-		CREATE TABLE IF NOT EXISTS t_user (
-			id BIGINT PRIMARY KEY,
-			role_id BIGINT,
-			login_name VARCHAR(64),
-			name VARCHAR(64),
-			pwd VARCHAR(64)
-		);
-		`
-	config.Mngtdb.Exec(sql_table)
-
-	sql_table = `
-		CREATE TABLE IF NOT EXISTS t_role (
-			id BIGINT PRIMARY KEY,
-			name VARCHAR(64)
-		);
-		`
-	config.Mngtdb.Exec(sql_table)
-
-	sql_table = `
-		CREATE TABLE IF NOT EXISTS t_user_role (
-			id BIGINT PRIMARY KEY,
-			user_id BIGINT,
-			role_id BIGINT
-		);
-		`
-	config.Mngtdb.Exec(sql_table)
-
-	sql_table = `
-		CREATE TABLE IF NOT EXISTS t_power (
-			id BIGINT PRIMARY KEY,
-			role_id BIGINT,
-			conn_id BIGINT
-		);
-		`
-	config.Mngtdb.Exec(sql_table)
-}
-
 type User struct {
 	Id        uint64    `json:"id"`
 	RoleId    []*uint64 `json:"roleId"`
