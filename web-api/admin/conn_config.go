@@ -44,11 +44,8 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	curType := r.Form.Get("type")
 	level := r.Form.Get("level")
 	authorization := r.Header.Get("Authorization")
-	userPower := store.GetItem(authorization)
-
-	if userPower == nil {
-		userPower = UserPower{}
-	}
+	var userPower UserPower
+	store.GetItem(authorization, &userPower)
 
 	nextType := getNextType(curType)
 
@@ -56,18 +53,18 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	switch nextType {
 	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
-			data = findByParent(key, userPower.(UserPower))
+			data = findByParent(key, userPower)
 			if len(data) == 0 || data[0] == nil {
-				data = listConn(key, userPower.(UserPower))
+				data = listConn(key, userPower)
 			}
 			if level == "0" {
-				data = append(data, listConn("noneParent", userPower.(UserPower))...)
+				data = append(data, listConn("noneParent", userPower)...)
 			}
 		} else {
 			data = make([]*Tree, 0)
 		}
 	case TREE_NODE_TYPE_CONN:
-		data = listConn(key, userPower.(UserPower))
+		data = listConn(key, userPower)
 	case TREE_NODE_TYPE_SCHEMA:
 		data = listSchema(connId, authorization)
 	case TREE_NODE_TYPE_TABLE:
@@ -152,8 +149,9 @@ func getNextType(curType string) string {
 }
 
 func GetConn(id uint64, authorization string) *sqlx.DB {
-	userPower := store.GetItem(authorization)
-	if userPower == nil || !slices.Contains(userPower.(UserPower).Power, id) {
+	var userPower UserPower
+	store.GetItem(authorization, &userPower)
+	if !slices.Contains(userPower.Power, id) {
 		logutils.Panicln(errors.New("无权访问"))
 	}
 	cfgList := []ConnCfg{}

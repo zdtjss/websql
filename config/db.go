@@ -1,6 +1,7 @@
 package config
 
 import (
+	"go-web/logutils"
 	"log"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -34,7 +35,7 @@ func GetConn(param *DBParam) *sqlx.DB {
 func initDBConn(param *DBParam) {
 	db, err := sqlx.Connect(param.DbType, param.User+":"+param.Pwd+"@"+param.Url)
 	if err != nil {
-		panic("连接数据库失败，err :" + err.Error())
+		logutils.Panicf("连接数据库失败，err : %x", err)
 	}
 	db.SetMaxOpenConns(5)
 	DBMap[createKey(param)] = db

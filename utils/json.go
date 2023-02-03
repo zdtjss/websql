@@ -3,11 +3,11 @@ package utils
 import (
 	"compress/gzip"
 	"encoding/json"
+	"go-web/logutils"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
-	"go-web/logutils"
 )
 
 func ToJsonString(v any) []byte {
@@ -16,6 +16,14 @@ func ToJsonString(v any) []byte {
 		log.Panicln(err)
 	}
 	return str
+}
+
+func ToJsonString2(v any) ([]byte, error) {
+	str, err := json.Marshal(v)
+	if err != nil {
+		log.Println(err)
+	}
+	return str, err
 }
 
 func WriteJson(w http.ResponseWriter, v any) {
@@ -38,6 +46,12 @@ func UnmarshalJson[T any](r io.Reader, v *T) {
 	logutils.Println(err)
 	err = json.Unmarshal(jsonData, v)
 	logutils.Println(err)
+}
+
+func UnmarshalJson2[T any](r io.Reader, v *T) error {
+	jsonData, err := io.ReadAll(r)
+	logutils.Println(err)
+	return json.Unmarshal(jsonData, v)
 }
 
 type Result struct {

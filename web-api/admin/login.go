@@ -38,8 +38,9 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 
 func CheckPower(r *http.Request) {
 	authorization := r.Header.Get("Authorization")
-	userPower := store.GetItem(authorization)
-	if userPower == nil || userPower.(UserPower).UserId != 1 {
+	var userPower UserPower
+	store.GetItem(authorization, &userPower)
+	if userPower.UserId != 1 {
 		logutils.Panicln(errors.New("无权访问"))
 	}
 }

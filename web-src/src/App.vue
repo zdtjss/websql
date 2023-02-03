@@ -254,10 +254,10 @@
       </template>
     </el-dialog>
     <!-- 登录对话框 -->
-    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login">
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login" @opened="loginName.focus()">
       <el-form :model="loginForm" label-width="80px">
         <el-form-item label="用户名" required>
-          <el-input v-model="loginForm.name" />
+          <el-input ref="loginName" v-model="loginForm.name" />
         </el-form-item>
         <el-form-item label="密&nbsp;&nbsp;&nbsp;码" required>
           <el-input v-model="loginForm.password" type="password" />
@@ -295,6 +295,7 @@ const resizeTreeAreaFlag = ref(false)
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
 const isAdmin = ref(false)
+const loginName = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
 const formLabelWidth = '100px'

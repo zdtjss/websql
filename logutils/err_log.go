@@ -8,9 +8,9 @@ func Println(err error) {
 	}
 }
 
-func Printf(format string, err error) {
+func Printf(format string, err ...any) {
 	if err != nil {
-		log.Printf(format, err)
+		log.Printf(format, err...)
 	}
 }
 
@@ -20,8 +20,8 @@ func Panicln(err error) {
 	}
 }
 
-func Panicf(format string, err error) {
+func Panicf(format string, err ...any) {
 	if err != nil {
-		log.Panicf(format, err)
+		log.Panicf(format, err...)
 	}
 }
