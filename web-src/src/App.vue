@@ -1,20 +1,23 @@
 <template>
   <el-container class="layout-container-demo">
     <el-aside :width="treeDivWidth">
-      <div>
-        <el-icon color="#409EFC" @click="dirDialogVisible = true; listDirTree()" style="cursor: pointer;" title="添加目录">
-          <FolderAdd />
+      <div style="text-align: right;margin-right: 10px;">
+        <el-icon v-show="isAdmin" color="#409EFC"
+          @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
+          style="cursor: pointer;margin-left: 8px;" title="配置">
+          <Tools />
         </el-icon>
-        <el-icon color="#409EFC" @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
-          style="cursor: pointer;margin-left: 8px;" title="连接列表">
-          <List />
-        </el-icon>
-        <el-icon color="#409EFC" @click="loginDialogVisible = true"
+        <el-icon v-show="!loginSucc" color="#409EFC" @click="loginDialogVisible = true"
           style="cursor: pointer;margin-left: 8px;" title="登录">
           <User />
         </el-icon>
+        <el-icon v-show="loginSucc" color="#409EFC" @click="logout" style="cursor: pointer;margin-left: 8px;"
+          title="退出">
+          <SwitchButton />
+        </el-icon>
       </div>
-      <el-tree :highlight-current="true" :load="loadTree" :lazy="true" :props="{ isLeaf: 'isLeaf' }">
+      <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
+        :props="{ isLeaf: 'isLeaf' }">
         <template #default="{ node, data }">
           <span>
             <a :title="data.data != null ? data.data.text : ''">{{ node.label }}</a>
@@ -56,9 +59,9 @@
                       }}</span>
                   </el-option>
                 </el-select> -->
-                <el-tree-select v-show="scope.row.editable" v-model="scope.row.connIdList" :data="connListSelect"
-                  node-key="id" multiple collapse-tags collapse-tags-tooltip :render-after-expand="false"
-                  show-checkbox />
+                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList"
+                  :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
+                  :render-after-expand="false" :check-on-click-node="true" show-checkbox :check-strictly="false" />
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -73,7 +76,7 @@
                   style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
-                <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
+                <el-popconfirm title="确定要删除?" @confirm="delRole(scope.row.id)" confirm-button-text="是"
                   cancel-button-text="否">
                   <template #reference>
                     <el-icon style="cursor: pointer;" title="删除">
@@ -140,7 +143,7 @@
                   style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
-                <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
+                <el-popconfirm title="确定要删除?" @confirm="delUser(scope.row.id)" confirm-button-text="是"
                   cancel-button-text="否">
                   <template #reference>
                     <el-icon style="cursor: pointer;" title="删除">
@@ -184,7 +187,7 @@
             </el-table-column>
             <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
               <template #default="scope">
-                <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
+                <el-input v-show="scope.row.editable" v-model="scope.row.pwd"/>
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
               </template>
             </el-table-column>
@@ -218,6 +221,31 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
+        <el-tab-pane label="目录" name="dir">
+          <div style="padding: 50px 100px;">
+            <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
+              <template #default="{ node, data }">
+                <span>
+                  <span>
+                    <el-input v-model="data.label"></el-input>
+                  </span>
+                  <span style="right: 0px;position: absolute;">
+                    <a @click="appendTreeNode(data)">添加</a>
+                    <el-popconfirm title="确定要删除?" @confirm="removeTreeNode(node, data)" confirm-button-text="是"
+                      cancel-button-text="否">
+                      <template #reference>
+                        <a style="margin-left: 8px">删除</a>
+                      </template>
+                    </el-popconfirm>
+                  </span>
+                </span>
+              </template>
+            </el-tree>
+            <div style="float: right; position: relative;margin-top: 15px;">
+              <el-button type="primary" @click="saveTree">保存</el-button>
+            </div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
       <template #footer>
         <span class="dialog-footer">
@@ -225,39 +253,14 @@
         </span>
       </template>
     </el-dialog>
-    <el-dialog v-model="dirDialogVisible" @close="dirDialogVisible = false" width="350px">
-      <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
-        <template #default="{ node, data }">
-          <span>
-            <span>
-              <el-input v-model="data.label" size="small"></el-input>
-            </span>
-            <span style="right: 0px;position: absolute;">
-              <a @click="appendTreeNode(data)">添加</a>
-              <el-popconfirm title="确定要删除?" @confirm="removeTreeNode(node, data)" confirm-button-text="是"
-                cancel-button-text="否">
-                <template #reference>
-                  <a style="margin-left: 8px">删除</a>
-                </template>
-              </el-popconfirm>
-            </span>
-          </span>
-        </template>
-      </el-tree>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="saveTree">保存</el-button>
-          <el-button @click="dirDialogVisible = false">关闭</el-button>
-        </span>
-      </template>
-    </el-dialog>
-    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px">
+    <!-- 登录对话框 -->
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login">
       <el-form :model="loginForm" label-width="80px">
-        <el-form-item label="用户名">
+        <el-form-item label="用户名" required>
           <el-input v-model="loginForm.name" />
         </el-form-item>
-        <el-form-item label="密&nbsp;&nbsp;&nbsp;码">
-          <el-input v-model="loginForm.password" />
+        <el-form-item label="密&nbsp;&nbsp;&nbsp;码" required>
+          <el-input v-model="loginForm.password" type="password" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -284,16 +287,19 @@ const defaultTabAdmin = ref("role")
 const editableTabsValue = ref('')
 const editableTabs = ref([])
 
+const connTree = ref()
+const treeData = ref([])
 const treeDivWidth = ref("300px")
 const resizeTreeAreaFlag = ref(false)
 
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
+const isAdmin = ref(false)
+const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
 const formLabelWidth = '100px'
 const cfgDialogVisible = ref(false)
 const userList = ref([])
-const userListSelect = ref([])
 const connListSelect = ref([])
 const roleList = ref([])
 const userQuery = ref({
@@ -303,9 +309,8 @@ const userQuery = ref({
 const role = ref({})
 const user = ref({})
 const connList = ref([])
-
+const roleConnTree = ref()
 const conCfgTreeData = ref([])
-const dirDialogVisible = ref(false)
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
 
 const conn = ref({ dbType: "mysql" })
@@ -383,7 +388,7 @@ function mouseUp() {
 }
 
 function loadTree(node, resolve) {
-  if (node.data.type === 'column') {
+  if ((Object.keys(node.data).length === 0 && !loginSucc.value) || node.data.type === 'column') {
     resolve([])
     return
   }
@@ -459,14 +464,36 @@ function login() {
   params.append("password", loginForm.value.password);
   http.post("/login", params)
     .then((resp) => {
-      debugger
+      refreshTree()
+      isAdmin.value = resp.data.data.isAdmin
+      sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+      loginForm.value = {}
+      loginSucc.value = true
+      loginDialogVisible.value = false
+      ElMessage("登陆成功")
+    })
+}
+
+function logout() {
+  http.post("/logout")
+    .then((resp) => {
+      refreshTree()
+      isAdmin.value = false
+      loginSucc.value = false
       ElMessage(resp.data.data)
-      loginDialogVisible.value = true
+      sessionStorage.removeItem("authentication")
+    })
+}
+
+function refreshTree() {
+  http.get("/showTree", { params: { connId: 0, key: "", type: "dir", level: 0 } })
+    .then((resp) => {
+      treeData.value = resp.data.data
     })
 }
 
 function addUser() {
-  userList.value.push({ editable: true })
+  userList.value.push({ "roleId": [], "roleName": [], "loginName": "", "name": "", "pwd": "", editable: true })
 }
 
 function findUser() {
@@ -510,12 +537,15 @@ function loadCfgData(pane) {
         connList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
         setTimeout(listDirTree(), 1000)
       })
+  } else if (pane.props.name === "dir") {
+    listDirTree()
   }
 }
 
 function saveUser(row) {
   http.post("/saveUser", row)
     .then((resp) => {
+      findUser()
       row.editable = false
       ElMessage("保存成功")
     })
@@ -547,7 +577,10 @@ function roleDblClick(row) {
 }
 
 function saveRole(row) {
-  http.post("/saveRole", row)
+  const param = Object.assign({}, row)
+  param.connIdList = []
+  roleConnTree.value.getCheckedNodes(false, true).forEach((val) => param.connIdList.push(val.id))
+  http.post("/saveRole", param)
     .then((resp) => {
       loadCfgData({ props: { name: 'role' } })
       ElMessage("保存成功")
@@ -557,14 +590,13 @@ function saveRole(row) {
 function delRole(id) {
   http.get("/delRole", { params: { id: id } })
     .then((resp) => {
-      // findUser()
+      loadCfgData({ props: { name: 'role' } })
     })
 }
 
 function saveTree() {
   http.post("/saveTree", conCfgTreeData.value)
     .then((resp) => {
-      dirDialogVisible.value = false
       ElMessage("保存成功")
     })
 }

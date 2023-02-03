@@ -1,8 +1,9 @@
 package admin
 
 import (
-	"crypto/md5"
+	"errors"
 	"fmt"
+	"go-web/logutils"
 	"go-web/utils"
 	"go-web/utils/store"
 	"net/http"
@@ -15,20 +16,30 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	if name != "" {
 		user := findByLoginName(name)
-		if user.Pwd == pwd {
+		if user.Pwd == Md5sum(pwd) {
 			power := findUserPower(user.Id)
-			key := randomKey()
-			store.StoreItem(key, power)
+			key := Md5sum(fmt.Sprint(utils.RandomInt64()))
 			w.Header().Set("Authentication", key)
-			utils.WriteJson(w, "登录成功")
+			store.StoreItem(key, UserPower{UserId: user.Id, Power: power})
+			utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == 1})
+		} else {
+			logutils.Panicln(errors.New("用户名或密码不正确"))
 		}
 	} else {
-		utils.WriteJson(w, "登录失败")
+		logutils.Panicln(errors.New("登录失败"))
 	}
 }
 
-func randomKey() string {
-	h := md5.New()
-	h.Write([]byte(fmt.Sprint(utils.RandomInt64())))
-	return fmt.Sprint(h.Sum(nil))
+func Logout(w http.ResponseWriter, r *http.Request) {
+	key := r.Header.Get("Authentication")
+	store.RemoveItem(key)
+	utils.WriteJson(w, "退出成功")
+}
+
+func CheckPower(r *http.Request) {
+	authorization := r.Header.Get("Authorization")
+	userPower := store.GetItem(authorization)
+	if userPower == nil || userPower.(UserPower).UserId != 1 {
+		logutils.Panicln(errors.New("无权访问"))
+	}
 }

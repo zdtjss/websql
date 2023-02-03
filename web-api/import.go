@@ -20,6 +20,8 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	log.Println("收到新增/更新请求")
 	r.ParseMultipartForm(30 * 1024 * 1024)
 
+	authorization := r.Header.Get("Authorization")
+
 	connId := utils.AtoUint64(r.Form.Get("connId"))
 	schema := r.Form.Get("schema")
 	table := r.Form.Get("table")
@@ -39,7 +41,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	tx, _ := admin.GetConn(connId).Begin()
+	tx, _ := admin.GetConn(connId, authorization).Begin()
 	defer tx.Rollback()
 
 	rows, err := excel.Rows(table)

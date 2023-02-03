@@ -4,9 +4,9 @@ import (
 	"go-web/logutils"
 )
 
-func listSchema(key uint64) []*Tree {
+func listSchema(key uint64, authorization string) []*Tree {
 	schemaName := ""
-	row, err := GetConn(key).Query("select schema_name from information_schema.schemata")
+	row, err := GetConn(key, authorization).Query("select schema_name from information_schema.schemata")
 	logutils.Panicln(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -16,9 +16,9 @@ func listSchema(key uint64) []*Tree {
 	return tree
 }
 
-func listTable(key uint64, schema string) []*Tree {
+func listTable(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
-	row, err := GetConn(key).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
+	row, err := GetConn(key, authorization).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -28,9 +28,9 @@ func listTable(key uint64, schema string) []*Tree {
 	return tree
 }
 
-func listColumns(key uint64, table string) []*Tree {
+func listColumns(key uint64, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
-	row, err := GetConn(key).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
+	row, err := GetConn(key, authorization).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -40,9 +40,9 @@ func listColumns(key uint64, table string) []*Tree {
 	return tree
 }
 
-func listAllColumns(key uint64, schema string) []*Tree {
+func listAllColumns(key uint64, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
-	row, err := GetConn(key).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
+	row, err := GetConn(key, authorization).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {

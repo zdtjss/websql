@@ -8,6 +8,7 @@ const http = axios.create({
 
 http.interceptors.request.use((config) => {
     config.url = env.VITE_API_URL + config.url
+    config.headers['Authorization'] = sessionStorage.getItem("authentication") || ""
     return config
 });
 

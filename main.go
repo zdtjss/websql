@@ -37,6 +37,8 @@ func main() {
 
 	webapi.MainRegister(router)
 
+	config.InitMngtDbConn()
+
 	if *initSqlFile != "" {
 		config.InitDB(*initSqlFile)
 	}

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"bytes"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"go-web/config"
 	"go-web/logutils"
@@ -12,6 +14,7 @@ import (
 )
 
 func SaveRole(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	role := &RoleSave{}
 	utils.UnmarshalJson(r.Body, role)
 	tx, _ := config.Mngtdb.Beginx()
@@ -25,19 +28,12 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 		stmt, _ := tx.Prepare("update t_role set name = ? where id = ?")
 		tx.Stmt(stmt).Exec(&role.Name, &role.Id)
 		tx.Exec("delete from t_power where role_id = ?", &role.Id)
-		tx.Exec("update t_user set role_id = 0 where id = ?", &role.Id)
 	}
 	if len(role.ConnIdList) > 0 {
 		stmt, _ := tx.Prepare("insert into t_power (id, role_id, conn_id) values (?, ?, ?)")
 		for _, connId := range role.ConnIdList {
-			tx.Stmt(stmt).Exec(utils.RandomInt64(), role.Id, connId)
-		}
-	}
-	if len(role.UserIdList) > 0 {
-		stmt, _ := tx.Prepare("update t_user set role_id = ? where id = ?")
-		for _, userId := range role.UserIdList {
 			time.Sleep(10 * time.Millisecond)
-			tx.Stmt(stmt).Exec(&role.Id, userId)
+			tx.Stmt(stmt).Exec(utils.RandomInt64(), role.Id, connId)
 		}
 	}
 	err := tx.Commit()
@@ -46,18 +42,18 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func DelRole(w http.ResponseWriter, r *http.Request) {
-
+	CheckPower(r)
 	r.ParseForm()
 	id := utils.AtoUint64(r.FormValue("id"))
 
 	userCount := 0
-	config.Mngtdb.Select(userCount, "select count(*) from t_user_role where role_id = ?", id)
+	config.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
 	if userCount > 0 {
 		logutils.Panicln(errors.New("有用户，不能删。"))
 	}
 
 	powerCount := 0
-	config.Mngtdb.Select(powerCount, "select count(*) from t_power where role_id = ?", id)
+	config.Mngtdb.Select(&powerCount, "select count(*) from t_power where role_id = ?", id)
 	if powerCount > 0 {
 		logutils.Panicln(errors.New("有权限，不能删。"))
 	}
@@ -98,14 +94,23 @@ func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func SaveUser(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	user := &User{}
 	utils.UnmarshalJson(r.Body, user)
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 	if user.Id == 0 {
-		stmt, _ := config.Mngtdb.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?, ?)")
-		tx.Stmt(stmt).Exec(utils.RandomInt64(), &user.Name, &user.LoginName, &user.Pwd)
+		stmt, _ := config.Mngtdb.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?)")
+		rs, _ := tx.Stmt(stmt).Exec(utils.RandomInt64(), &user.Name, &user.LoginName, Md5sum(user.Pwd))
+		id, _ := rs.LastInsertId()
+		*&user.Id = uint64(id)
 	} else {
+		var userDb []User
+		config.Mngtdb.Select(&userDb, "select pwd from t_user where id = ?", user.Id)
+		md5pwd := Md5sum(user.Pwd)
+		if userDb[0].Pwd != md5pwd {
+			user.Pwd = md5pwd
+		}
 		stmt, _ := config.Mngtdb.Prepare("update t_user set name = ?, login_name = ?, pwd = ? where id = ?")
 		tx.Stmt(stmt).Exec(&user.Name, &user.LoginName, &user.Pwd, &user.Id)
 		tx.Exec("delete from t_user_role where user_id = ?", user.Id)
@@ -113,6 +118,7 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	if len(user.RoleId) > 0 {
 		stmt, _ := tx.Prepare("insert into t_user_role (id, role_id, user_id) values (?, ?, ?)")
 		for _, rid := range user.RoleId {
+			time.Sleep(10 * time.Millisecond)
 			tx.Stmt(stmt).Exec(utils.RandomInt64(), rid, user.Id)
 		}
 	}
@@ -121,7 +127,15 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, "")
 }
 
+func Md5sum(s string) string {
+	h := md5.New()
+	h.Write([]byte(s))
+	h.Write([]byte("dd5ac9a6fa2da9aaacc3cccca15b9707"))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func DelUser(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	r.ParseForm()
 	config.Mngtdb.Exec("delete from t_user where id = ?", utils.AtoUint64(r.FormValue("id")))
 	utils.WriteJson(w, "")
@@ -162,6 +176,7 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	}
 	userRoleMap := findUserRole(userIds)
 	for _, user := range userList {
+		user.Pwd = ""
 		roleIds := []*uint64{}
 		roleNames := []*string{}
 		for _, userRole := range userRoleMap[user.Id] {
@@ -176,15 +191,15 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func findByLoginName(loginName string) User {
-	var user User
-	err := config.Mngtdb.Select(&user, "select id,pwd fromt_user where login_name = ?", loginName)
+	var user []User
+	err := config.Mngtdb.Select(&user, "select id,name,pwd from t_user where login_name = ?", loginName)
 	logutils.Panicln(err)
-	return user
+	return user[0]
 }
 
 func findUserPower(userId uint64) []uint64 {
 	resIds := []uint64{}
-	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role u on ur.role_id = p.role_id where ur.user_id = ?", userId)
+	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
 	logutils.Println(err)
 	var resId uint64
 	for rows.Next() {
@@ -194,14 +209,19 @@ func findUserPower(userId uint64) []uint64 {
 	return resIds
 }
 
-func appendPmsn(sql bytes.Buffer, param []any, userId uint64) {
-	powerList := findUserPower(userId)
-	powerCount := len(powerList)
-	sql.WriteString("role_id in ( ")
+func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower UserPower) {
+	powerCount := len(userPower.Power)
+	sql.WriteString(" and ")
+	if powerCount == 0 {
+		sql.WriteString(" 1 = 2 ")
+		return
+	}
+	sql.WriteString(col)
+	sql.WriteString(" in ( ")
 	sql.WriteString(strings.Repeat("?,", powerCount)[0 : powerCount*2-1])
 	sql.WriteString(") ")
 	for i := 0; i < powerCount; i++ {
-		*&param = append(*&param, powerList[i])
+		(*param) = append((*param), userPower.Power[i])
 	}
 }
 
@@ -266,6 +286,11 @@ type User struct {
 	LoginName string    `json:"loginName" db:"login_name"`
 	Name      string    `json:"name"`
 	Pwd       string    `json:"pwd"`
+}
+
+type UserPower struct {
+	UserId uint64
+	Power  []uint64
 }
 
 type Role struct {

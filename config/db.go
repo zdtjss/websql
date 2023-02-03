@@ -12,7 +12,7 @@ import (
 var Mngtdb *sqlx.DB
 var DBMap map[uint64]*sqlx.DB = make(map[uint64]*sqlx.DB)
 
-func init() {
+func InitMngtDbConn() {
 	Cfg = ReadConfig()
 	sqlxDb, err := sqlx.Connect(Cfg.DB.DriverName, Cfg.DB.DataSourceName)
 	if err != nil {

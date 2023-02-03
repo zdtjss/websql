@@ -2,16 +2,20 @@ package admin
 
 import (
 	"bytes"
+	"errors"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
+	"go-web/utils/store"
 	"net/http"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/exp/slices"
 )
 
 func SaveConn(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(r.Body, cfg)
 	if cfg.Id == 0 {
@@ -26,6 +30,7 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 }
 
 func DelConn(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	r.ParseForm()
 	id := utils.AtoUint64(r.FormValue("id"))
 	config.Mngtdb.Exec("delete from t_conn where id = ?", id)
@@ -38,41 +43,44 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	key := r.Form.Get("key")
 	curType := r.Form.Get("type")
 	level := r.Form.Get("level")
+	authorization := r.Header.Get("Authorization")
+	userPower := store.GetItem(authorization)
+
+	if userPower == nil {
+		userPower = UserPower{}
+	}
+
 	nextType := getNextType(curType)
 
 	var data []*Tree
 	switch nextType {
 	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
-			data = findByParent(key)
+			data = findByParent(key, userPower.(UserPower))
 			if len(data) == 0 || data[0] == nil {
-				data = listConn(key)
+				data = listConn(key, userPower.(UserPower))
 			}
 			if level == "0" {
-				data = append(data, listConn("noneParent")...)
+				data = append(data, listConn("noneParent", userPower.(UserPower))...)
 			}
 		} else {
 			data = make([]*Tree, 0)
 		}
 	case TREE_NODE_TYPE_CONN:
-		data = listConn(key)
+		data = listConn(key, userPower.(UserPower))
 	case TREE_NODE_TYPE_SCHEMA:
-		data = listSchema(connId)
+		data = listSchema(connId, authorization)
 	case TREE_NODE_TYPE_TABLE:
-		data = listTable(connId, key)
+		data = listTable(connId, key, authorization)
 	case TREE_NODE_TYPE_COLUMN:
-		data = listColumns(connId, key)
+		data = listColumns(connId, key, authorization)
 	case TREE_NODE_TYPE_ALLCOLUMN:
-		data = listAllColumns(connId, key)
+		data = listAllColumns(connId, key, authorization)
 	}
 	utils.WriteJson(w, data)
 }
 
-func ShowTree2(w http.ResponseWriter, r *http.Request) {
-
-}
-
-func listConn(parentId string) []*Tree {
+func listConn(parentId string, userPower UserPower) []*Tree {
 	if parentId == "" {
 		return nil
 	}
@@ -80,11 +88,12 @@ func listConn(parentId string) []*Tree {
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_conn")
 	if strings.EqualFold(parentId, "noneParent") {
-		sql.WriteString(" where parent_id = 0 or parent_id is null")
+		sql.WriteString(" where (parent_id = 0 or parent_id is null)")
 	} else if parentId != "" {
 		param = append(param, parentId)
 		sql.WriteString(" where parent_id = ?")
 	}
+	appendPmsn(&sql, "id", &param, userPower)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.Panicln(err)
@@ -142,7 +151,11 @@ func getNextType(curType string) string {
 	return t
 }
 
-func GetConn(id uint64) *sqlx.DB {
+func GetConn(id uint64, authorization string) *sqlx.DB {
+	userPower := store.GetItem(authorization)
+	if userPower == nil || !slices.Contains(userPower.(UserPower).Power, id) {
+		logutils.Panicln(errors.New("无权访问"))
+	}
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
 	logutils.Panicln(err)

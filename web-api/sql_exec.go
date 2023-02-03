@@ -14,6 +14,8 @@ import (
 )
 
 func ExecSQL(w http.ResponseWriter, r *http.Request) {
+	authorization := r.Header.Get("Authorization")
+
 	r.ParseForm()
 	connId := utils.AtoUint64(r.Form.Get("connId"))
 	// schema := r.Form.Get("schema")
@@ -23,7 +25,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, admin.GetConn(connId))
+		rspData.Data = batchExec(&sqlStr, admin.GetConn(connId, authorization))
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
@@ -32,7 +34,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
-		rows, err2 := admin.GetConn(connId).Query(sqlStr, params...)
+		rows, err2 := admin.GetConn(connId, authorization).Query(sqlStr, params...)
 		logutils.Panicln(err2)
 		cts, err3 := rows.ColumnTypes()
 		logutils.Panicln(err3)

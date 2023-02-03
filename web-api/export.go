@@ -15,25 +15,26 @@ import (
 )
 
 func ExportXlsx(w http.ResponseWriter, r *http.Request) {
+	authorization := r.Header.Get("Authorization")
 	r.ParseForm()
 	table := r.Form.Get("table")
 	connId := utils.AtoUint64(r.Form.Get("connId"))
 	schema := r.Form.Get("schema")
 	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".xlsx")
-	queryAndWrite(schema+"."+table, w, connId)
+	queryAndWrite(schema+"."+table, w, connId, authorization)
 }
 
-func queryAndWrite(table string, out io.Writer, connId uint64) {
+func queryAndWrite(table string, out io.Writer, connId uint64, authorization string) {
 	log.Println("正在导出：", table)
-	rows, err := admin.GetConn(connId).Query(fmt.Sprintf("SELECT * from %s", table))
+	rows, err := admin.GetConn(connId, authorization).Query(fmt.Sprintf("SELECT * from %s", table))
 	logutils.Panicln(err)
 
 	columns, err := rows.Columns()
 	logutils.Panicln(err)
 
 	columnComment := make([]string, len(columns))
-	columnMap := columnMap(table, connId)
+	columnMap := columnMap(table, connId, authorization)
 	for i := 0; i < len(columns); i++ {
 		columnComment[i] = columnMap[columns[i]]
 	}
@@ -88,9 +89,9 @@ func queryAndWrite(table string, out io.Writer, connId uint64) {
 	excel.Write(out)
 }
 
-func columnMap(table string, connId uint64) map[string]string {
+func columnMap(table string, connId uint64, authorization string) map[string]string {
 	columnMap := make(map[string]string)
-	stmt, err := admin.GetConn(connId).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
+	stmt, err := admin.GetConn(connId, authorization).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
 	logutils.Println(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
 	logutils.Println(err2)

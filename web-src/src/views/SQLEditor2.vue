@@ -49,7 +49,7 @@ import excel from '../js/utils/excel.js'
 
 const props = defineProps<{
     tabId: string,
-    connId: string,
+    connId: number,
     schema: string
 }>()
 
