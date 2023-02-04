@@ -2,9 +2,11 @@ package admin
 
 import (
 	"go-web/logutils"
+	"go-web/utils"
+	"net/http"
 )
 
-func listSchema(key uint64, authorization string) []*Tree {
+func listSchema_mysql(key uint64, authorization string) []*Tree {
 	schemaName := ""
 	row, err := GetConn(key, authorization).Query("select schema_name from information_schema.schemata")
 	logutils.Panicln(err)
@@ -16,7 +18,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 	return tree
 }
 
-func listTable(key uint64, schema, authorization string) []*Tree {
+func listTable_mysql(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	row, err := GetConn(key, authorization).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
 	logutils.Println(err)
@@ -28,7 +30,7 @@ func listTable(key uint64, schema, authorization string) []*Tree {
 	return tree
 }
 
-func listColumns(key uint64, table, authorization string) []*Tree {
+func listColumns_mysql(key uint64, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	row, err := GetConn(key, authorization).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
 	logutils.Println(err)
@@ -40,7 +42,7 @@ func listColumns(key uint64, table, authorization string) []*Tree {
 	return tree
 }
 
-func listAllColumns(key uint64, schema, authorization string) []*Tree {
+func listAllColumns_mysql(key uint64, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	row, err := GetConn(key, authorization).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
 	logutils.Println(err)
@@ -50,4 +52,31 @@ func listAllColumns(key uint64, schema, authorization string) []*Tree {
 		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
 	return tree
+}
+
+func ListTableFat_mysql(w http.ResponseWriter, r *http.Request) {
+	authorization := r.Header.Get("Authorization")
+	r.ParseForm()
+	tables := queryTableInfo_mysql(utils.AtoUint64(r.FormValue("connId")), r.Form.Get("schema"), authorization)
+	utils.WriteJson(w, tables)
+}
+
+func queryTableInfo_mysql(key uint64, schema, authorization string) []*Table {
+	tables := make([]*Table, 0)
+	stmt, err := GetConn(key, authorization).Prepare("SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?")
+	logutils.Println(err)
+	rs, err2 := stmt.Query(schema)
+	logutils.Println(err2)
+	var name, comment string
+	for rs.Next() {
+		rs.Scan(&name, &comment)
+		table := &Table{name, comment}
+		tables = append(tables, table)
+	}
+	return tables
+}
+
+type Table struct {
+	Name    string `json:"name"`
+	Comment string `json:"comment"`
 }
