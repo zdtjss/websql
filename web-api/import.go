@@ -3,13 +3,11 @@ package webapi
 import (
 	"bytes"
 	"database/sql"
-	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -124,12 +122,12 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	stmt, err := tx.Prepare(sql.String())
 	logutils.Panicln(err)
 
-	colTypeMap := queryColType(schema, table, tx)
+	colTypeMap := admin.QueryColTypeMysql(schema, table, tx)
 
 	anyVal := make([]interface{}, len(columns))
 	for _, val := range data {
 		for i, v := range val {
-			anyVal[i] = parseVal(colTypeMap[columns[i]], v)
+			anyVal[i] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
 		}
 		_, err = stmt.Exec(anyVal...)
 		logutils.Panicln(err)
@@ -143,7 +141,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		return
 	}
 
-	keys := queryKey(schema, table, tx)
+	keys := admin.QueryPrimaryKeyMySQL(schema, table, tx)
 	keyIdx := keyIdx(keys, columns)
 
 	sql := bytes.Buffer{}
@@ -174,17 +172,17 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	valCount := -1
 	paramCount := -1
 
-	colTypeMap := queryColType(schema, table, tx)
+	colTypeMap := admin.QueryColTypeMysql(schema, table, tx)
 
 	anyVal := make([]any, len(columns))
 	for _, val := range data {
 		for i, v := range val {
 			if !slices.Contains(keyIdx, i) {
 				valCount++
-				anyVal[valCount] = parseVal(colTypeMap[columns[i]], v)
+				anyVal[valCount] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
 			} else {
 				paramCount++
-				anyVal[len(columns)-len(keys)+paramCount] = parseVal(colTypeMap[columns[i]], v)
+				anyVal[len(columns)-len(keys)+paramCount] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
 			}
 		}
 
@@ -205,60 +203,4 @@ func keyIdx(keys, columns []string) []int {
 		}
 	}
 	return keyIdx
-}
-
-func queryKey(schema, table string, tx *sql.Tx) []string {
-	primaryKeys := make([]string, 0)
-	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
-	logutils.Println(err)
-	rs, err2 := stmt.Query(schema, table)
-	logutils.Println(err2)
-	var name string
-	for rs.Next() {
-		rs.Scan(&name)
-		primaryKeys = append(primaryKeys, name)
-	}
-	if len(primaryKeys) == 0 {
-		msg := fmt.Sprintf("%s 没有主键", table)
-		log.Println(msg)
-		panic(msg)
-	}
-	return primaryKeys
-}
-
-func queryColType(schema, table string, tx *sql.Tx) map[string]string {
-	colTypeMap := make(map[string]string, 0)
-	stmt, err := tx.Prepare("select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?")
-	logutils.Println(err)
-	rs, err2 := stmt.Query(schema, table)
-	logutils.Println(err2)
-	var colName, colType string
-	for rs.Next() {
-		rs.Scan(&colName, &colType)
-		colTypeMap[colName] = colType
-	}
-	return colTypeMap
-}
-
-func parseVal(colType string, val string) (retVal any) {
-	if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
-		return nil
-	}
-	switch colType {
-	case "float", "double", "decimal":
-		f, err := strconv.ParseFloat(val, 64)
-		logutils.Panicln(err)
-		retVal = f
-	case "int", "bigint", "smallint", "tinyint":
-		f, err := strconv.ParseInt(val, 10, 64)
-		logutils.Panicln(err)
-		retVal = f
-	case "bit":
-		f, err := strconv.ParseBool(val)
-		logutils.Panicln(err)
-		retVal = f
-	default:
-		retVal = val
-	}
-	return retVal
 }

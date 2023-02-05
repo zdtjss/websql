@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -34,7 +33,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	logutils.Panicln(err)
 
 	columnComment := make([]string, len(columns))
-	columnMap := columnMap(table, connId, authorization)
+	columnMap := admin.ColumnMapMySQL(table, connId, authorization)
 	for i := 0; i < len(columns); i++ {
 		columnComment[i] = columnMap[columns[i]]
 	}
@@ -75,7 +74,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 		//存每一行的内容
 		var row []any
 		for i, v := range values {
-			row = append(row, ConvertCol(colTypeMap[columns[i]], v))
+			row = append(row, admin.ConvertColMySQL(colTypeMap[columns[i]], v))
 		}
 
 		count++
@@ -87,18 +86,4 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	}
 
 	excel.Write(out)
-}
-
-func columnMap(table string, connId uint64, authorization string) map[string]string {
-	columnMap := make(map[string]string)
-	stmt, err := admin.GetConn(connId, authorization).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
-	logutils.Println(err)
-	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
-	logutils.Println(err2)
-	var name, comment string
-	for rs.Next() {
-		rs.Scan(&name, &comment)
-		columnMap[name] = comment
-	}
-	return columnMap
 }

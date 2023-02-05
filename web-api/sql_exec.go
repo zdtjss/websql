@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -128,47 +127,13 @@ func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 		for i, val := range values { // val是每个列对应的值
 			key := columns[i] //列名
 			// 列名与值对应
-			row[key] = ConvertCol(colTypeMap[key], val)
+			row[key] = admin.ConvertColMySQL(colTypeMap[key], val)
 		}
 
 		// 将product归到集合中
 		dataMaps = append(dataMaps, row)
 	}
 	return dataMaps
-}
-
-func ConvertCol(colType string, val any) any {
-	var v any
-	//判断是否为[]byte
-	if b, ok := val.([]byte); ok {
-		switch colType {
-		case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
-			iv, err := strconv.ParseInt(string(b), 10, 32)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = int(iv)
-		case "BIGINT":
-			iv, err := strconv.ParseInt(string(b), 10, 64)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = iv
-		case "FLOAT":
-			iv, err := strconv.ParseFloat(string(b), 32)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = float32(iv)
-		case "DOUBLE", "DECIMAL":
-			iv, err := strconv.ParseFloat(string(b), 64)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = iv
-		case "BIT":
-			v = b[0] == byte(1)
-		default:
-			v = string(b)
-		}
-	} else if t, ok := val.(time.Time); ok {
-		v = t.Format("2006-01-02 15:04:05")
-	} else {
-		v = val
-	}
-	return v
 }
 
 type Column struct {

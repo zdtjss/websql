@@ -66,13 +66,13 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	case TREE_NODE_TYPE_CONN:
 		data = listConn(key, userPower)
 	case TREE_NODE_TYPE_SCHEMA:
-		data = listSchema_mysql(connId, authorization)
+		data = listSchemaMySQL(connId, authorization)
 	case TREE_NODE_TYPE_TABLE:
-		data = listTable_mysql(connId, key, authorization)
+		data = listTableMySQL(connId, key, authorization)
 	case TREE_NODE_TYPE_COLUMN:
-		data = listColumns_mysql(connId, key, authorization)
+		data = listColumnsMySQL(connId, key, authorization)
 	case TREE_NODE_TYPE_ALLCOLUMN:
-		data = listAllColumns_mysql(connId, key, authorization)
+		data = listAllColumnsMySQL(connId, key, authorization)
 	}
 	utils.WriteJson(w, data)
 }

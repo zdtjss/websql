@@ -23,7 +23,7 @@ var destAddr string = "http://localhost:8083"
 
 func MainRegister(router *mux.Router) {
 
-	router.HandleFunc("/listTable", admin.ListTableFat_mysql).Methods("GET")
+	router.HandleFunc("/listTable", admin.ListTableFatMySQL).Methods("GET")
 	router.HandleFunc("/exportXlsx", ExportXlsx).Methods("GET")
 	router.HandleFunc("/importXlsx", ImportXlsx).Methods("POST")
 	router.HandleFunc("/execSQL", ExecSQL).Methods("GET")
