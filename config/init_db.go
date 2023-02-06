@@ -12,7 +12,7 @@ func InitDB(scriptFile string) {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := Mngtdb.DB.Begin()
 	defer tx.Rollback()
-	logutils.Panicf("事务开启失败， %s\n", err)
+	logutils.Panicf("事务开启失败， %x\n", err)
 	for _, s := range sqlArr {
 		relSql := utils.ExtractSql(s)
 		if relSql == "" {

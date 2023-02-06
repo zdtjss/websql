@@ -9,7 +9,7 @@ func Println(err error) {
 }
 
 func Printf(format string, err ...any) {
-	if err != nil {
+	if len(err) == 1 && err[0] != nil {
 		log.Printf(format, err...)
 	}
 }
@@ -21,7 +21,7 @@ func Panicln(err error) {
 }
 
 func Panicf(format string, err ...any) {
-	if err != nil {
+	if len(err) == 1 && err[0] != nil {
 		log.Panicf(format, err...)
 	}
 }
