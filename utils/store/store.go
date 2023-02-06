@@ -44,15 +44,15 @@ func GetItem(key string, dist any) {
 	}
 	if RDB != nil {
 		val, _ := RDB.Get(ctx, key).Result()
+		RDB.Expire(ctx, key, 30*time.Minute)
 		err := utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
 		if err != nil && val != "" {
-			*&dist = val
-			RDB.Expire(ctx, key, 30*time.Minute)
+			dist = val
 		} else if err != nil {
 			logutils.Printf("获取key:%s 失败,err:%x", key, err)
 		}
 	} else {
-		v, _ := store[key]
-		*&dist = v
+		v := store[key]
+		utils.UnmarshalJson(bytes.NewBuffer(utils.ToJsonString(v)), &dist)
 	}
 }

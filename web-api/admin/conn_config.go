@@ -102,6 +102,7 @@ func listConn(parentId string, userPower UserPower) []*Tree {
 }
 
 func ListConn2(w http.ResponseWriter, r *http.Request) {
+	CheckPower(r)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
 	logutils.Panicln(err)
