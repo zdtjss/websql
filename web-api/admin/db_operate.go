@@ -1,23 +1,20 @@
 package admin
 
 import (
-	"database/sql"
 	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
-	"golang.org/x/exp/slices"
+	"github.com/jmoiron/sqlx"
 )
 
 func listSchema(key uint64, authorization string) []*Tree {
 	schemaName := ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listSchemaMySQL"])
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listSchema"])
 	logutils.Panicln(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -30,7 +27,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 func listTable(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listTableMySQL"], schema)
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -43,7 +40,7 @@ func listTable(key uint64, schema, authorization string) []*Tree {
 func listColumns(key uint64, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listColumnsMySQL"], table)
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listColumns"], table)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -56,7 +53,7 @@ func listColumns(key uint64, table, authorization string) []*Tree {
 func listAllColumns(key uint64, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listAllColumnsMySQL"], schema)
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -76,7 +73,7 @@ func ListTableFat(w http.ResponseWriter, r *http.Request) {
 func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
-	stmt, err := dc.Conn.Prepare(SQL_DIALECT[dc.DbType]["queryTableInfoMySQL"])
+	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["queryTableInfo"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.Println(err2)
@@ -89,67 +86,20 @@ func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	return tables
 }
 
-func ConvertColMySQL(colType string, val any) any {
-	var v any
-	//判断是否为[]byte
-	if b, ok := val.([]byte); ok {
-		switch colType {
-		case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
-			iv, err := strconv.ParseInt(string(b), 10, 32)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = int(iv)
-		case "BIGINT":
-			iv, err := strconv.ParseInt(string(b), 10, 64)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = iv
-		case "FLOAT":
-			iv, err := strconv.ParseFloat(string(b), 32)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = float32(iv)
-		case "DOUBLE", "DECIMAL":
-			iv, err := strconv.ParseFloat(string(b), 64)
-			logutils.Panicf("转换类型失败， %x", err)
-			v = iv
-		case "BIT":
-			v = b[0] == byte(1)
-		default:
-			v = string(b)
-		}
-	} else if t, ok := val.(time.Time); ok {
-		v = t.Format("2006-01-02 15:04:05")
-	} else {
-		v = val
-	}
-	return v
+func ConvertCol(dbType, colType string, val any) any {
+
+	return ConvertColHandler[dbType](colType, val)
 }
 
-func ParseValMySQL(colType string, val string) (retVal any) {
-	if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
-		return nil
-	}
-	switch colType {
-	case "float", "double", "decimal":
-		f, err := strconv.ParseFloat(val, 64)
-		logutils.Panicln(err)
-		retVal = f
-	case "int", "bigint", "smallint", "tinyint":
-		f, err := strconv.ParseInt(val, 10, 64)
-		logutils.Panicln(err)
-		retVal = f
-	case "bit":
-		f, err := strconv.ParseBool(val)
-		logutils.Panicln(err)
-		retVal = f
-	default:
-		retVal = val
-	}
-	return retVal
+func ParseVal(dbType, colType string, val string) (retVal any) {
+
+	return ParseValHandler[dbType](colType, val)
 }
 
 func ColumnMap(table string, connId uint64, authorization string) map[string]string {
 	columnMap := make(map[string]string)
 	dc := GetConn(connId, authorization)
-	stmt, err := dc.Conn.Prepare(SQL_DIALECT[dc.DbType]["ColumnMapMySQL"])
+	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["ColumnMap"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
 	logutils.Println(err2)
@@ -161,9 +111,9 @@ func ColumnMap(table string, connId uint64, authorization string) map[string]str
 	return columnMap
 }
 
-func QueryPrimaryKey(schema, table string, tx *sql.Tx) []string {
+func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 	primaryKeys := make([]string, 0)
-	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
+	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(schema, table)
 	logutils.Println(err2)
@@ -180,9 +130,9 @@ func QueryPrimaryKey(schema, table string, tx *sql.Tx) []string {
 	return primaryKeys
 }
 
-func QueryColType(schema, table string, tx *sql.Tx) map[string]string {
+func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 	colTypeMap := make(map[string]string, 0)
-	stmt, err := tx.Prepare("select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?")
+	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryColType"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(schema, table)
 	logutils.Println(err2)

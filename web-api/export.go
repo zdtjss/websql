@@ -26,7 +26,9 @@ func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 
 func queryAndWrite(table string, out io.Writer, connId uint64, authorization string) {
 	log.Println("正在导出：", table)
-	rows, err := admin.GetConn(connId, authorization).Query(fmt.Sprintf("SELECT * from %s", table))
+
+	connCtx := admin.GetConn(connId, authorization)
+	rows, err := connCtx.Query(fmt.Sprintf("SELECT * from %s", table))
 	logutils.Panicln(err)
 
 	columns, err := rows.Columns()
@@ -74,7 +76,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 		//存每一行的内容
 		var row []any
 		for i, v := range values {
-			row = append(row, admin.ConvertColMySQL(colTypeMap[columns[i]], v))
+			row = append(row, admin.ConvertCol(connCtx.DriverName(), colTypeMap[columns[i]], v))
 		}
 
 		count++

@@ -149,7 +149,7 @@ func getNextType(curType string) string {
 	return t
 }
 
-func GetConn(id uint64, authorization string) *DbConn {
+func GetConn(id uint64, authorization string) *sqlx.DB {
 	var userPower UserPower
 	store.GetItem(authorization, &userPower)
 	if !slices.Contains(userPower.Power, id) {
@@ -158,7 +158,7 @@ func GetConn(id uint64, authorization string) *DbConn {
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
 	logutils.Panicln(err)
-	return &DbConn{cfgList[0].DbType, config.GetConn(convertToDBParam(&cfgList[0]))}
+	return config.GetConn(convertToDBParam(&cfgList[0]))
 }
 
 func convertToDBParam(cfg *ConnCfg) *config.DBParam {
@@ -174,11 +174,6 @@ type ConnCfg struct {
 	User       string  `json:"user"`
 	Pwd        string  `json:"pwd"`
 	Url        string  `json:"url"`
-}
-
-type DbConn struct {
-	DbType string
-	Conn   *sqlx.DB
 }
 
 type ConnCfgBase struct {

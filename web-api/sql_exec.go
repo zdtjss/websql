@@ -22,9 +22,11 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	maxLine := r.Form.Get("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
 
+	conn := admin.GetConn(connId, authorization)
+
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, admin.GetConn(connId, authorization))
+		rspData.Data = batchExec(&sqlStr, conn)
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
@@ -33,7 +35,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
-		rows, err2 := admin.GetConn(connId, authorization).Query(sqlStr, params...)
+		rows, err2 := conn.Query(sqlStr, params...)
 		logutils.Panicln(err2)
 		cts, err3 := rows.ColumnTypes()
 		logutils.Panicln(err3)
@@ -42,7 +44,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName()}
 		}
 
-		data := GetResultRows(rows)
+		data := GetResultRows(conn.DriverName(), rows)
 
 		rspData := TableDataList{Columns: columnList, Data: data}
 
@@ -91,7 +93,7 @@ func checkContains(src string, suffix []string) bool {
 	return false
 }
 
-func GetResultRows(rows *sql.Rows) []map[string]interface{} {
+func GetResultRows(dbtype string, rows *sql.Rows) []map[string]interface{} {
 
 	dataMaps := make([]map[string]interface{}, 0)
 	cts, err := rows.ColumnTypes()
@@ -127,7 +129,7 @@ func GetResultRows(rows *sql.Rows) []map[string]interface{} {
 		for i, val := range values { // val是每个列对应的值
 			key := columns[i] //列名
 			// 列名与值对应
-			row[key] = admin.ConvertColMySQL(colTypeMap[key], val)
+			row[key] = admin.ConvertColHandler["dbtype"](colTypeMap[key], val)
 		}
 
 		// 将product归到集合中

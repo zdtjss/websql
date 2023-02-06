@@ -50,15 +50,6 @@
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                <!-- <el-select v-show="scope.row.editable" v-model="scope.row.connIdList" multiple filterable collapse-tags
-                  collapse-tags-tooltip placeholder="请选择">
-                  <el-option v-for="item in connListSelect" :key="item.id" :value="item.id" :label="item.name">
-                    <span style="float: left">{{ item.name }}</span>
-                    <span style="float: right;color: var(--el-text-color-secondary);font-size: 13px;">{{
-                      item.treeNode
-                      }}</span>
-                  </el-option>
-                </el-select> -->
                 <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList"
                   :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
                   :render-after-expand="false" :check-on-click-node="true" show-checkbox :check-strictly="false" />
@@ -164,14 +155,14 @@
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <!-- <el-table-column prop="dbType" label="数据库类型" width="120">
+            <el-table-column prop="dbType" label="数据库类型" width="120">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.dbType }}</span>
+                <span v-show="!scope.row.editable">{{ dbTypeList.filter(t => t.value === scope.row.dbType)[0].label }}</span>
                 <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
                   <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
                 </el-select>
               </template>
-            </el-table-column> -->
+            </el-table-column>
             <el-table-column prop="parentId" label="所属层级" width="130">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.parentName }}</span>
@@ -312,7 +303,7 @@ const user = ref({})
 const connList = ref([])
 const roleConnTree = ref()
 const conCfgTreeData = ref([])
-const dbTypeList = ref([{ label: "MySQL", value: "mysql" }])
+const dbTypeList = ref([{ label: "MySQL", value: "mysql" }, { label: "Oracle", value: "oracle" }])
 
 const conn = ref({ dbType: "mysql" })
 

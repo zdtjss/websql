@@ -2,7 +2,6 @@ package webapi
 
 import (
 	"bytes"
-	"database/sql"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
@@ -10,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/exp/slices"
 )
@@ -39,7 +39,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	tx, _ := admin.GetConn(connId, authorization).Begin()
+	tx, _ := admin.GetConn(connId, authorization).Beginx()
 	defer tx.Rollback()
 
 	rows, err := excel.Rows(table)
@@ -98,7 +98,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func insertToDb(schema, table string, columns []string, data [][]string, tx *sql.Tx) {
+func insertToDb(schema, table string, columns []string, data [][]string, tx *sqlx.Tx) {
 
 	if len(data) == 0 {
 		return
@@ -119,7 +119,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	log.Println(sql.String())
 
-	stmt, err := tx.Prepare(sql.String())
+	stmt, err := tx.Tx.Prepare(sql.String())
 	logutils.Panicln(err)
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
@@ -127,7 +127,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	anyVal := make([]interface{}, len(columns))
 	for _, val := range data {
 		for i, v := range val {
-			anyVal[i] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
+			anyVal[i] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
 		}
 		_, err = stmt.Exec(anyVal...)
 		logutils.Panicln(err)
@@ -135,7 +135,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 }
 
-func updateToDb(schema, table string, columns []string, data [][]string, tx *sql.Tx) {
+func updateToDb(schema, table string, columns []string, data [][]string, tx *sqlx.Tx) {
 
 	if len(data) == 0 {
 		return
@@ -166,7 +166,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	log.Println(realSql)
 
-	stmt, err := tx.Prepare(realSql)
+	stmt, err := tx.Tx.Prepare(realSql)
 	logutils.Panicln(err)
 
 	valCount := -1
@@ -179,10 +179,10 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		for i, v := range val {
 			if !slices.Contains(keyIdx, i) {
 				valCount++
-				anyVal[valCount] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
+				anyVal[valCount] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
 			} else {
 				paramCount++
-				anyVal[len(columns)-len(keys)+paramCount] = admin.ParseValMySQL(colTypeMap[columns[i]], v)
+				anyVal[len(columns)-len(keys)+paramCount] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
 			}
 		}
 
