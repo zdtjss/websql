@@ -33,7 +33,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	logutils.Panicln(err)
 
 	columnComment := make([]string, len(columns))
-	columnMap := admin.ColumnMapMySQL(table, connId, authorization)
+	columnMap := admin.ColumnMap(table, connId, authorization)
 	for i := 0; i < len(columns); i++ {
 		columnComment[i] = columnMap[columns[i]]
 	}

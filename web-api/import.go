@@ -122,7 +122,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	stmt, err := tx.Prepare(sql.String())
 	logutils.Panicln(err)
 
-	colTypeMap := admin.QueryColTypeMysql(schema, table, tx)
+	colTypeMap := admin.QueryColType(schema, table, tx)
 
 	anyVal := make([]interface{}, len(columns))
 	for _, val := range data {
@@ -141,7 +141,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		return
 	}
 
-	keys := admin.QueryPrimaryKeyMySQL(schema, table, tx)
+	keys := admin.QueryPrimaryKey(schema, table, tx)
 	keyIdx := keyIdx(keys, columns)
 
 	sql := bytes.Buffer{}
@@ -172,7 +172,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	valCount := -1
 	paramCount := -1
 
-	colTypeMap := admin.QueryColTypeMysql(schema, table, tx)
+	colTypeMap := admin.QueryColType(schema, table, tx)
 
 	anyVal := make([]any, len(columns))
 	for _, val := range data {

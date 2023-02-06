@@ -66,13 +66,13 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	case TREE_NODE_TYPE_CONN:
 		data = listConn(key, userPower)
 	case TREE_NODE_TYPE_SCHEMA:
-		data = listSchemaMySQL(connId, authorization)
+		data = listSchema(connId, authorization)
 	case TREE_NODE_TYPE_TABLE:
-		data = listTableMySQL(connId, key, authorization)
+		data = listTable(connId, key, authorization)
 	case TREE_NODE_TYPE_COLUMN:
-		data = listColumnsMySQL(connId, key, authorization)
+		data = listColumns(connId, key, authorization)
 	case TREE_NODE_TYPE_ALLCOLUMN:
-		data = listAllColumnsMySQL(connId, key, authorization)
+		data = listAllColumns(connId, key, authorization)
 	}
 	utils.WriteJson(w, data)
 }
@@ -149,7 +149,7 @@ func getNextType(curType string) string {
 	return t
 }
 
-func GetConn(id uint64, authorization string) *sqlx.DB {
+func GetConn(id uint64, authorization string) *DbConn {
 	var userPower UserPower
 	store.GetItem(authorization, &userPower)
 	if !slices.Contains(userPower.Power, id) {
@@ -158,7 +158,7 @@ func GetConn(id uint64, authorization string) *sqlx.DB {
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
 	logutils.Panicln(err)
-	return config.GetConn(convertToDBParam(&cfgList[0]))
+	return &DbConn{cfgList[0].DbType, config.GetConn(convertToDBParam(&cfgList[0]))}
 }
 
 func convertToDBParam(cfg *ConnCfg) *config.DBParam {
@@ -174,6 +174,11 @@ type ConnCfg struct {
 	User       string  `json:"user"`
 	Pwd        string  `json:"pwd"`
 	Url        string  `json:"url"`
+}
+
+type DbConn struct {
+	DbType string
+	Conn   *sqlx.DB
 }
 
 type ConnCfgBase struct {

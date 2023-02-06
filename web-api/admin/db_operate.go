@@ -14,9 +14,10 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-func listSchemaMySQL(key uint64, authorization string) []*Tree {
+func listSchema(key uint64, authorization string) []*Tree {
 	schemaName := ""
-	row, err := GetConn(key, authorization).Query("select schema_name from information_schema.schemata")
+	dc := GetConn(key, authorization)
+	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listSchemaMySQL"])
 	logutils.Panicln(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -26,9 +27,10 @@ func listSchemaMySQL(key uint64, authorization string) []*Tree {
 	return tree
 }
 
-func listTableMySQL(key uint64, schema, authorization string) []*Tree {
+func listTable(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
-	row, err := GetConn(key, authorization).Query("select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?", schema)
+	dc := GetConn(key, authorization)
+	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listTableMySQL"], schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -38,9 +40,10 @@ func listTableMySQL(key uint64, schema, authorization string) []*Tree {
 	return tree
 }
 
-func listColumnsMySQL(key uint64, table, authorization string) []*Tree {
+func listColumns(key uint64, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
-	row, err := GetConn(key, authorization).Query("select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION", table)
+	dc := GetConn(key, authorization)
+	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listColumnsMySQL"], table)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -50,9 +53,10 @@ func listColumnsMySQL(key uint64, table, authorization string) []*Tree {
 	return tree
 }
 
-func listAllColumnsMySQL(key uint64, schema, authorization string) []*Tree {
+func listAllColumns(key uint64, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
-	row, err := GetConn(key, authorization).Query("select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?", schema)
+	dc := GetConn(key, authorization)
+	row, err := dc.Conn.Query(SQL_DIALECT[dc.DbType]["listAllColumnsMySQL"], schema)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -62,16 +66,17 @@ func listAllColumnsMySQL(key uint64, schema, authorization string) []*Tree {
 	return tree
 }
 
-func ListTableFatMySQL(w http.ResponseWriter, r *http.Request) {
+func ListTableFat(w http.ResponseWriter, r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	r.ParseForm()
-	tables := queryTableInfoMySQL(utils.AtoUint64(r.FormValue("connId")), r.Form.Get("schema"), authorization)
+	tables := queryTableInfo(utils.AtoUint64(r.FormValue("connId")), r.Form.Get("schema"), authorization)
 	utils.WriteJson(w, tables)
 }
 
-func queryTableInfoMySQL(key uint64, schema, authorization string) []*Table {
+func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
-	stmt, err := GetConn(key, authorization).Prepare("SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?")
+	dc := GetConn(key, authorization)
+	stmt, err := dc.Conn.Prepare(SQL_DIALECT[dc.DbType]["queryTableInfoMySQL"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.Println(err2)
@@ -141,9 +146,10 @@ func ParseValMySQL(colType string, val string) (retVal any) {
 	return retVal
 }
 
-func ColumnMapMySQL(table string, connId uint64, authorization string) map[string]string {
+func ColumnMap(table string, connId uint64, authorization string) map[string]string {
 	columnMap := make(map[string]string)
-	stmt, err := GetConn(connId, authorization).Prepare("SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?")
+	dc := GetConn(connId, authorization)
+	stmt, err := dc.Conn.Prepare(SQL_DIALECT[dc.DbType]["ColumnMapMySQL"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
 	logutils.Println(err2)
@@ -155,7 +161,7 @@ func ColumnMapMySQL(table string, connId uint64, authorization string) map[strin
 	return columnMap
 }
 
-func QueryPrimaryKeyMySQL(schema, table string, tx *sql.Tx) []string {
+func QueryPrimaryKey(schema, table string, tx *sql.Tx) []string {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare("select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'")
 	logutils.Println(err)
@@ -174,7 +180,7 @@ func QueryPrimaryKeyMySQL(schema, table string, tx *sql.Tx) []string {
 	return primaryKeys
 }
 
-func QueryColTypeMysql(schema, table string, tx *sql.Tx) map[string]string {
+func QueryColType(schema, table string, tx *sql.Tx) map[string]string {
 	colTypeMap := make(map[string]string, 0)
 	stmt, err := tx.Prepare("select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?")
 	logutils.Println(err)
