@@ -213,14 +213,14 @@
           </el-table>
         </el-tab-pane>
         <el-tab-pane label="目录" name="dir">
-          <div style="padding: 50px 100px;">
+          <div style="padding: 65px 200px;">
             <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
               <template #default="{ node, data }">
-                <span>
-                  <span>
+                <div style="width:100%;">
+                  <div style="display: inline-block;width: 100%;">
                     <el-input v-model="data.label"></el-input>
-                  </span>
-                  <span style="right: 0px;position: absolute;">
+                  </div>
+                  <div style="margin-left: 30px;display: inline-block;">
                     <a @click="appendTreeNode(data)">添加</a>
                     <el-popconfirm title="确定要删除?" @confirm="removeTreeNode(node, data)" confirm-button-text="是"
                       cancel-button-text="否">
@@ -228,14 +228,14 @@
                         <a style="margin-left: 8px">删除</a>
                       </template>
                     </el-popconfirm>
-                  </span>
-                </span>
+                  </div>
+                </div>
               </template>
             </el-tree>
-            <div style="float: right; position: relative;margin-top: 15px;">
+          </div>
+          <div style="float: right; margin-right: 100px;">
               <el-button type="primary" @click="saveTree">保存</el-button>
             </div>
-          </div>
         </el-tab-pane>
       </el-tabs>
       <template #footer>
