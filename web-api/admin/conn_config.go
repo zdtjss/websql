@@ -49,7 +49,7 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 
 	nextType := getNextType(curType)
 
-	var data []*Tree
+	var data = make([]*Tree, 0)
 	switch nextType {
 	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
@@ -60,8 +60,6 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 			if level == "0" {
 				data = append(data, listConn("noneParent", userPower)...)
 			}
-		} else {
-			data = make([]*Tree, 0)
 		}
 	case TREE_NODE_TYPE_CONN:
 		data = listConn(key, userPower)
