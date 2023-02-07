@@ -73,7 +73,7 @@ func ListTableFat(w http.ResponseWriter, r *http.Request) {
 func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
-	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["queryTableInfo"])
+	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listSchema"])
 	logutils.Println(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.Println(err2)

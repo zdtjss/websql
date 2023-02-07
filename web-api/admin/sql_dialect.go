@@ -14,10 +14,24 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listTable":       "select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?",
 		"listColumns":     "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
 		"listAllColumns":  "select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?",
-		"queryTableInfo":  "SELECT TABLE_NAME,table_comment FROM information_schema.tables WHERE table_schema = ?",
 		"ColumnMap":       "SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE TABLE_NAME = ?",
 		"QueryPrimaryKey": "select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'",
 		"QueryColType":    "select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?",
+	},
+	"oracle": {
+		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
+		"listTable":  "select TABLE_NAME, COMMENTS table_commentfrom user_tab_comments",
+		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
+			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
+		"listAllColumns": `SELECT B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
+			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
+		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
+			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
+		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = 'T_NWAY' and CONSTRAINT_TYPE = 'P'",
+		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = ?",
 	},
 }
 
@@ -57,6 +71,33 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 		}
 		return v
 	},
+	"oracle": func(colType string, val any) any {
+		var v any
+		//判断是否为[]byte
+		if b, ok := val.([]byte); ok {
+			switch colType {
+			case "NUMBER", "INTEGER":
+				iv, err := strconv.ParseInt(string(b), 10, 32)
+				logutils.Panicf("转换类型失败， %x", err)
+				v = int(iv)
+			case "FLOAT":
+				iv, err := strconv.ParseFloat(string(b), 32)
+				logutils.Panicf("转换类型失败， %x", err)
+				v = float32(iv)
+			case "DOUBLE", "DECIMAL":
+				iv, err := strconv.ParseFloat(string(b), 64)
+				logutils.Panicf("转换类型失败， %x", err)
+				v = iv
+			default:
+				v = string(b)
+			}
+		} else if t, ok := val.(time.Time); ok {
+			v = t.Format("2006-01-02 15:04:05")
+		} else {
+			v = val
+		}
+		return v
+	},
 }
 
 // 通常是导入数据时将excel中数据转成数据库类型
@@ -83,5 +124,8 @@ var ParseValHandler = map[string]func(colType string, val string) any{
 			retVal = val
 		}
 		return retVal
+	},
+	"oracle": func(colType string, val string) any {
+		return val
 	},
 }
