@@ -129,7 +129,7 @@ func GetResultRows(dbtype string, rows *sql.Rows) []map[string]interface{} {
 		for i, val := range values { // val是每个列对应的值
 			key := columns[i] //列名
 			// 列名与值对应
-			row[key] = admin.ConvertColHandler["dbtype"](colTypeMap[key], val)
+			row[key] = admin.ConvertColHandler[dbtype](colTypeMap[key], val)
 		}
 
 		// 将product归到集合中

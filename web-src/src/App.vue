@@ -50,7 +50,7 @@
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList"
+                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList" style="width:100%"
                   :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip placeholder="请选择"
                   :render-after-expand="false" :check-on-click-node="true" show-checkbox :check-strictly="false" />
               </template>
