@@ -68,13 +68,13 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	*&req.Header = r.Header
 	resp, err := http.DefaultClient.Do(req)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	maps.Copy(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	_, err2 := io.Copy(w, resp.Body)
-	logutils.Panicln(err2)
+	logutils.PanicErr(err2)
 	defer resp.Body.Close()
 }
 
@@ -90,7 +90,7 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	file, err := utils.Find("static" + reqPath)
 	if err != nil || strings.EqualFold("/", reqPath) {
 		file, err = utils.Find("static/index.html")
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 	}
 	defer file.Close()
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))

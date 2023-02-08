@@ -37,7 +37,7 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err := tx.Commit()
-	logutils.Panicf("保存角色失败 %x", err)
+	logutils.PanicErrf("保存角色失败", err)
 	utils.WriteJson(w, "")
 }
 
@@ -49,13 +49,13 @@ func DelRole(w http.ResponseWriter, r *http.Request) {
 	userCount := 0
 	config.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
 	if userCount > 0 {
-		logutils.Panicln(errors.New("有用户，不能删。"))
+		logutils.PanicErr(errors.New("有用户，不能删。"))
 	}
 
 	powerCount := 0
 	config.Mngtdb.Select(&powerCount, "select count(*) from t_power where role_id = ?", id)
 	if powerCount > 0 {
-		logutils.Panicln(errors.New("有权限，不能删。"))
+		logutils.PanicErr(errors.New("有权限，不能删。"))
 	}
 
 	config.Mngtdb.Exec("delete from t_role where id = ?", id)
@@ -65,7 +65,7 @@ func DelRole(w http.ResponseWriter, r *http.Request) {
 func RoleList(w http.ResponseWriter, r *http.Request) {
 	roleList := []*Role{}
 	err := config.Mngtdb.Select(&roleList, "select * from t_role")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	roleIdList := make([]any, len(roleList))
 	for idx, role := range roleList {
@@ -81,7 +81,7 @@ func RoleList(w http.ResponseWriter, r *http.Request) {
 func RoleBaseList(w http.ResponseWriter, r *http.Request) {
 	roleList := []*Role{}
 	err := config.Mngtdb.Select(&roleList, "select * from t_role")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	utils.WriteJson(w, roleList)
 }
 
@@ -89,7 +89,7 @@ func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	userList := []*User{}
 	err := config.Mngtdb.Select(&userList, "select * from t_user where role_id = ?", utils.AtoUint64(r.FormValue("roleId")))
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	utils.WriteJson(w, userList)
 }
 
@@ -123,7 +123,7 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err := tx.Commit()
-	logutils.Panicf("保存用户失败 %x", err)
+	logutils.PanicErrf("保存用户失败", err)
 	utils.WriteJson(w, "")
 }
 
@@ -168,7 +168,7 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	}
 	userList := []*User{}
 	err := config.Mngtdb.Select(&userList, sql.String(), param...)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	userIds := []any{}
 	for _, user := range userList {
@@ -193,14 +193,14 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 func findByLoginName(loginName string) User {
 	var user []User
 	err := config.Mngtdb.Select(&user, "select id,name,pwd from t_user where login_name = ?", loginName)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	return user[0]
 }
 
 func findUserPower(userId uint64) []uint64 {
 	resIds := []uint64{}
 	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	var resId uint64
 	for rows.Next() {
 		rows.Scan(&resId)
@@ -239,7 +239,7 @@ func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
 	sqlBuf.WriteString(") ")
 	powerList := []*PowerDto{}
 	err := config.Mngtdb.Select(&powerList, sqlBuf.String(), roleIdList...)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	rolePowerMap := make(map[uint64][]*PowerDto, len(powerList))
 	for _, power := range powerList {
 		v, ok := rolePowerMap[power.RoleId]
@@ -266,7 +266,7 @@ func findUserRole(userIdList []any) map[uint64][]*UserRole {
 	sqlBuf.WriteString(") ")
 	userRoleList := []*UserRole{}
 	err := config.Mngtdb.Select(&userRoleList, sqlBuf.String(), userIdList...)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	roleUserMap := make(map[uint64][]*UserRole, len(userRoleList))
 	for _, userRole := range userRoleList {
 		v, ok := roleUserMap[userRole.UserId]

@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"database/sql"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
@@ -35,10 +34,10 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
-		rows, err2 := conn.Query(sqlStr, params...)
-		logutils.Panicln(err2)
+		rows, err2 := conn.Queryx(sqlStr, params...)
+		logutils.PanicErr(err2)
 		cts, err3 := rows.ColumnTypes()
-		logutils.Panicln(err3)
+		logutils.PanicErr(err3)
 		columnList := make([]Column, len(cts))
 		for idx, val := range cts {
 			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName()}
@@ -66,7 +65,7 @@ func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := db.DB.Begin()
 	defer tx.Rollback()
-	logutils.Panicf("事务开启失败， %s", err)
+	logutils.PanicErrf("事务开启失败， %s", err)
 	resultData := []map[string]any{}
 	for _, s := range sqlArr {
 		relSql := utils.ExtractSql(s)
@@ -74,13 +73,13 @@ func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 			continue
 		}
 		rs, err2 := tx.Exec(relSql)
-		logutils.Panicln(err2)
+		logutils.PanicErr(err2)
 		affected, err := rs.RowsAffected()
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 		resultData = append(resultData, map[string]any{"受影响行数": affected})
 	}
 	err = tx.Commit()
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	return resultData
 }
 
@@ -102,11 +101,10 @@ func checkContains(src string, suffix []string) bool {
 	return false
 }
 
-func GetResultRows(dbtype string, rows *sql.Rows) []map[string]interface{} {
-
-	dataMaps := make([]map[string]interface{}, 0)
+func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
+	dataMaps := make([]map[string]any, 0)
 	cts, err := rows.ColumnTypes()
-	logutils.Panicf("获取字段类型失败，%x", err)
+	logutils.PanicErrf("获取字段类型失败", err)
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -140,7 +138,6 @@ func GetResultRows(dbtype string, rows *sql.Rows) []map[string]interface{} {
 			// 列名与值对应
 			row[key] = admin.ConvertColHandler[dbtype](colTypeMap[key], val)
 		}
-
 		// 将product归到集合中
 		dataMaps = append(dataMaps, row)
 	}

@@ -15,7 +15,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 	schemaName := ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listSchema"])
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
@@ -32,7 +32,7 @@ func listTable(key uint64, schema, authorization string) []*Tree {
 		params = append(params, schema)
 	}
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], params...)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&tableName, &tableComment)
@@ -45,7 +45,7 @@ func listColumns(key uint64, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listColumns"], table)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&columnName, &columnComment)
@@ -58,7 +58,7 @@ func listAllColumns(key uint64, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&columnName, &columnComment)
@@ -78,9 +78,9 @@ func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
 	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listSchema"])
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema)
-	logutils.Println(err2)
+	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {
 		rs.Scan(&name, &comment)
@@ -104,9 +104,9 @@ func ColumnMap(table string, connId uint64, authorization string) map[string]str
 	columnMap := make(map[string]string)
 	dc := GetConn(connId, authorization)
 	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["ColumnMap"])
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
-	logutils.Println(err2)
+	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {
 		rs.Scan(&name, &comment)
@@ -118,9 +118,9 @@ func ColumnMap(table string, connId uint64, authorization string) map[string]str
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema, table)
-	logutils.Println(err2)
+	logutils.PrintErr(err2)
 	var name string
 	for rs.Next() {
 		rs.Scan(&name)
@@ -137,9 +137,9 @@ func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 	colTypeMap := make(map[string]string, 0)
 	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryColType"])
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema, table)
-	logutils.Println(err2)
+	logutils.PrintErr(err2)
 	var colName, colType string
 	for rs.Next() {
 		rs.Scan(&colName, &colType)

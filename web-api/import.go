@@ -27,11 +27,11 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	file, _, err := r.FormFile("file")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	defer file.Close()
 
 	excel, err := excelize.OpenReader(file)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	defer func() {
 		if err := excel.Close(); err != nil {
@@ -43,13 +43,13 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	rows, err := excel.Rows(table)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	defer rows.Close()
 
 	header := make([]string, 0)
 	if rows.Next() {
 		row, err := rows.Columns()
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 		header = append(header, row...)
 	}
 
@@ -61,10 +61,10 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		count++
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 		columns := []string{}
 		row, err := rows.Columns()
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 		columns = append(columns, row...)
 		totalValues[count] = columns
 		if count+1 >= maxLines {
@@ -86,7 +86,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err = tx.Commit(); err != nil {
-		logutils.Panicf("导入失败, %x", err)
+		logutils.PanicErrf("导入失败,", err)
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
@@ -120,7 +120,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	log.Println(sql.String())
 
 	stmt, err := tx.Tx.Prepare(sql.String())
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
 
@@ -130,7 +130,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 			anyVal[i] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
 		}
 		_, err = stmt.Exec(anyVal...)
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 	}
 
 }
@@ -167,7 +167,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 	log.Println(realSql)
 
 	stmt, err := tx.Tx.Prepare(realSql)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	valCount := -1
 	paramCount := -1
@@ -190,7 +190,7 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		paramCount = -1
 		log.Println(anyVal...)
 		_, err = stmt.Exec(anyVal...)
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 	}
 
 }

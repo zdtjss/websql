@@ -29,10 +29,10 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 
 	connCtx := admin.GetConn(connId, authorization)
 	rows, err := connCtx.Query(fmt.Sprintf("SELECT * from %s", table))
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	columns, err := rows.Columns()
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 
 	columnComment := make([]string, len(columns))
 	columnMap := admin.ColumnMap(table, connId, authorization)
@@ -41,7 +41,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	}
 
 	cts, err := rows.ColumnTypes()
-	logutils.Panicf("获取字段类型失败，%x", err)
+	logutils.PanicErrf("获取字段类型失败", err)
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -71,7 +71,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 
 		//把每行的内容添加到scanArgs，也添加到了values
 		err = rows.Scan(scanArgs...)
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 
 		//存每一行的内容
 		var row []any
@@ -84,7 +84,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	}
 
 	if err = rows.Err(); err != nil {
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 	}
 
 	excel.Write(out)

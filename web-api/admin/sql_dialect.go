@@ -45,19 +45,19 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			switch colType {
 			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = int(iv)
 			case "BIGINT":
 				iv, err := strconv.ParseInt(string(b), 10, 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			case "FLOAT":
 				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = float32(iv)
 			case "DOUBLE", "DECIMAL":
 				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			case "BIT":
 				v = b[0] == byte(1)
@@ -78,15 +78,15 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			switch colType {
 			case "NUMBER", "INTEGER":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = int(iv)
 			case "FLOAT":
 				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = float32(iv)
 			case "DOUBLE", "DECIMAL":
 				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			default:
 				v = string(b)
@@ -110,15 +110,15 @@ var ParseValHandler = map[string]func(colType string, val string) any{
 		switch colType {
 		case "float", "double", "decimal":
 			f, err := strconv.ParseFloat(val, 64)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		case "int", "bigint", "smallint", "tinyint":
 			f, err := strconv.ParseInt(val, 10, 64)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		case "bit":
 			f, err := strconv.ParseBool(val)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		default:
 			retVal = val

@@ -17,14 +17,12 @@ func StoreItem(key string, val any) {
 		data, err := utils.ToJsonString2(val)
 		if err != nil && val != nil {
 			fval, err = conv.ToStringE(val)
-			logutils.Println(err)
+			logutils.PrintErr(err)
 		} else if err == nil {
 			fval = string(data)
 		}
 		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
-		if err != nil {
-			logutils.Printf("key:%s 缓存失败,err:%s", key, err)
-		}
+		logutils.PrintErrf("key:%s 缓存失败", err, key)
 	} else {
 		store[key] = val
 	}
@@ -44,13 +42,13 @@ func GetItem(key string, dist any) {
 	}
 	if RDB != nil {
 		val, err := RDB.Get(ctx, key).Result()
-		logutils.Println(err)
+		logutils.PrintErr(err)
 		RDB.Expire(ctx, key, 30*time.Minute)
 		err = utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
 		if err != nil && val != "" {
 			dist = val
 		} else if err != nil {
-			logutils.Printf("获取key:%s 失败,err:%s", key, err)
+			logutils.PrintErrf("获取key:%s 失败,", err, key)
 		}
 	} else {
 		v := store[key]

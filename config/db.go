@@ -36,7 +36,7 @@ func GetConn(param *DBParam) *sqlx.DB {
 func initDBConn(param *DBParam) {
 	db, err := sqlx.Connect(param.DbType, *makeDsn(param))
 	if err != nil {
-		logutils.Panicf("连接数据库失败，err : %x", err)
+		logutils.PanicErrf("连接数据库失败", err)
 	}
 	db.SetMaxOpenConns(5)
 	DBMap[createKey(param)] = db

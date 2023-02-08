@@ -14,27 +14,27 @@ func ReadConfig() *Config {
 	fileData, err := os.ReadFile(configFile)
 	var config Config
 	err = json.Unmarshal(fileData, &config)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	return &config
 }
 
 func ReadSql(fileName string) *string {
 	configFile := FindFile(fileName)
 	fileData, err := os.ReadFile(configFile)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	sql := string(fileData)
 	return &sql
 }
 
 func FindFile(fileName string) string {
 	exec, err := os.Executable()
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	configFile := filepath.Join(filepath.Join(filepath.Dir(exec), "../"), fileName)
 	_, err = os.Lstat(configFile)
 	if err != nil {
 		configFile = filepath.Join(filepath.Dir(exec), fileName)
 		_, err = os.Lstat(configFile)
-		logutils.Panicln(err)
+		logutils.PanicErr(err)
 	}
 	return configFile
 }
@@ -47,6 +47,6 @@ type Config struct {
 	Redis struct {
 		Addr     string `json:"addr"`
 		Password string `json:"password"`
-		DB       int `json:"db"`
+		DB       int    `json:"db"`
 	} `json:"redis"`
 }
