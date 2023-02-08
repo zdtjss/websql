@@ -20,7 +20,7 @@ var SQL_DIALECT = map[string]map[string]string{
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
-		"listTable":  "select TABLE_NAME, COMMENTS table_commentfrom user_tab_comments",
+		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,

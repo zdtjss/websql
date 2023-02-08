@@ -34,13 +34,23 @@ func GetConn(param *DBParam) *sqlx.DB {
 }
 
 func initDBConn(param *DBParam) {
-	db, err := sqlx.Connect(param.DbType, param.User+":"+param.Pwd+"@"+param.Url)
+	db, err := sqlx.Connect(param.DbType, *makeDsn(param))
 	if err != nil {
 		logutils.Panicf("连接数据库失败，err : %x", err)
 	}
 	db.SetMaxOpenConns(5)
 	DBMap[createKey(param)] = db
 	log.Printf("数据库连接成功, env = %s, db = %s", param.Name, param.User)
+}
+
+func makeDsn(param *DBParam) *string {
+	dsn := ""
+	if param.DbType == "oracle" {
+		dsn = "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
+	} else {
+		dsn = param.User + ":" + param.Pwd + "@" + param.Url
+	}
+	return &dsn
 }
 
 func RealseConn(param *DBParam) {

@@ -560,12 +560,10 @@ function roleDblClick(row) {
   if (row.powerList) {
     row.connIdList = row.powerList.map(r => r.connId)
   }
-  if (connListSelect.value.length == 0) {
-    http.get("/connBaseTree")
-      .then((resp) => {
-        connListSelect.value = resp.data.data
-      })
-  }
+  http.get("/connBaseTree")
+    .then((resp) => {
+      connListSelect.value = resp.data.data
+    })
 }
 
 function saveRole(row) {

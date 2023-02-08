@@ -20,10 +20,15 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 	utils.UnmarshalJson(r.Body, cfg)
 	if cfg.Id == 0 {
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
-		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url)
+		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url)
 	} else {
-		stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
-		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+		if cfg.Pwd == "" {
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ? where id = ?")
+			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Url, &cfg.Id)
+		} else {
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
+			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url, &cfg.Id)
+		}
 		config.RealseConn(convertToDBParam(cfg))
 	}
 	utils.WriteJson(w, "")
@@ -104,6 +109,9 @@ func ListConn2(w http.ResponseWriter, r *http.Request) {
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
 	logutils.Panicln(err)
+	for idx := range cfgList {
+		cfgList[idx].Pwd = ""
+	}
 	utils.WriteJson(w, cfgList)
 }
 
@@ -156,6 +164,7 @@ func GetConn(id uint64, authorization string) *sqlx.DB {
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
 	logutils.Panicln(err)
+	cfgList[0].Pwd = utils.AESDecode(cfgList[0].Pwd)
 	return config.GetConn(convertToDBParam(&cfgList[0]))
 }
 

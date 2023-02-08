@@ -27,7 +27,11 @@ func listSchema(key uint64, authorization string) []*Tree {
 func listTable(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], schema)
+	params := make([]any, 0)
+	if dc.DriverName() == "mysql" {
+		params = append(params, schema)
+	}
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], params...)
 	logutils.Println(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {

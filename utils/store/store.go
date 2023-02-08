@@ -23,7 +23,7 @@ func StoreItem(key string, val any) {
 		}
 		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
 		if err != nil {
-			logutils.Printf("key:%s 缓存失败,err:%x", key, err)
+			logutils.Printf("key:%s 缓存失败,err:%s", key, err)
 		}
 	} else {
 		store[key] = val
@@ -43,13 +43,14 @@ func GetItem(key string, dist any) {
 		return
 	}
 	if RDB != nil {
-		val, _ := RDB.Get(ctx, key).Result()
+		val, err := RDB.Get(ctx, key).Result()
+		logutils.Println(err)
 		RDB.Expire(ctx, key, 30*time.Minute)
-		err := utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
+		err = utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
 		if err != nil && val != "" {
 			dist = val
 		} else if err != nil {
-			logutils.Printf("获取key:%s 失败,err:%x", key, err)
+			logutils.Printf("获取key:%s 失败,err:%s", key, err)
 		}
 	} else {
 		v := store[key]

@@ -31,7 +31,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	} else {
 		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select ", "SELECT ", "select\n", "SELECT\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			sqlStr = sqlStr + " limit ?"
+			sqlStr = *page(conn.DriverName(), &sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
@@ -50,7 +50,17 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		utils.WriteJson(w, rspData)
 	}
+}
 
+func page(dbtype string, sql *string) *string {
+	pageSql := ""
+	if dbtype == "oracle" {
+		// pageSql = "select a.* from (" + *sql + ") a where rownum <= ?"
+		pageSql = *sql
+	} else if dbtype == "mysql" {
+		pageSql = *sql + " limit ?"
+	}
+	return &pageSql
 }
 
 func batchExec(sql *string, db *sqlx.DB) []map[string]any {
