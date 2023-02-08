@@ -23,15 +23,15 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
 		"listAllColumns": `SELECT B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
-		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = 'T_NWAY' and CONSTRAINT_TYPE = 'P'",
-		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = ?",
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
+		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = :1 and CONSTRAINT_TYPE = 'P'",
+		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = :1",
 	},
 }
 

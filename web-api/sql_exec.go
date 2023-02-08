@@ -55,8 +55,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 func page(dbtype string, sql *string) *string {
 	pageSql := ""
 	if dbtype == "oracle" {
-		// pageSql = "select a.* from (" + *sql + ") a where rownum <= ?"
-		pageSql = *sql
+		pageSql = "select a.* from (" + *sql + ") a where rownum <= :1"
 	} else if dbtype == "mysql" {
 		pageSql = *sql + " limit ?"
 	}
