@@ -40,8 +40,8 @@ func (s *SnowFlake) Init(centerId, workerId int64) error {
 	s.epoch = time.Date(2023, 2, 3, 0, 0, 0, 0, time.Now().Location()).UnixMilli() //设置起始时间戳：2022-01-01 00:00:00
 	s.centerId = centerId
 	s.workerId = workerId
-	s.centerIdBits = 3   // 支持的最大机房ID占位数，最大是7
-	s.workerIdBits = 6   // 支持的最大机器ID占位数，最大是63
+	s.centerIdBits = 2   // 支持的最大机房ID占位数，最大是3
+	s.workerIdBits = 5   // 支持的最大机器ID占位数，最大是31
 	s.timestampBits = 41 // 时间戳占用位数
 	s.maxTimeStamp = -1 ^ (-1 << s.timestampBits)
 
@@ -50,10 +50,10 @@ func (s *SnowFlake) Init(centerId, workerId int64) error {
 
 	// 参数校验
 	if int(centerId) > maxCenterId || centerId < 0 {
-		return errors.New(fmt.Sprintf("Center ID can't be greater than %d or less than 0", maxCenterId))
+		return fmt.Errorf("Center ID can't be greater than %d or less than 0", maxCenterId)
 	}
 	if int(workerId) > maxWorkerId || workerId < 0 {
-		return errors.New(fmt.Sprintf("Worker ID can't be greater than %d or less than 0", maxWorkerId))
+		return fmt.Errorf("Worker ID can't be greater than %d or less than 0", maxWorkerId)
 	}
 
 	s.sequenceBits = 12 // 序列在ID中占的位数,最大为4095

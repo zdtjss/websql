@@ -40,12 +40,14 @@ import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
-import { format } from 'sql-formatter';
+import { format } from 'sql-formatter'
 
 import DBExport from './DBExport.vue'
 
 import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
+import copyToClipboard from '../js/utils/copy-to-clipboard.js'
+
 
 const props = defineProps<{
     tabId: string,
@@ -243,7 +245,7 @@ function exportCurrentToSqlInsert() {
     for (let i = 1; i < columns.value.length; i++) {
         columnArr.push(columns.value[i]["key"])
     }
-    for (let j = 1; j < result.value.length; j++) {
+    for (let j = 0; j < result.value.length; j++) {
         let rowVal = []
         let valueArr = []
         for (let i = 1; i < columns.value.length; i++) {
@@ -254,16 +256,10 @@ function exportCurrentToSqlInsert() {
         sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
     }
 
-    console.log(sql)
-    const blob = new Blob(["\uFEFF" + sqlArr.join(";\n")], {
-        type: "text/plain;charset=utf-8",
-    });
-    const url = window.URL.createObjectURL(blob);
-    const downloadLink = document.createElement("a");
-    downloadLink.href = url;
-    downloadLink.download = currentSelectTable + "-insert.sql";
-    downloadLink.click();
-    window.URL.revokeObjectURL(url);
+    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
+        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () =>  ElMessage({ message: "导出失败", type: "error" })
+    )
 }
 
 function exportCurrentToSqlUpdate() {
@@ -286,16 +282,11 @@ function exportCurrentToSqlUpdate() {
         }
         sqlArr.push(sql + rowVal.join(", "))
     }
-    console.log(sql)
-    const blob = new Blob(["\uFEFF" + sqlArr.join(";\n")], {
-        type: "text/plain;charset=utf-8",
-    });
-    const url = window.URL.createObjectURL(blob);
-    const downloadLink = document.createElement("a");
-    downloadLink.href = url;
-    downloadLink.download = currentSelectTable + "-update.sql";
-    downloadLink.click();
-    window.URL.revokeObjectURL(url);
+
+    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
+        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () =>  ElMessage({ message: "导出失败", type: "error" })
+    )
 }
 
 function onKeyup() {

@@ -20,10 +20,15 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 	utils.UnmarshalJson(r.Body, cfg)
 	if cfg.Id == 0 {
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
-		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url)
+		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url)
 	} else {
-		stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
-		stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Pwd, &cfg.Url, &cfg.Id)
+		if cfg.Pwd == "" {
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ? where id = ?")
+			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Url, &cfg.Id)
+		} else {
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
+			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url, &cfg.Id)
+		}
 		config.RealseConn(convertToDBParam(cfg))
 	}
 	utils.WriteJson(w, "")
@@ -91,7 +96,7 @@ func listConn(parentId string, userPower UserPower) []*Tree {
 	appendPmsn(&sql, "id", &param, userPower)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	tree := make([]*Tree, len(cfgList))
 	for i, cfg := range cfgList {
 		tree[i] = &Tree{Label: cfg.Name, Id: cfg.Id, Type: TREE_NODE_TYPE_CONN}
@@ -103,21 +108,24 @@ func ListConn2(w http.ResponseWriter, r *http.Request) {
 	CheckPower(r)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
+	for idx := range cfgList {
+		cfgList[idx].Pwd = ""
+	}
 	utils.WriteJson(w, cfgList)
 }
 
 func ListConnBase(w http.ResponseWriter, r *http.Request) {
 	cfgList := []*ConnCfgBase{}
 	err := config.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	utils.WriteJson(w, cfgList)
 }
 
 func listConnBase() map[uint64][]*ConnCfgBase {
 	cfgList := []*ConnCfgBase{}
 	err := config.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	rolePowerMap := make(map[uint64][]*ConnCfgBase, len(cfgList))
 	for _, conn := range cfgList {
 		v, ok := rolePowerMap[conn.ParentId]
@@ -151,11 +159,12 @@ func GetConn(id uint64, authorization string) *sqlx.DB {
 	var userPower UserPower
 	store.GetItem(authorization, &userPower)
 	if !slices.Contains(userPower.Power, id) {
-		logutils.Panicln(errors.New("无权访问"))
+		logutils.PanicErr(errors.New("无权访问"))
 	}
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
+	cfgList[0].Pwd = utils.AESDecode(cfgList[0].Pwd)
 	return config.GetConn(convertToDBParam(&cfgList[0]))
 }
 

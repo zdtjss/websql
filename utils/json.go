@@ -43,14 +43,14 @@ func WriteJson(w http.ResponseWriter, v any) {
 
 func UnmarshalJson[T any](r io.Reader, v *T) {
 	jsonData, err := io.ReadAll(r)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	err = json.Unmarshal(jsonData, v)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 }
 
 func UnmarshalJson2[T any](r io.Reader, v *T) error {
 	jsonData, err := io.ReadAll(r)
-	logutils.Println(err)
+	logutils.PrintErr(err)
 	return json.Unmarshal(jsonData, v)
 }
 

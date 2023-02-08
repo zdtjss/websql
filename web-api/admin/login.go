@@ -23,10 +23,10 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			store.StoreItem(key, UserPower{UserId: user.Id, Power: power})
 			utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == 1})
 		} else {
-			logutils.Panicln(errors.New("用户名或密码不正确"))
+			logutils.PanicErr(errors.New("用户名或密码不正确"))
 		}
 	} else {
-		logutils.Panicln(errors.New("登录失败"))
+		logutils.PanicErr(errors.New("登录失败"))
 	}
 }
 
@@ -41,6 +41,6 @@ func CheckPower(r *http.Request) {
 	var userPower = new(UserPower)
 	store.GetItem(authorization, userPower)
 	if userPower.UserId != 1 {
-		logutils.Panicln(errors.New("无权访问"))
+		logutils.PanicErr(errors.New("无权访问"))
 	}
 }

@@ -20,18 +20,18 @@ var SQL_DIALECT = map[string]map[string]string{
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
-		"listTable":  "select TABLE_NAME, COMMENTS table_commentfrom user_tab_comments",
+		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
 		"listAllColumns": `SELECT B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = ?`,
-		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = 'T_NWAY' and CONSTRAINT_TYPE = 'P'",
-		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = ?",
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
+		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = :1 and CONSTRAINT_TYPE = 'P'",
+		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = :1",
 	},
 }
 
@@ -45,19 +45,19 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			switch colType {
 			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = int(iv)
 			case "BIGINT":
 				iv, err := strconv.ParseInt(string(b), 10, 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			case "FLOAT":
 				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = float32(iv)
 			case "DOUBLE", "DECIMAL":
 				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			case "BIT":
 				v = b[0] == byte(1)
@@ -78,15 +78,15 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			switch colType {
 			case "NUMBER", "INTEGER":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = int(iv)
 			case "FLOAT":
 				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = float32(iv)
 			case "DOUBLE", "DECIMAL":
 				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.Panicf("转换类型失败， %x", err)
+				logutils.PanicErrf("转换类型失败", err)
 				v = iv
 			default:
 				v = string(b)
@@ -110,15 +110,15 @@ var ParseValHandler = map[string]func(colType string, val string) any{
 		switch colType {
 		case "float", "double", "decimal":
 			f, err := strconv.ParseFloat(val, 64)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		case "int", "bigint", "smallint", "tinyint":
 			f, err := strconv.ParseInt(val, 10, 64)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		case "bit":
 			f, err := strconv.ParseBool(val)
-			logutils.Panicln(err)
+			logutils.PanicErr(err)
 			retVal = f
 		default:
 			retVal = val

@@ -23,6 +23,6 @@ func ExtractSql(s string) string {
 
 func AtoUint64(s string) uint64 {
 	uis, err := strconv.ParseUint(s, 10, 64)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	return uis
 }

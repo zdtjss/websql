@@ -36,7 +36,7 @@ func findByParent(parentId string, userPower UserPower) []*Tree {
 	appendPmsn(&sql, "id", &param, userPower)
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, sql.String(), param...)
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	tree := make([]*Tree, len(treeList))
 	for i, cfg := range treeList {
 		tree[i] = &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR}
@@ -48,7 +48,7 @@ func ListDirTree(w http.ResponseWriter, r *http.Request) {
 	CheckPower(r)
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	tree := []*Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR})
@@ -71,7 +71,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	tree := []*Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR})
@@ -88,7 +88,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 	}
 	firstLevelConns := []*ConnCfgBase{}
 	err = config.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = 0 or parent_id is null)")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	for _, conn := range firstLevelConns {
 		firstLevel = append(firstLevel, &Tree{Label: conn.Name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
 	}
@@ -119,13 +119,13 @@ func doTreeInsert(tree []*DirTree) {
 	planeDir := expendDirTreeAll(tree)
 
 	tx, err := config.Mngtdb.Beginx()
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	defer tx.Rollback()
 
 	tx.Exec("delete from t_tree")
 
 	stmt, err := tx.Prepare("insert into t_tree (id, label, parent) values (?, ?, ?)")
-	logutils.Panicln(err)
+	logutils.PanicErr(err)
 	for _, t := range planeDir {
 		id := t.Id
 		if id == 0 {
