@@ -36,6 +36,9 @@ export const dbSchemaProxy = {
         return schemas
     },
     getDbType(schema) {
+        return this.schemaProxy[schema]["dbType"]
+    },
+    getDialect(schema) {
         const dbType = this.schemaProxy[schema]["dbType"]
         if (dbType === "mysql") {
             return MySQL

@@ -6,6 +6,7 @@
             <el-button @click="exportCurrentToXlsx">excel</el-button>
             <el-button @click="exportCurrentToSqlInsert">SQL-insert</el-button>
             <el-button @click="exportCurrentToSqlUpdate">SQL-update</el-button>
+            <el-button @click="tableCreateDialogVisible = true">SQL-create</el-button>
             <el-button @click="formatSql">美化</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
@@ -15,7 +16,7 @@
         <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
             <el-icon @click="toggleResult" style="right: 0px;position: absolute;" :title="toggleResultTitle" :size="22">
                 <ArrowDown v-if="showResult" style="margin-top:15px;" />
-                <ArrowUp v-if="resultHide"/>
+                <ArrowUp v-if="resultHide" />
             </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
@@ -26,6 +27,22 @@
         <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true">
             <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
         </el-dialog>
+        <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true" width="1000px"
+            style="height:650px;overflow-y: auto;">
+            <el-row>
+                <el-form-item label="表名">
+                    <el-input v-model="tableName" size="large"/>
+                </el-form-item>
+                <el-form-item>
+                    <el-button @click="showDdl" style="margin-left:12px;">查看</el-button>
+                </el-form-item>
+            </el-row>
+            <el-row >
+                <el-scrollbar height="400px" width="900px">
+                    <pre>{{ tableCreateDdl }}</pre>
+                </el-scrollbar>
+            </el-row>
+        </el-dialog>
     </el-container>
 </template>
 
@@ -34,7 +51,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@cod
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
-import { sql } from '@codemirror/lang-sql';
+import { sql} from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
@@ -68,6 +85,10 @@ const toggleResultTitle = ref("")
 
 const exectingSql = ref(false)
 let currentSelectTable = ""
+
+const tableName = ref("")
+const tableCreateDdl = ref("")
+const tableCreateDialogVisible = ref(false)
 
 onMounted(() => {
     // 默认高度
@@ -104,7 +125,7 @@ function createEditor(editorContainer: any, doc: any) {
                 }
             ]),
             sql({
-                dialect: dbSchemaProxy.getDbType(props.schema),
+                dialect: dbSchemaProxy.getDialect(props.schema),
                 schema: <any>dbSchemaProxy.getAll(),
                 tables: dbSchemaProxy.getTable(props.schema)
             }),
@@ -254,9 +275,9 @@ function exportCurrentToSqlInsert() {
         sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
     }
 
-    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
-        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () =>  ElMessage({ message: "导出失败", type: "error" })
+    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "导出失败", type: "error" })
     )
 }
 
@@ -281,9 +302,9 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
-        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () =>  ElMessage({ message: "导出失败", type: "error" })
+    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "导出失败", type: "error" })
     )
 }
 
@@ -327,6 +348,30 @@ function fmtValForUpdate(val: any) {
         return " = '" + val + "'"
     }
     return val
+}
+
+function showDdl() {
+    let sqlStr = ""
+    const dbType = dbSchemaProxy.getDbType(props.schema)
+    if (dbType === 'mysql') {
+        sqlStr = "show create table " + tableName.value
+    } else if (dbType === 'oracle') {
+        sqlStr = "select dbms_metadata.get_ddl('TABLE','" + tableName.value.toUpperCase() + "') from dual"
+    } else {
+        ElMessage({ message: "暂不支持", type: "error" })
+        return
+    }
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlStr, maxLine: maxLine.value } })
+        .then((resp) => {
+            if (dbType === 'mysql') {
+                tableCreateDdl.value = resp.data.data.data[0]["Create Table"]
+            } else if (dbType === 'oracle') {
+                tableCreateDdl.value = resp.data.data.data[0]["Create Table"]
+            }
+        })
+        .catch(function (error) {
+            console.log(error);
+        });
 }
 
 </script>
