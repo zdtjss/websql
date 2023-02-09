@@ -34,20 +34,18 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@cod
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
-import { sql, MySQL } from '@codemirror/lang-sql';
+import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format } from 'sql-formatter'
-
 import DBExport from './DBExport.vue'
 
 import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
 import copyToClipboard from '../js/utils/copy-to-clipboard.js'
-
 
 const props = defineProps<{
     tabId: string,
@@ -106,7 +104,7 @@ function createEditor(editorContainer: any, doc: any) {
                 }
             ]),
             sql({
-                dialect: MySQL,
+                dialect: dbSchemaProxy.getDbType(props.schema),
                 schema: <any>dbSchemaProxy.getAll(),
                 tables: dbSchemaProxy.getTable(props.schema)
             }),

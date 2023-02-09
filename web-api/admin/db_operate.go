@@ -19,7 +19,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
-		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA})
+		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
 	}
 	return tree
 }

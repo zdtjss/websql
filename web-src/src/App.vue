@@ -387,7 +387,7 @@ function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: findConn(node), key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
-        dbSchemaProxy.addTable(node.data.label, resp.data.data)
+        dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
 
         addTab(node)
 
