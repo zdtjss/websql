@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bytes"
+	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
@@ -113,8 +114,16 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	sql.WriteString(" (")
 	sql.WriteString(strings.Join(columns, ","))
 	sql.WriteString(") values (")
-	plc := strings.Repeat("?,", len(columns))
-	sql.Write([]byte(plc[:len(plc)-1]))
+	if tx.DriverName() == "oracle" {
+		plc := make([]string, len(columns))
+		for idx := 0; idx < len(columns); idx++ {
+			plc[idx] = ":" + fmt.Sprint(idx+1)
+		}
+		sql.WriteString(strings.Join(plc, ","))
+	} else {
+		plc := strings.Repeat("?,", len(columns))
+		sql.Write([]byte(plc[:len(plc)-1]))
+	}
 	sql.WriteString(" )")
 
 	log.Println(sql.String())

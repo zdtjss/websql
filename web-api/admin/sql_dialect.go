@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	go_ora "github.com/sijms/go-ora/v2"
 	"golang.org/x/exp/slices"
 )
 
@@ -20,7 +21,7 @@ var SQL_DIALECT = map[string]map[string]string{
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
-		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments",
+		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
@@ -31,7 +32,7 @@ var SQL_DIALECT = map[string]map[string]string{
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
 		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = :1 and CONSTRAINT_TYPE = 'P'",
-		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where table_name = :1",
+		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where 'notexists' <> :1 and table_name = :2",
 	},
 }
 
@@ -91,8 +92,8 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			default:
 				v = string(b)
 			}
-		} else if t, ok := val.(time.Time); ok {
-			v = t.Format("2006-01-02 15:04:05")
+		} else if t, ok := val.(go_ora.TimeStamp); ok {
+			v = time.Time(t).Format("2006-01-02 15:04:05")
 		} else {
 			v = val
 		}
@@ -126,6 +127,26 @@ var ParseValHandler = map[string]func(colType string, val string) any{
 		return retVal
 	},
 	"oracle": func(colType string, val string) any {
-		return val
+		if slices.Contains([]string{"NUMBER", "TIMESTAMP(6)"}, colType) && val == "" {
+			return nil
+		}
+		var retVal any
+		switch colType {
+		case "NUMBER":
+			f, err := strconv.ParseFloat(val, 64)
+			logutils.PanicErr(err)
+			retVal = f
+		case "INTEGER":
+			f, err := strconv.ParseInt(val, 10, 64)
+			logutils.PanicErr(err)
+			retVal = f
+		case "TIMESTAMP(6)":
+			f, err := time.Parse("2006-01-02 15:04:05", val)
+			logutils.PanicErr(err)
+			retVal = f
+		default:
+			retVal = val
+		}
+		return retVal
 	},
 }
