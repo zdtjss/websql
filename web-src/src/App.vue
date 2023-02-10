@@ -246,11 +246,11 @@
     </el-dialog>
     <!-- 登录对话框 -->
     <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login" @opened="loginName.focus()">
-      <el-form :model="loginForm" label-width="80px">
-        <el-form-item label="用户名" required>
+      <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
+        <el-form-item label="用户名" prop="name">
           <el-input ref="loginName" v-model="loginForm.name" />
         </el-form-item>
-        <el-form-item label="密&nbsp;&nbsp;&nbsp;码" required>
+        <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
           <el-input v-model="loginForm.password" type="password" />
         </el-form-item>
       </el-form>
@@ -265,7 +265,7 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, onMounted } from 'vue'
+import { ref, reactive, shallowRef, onMounted } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
@@ -287,7 +287,17 @@ const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
 const isAdmin = ref(false)
 const loginName = ref()
+const loginFormRef = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
+
+const loginRules = reactive({
+  name: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
+  ],
+})
 
 const formLabelWidth = '100px'
 const cfgDialogVisible = ref(false)
@@ -450,20 +460,23 @@ function delConnCfg(id) {
 }
 
 function login() {
-  loginDialogVisible.value = true
-  const params = new URLSearchParams();
-  params.append("name", loginForm.value.name);
-  params.append("password", loginForm.value.password);
-  http.post("/login", params)
-    .then((resp) => {
-      refreshTree()
-      isAdmin.value = resp.data.data.isAdmin
-      sessionStorage.setItem("authentication", resp.headers.get("authentication"))
-      loginForm.value = {}
-      loginSucc.value = true
-      loginDialogVisible.value = false
-      ElMessage("登陆成功")
-    })
+  loginFormRef.value.validate(isValid => {
+    if (isValid) {
+      const params = new URLSearchParams();
+      params.append("name", loginForm.value.name);
+      params.append("password", loginForm.value.password);
+      http.post("/login", params)
+        .then((resp) => {
+          refreshTree()
+          isAdmin.value = resp.data.data.isAdmin
+          sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+          loginForm.value = {}
+          loginSucc.value = true
+          loginDialogVisible.value = false
+          ElMessage("登陆成功")
+        })
+    }
+  })
 }
 
 function logout() {
@@ -537,7 +550,6 @@ function loadCfgData(pane) {
 function saveUser(row) {
   http.post("/saveUser", row)
     .then((resp) => {
-      findUser()
       row.editable = false
       ElMessage("保存成功")
     })

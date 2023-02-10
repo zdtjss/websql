@@ -33,7 +33,7 @@
                 </template>
             </el-auto-resizer>
         </el-footer>
-        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true">
+        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
             <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
         </el-dialog>
         <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
@@ -43,11 +43,14 @@
                     <el-input v-model="tableName" style="width: 300px;" />
                 </el-form-item>
                 <el-form-item>
-                    <el-button @click="showCreateScript" style="margin-left:12px;">查看</el-button>
+                    <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
+                    <el-button @click="copyCreateScript" style="margin-left:12px;" size="small">复制</el-button>
                 </el-form-item>
             </el-row>
             <el-row>
-                <pre  style="font-size: 18px;width: 100%;height: 470px;overflow-y: auto;"><code class="language-sql" v-bind:innerHTML="tableCreateDdl"></code></pre>
+                <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
+                    <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
+                </el-scrollbar>
             </el-row>
         </el-dialog>
     </el-container>
@@ -101,6 +104,7 @@ let currentSelectTable = ""
 
 const tableName = ref("")
 const tableCreateDdl = ref("")
+const tableCreateDdlRef = ref()
 const tableCreateDialogVisible = ref(false)
 
 onMounted(() => {
@@ -301,7 +305,7 @@ function exportCurrentToSqlInsert() {
             rowVal.push(fmtValForInsert(val))
         }
         valueArr.push(rowVal.join(","))
-        sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
+        sqlArr.push(sql + columnArr.join(",") + ") \n values (" + valueArr.join(",") + ")")
     }
 
     copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",
@@ -331,12 +335,11 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: "mysql" }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
         () => ElMessage({ message: "导出失败", type: "error" })
     )
 }
-
 
 function showCreateScript() {
     let sqlStr = ""
@@ -360,6 +363,13 @@ function showCreateScript() {
         .catch(function (error) {
             console.log(error);
         });
+}
+
+function copyCreateScript() {
+    copyToClipboard(tableCreateDdlRef.value.innerText,
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "复制失败", type: "error" })
+    )
 }
 
 function onKeyup() {
@@ -401,7 +411,7 @@ function fmtValForUpdate(val: any) {
     } else if (typeof val === "string") {
         return " = '" + val + "'"
     }
-    return val
+    return " = " +val
 }
 
 </script>

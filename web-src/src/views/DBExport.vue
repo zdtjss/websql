@@ -1,7 +1,7 @@
 <template>
     <el-container>
         <el-main class="sql_area">
-            <el-table :data="tableData" :stripe="true" :highlight-current-row="true" width="100%" height="100%">
+            <el-table :data="tableData" :stripe="true" :highlight-current-row="true" width="100%" height="650">
                 <el-table-column prop="name" label="表名" />
                 <el-table-column prop="comment" label="注释" />
                 <el-table-column label="操作" style="text-align: center; " width="260">
