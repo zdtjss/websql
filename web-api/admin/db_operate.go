@@ -19,7 +19,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
-		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA})
+		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
 	}
 	return tree
 }
@@ -77,7 +77,7 @@ func ListTableFat(w http.ResponseWriter, r *http.Request) {
 func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
-	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listSchema"])
+	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listTable"])
 	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.PrintErr(err2)

@@ -22,7 +22,7 @@ func StoreItem(key string, val any) {
 			fval = string(data)
 		}
 		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
-		logutils.PrintErrf("key:%s 缓存失败", err, key)
+		logutils.PanicErrf("key:%s 缓存失败", err, key)
 	} else {
 		store[key] = val
 	}

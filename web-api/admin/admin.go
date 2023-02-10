@@ -190,11 +190,14 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, userList)
 }
 
-func findByLoginName(loginName string) User {
-	var user []User
-	err := config.Mngtdb.Select(&user, "select id,name,pwd from t_user where login_name = ?", loginName)
+func findByLoginName(loginName string) *User {
+	var users []User
+	err := config.Mngtdb.Select(&users, "select id,name,pwd from t_user where login_name = ?", loginName)
 	logutils.PanicErr(err)
-	return user[0]
+	if len(users) == 0 {
+		return nil
+	}
+	return &users[0]
 }
 
 func findUserPower(userId uint64) []uint64 {

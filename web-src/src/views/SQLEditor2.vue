@@ -4,9 +4,19 @@
             <el-button @click="exec" :loading="exectingSql">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
             <el-button @click="exportCurrentToXlsx">excel</el-button>
-            <el-button @click="exportCurrentToSqlInsert">SQL-insert</el-button>
-            <el-button @click="exportCurrentToSqlUpdate">SQL-update</el-button>
-            <el-button @click="formatSql">美化</el-button>
+            <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
+                <el-button>
+                    SQL<el-icon class="el-icon--right"><arrow-down /></el-icon>
+                </el-button>
+                <template #dropdown>
+                    <el-dropdown-menu>
+                        <el-dropdown-item command="insert">insert</el-dropdown-item>
+                        <el-dropdown-item command="update">update</el-dropdown-item>
+                        <el-dropdown-item command="create">create</el-dropdown-item>
+                    </el-dropdown-menu>
+                </template>
+            </el-dropdown>
+            <el-button @click="formatSql" style="margin-left: 12px;">美化</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }">
@@ -15,7 +25,7 @@
         <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
             <el-icon @click="toggleResult" style="right: 0px;position: absolute;" :title="toggleResultTitle" :size="22">
                 <ArrowDown v-if="showResult" style="margin-top:15px;" />
-                <ArrowUp v-if="resultHide"/>
+                <ArrowUp v-if="resultHide" />
             </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
@@ -23,8 +33,25 @@
                 </template>
             </el-auto-resizer>
         </el-footer>
-        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true">
+        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
             <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
+        </el-dialog>
+        <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
+            width="1000px" style="height:650px;overflow-y: auto;">
+            <el-row>
+                <el-form-item label="表名">
+                    <el-input v-model="tableName" style="width: 300px;" />
+                </el-form-item>
+                <el-form-item>
+                    <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
+                    <el-button @click="copyCreateScript" style="margin-left:12px;" size="small">复制</el-button>
+                </el-form-item>
+            </el-row>
+            <el-row>
+                <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
+                    <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
+                </el-scrollbar>
+            </el-row>
         </el-dialog>
     </el-container>
 </template>
@@ -34,20 +61,24 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@cod
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorState } from '@codemirror/state';
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
-import { sql, MySQL } from '@codemirror/lang-sql';
+import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language';
 import { autocompletion } from '@codemirror/autocomplete';
 import { ref, onMounted } from 'vue';
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format } from 'sql-formatter'
-
 import DBExport from './DBExport.vue'
+
+import hljs from 'highlight.js/lib/core';
+import * as highlightSql from 'highlight.js/lib/languages/sql';
+import 'highlight.js/styles/stackoverflow-light.css'
 
 import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
 import copyToClipboard from '../js/utils/copy-to-clipboard.js'
 
+hljs.registerLanguage('sql', highlightSql.default);
 
 const props = defineProps<{
     tabId: string,
@@ -70,6 +101,11 @@ const toggleResultTitle = ref("")
 
 const exectingSql = ref(false)
 let currentSelectTable = ""
+
+const tableName = ref("")
+const tableCreateDdl = ref("")
+const tableCreateDdlRef = ref()
+const tableCreateDialogVisible = ref(false)
 
 onMounted(() => {
     // 默认高度
@@ -106,7 +142,7 @@ function createEditor(editorContainer: any, doc: any) {
                 }
             ]),
             sql({
-                dialect: MySQL,
+                dialect: dbSchemaProxy.getDialect(props.schema),
                 schema: <any>dbSchemaProxy.getAll(),
                 tables: dbSchemaProxy.getTable(props.schema)
             }),
@@ -234,6 +270,22 @@ function exportCurrentToXlsx() {
     excel.exportJsonToExcel(obj)
 }
 
+function handleDdlCommand(command: string) {
+    switch (command) {
+        case "insert":
+            exportCurrentToSqlInsert()
+            break
+        case "update":
+            exportCurrentToSqlUpdate()
+            break
+        case "create":
+            tableCreateDialogVisible.value = true
+            break
+        default:
+            ElMessage({ message: "无效操作", type: "error" })
+    }
+}
+
 function exportCurrentToSqlInsert() {
     if (result.value.length === 0) {
         ElMessage({ message: "请先执行查询，在导出SQL", type: "warning" })
@@ -253,12 +305,12 @@ function exportCurrentToSqlInsert() {
             rowVal.push(fmtValForInsert(val))
         }
         valueArr.push(rowVal.join(","))
-        sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
+        sqlArr.push(sql + columnArr.join(",") + ") \n values (" + valueArr.join(",") + ")")
     }
 
-    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
-        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () =>  ElMessage({ message: "导出失败", type: "error" })
+    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "导出失败", type: "error" })
     )
 }
 
@@ -283,9 +335,40 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "", 
-        () =>  ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () =>  ElMessage({ message: "导出失败", type: "error" })
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: "mysql" }) : "",
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "导出失败", type: "error" })
+    )
+}
+
+function showCreateScript() {
+    let sqlStr = ""
+    const dbType = dbSchemaProxy.getDbType(props.schema)
+    if (dbType === 'mysql') {
+        sqlStr = "show create table " + tableName.value
+    } else if (dbType === 'oracle') {
+        sqlStr = "select dbms_metadata.get_ddl('TABLE','" + tableName.value.toUpperCase() + "') from dual"
+    } else {
+        ElMessage({ message: "暂不支持", type: "error" })
+        return
+    }
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlStr, maxLine: maxLine.value } })
+        .then((resp) => {
+            if (dbType === 'mysql') {
+                tableCreateDdl.value = hljs.highlight(resp.data.data.data[0]["Create Table"], { language: 'sql' }).value
+            } else if (dbType === 'oracle') {
+                tableCreateDdl.value =  hljs.highlight(resp.data.data.data[0]["Create Table"], { language: 'sql' }).value
+            }
+        })
+        .catch(function (error) {
+            console.log(error);
+        });
+}
+
+function copyCreateScript() {
+    copyToClipboard(tableCreateDdlRef.value.innerText,
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "复制失败", type: "error" })
     )
 }
 
@@ -328,7 +411,7 @@ function fmtValForUpdate(val: any) {
     } else if (typeof val === "string") {
         return " = '" + val + "'"
     }
-    return val
+    return " = " +val
 }
 
 </script>

@@ -16,7 +16,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	if name != "" {
 		user := findByLoginName(name)
-		if user.Pwd == Md5sum(pwd) {
+		if user != nil && user.Pwd == Md5sum(pwd) {
 			power := findUserPower(user.Id)
 			key := Md5sum(fmt.Sprint(utils.RandomInt64()))
 			w.Header().Set("Authentication", key)
@@ -26,7 +26,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			logutils.PanicErr(errors.New("用户名或密码不正确"))
 		}
 	} else {
-		logutils.PanicErr(errors.New("登录失败"))
+		logutils.PanicErr(errors.New("无效登录名"))
 	}
 }
 

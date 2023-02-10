@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -55,8 +56,10 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 		}
 	}()
 
-	excel.SetSheetRow("Sheet1", "A1", &columns)
-	excel.SetSheetRow("Sheet1", "A2", &columnComment)
+	sheetName := table[strings.Index(table, ".")+1:]
+	excel.SetSheetName("Sheet1", sheetName)
+	excel.SetSheetRow(sheetName, "A1", &columns)
+	excel.SetSheetRow(sheetName, "A2", &columnComment)
 
 	//values：一行的所有值,把每一行的各个字段放到values中，values长度==列数
 	values := make([]any, len(columns))
@@ -80,7 +83,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 		}
 
 		count++
-		excel.SetSheetRow("Sheet1", "A"+strconv.Itoa(count), &row)
+		excel.SetSheetRow(sheetName, "A"+strconv.Itoa(count), &row)
 	}
 
 	if err = rows.Err(); err != nil {
