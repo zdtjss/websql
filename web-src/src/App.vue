@@ -50,9 +50,10 @@
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList" style="width:100%"
-                  :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip placeholder="请选择"
-                  :render-after-expand="false" :check-on-click-node="true" show-checkbox :check-strictly="false" />
+                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList"
+                  style="width:100%" :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
+                  placeholder="请选择" :render-after-expand="false" :check-on-click-node="true" show-checkbox
+                  :check-strictly="false" />
               </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
@@ -134,7 +135,7 @@
                   style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
-                <el-popconfirm title="确定要删除?" @confirm="delUser(scope.row.id)" confirm-button-text="是"
+                <el-popconfirm title="确定要删除?" @confirm="delUser(scope.row)" confirm-button-text="是"
                   cancel-button-text="否">
                   <template #reference>
                     <el-icon style="cursor: pointer;" title="删除">
@@ -157,7 +158,9 @@
             </el-table-column>
             <el-table-column prop="dbType" label="数据库类型" width="120">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ dbTypeList.filter(t => t.value === scope.row.dbType)[0].label }}</span>
+                <span v-show="!scope.row.editable">{{
+                  dbTypeList.filter(t => t.value === scope.row.dbType)[0].label
+                }}</span>
                 <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
                   <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
                 </el-select>
@@ -178,7 +181,7 @@
             </el-table-column>
             <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
               <template #default="scope">
-                <el-input v-show="scope.row.editable" v-model="scope.row.pwd"/>
+                <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
               </template>
             </el-table-column>
@@ -200,7 +203,7 @@
                   title="保存" style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
-                <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row.id)" confirm-button-text="是"
+                <el-popconfirm title="确定要删除?" @confirm="delConnCfg(scope.row)" confirm-button-text="是"
                   cancel-button-text="否">
                   <template #reference>
                     <el-icon style="cursor: pointer;" title="删除">
@@ -245,7 +248,8 @@
       </template>
     </el-dialog>
     <!-- 登录对话框 -->
-    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login" @opened="loginName.focus()">
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
+      @opened="loginName.focus()">
       <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
         <el-form-item label="用户名" prop="name">
           <el-input ref="loginName" v-model="loginForm.name" />
@@ -406,12 +410,14 @@ function loadTree(node, resolve) {
             dbSchemaProxy.addTable(node.data.label + "_col", resp2.data.data)
           }) */
       }
-      resolve(resp.data.data.map(e => {
-        if (e.type === "column") {
-          return Object.assign({ isLeaf: true }, e)
-        }
-        return e
-      }))
+      if (resp.data.data) {
+        resolve(resp.data.data.map(e => {
+          if (e.type === "column") {
+            return Object.assign({ isLeaf: true }, e)
+          }
+          return e
+        }))
+      }
       node.loaded = false
     })
     .catch((error) => {
@@ -452,11 +458,15 @@ function listConnCfg() {
     })
 }
 
-function delConnCfg(id) {
-  http.get("/delConn", { params: { id: id } })
-    .then((resp) => {
-      listConnCfg()
-    })
+function delConnCfg(row) {
+  if (row.id) {
+    http.get("/delConn", { params: { id: row.id } })
+      .then((resp) => {
+        listConnCfg()
+      })
+  } else {
+    connList.value = connList.value.filter(item => item != row)
+  }
 }
 
 function login() {
@@ -512,6 +522,26 @@ function findUser() {
     })
 }
 
+function saveUser(row) {
+  http.post("/saveUser", row)
+    .then((resp) => {
+      row.editable = false
+      ElMessage("保存成功")
+    })
+}
+
+function delUser(row) {
+  debugger
+  if (row.id) {
+    http.get("/delUser", { params: { id: row.id } })
+      .then((resp) => {
+        findUser()
+      })
+  } else {
+    userList.value = userList.value.filter(item => item != row)
+  }
+}
+
 function listConnBase(query) {
   if (query === "") {
     return
@@ -545,21 +575,6 @@ function loadCfgData(pane) {
   } else if (pane.props.name === "dir") {
     listDirTree()
   }
-}
-
-function saveUser(row) {
-  http.post("/saveUser", row)
-    .then((resp) => {
-      row.editable = false
-      ElMessage("保存成功")
-    })
-}
-
-function delUser(id) {
-  http.get("/delUser", { params: { id: id } })
-    .then((resp) => {
-      findUser()
-    })
 }
 
 function addRole() {
@@ -596,7 +611,7 @@ function delRole(row) {
         loadCfgData({ props: { name: 'role' } })
       })
   } else {
-    roleList.value.splice(roleList.value.findindex(item => item == row), 1)
+    roleList.value = roleList.value.filter(item => item != row)
   }
 }
 
@@ -620,11 +635,7 @@ const appendTreeNode = (data) => {
 }
 
 const removeDir = (node, data) => {
-  const parent = node.parent
-  const children = parent.data.children || parent.data
-  const index = children.findIndex((d) => d.id === data.id)
-  children.splice(index, 1)
-  conCfgTreeData.value = [...conCfgTreeData.value]
+  conCfgTreeData.value = conCfgTreeData.value.filter(item => item != data)
   if (data.id) {
     http.get("/delTreeNode", { params: { id: data.id } })
       .then((resp) => {
