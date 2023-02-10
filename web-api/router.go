@@ -48,7 +48,7 @@ func MainRegister(router *mux.Router) {
 
 	router.HandleFunc("/findUser", admin.FindUser).Methods("GET")
 	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
-	router.HandleFunc("/delUser", admin.DelUser).Methods("POST")
+	router.HandleFunc("/delUser", admin.DelUser).Methods("GET")
 
 	router.HandleFunc("/ext/", proxy)
 

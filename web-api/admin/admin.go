@@ -100,10 +100,9 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 	if user.Id == 0 {
+		*&user.Id = utils.RandomInt64()
 		stmt, _ := config.Mngtdb.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?)")
-		rs, _ := tx.Stmt(stmt).Exec(utils.RandomInt64(), &user.Name, &user.LoginName, Md5sum(user.Pwd))
-		id, _ := rs.LastInsertId()
-		*&user.Id = uint64(id)
+		tx.Stmt(stmt).Exec(&user.Id, &user.Name, &user.LoginName, Md5sum(user.Pwd))
 	} else {
 		var userDb []User
 		config.Mngtdb.Select(&userDb, "select pwd from t_user where id = ?", user.Id)
@@ -118,7 +117,7 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	if len(user.RoleId) > 0 {
 		stmt, _ := tx.Prepare("insert into t_user_role (id, role_id, user_id) values (?, ?, ?)")
 		for _, rid := range user.RoleId {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(3 * time.Millisecond)
 			tx.Stmt(stmt).Exec(utils.RandomInt64(), rid, user.Id)
 		}
 	}
@@ -146,7 +145,7 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	name := r.FormValue("name")
 	loginName := r.FormValue("loginName")
-	userIdList, _ := r.Form["userIdList[]"]
+	userIdList := r.Form["userIdList[]"]
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
