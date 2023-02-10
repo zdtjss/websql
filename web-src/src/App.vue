@@ -67,7 +67,7 @@
                   style="margin-right:5px;cursor: pointer;">
                   <Select />
                 </el-icon>
-                <el-popconfirm title="确定要删除?" @confirm="delRole(scope.row.id)" confirm-button-text="是"
+                <el-popconfirm title="确定要删除?" @confirm="delRole(scope.row)" confirm-button-text="是"
                   cancel-button-text="否">
                   <template #reference>
                     <el-icon style="cursor: pointer;" title="删除">
@@ -222,7 +222,7 @@
                   </span>
                   <span style="right: 0px;position: absolute;">
                     <a @click="appendTreeNode(data)">添加</a>
-                    <el-popconfirm title="确定要删除?" @confirm="removeTreeNode(node, data)" confirm-button-text="是"
+                    <el-popconfirm title="确定要删除?" @confirm="removeDir(node, data)" confirm-button-text="是"
                       cancel-button-text="否">
                       <template #reference>
                         <a style="margin-left: 8px">删除</a>
@@ -589,11 +589,15 @@ function saveRole(row) {
     })
 }
 
-function delRole(id) {
-  http.get("/delRole", { params: { id: id } })
-    .then((resp) => {
-      loadCfgData({ props: { name: 'role' } })
-    })
+function delRole(row) {
+  if (row.id) {
+    http.get("/delRole", { params: { id: row.id } })
+      .then((resp) => {
+        loadCfgData({ props: { name: 'role' } })
+      })
+  } else {
+    roleList.value.splice(roleList.value.findindex(item => item == row), 1)
+  }
 }
 
 function saveTree() {
@@ -615,12 +619,18 @@ const appendTreeNode = (data) => {
   conCfgTreeData.value.push(newChild)
 }
 
-const removeTreeNode = (node, data) => {
+const removeDir = (node, data) => {
   const parent = node.parent
   const children = parent.data.children || parent.data
   const index = children.findIndex((d) => d.id === data.id)
   children.splice(index, 1)
   conCfgTreeData.value = [...conCfgTreeData.value]
+  if (data.id) {
+    http.get("/delTreeNode", { params: { id: data.id } })
+      .then((resp) => {
+        conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "", value: "" }] : resp.data.data
+      })
+  }
 }
 
 </script>
