@@ -32,7 +32,7 @@ func main() {
 	port = flag.String("port", "80", "")
 	isHttps = flag.Bool("https", false, "")
 	initSqlFile := flag.String("sql", "", "")
-	bs := flag.Bool("bs", false, "")
+	isRemote := flag.Bool("remote", false, "true 使用redis存储token，适合多实例部署，默认false")
 	flag.Parse()
 
 	webapi.MainRegister(router)
@@ -43,7 +43,7 @@ func main() {
 		config.InitDB(*initSqlFile)
 	}
 
-	if *bs {
+	if *isRemote {
 		store.InitRedis()
 	}
 
