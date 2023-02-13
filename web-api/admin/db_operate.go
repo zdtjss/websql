@@ -27,11 +27,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 func listTable(key uint64, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	dc := GetConn(key, authorization)
-	params := make([]any, 0)
-	if dc.DriverName() == "mysql" {
-		params = append(params, schema)
-	}
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], params...)
+	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -61,6 +57,7 @@ func listAllColumns(key uint64, schema, authorization string) []*Tree {
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
+		*&columnComment = ""
 		row.Scan(&columnName, &columnComment)
 		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
@@ -83,6 +80,7 @@ func queryTableInfo(key uint64, schema, authorization string) []*Table {
 	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {
+		*&comment = ""
 		rs.Scan(&name, &comment)
 		table := &Table{name, comment}
 		tables = append(tables, table)
@@ -109,6 +107,7 @@ func ColumnMap(table string, connId uint64, authorization string) map[string]str
 	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {
+		*&comment = ""
 		rs.Scan(&name, &comment)
 		columnMap[name] = comment
 	}
@@ -142,6 +141,7 @@ func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 	logutils.PrintErr(err2)
 	var colName, colType string
 	for rs.Next() {
+		*&colType = ""
 		rs.Scan(&colName, &colType)
 		colTypeMap[colName] = colType
 	}
