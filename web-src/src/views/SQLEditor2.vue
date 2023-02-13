@@ -1,7 +1,7 @@
 <template>
     <el-container>
         <el-header height="30px" class="toolbar">
-            <el-button @click="exec" :loading="exectingSql" title="Ctrl + Enter">执行</el-button>
+            <el-button @click="exec" :loading="exectingSql" title="Ctrl + Shift + E">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
             <el-button @click="exportCurrentToXlsx">excel</el-button>
             <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
@@ -19,7 +19,7 @@
             <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
-        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.ctrl.enter="exec"
+        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.ctrl.shift.e="exec"
             @keyup.ctrl.shift.f="formatSql">
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
