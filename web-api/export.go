@@ -50,6 +50,7 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 	}
 
 	excel := excelize.NewFile()
+
 	defer func() {
 		if err := excel.Close(); err != nil {
 			log.Println(err)
@@ -58,8 +59,18 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 
 	sheetName := table[strings.Index(table, ".")+1:]
 	excel.SetSheetName("Sheet1", sheetName)
-	excel.SetSheetRow(sheetName, "A1", &columns)
-	excel.SetSheetRow(sheetName, "A2", &columnComment)
+	streamWriter, _ := excel.NewStreamWriter(sheetName)
+
+	var columns2 = make([]any, len(columns))
+	for idx := range columns {
+		columns2[idx] = columns[idx]
+	}
+	var columnComment2 = make([]any, len(columnComment))
+	for idx := range columnComment {
+		columnComment2[idx] = columnComment[idx]
+	}
+	streamWriter.SetRow("A1", columns2)
+	streamWriter.SetRow("A2", columnComment2)
 
 	//values：一行的所有值,把每一行的各个字段放到values中，values长度==列数
 	values := make([]any, len(columns))
@@ -77,18 +88,23 @@ func queryAndWrite(table string, out io.Writer, connId uint64, authorization str
 		logutils.PanicErr(err)
 
 		//存每一行的内容
-		var row []any
-		for i, v := range values {
-			row = append(row, admin.ConvertCol(connCtx.DriverName(), colTypeMap[columns[i]], v))
+		var row = make([]any, len(values))
+		for i := range values {
+			row[i] = admin.ConvertCol(connCtx.DriverName(), colTypeMap[columns[i]], values[i])
 		}
 
 		count++
-		excel.SetSheetRow(sheetName, "A"+strconv.Itoa(count), &row)
+		streamWriter.SetRow("A"+strconv.Itoa(count), row)
 	}
 
 	if err = rows.Err(); err != nil {
 		logutils.PanicErr(err)
 	}
-
+	if err := streamWriter.Flush(); err != nil {
+		logutils.PanicErrf("导出excel失败", err)
+		return
+	}
 	excel.Write(out)
+	log.Println("导出完成：", table)
+
 }
