@@ -2,7 +2,6 @@ package store
 
 import (
 	"bytes"
-	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
 	"time"
@@ -22,9 +21,8 @@ func StoreItem(key string, val any) {
 		} else if err == nil {
 			fval = string(data)
 		}
-		realKey := creakRedisKey(key)
-		err = RDB.Set(ctx, realKey, fval, 30*time.Minute).Err()
-		logutils.PanicErrf("key:%s 缓存失败", err, realKey)
+		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
+		logutils.PanicErrf("key:%s 缓存失败", err, key)
 	} else {
 		store[key] = val
 	}
@@ -43,22 +41,17 @@ func GetItem(key string, dist any) {
 		return
 	}
 	if RDB != nil {
-		realKey := creakRedisKey(key)
-		val, err := RDB.Get(ctx, realKey).Result()
+		val, err := RDB.Get(ctx, key).Result()
 		logutils.PrintErr(err)
-		RDB.Expire(ctx, realKey, 30*time.Minute)
+		RDB.Expire(ctx, key, 30*time.Minute)
 		err = utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
 		if err != nil && val != "" {
 			dist = val
 		} else if err != nil {
-			logutils.PrintErrf("获取key:%s 失败,", err, realKey)
+			logutils.PrintErrf("获取key:%s 失败,", err, key)
 		}
 	} else {
 		v := store[key]
 		utils.UnmarshalJson(bytes.NewBuffer(utils.ToJsonString(v)), &dist)
 	}
-}
-
-func creakRedisKey(key string) string {
-	return fmt.Sprintf("NWAY-WEBSQL-%s", key)
 }
