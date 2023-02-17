@@ -1,5 +1,5 @@
 {
-  "name": "sql-web",
+  "name": "web-sql",
   "version": "0.1.0",
   "scripts": {
     "dev": "vite",
