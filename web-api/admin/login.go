@@ -19,7 +19,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		power := findUserPower(user.Id)
 		key := Md5sum(fmt.Sprint(utils.RandomInt64()))
 		w.Header().Set("Authentication", key)
-		store.StoreItem(key, UserPower{UserId: user.Id, Power: power})
+		store.Add(key, UserPower{UserId: user.Id, Power: power})
 		utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == 1})
 	} else {
 		logutils.PanicErr(errors.New("用户名或密码不正确"))
@@ -28,14 +28,14 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 func Logout(w http.ResponseWriter, r *http.Request) {
 	key := r.Header.Get("Authentication")
-	store.RemoveItem(key)
+	store.Remove(key)
 	utils.WriteJson(w, "退出成功")
 }
 
-func CheckPower(r *http.Request) {
+func CheckAdminPower(r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	var userPower = new(UserPower)
-	store.GetItem(authorization, userPower)
+	store.Get(authorization, userPower)
 	if userPower.UserId != 1 {
 		logutils.PanicErr(errors.New("无权访问"))
 	}

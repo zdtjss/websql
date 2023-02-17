@@ -7,11 +7,11 @@ import (
 
 func TestGetItem(t *testing.T) {
 
-	StoreItem("abc", UserPower{UserId: 1})
+	Add("abc", UserPower{UserId: 1})
 
 	var userPower UserPower
 
-	GetItem("abc", &userPower)
+	Get("abc", &userPower)
 
 	fmt.Println(userPower.UserId)
 }
