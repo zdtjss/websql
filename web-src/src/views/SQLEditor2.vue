@@ -23,6 +23,7 @@
             @keyup.ctrl.shift.f="formatSql">
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
+        <div style="width: 100%; border: 1px solid #9e9e9e30; cursor: row-resize;" @mousedown="resizeResultArea"></div>
         <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
             <el-icon @click="toggleResult" style="right: 0px;position: absolute;" :title="toggleResultTitle" :size="22">
                 <ArrowDown v-if="showResult" style="margin-top:15px;" />
@@ -117,7 +118,7 @@ onMounted(() => {
             createEditor(codemirror, doc);
         }
     })
-    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n"
     createEditor(codemirror, doc);
 })
 
@@ -176,7 +177,7 @@ function formatSql() {
         return
     }
     const editorState = <EditorState>editorView.value?.state
-    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: "mysql" }) + "\n"))
+    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: dbSchemaProxy.getDbType(props.schema) }) + "\n"))
 }
 
 function exec() {
@@ -194,12 +195,14 @@ function exec() {
                     key: col.name,
                     title: col.name,
                     dataKey: col.name,
-                    width: 150
+                    width: 150,
+                    minWidth: "150px"
                 }
             })
             columns.value.unshift({
                 dataKey: "col-idx",
-                width: 50
+                width: 55,
+                fixed: true
             })
             result.value = resp.data.data.data
             result.value.forEach((row: any, idx: number) => {
@@ -336,7 +339,7 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: "mysql" }) : "",
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: dbSchemaProxy.getDbType(props.schema) }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
         () => ElMessage({ message: "导出失败", type: "error" })
     )
@@ -375,6 +378,20 @@ function copyCreateScript() {
 
 function onKeyup() {
     localStorage.setItem(getSqlKey(), getEditorDoc())
+}
+
+function resizeResultArea(event: MouseEvent) {
+    const startY = event.clientY
+    const ogiHeight = sqlDivHeight.value === "" ? startY : Number.parseFloat(sqlDivHeight.value.substring(0, sqlDivHeight.value.length - 2))
+    const resultHeight = resultDivHeight.value === "" ? startY : Number.parseFloat(resultDivHeight.value.substring(0, resultDivHeight.value.length - 2))
+    document.onmousemove = (e) => {
+        sqlDivHeight.value = (ogiHeight + e.clientY - startY) + "px"
+        resultDivHeight.value = (resultHeight - (e.clientY - startY)) + "px"
+    }
+    document.onmouseup = () => {
+        document.onmouseup = null
+        document.onmousemove = null
+    }
 }
 
 function toggleResult() {

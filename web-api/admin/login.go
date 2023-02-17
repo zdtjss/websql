@@ -14,19 +14,15 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	name := r.PostForm.Get("name")
 	pwd := r.PostForm.Get("password")
 
-	if name != "" {
-		user := findByLoginName(name)
-		if user != nil && user.Pwd == Md5sum(pwd) {
-			power := findUserPower(user.Id)
-			key := Md5sum(fmt.Sprint(utils.RandomInt64()))
-			w.Header().Set("Authentication", key)
-			store.StoreItem(key, UserPower{UserId: user.Id, Power: power})
-			utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == 1})
-		} else {
-			logutils.PanicErr(errors.New("用户名或密码不正确"))
-		}
+	user := findByLoginName(name)
+	if user != nil && user.Pwd == Md5sum(pwd) {
+		power := findUserPower(user.Id)
+		key := Md5sum(fmt.Sprint(utils.RandomInt64()))
+		w.Header().Set("Authentication", key)
+		store.StoreItem(key, UserPower{UserId: user.Id, Power: power})
+		utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == 1})
 	} else {
-		logutils.PanicErr(errors.New("无效登录名"))
+		logutils.PanicErr(errors.New("用户名或密码不正确"))
 	}
 }
 

@@ -25,7 +25,7 @@
         </template>
       </el-tree>
     </el-aside>
-    <div style="height: 100%; border: 1px solid  gray; cursor: col-resize;" @mousedown="resizeTreeArea"></div>
+    <div style="height: 100%; border: 1px solid #9e9e9e; cursor: col-resize;" @mousedown="resizeTreeArea"></div>
     <el-container>
       <el-main>
         <el-tabs v-model="editableTabsValue" type="card" class="demo-tabs" closable @tab-remove="removeTab">
@@ -150,13 +150,13 @@
         <el-tab-pane label="连接" name="conn">
           <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
-            <el-table-column prop="name" label="连接名称" width="120" :show-overflow-tooltip="true">
+            <el-table-column prop="name" label="连接名称" width="150" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="dbType" label="数据库类型" width="120">
+            <el-table-column prop="dbType" label="数据库类型" width="100">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{
                   dbTypeList.filter(t => t.value === scope.row.dbType)[0].label
@@ -179,7 +179,7 @@
                 <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
+            <el-table-column prop="pwd" label="密码" width="120" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
@@ -284,8 +284,7 @@ const editableTabs = ref([])
 
 const connTree = ref()
 const treeData = ref([])
-const treeDivWidth = ref("300px")
-const resizeTreeAreaFlag = ref(false)
+const treeDivWidth = ref("260px")
 
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
@@ -374,23 +373,15 @@ function restoreTab() {
 }
 
 function resizeTreeArea(event) {
+  const startX = event.clientX
   const ogiWidth = new Number(treeDivWidth.value.substring(0, treeDivWidth.value.length - 2))
-  let deviation = 0
-  if (event.clientX > ogiWidth) {
-    deviation = event.clientX - ogiWidth
-  }
   document.onmousemove = (e) => {
-    treeDivWidth.value = (e.clientX - deviation) + "px"
+    treeDivWidth.value = (ogiWidth + e.clientX - startX) + "px"
   }
   document.onmouseup = () => {
     document.onmouseup = null
     document.onmousemove = null
   }
-}
-
-function mouseUp() {
-  resizeTreeAreaFlag.value = false
-  document.removeEventListener('mousemove', this.mouseMove)
 }
 
 function loadTree(node, resolve) {
@@ -540,16 +531,6 @@ function delUser(row) {
   } else {
     userList.value = userList.value.filter(item => item != row)
   }
-}
-
-function listConnBase(query) {
-  if (query === "") {
-    return
-  }
-  http.get("/connBaseTree", { params: { name: query } })
-    .then((resp) => {
-      connListSelect.value = resp.data.data
-    })
 }
 
 function loadCfgData(pane) {

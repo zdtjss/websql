@@ -17,8 +17,7 @@ go.sum
 nway.key
 nway.pem
 .vscode/
-static/package-lock.json
 nway.s3db
 web-src/package-lock.json
 static/
-config.json
+nway.sqlite3.db

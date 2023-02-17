@@ -69,8 +69,8 @@ function queryData() {
 function exportXlsx(table) {
     http.get("/exportXlsx?connId=" + props.connId + "&schema=" + props.schema + "&table=" + table, { responseType: 'blob' }).then((res) => {
         if (!res) {
-            this.$message.error("下载模板文件失败");
-            return false;
+            ElMessage.error("下载失败")
+            return;
         }
         const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=utf-8' });
         const downloadElement = document.createElement('a');
