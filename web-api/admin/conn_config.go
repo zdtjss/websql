@@ -15,7 +15,7 @@ import (
 )
 
 func SaveConn(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(r.Body, cfg)
 	if cfg.Id == 0 {
@@ -35,7 +35,7 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 }
 
 func DelConn(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	r.ParseForm()
 	id := utils.AtoUint64(r.FormValue("id"))
 	config.Mngtdb.Exec("delete from t_conn where id = ?", id)
@@ -50,7 +50,7 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	level := r.Form.Get("level")
 	authorization := r.Header.Get("Authorization")
 	var userPower UserPower
-	store.GetItem(authorization, &userPower)
+	store.Get(authorization, &userPower)
 
 	nextType := getNextType(curType)
 
@@ -105,7 +105,7 @@ func listConn(parentId string, userPower UserPower) []*Tree {
 }
 
 func ListConn2(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
 	logutils.PanicErr(err)
@@ -157,7 +157,7 @@ func getNextType(curType string) string {
 
 func GetConn(id uint64, authorization string) *sqlx.DB {
 	var userPower UserPower
-	store.GetItem(authorization, &userPower)
+	store.Get(authorization, &userPower)
 	if !slices.Contains(userPower.Power, id) {
 		logutils.PanicErr(errors.New("无权访问"))
 	}

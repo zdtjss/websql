@@ -10,14 +10,14 @@ import (
 )
 
 func SaveTree(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	tree := []*DirTree{}
 	utils.UnmarshalJson(r.Body, &tree)
 	doTreeInsert(tree)
 }
 
 func DelTreeNode(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	r.ParseForm()
 	config.Mngtdb.Exec("delete from t_tree where id = ?", utils.AtoUint64(r.FormValue("id")))
 	utils.WriteJson(w, "")
@@ -45,7 +45,7 @@ func findByParent(parentId string, userPower UserPower) []*Tree {
 }
 
 func ListDirTree(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
 	logutils.PanicErr(err)
@@ -67,7 +67,7 @@ func ListDirTree(w http.ResponseWriter, r *http.Request) {
 
 func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 
-	CheckPower(r)
+	CheckAdminPower(r)
 
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")

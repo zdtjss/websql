@@ -14,7 +14,7 @@ import (
 )
 
 func SaveRole(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	role := &RoleSave{}
 	utils.UnmarshalJson(r.Body, role)
 	tx, _ := config.Mngtdb.Beginx()
@@ -42,7 +42,7 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func DelRole(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	r.ParseForm()
 	id := utils.AtoUint64(r.FormValue("id"))
 
@@ -94,7 +94,7 @@ func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func SaveUser(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	user := &User{}
 	utils.UnmarshalJson(r.Body, user)
 	tx, _ := config.Mngtdb.Beginx()
@@ -134,7 +134,7 @@ func Md5sum(s string) string {
 }
 
 func DelUser(w http.ResponseWriter, r *http.Request) {
-	CheckPower(r)
+	CheckAdminPower(r)
 	r.ParseForm()
 	config.Mngtdb.Exec("delete from t_user where id = ?", utils.AtoUint64(r.FormValue("id")))
 	utils.WriteJson(w, "")

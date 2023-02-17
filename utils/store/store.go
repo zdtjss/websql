@@ -11,7 +11,7 @@ import (
 
 var store = make(map[string]any, 10)
 
-func StoreItem(key string, val any) {
+func Add(key string, val any) {
 	if RDB != nil {
 		var fval string
 		data, err := utils.ToJsonString2(val)
@@ -28,7 +28,7 @@ func StoreItem(key string, val any) {
 	}
 }
 
-func RemoveItem(key string) {
+func Remove(key string) {
 	if RDB != nil {
 		RDB.Del(ctx, key)
 	} else {
@@ -36,7 +36,7 @@ func RemoveItem(key string) {
 	}
 }
 
-func GetItem(key string, dist any) {
+func Get(key string, dist any) {
 	if key == "" {
 		return
 	}
