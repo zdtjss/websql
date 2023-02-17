@@ -10,9 +10,9 @@ require (
 	github.com/jmoiron/sqlx v1.3.5
 	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/redis/go-redis/v9 v9.0.2
-	github.com/sijms/go-ora/v2 v2.5.27
+	github.com/sijms/go-ora/v2 v2.5.30
 	github.com/xuri/excelize/v2 v2.7.0
-	golang.org/x/exp v0.0.0-20230206171751-46f607a40771
+	golang.org/x/exp v0.0.0-20230213192124-5e25df0256eb
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	github.com/richardlehane/msoleps v1.0.3 // indirect
 	github.com/xuri/efp v0.0.0-20220603152613-6918739fd470 // indirect
 	github.com/xuri/nfp v0.0.0-20220409054826-5e722a1d9e22 // indirect
-	golang.org/x/crypto v0.5.0 // indirect
-	golang.org/x/net v0.5.0 // indirect
-	golang.org/x/text v0.6.0 // indirect
+	golang.org/x/crypto v0.6.0 // indirect
+	golang.org/x/net v0.7.0 // indirect
+	golang.org/x/text v0.7.0 // indirect
 )

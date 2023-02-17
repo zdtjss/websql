@@ -20,5 +20,7 @@ func InitRedis() {
 	err := RDB.Ping(ctx).Err()
 	if err == nil {
 		log.Println("Redis 连接成功")
+	} else {
+		log.Fatalf("Redis 连接失败,err:%s\n", err.Error())
 	}
 }

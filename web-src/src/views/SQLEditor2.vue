@@ -118,7 +118,7 @@ onMounted(() => {
             createEditor(codemirror, doc);
         }
     })
-    const doc = localStorage.getItem(getSqlKey()) || "\n\n"
+    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n"
     createEditor(codemirror, doc);
 })
 
@@ -177,7 +177,7 @@ function formatSql() {
         return
     }
     const editorState = <EditorState>editorView.value?.state
-    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: "mysql" }) + "\n"))
+    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: dbSchemaProxy.getDbType(props.schema) }) + "\n"))
 }
 
 function exec() {
@@ -339,7 +339,7 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: "mysql" }) : "",
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: dbSchemaProxy.getDbType(props.schema) }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
         () => ElMessage({ message: "导出失败", type: "error" })
     )
