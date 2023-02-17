@@ -15,7 +15,11 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(function (response) {
     return response;
 }, function (error) {
-    ElMessage({ message: error.response.data.msg, type: "error" })
+    if (error.response && error.response.data) {
+        ElMessage.error(error.response.data.msg)
+    } else {
+        ElMessage.error(error.message)
+    }
     return Promise.reject(error);
 });
 
