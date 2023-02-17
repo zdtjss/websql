@@ -150,13 +150,13 @@
         <el-tab-pane label="连接" name="conn">
           <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="(row) => row.editable = true">
-            <el-table-column prop="name" label="连接名称" width="120" :show-overflow-tooltip="true">
+            <el-table-column prop="name" label="连接名称" width="150" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="dbType" label="数据库类型" width="120">
+            <el-table-column prop="dbType" label="数据库类型" width="100">
               <template #default="scope">
                 <span v-show="!scope.row.editable">{{
                   dbTypeList.filter(t => t.value === scope.row.dbType)[0].label
@@ -179,7 +179,7 @@
                 <span v-show="!scope.row.editable">{{ scope.row.user }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="pwd" label="密码" width="180" :show-overflow-tooltip="true">
+            <el-table-column prop="pwd" label="密码" width="120" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.pwd" />
                 <span v-show="!scope.row.editable">{{ scope.row.pwd }}</span>
