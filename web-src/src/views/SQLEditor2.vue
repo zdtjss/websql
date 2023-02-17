@@ -118,7 +118,7 @@ onMounted(() => {
             createEditor(codemirror, doc);
         }
     })
-    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n"
+    const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
 })
 
