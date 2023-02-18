@@ -260,7 +260,7 @@
       </el-form>
       <template #footer>
         <span class="dialog-footer">
-          <el-button type="primary" @click="login">登录</el-button>
+          <el-button type="primary" @click="login" :loading="logining">登录</el-button>
           <el-button @click="loginDialogVisible = false">关闭</el-button>
         </span>
       </template>
@@ -293,6 +293,7 @@ const loginName = ref()
 const loginFormRef = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
+const logining = ref(false)
 const loginRules = reactive({
   name: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
@@ -463,6 +464,7 @@ function delConnCfg(row) {
 function login() {
   loginFormRef.value.validate(isValid => {
     if (isValid) {
+      logining.value = true
       const params = new URLSearchParams();
       params.append("name", loginForm.value.name);
       params.append("password", loginForm.value.password);
@@ -472,10 +474,11 @@ function login() {
           isAdmin.value = resp.data.data.isAdmin
           sessionStorage.setItem("authentication", resp.headers.get("authentication"))
           loginForm.value = {}
+          logining.value = false
           loginSucc.value = true
           loginDialogVisible.value = false
           ElMessage("登陆成功")
-        })
+        }).finally(() => logining.value = false)
     }
   })
 }

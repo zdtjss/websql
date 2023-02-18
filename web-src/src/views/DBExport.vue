@@ -3,23 +3,26 @@
         <el-main class="sql_area">
             <el-table :data="tableData" :stripe="true" :highlight-current-row="true" width="100%" height="650">
                 <el-table-column prop="name" label="表名" />
-                <el-table-column prop="comment" label="注释" :show-overflow-tooltip="true"/>
+                <el-table-column prop="comment" label="注释" :show-overflow-tooltip="true" />
                 <el-table-column label="操作" style="text-align: center; " width="260">
                     <template #default="scope">
                         <el-row :gutter="10">
                             <el-col :span="6">
-                                <el-button size="small" @click="exportXlsx(scope.row.name)">导出</el-button>
+                                <el-button size="small" @click="exportXlsx(scope.row)"
+                                    :loading="scope.row.exporting">导出</el-button>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload :file-list="fileListInsert" :http-request="upload" :show-file-list="false" :limit="1">
-                                    <el-button size="small"
-                                        @click="currentOpt = { table: scope.row.name, optType: 'insert' }">导入/新增</el-button>
+                                <el-upload :file-list="fileListInsert" :http-request="upload"
+                                    :data="{ row: scope.row, table: scope.row.name, optType: 'insert' }"
+                                    @on-progress="scope.row.inserting = true" :show-file-list="false" :limit="1">
+                                    <el-button size="small" :loading="scope.row.inserting">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
                             <el-col :span="9">
-                                <el-upload :file-list="fileListUpdate" :http-request="upload" :show-file-list="false" :limit="1">
-                                    <el-button size="small"
-                                        @click="currentOpt = { table: scope.row.name, optType: 'update' }">导入/修改</el-button>
+                                <el-upload :file-list="fileListUpdate" :http-request="upload"
+                                    :data="{ row: scope.row, table: scope.row.name, optType: 'update' }"
+                                    @on-progress="scope.row.updateing = true" :show-file-list="false" :limit="1">
+                                    <el-button size="small" :loading="scope.row.updateing">导入/修改</el-button>
                                 </el-upload>
                             </el-col>
                         </el-row>
@@ -45,11 +48,6 @@ const props = defineProps({
 const fileListInsert = ref([])
 const fileListUpdate = ref([])
 
-let currentOpt = {
-    table: "",
-    optType: ""
-}
-
 const tableData = ref([])
 
 onMounted(() => {
@@ -66,8 +64,9 @@ function queryData() {
         });
 }
 
-function exportXlsx(table) {
-    http.get("/exportXlsx?connId=" + props.connId + "&schema=" + props.schema + "&table=" + table, { responseType: 'blob' }).then((res) => {
+function exportXlsx(row) {
+    row.exporting = true
+    http.get("/exportXlsx?connId=" + props.connId + "&schema=" + props.schema + "&table=" + row.name, { responseType: 'blob' }).then((res) => {
         if (!res) {
             ElMessage.error("下载失败")
             return;
@@ -86,7 +85,7 @@ function exportXlsx(table) {
         downloadElement.click(); //点击下载
         document.body.removeChild(downloadElement); //下载完成移除元素
         window.URL.revokeObjectURL(href); //释放掉blob对象
-    })
+    }).finally(() => row.exporting = false)
 }
 
 function upload(options) {
@@ -95,14 +94,15 @@ function upload(options) {
     param.append('file', options.file);
     param.append("connId", props.connId)
     param.append("schema", props.schema)
-
-    Object.keys(options.data).forEach(key => {
+    Object.keys(options.data).filter(key => key !== "row").forEach(key => {
         param.append(key, options.data[key])
     })
 
-    Object.keys(currentOpt).forEach(key => {
-        param.append(key, currentOpt[key])
-    })
+    if (options.data.optType === "insert") {
+        options.data.row.inserting = true
+    } else {
+        options.data.row.updateing = true
+    }
 
     http.post("/importXlsx", param, {
         headers: { "content-type": "multipart/form-data" }
@@ -119,6 +119,11 @@ function upload(options) {
     }).finally((e) => {
         fileListInsert.value = []
         fileListUpdate.value = []
+        if (options.data.optType === "insert") {
+            options.data.row.inserting = false
+        } else {
+            options.data.row.updateing = false
+        }
     })
 }
 
