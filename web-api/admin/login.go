@@ -40,7 +40,7 @@ func GetUserPower(authorization string) *UserPower {
 
 func CheckAdminPower(r *http.Request) {
 	authorization := r.Header.Get("Authorization")
-	var userPower = GetUserPower(formatStoreKey(authorization))
+	var userPower = GetUserPower(authorization)
 	if userPower.UserId != "1" {
 		logutils.PanicErr(errors.New("无权访问"))
 	}

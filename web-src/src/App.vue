@@ -326,6 +326,9 @@ onMounted(() => {
   storedTabs.forEach(tab => tab.component = sqlEditor)
   editableTabs.value.push(...storedTabs)
   editableTabsValue.value = localStorage.getItem("editableTabsValue") || ""
+  if (!loginSucc.value) {
+    loginDialogVisible.value = true
+  }
 })
 
 const addTab = (node) => {
