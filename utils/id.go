@@ -14,6 +14,13 @@ func RandomInt64() uint64 {
 	return uint64(id)
 }
 
+func RandomStr() string {
+	snowFlake := &SnowFlake{}
+	_ = snowFlake.Init(1, 5)
+	id, _ := snowFlake.NextId()
+	return fmt.Sprint(id)
+}
+
 type SnowFlake struct {
 	epoch     int64 // 起始时间戳
 	timestamp int64 // 当前时间戳，毫秒

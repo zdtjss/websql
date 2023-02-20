@@ -19,18 +19,18 @@ func SaveTree(w http.ResponseWriter, r *http.Request) {
 func DelTreeNode(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
-	config.Mngtdb.Exec("delete from t_tree where id = ?", utils.AtoUint64(r.FormValue("id")))
+	config.Mngtdb.Exec("delete from t_tree where id = ?", r.FormValue("id"))
 	utils.WriteJson(w, "")
 }
 
-func findByParent(parentId string, userPower UserPower) []*Tree {
+func findByParent(parentId string, userPower *UserPower) []*Tree {
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_tree where ")
 	if parentId == "" {
-		sql.WriteString(" (parent is null or parent = 0)")
+		sql.WriteString(" (parent is null or parent = '')")
 	} else {
-		param = append(param, utils.AtoUint64(parentId))
+		param = append(param, parentId)
 		sql.WriteString(" parent = ?")
 	}
 	appendPmsn(&sql, "id", &param, userPower)
@@ -55,12 +55,12 @@ func ListDirTree(w http.ResponseWriter, r *http.Request) {
 	}
 	firstLevel := []*Tree{}
 	for _, cfg := range tree {
-		if cfg.Parent == 0 {
+		if cfg.Parent == "" {
 			firstLevel = append(firstLevel, cfg)
 		}
 	}
 	for _, cfg := range firstLevel {
-		cfg.Children = findChild(cfg, tree, map[uint64][]*ConnCfgBase{})
+		cfg.Children = findChild(cfg, tree, map[string][]*ConnCfgBase{})
 	}
 	utils.WriteJson(w, firstLevel)
 }
@@ -78,7 +78,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 	}
 	firstLevel := []*Tree{}
 	for _, cfg := range tree {
-		if cfg.Parent == 0 {
+		if cfg.Parent == "" {
 			firstLevel = append(firstLevel, cfg)
 		}
 	}
@@ -87,7 +87,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 		cfg.Children = append(cfg.Children, findChild(cfg, tree, connMap)...)
 	}
 	firstLevelConns := []*ConnCfgBase{}
-	err = config.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = 0 or parent_id is null)")
+	err = config.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = '' or parent_id is null)")
 	logutils.PanicErr(err)
 	for _, conn := range firstLevelConns {
 		firstLevel = append(firstLevel, &Tree{Label: conn.Name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
@@ -95,7 +95,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, firstLevel)
 }
 
-func findChild(curNode *Tree, nodes []*Tree, connMap map[uint64][]*ConnCfgBase) []*Tree {
+func findChild(curNode *Tree, nodes []*Tree, connMap map[string][]*ConnCfgBase) []*Tree {
 	childConn := make([]*Tree, 0)
 	conns, ok := connMap[curNode.Id]
 	if ok {
@@ -128,9 +128,9 @@ func doTreeInsert(tree []*DirTree) {
 	logutils.PanicErr(err)
 	for _, t := range planeDir {
 		id := t.Id
-		if id == 0 {
-			time.Sleep(10 * time.Millisecond)
-			id = utils.RandomInt64()
+		if id == "" {
+			time.Sleep(3 * time.Millisecond)
+			id = utils.RandomStr()
 		}
 		stmt.Exec(id, &t.Label, &t.Parent)
 	}
@@ -159,8 +159,8 @@ func expendDirTree(p *DirTree) []*DirTree {
 }
 
 type DirTree struct {
-	Id       uint64     `json:"id" db:"id"`
+	Id       string     `json:"id" db:"id"`
 	Label    string     `json:"label" db:"label"`
-	Parent   uint64     `json:"parent" db:"parent"`
+	Parent   string     `json:"parent" db:"parent"`
 	Children []*DirTree `json:"children"`
 }

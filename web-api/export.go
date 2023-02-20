@@ -3,7 +3,6 @@ package webapi
 import (
 	"fmt"
 	"go-web/logutils"
-	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"io"
 	"log"
@@ -18,14 +17,14 @@ func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	r.ParseForm()
 	table := r.Form.Get("table")
-	connId := utils.AtoUint64(r.Form.Get("connId"))
+	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
 	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Add("content-disposition", "attachment;filename="+table+".xlsx")
 	queryAndWrite(schema+"."+table, w, connId, authorization)
 }
 
-func queryAndWrite(table string, out io.Writer, connId uint64, authorization string) {
+func queryAndWrite(table string, out io.Writer, connId string, authorization string) {
 	log.Println("正在导出：", table)
 
 	connCtx := admin.GetConn(connId, authorization)

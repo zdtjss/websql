@@ -7,7 +7,7 @@ import (
 
 func TestGetItem(t *testing.T) {
 
-	Add("abc", UserPower{UserId: 1})
+	Add("abc", UserPower{UserId: "1"})
 
 	var userPower UserPower
 
@@ -18,7 +18,7 @@ func TestGetItem(t *testing.T) {
 
 func TestGetItem2(t *testing.T) {
 
-	setItem("abc", UserPower{UserId: 1})
+	setItem("abc", UserPower{UserId: "1"})
 
 	var userPower = new(UserPower)
 
@@ -35,10 +35,10 @@ func setItem(key string, power UserPower) {
 
 func getItem(key string, power *UserPower) {
 	// val := powers[key]
-	// *&power = &val
-	(*&power).UserId = 100
+	// *&power = &vala
+	power.UserId = "100"
 }
 
 type UserPower struct {
-	UserId uint64
+	UserId string
 }

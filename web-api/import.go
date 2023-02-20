@@ -21,7 +21,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 
 	authorization := r.Header.Get("Authorization")
 
-	connId := utils.AtoUint64(r.Form.Get("connId"))
+	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
 	table := r.Form.Get("table")
 	operType := r.Form.Get("optType")

@@ -12,7 +12,7 @@ import (
 
 // 打开数据库，如果不存在，则创建
 var Mngtdb *sqlx.DB
-var DBMap map[uint64]*sqlx.DB = make(map[uint64]*sqlx.DB)
+var DBMap map[string]*sqlx.DB = make(map[string]*sqlx.DB)
 
 func InitMngtDbConn() {
 	Cfg = ReadConfig()
@@ -54,19 +54,19 @@ func makeDsn(param *DBParam) *string {
 }
 
 func RealseConn(param *DBParam) {
-	val, ok := DBMap[createKey(param)]
+	conn, ok := DBMap[createKey(param)]
 	if ok {
-		val.Close()
+		conn.Close()
 		delete(DBMap, createKey(param))
 	}
 }
 
-func createKey(param *DBParam) uint64 {
+func createKey(param *DBParam) string {
 	return param.Id
 }
 
 type DBParam struct {
-	Id     uint64 `json:"id"`
+	Id     string `json:"id"`
 	Name   string `json:"name"`
 	User   string `json:"user"`
 	Pwd    string `json:"pwd"`

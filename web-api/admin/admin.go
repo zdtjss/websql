@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func SaveRole(w http.ResponseWriter, r *http.Request) {
@@ -19,21 +21,20 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 	utils.UnmarshalJson(r.Body, role)
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
-	if role.Id == 0 {
+	if role.Id == "" {
+		role.Id = utils.RandomStr()
 		stmt, _ := tx.Prepare("insert into t_role (id, name) values (?, ?)")
-		rs, _ := tx.Stmt(stmt).Exec(utils.RandomInt64(), &role.Name)
-		nid, _ := rs.LastInsertId()
-		*&role.Id = uint64(nid)
+		tx.Stmt(stmt).Exec(role.Id, role.Name)
 	} else {
 		stmt, _ := tx.Prepare("update t_role set name = ? where id = ?")
-		tx.Stmt(stmt).Exec(&role.Name, &role.Id)
-		tx.Exec("delete from t_power where role_id = ?", &role.Id)
+		tx.Stmt(stmt).Exec(role.Name, role.Id)
+		tx.Exec("delete from t_power where role_id = ?", role.Id)
 	}
 	if len(role.ConnIdList) > 0 {
 		stmt, _ := tx.Prepare("insert into t_power (id, role_id, conn_id) values (?, ?, ?)")
 		for _, connId := range role.ConnIdList {
 			time.Sleep(10 * time.Millisecond)
-			tx.Stmt(stmt).Exec(utils.RandomInt64(), role.Id, connId)
+			tx.Stmt(stmt).Exec(utils.RandomStr(), role.Id, connId)
 		}
 	}
 	err := tx.Commit()
@@ -44,7 +45,7 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 func DelRole(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
-	id := utils.AtoUint64(r.FormValue("id"))
+	id := r.FormValue("id")
 
 	userCount := 0
 	config.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
@@ -88,7 +89,7 @@ func RoleBaseList(w http.ResponseWriter, r *http.Request) {
 func FindUserByRole(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	userList := []*User{}
-	err := config.Mngtdb.Select(&userList, "select * from t_user where role_id = ?", utils.AtoUint64(r.FormValue("roleId")))
+	err := config.Mngtdb.Select(&userList, "select * from t_user where role_id = ?", r.FormValue("roleId"))
 	logutils.PanicErr(err)
 	utils.WriteJson(w, userList)
 }
@@ -99,31 +100,52 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	utils.UnmarshalJson(r.Body, user)
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
-	if user.Id == 0 {
-		*&user.Id = utils.RandomInt64()
-		stmt, _ := config.Mngtdb.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?)")
-		tx.Stmt(stmt).Exec(&user.Id, &user.Name, &user.LoginName, Md5sum(user.Pwd))
+	checkUserExist(user, tx)
+	if user.Id == "" {
+		user.Id = utils.RandomStr()
+		stmt, _ := tx.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?)")
+		tx.Stmt(stmt).Exec(user.Id, user.Name, user.LoginName, Md5sum(user.Pwd))
 	} else {
-		var userDb []User
-		config.Mngtdb.Select(&userDb, "select pwd from t_user where id = ?", user.Id)
-		md5pwd := Md5sum(user.Pwd)
-		if userDb[0].Pwd != md5pwd {
-			user.Pwd = md5pwd
+		var pwdDb string
+		rowE := tx.QueryRow("select pwd from t_user where id = ?", user.Id)
+		rowE.Scan(&pwdDb)
+		newPwd := Md5sum(user.Pwd)
+		if user.Pwd == "" || pwdDb == newPwd {
+			user.Pwd = pwdDb
+		} else {
+			user.Pwd = newPwd
 		}
-		stmt, _ := config.Mngtdb.Prepare("update t_user set name = ?, login_name = ?, pwd = ? where id = ?")
-		tx.Stmt(stmt).Exec(&user.Name, &user.LoginName, &user.Pwd, &user.Id)
+		stmt, _ := tx.Prepare("update t_user set name = ?, login_name = ?, pwd = ? where id = ?")
+		tx.Stmt(stmt).Exec(user.Name, user.LoginName, user.Pwd, user.Id)
 		tx.Exec("delete from t_user_role where user_id = ?", user.Id)
 	}
 	if len(user.RoleId) > 0 {
 		stmt, _ := tx.Prepare("insert into t_user_role (id, role_id, user_id) values (?, ?, ?)")
 		for _, rid := range user.RoleId {
 			time.Sleep(3 * time.Millisecond)
-			tx.Stmt(stmt).Exec(utils.RandomInt64(), rid, user.Id)
+			tx.Stmt(stmt).Exec(utils.RandomStr(), rid, user.Id)
 		}
 	}
 	err := tx.Commit()
 	logutils.PanicErrf("保存用户失败", err)
 	utils.WriteJson(w, "")
+}
+
+func checkUserExist(user *User, tx *sqlx.Tx) {
+	checkSqlParam := make([]any, 2)
+	checkSqlParam[0] = &user.LoginName
+	sql := bytes.NewBufferString("select id from t_user where login_name = ?")
+	if user.Id != "" {
+		checkSqlParam[1] = user.Id
+		sql.WriteString(" and id <> ?")
+	}
+	sql.WriteString("limit 1")
+	row := tx.QueryRow(sql.String(), checkSqlParam...)
+	var checkUserId string
+	row.Scan(&checkUserId)
+	if checkUserId != "" {
+		logutils.PanicErr(errors.New("此登录名已存在"))
+	}
 }
 
 func Md5sum(s string) string {
@@ -136,7 +158,7 @@ func Md5sum(s string) string {
 func DelUser(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
-	config.Mngtdb.Exec("delete from t_user where id = ?", utils.AtoUint64(r.FormValue("id")))
+	config.Mngtdb.Exec("delete from t_user where id = ?", r.FormValue("id"))
 	utils.WriteJson(w, "")
 }
 
@@ -176,7 +198,7 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	userRoleMap := findUserRole(userIds)
 	for _, user := range userList {
 		user.Pwd = ""
-		roleIds := []*uint64{}
+		roleIds := []*string{}
 		roleNames := []*string{}
 		for _, userRole := range userRoleMap[user.Id] {
 			roleIds = append(roleIds, &userRole.RoleId)
@@ -199,11 +221,11 @@ func findByLoginName(loginName string) *User {
 	return &users[0]
 }
 
-func findUserPower(userId uint64) []uint64 {
-	resIds := []uint64{}
+func findUserPower(userId string) []string {
+	resIds := []string{}
 	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
 	logutils.PrintErr(err)
-	var resId uint64
+	var resId string
 	for rows.Next() {
 		rows.Scan(&resId)
 		resIds = append(resIds, resId)
@@ -211,7 +233,7 @@ func findUserPower(userId uint64) []uint64 {
 	return resIds
 }
 
-func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower UserPower) {
+func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
 	powerCount := len(userPower.Power)
 	sql.WriteString(" and ")
 	if powerCount == 0 {
@@ -227,10 +249,10 @@ func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower UserPower
 	}
 }
 
-func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
+func findConnByRole(roleIdList []any) map[string][]*PowerDto {
 	roleCount := len(roleIdList)
 	if roleCount == 0 {
-		return map[uint64][]*PowerDto{}
+		return map[string][]*PowerDto{}
 	}
 	var (
 		sqlBuf = bytes.Buffer{}
@@ -242,7 +264,7 @@ func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
 	powerList := []*PowerDto{}
 	err := config.Mngtdb.Select(&powerList, sqlBuf.String(), roleIdList...)
 	logutils.PanicErr(err)
-	rolePowerMap := make(map[uint64][]*PowerDto, len(powerList))
+	rolePowerMap := make(map[string][]*PowerDto, len(powerList))
 	for _, power := range powerList {
 		v, ok := rolePowerMap[power.RoleId]
 		if !ok {
@@ -254,10 +276,10 @@ func findConnByRole(roleIdList []any) map[uint64][]*PowerDto {
 	return rolePowerMap
 }
 
-func findUserRole(userIdList []any) map[uint64][]*UserRole {
+func findUserRole(userIdList []any) map[string][]*UserRole {
 	userCount := len(userIdList)
 	if userCount == 0 {
-		return map[uint64][]*UserRole{}
+		return map[string][]*UserRole{}
 	}
 	var (
 		sqlBuf = bytes.Buffer{}
@@ -269,7 +291,7 @@ func findUserRole(userIdList []any) map[uint64][]*UserRole {
 	userRoleList := []*UserRole{}
 	err := config.Mngtdb.Select(&userRoleList, sqlBuf.String(), userIdList...)
 	logutils.PanicErr(err)
-	roleUserMap := make(map[uint64][]*UserRole, len(userRoleList))
+	roleUserMap := make(map[string][]*UserRole, len(userRoleList))
 	for _, userRole := range userRoleList {
 		v, ok := roleUserMap[userRole.UserId]
 		if !ok {
@@ -282,8 +304,8 @@ func findUserRole(userIdList []any) map[uint64][]*UserRole {
 }
 
 type User struct {
-	Id        uint64    `json:"id"`
-	RoleId    []*uint64 `json:"roleId"`
+	Id        string    `json:"id"`
+	RoleId    []*string `json:"roleId"`
 	RoleName  []*string `json:"roleName"`
 	LoginName string    `json:"loginName" db:"login_name"`
 	Name      string    `json:"name"`
@@ -291,39 +313,39 @@ type User struct {
 }
 
 type UserPower struct {
-	UserId uint64
-	Power  []uint64
+	UserId string
+	Power  []string
 }
 
 type Role struct {
-	Id        uint64      `json:"id"`
+	Id        string      `json:"id"`
 	Name      string      `json:"name"`
 	PowerList []*PowerDto `json:"powerList"`
 }
 
 type UserRole struct {
-	Id       uint64 `json:"id"`
-	UserId   uint64 `json:"userId" db:"user_id"`
-	RoleId   uint64 `json:"roleId" db:"role_id"`
+	Id       string `json:"id"`
+	UserId   string `json:"userId" db:"user_id"`
+	RoleId   string `json:"roleId" db:"role_id"`
 	RoleName string `json:"roleName" db:"role_name"`
 }
 
 type RoleSave struct {
-	Id         uint64    `json:"id"`
+	Id         string    `json:"id"`
 	Name       string    `json:"name"`
-	ConnIdList []*uint64 `json:"connIdList"`
-	UserIdList []*uint64 `json:"userIdList"`
+	ConnIdList []*string `json:"connIdList"`
+	UserIdList []*string `json:"userIdList"`
 }
 
 type Power struct {
-	Id     uint64 `json:"id"`
-	RoleId uint64 `json:"roleId" db:"role_id"`
-	ConnId uint64 `json:"connId" db:"conn_id"`
+	Id     string `json:"id"`
+	RoleId string `json:"roleId" db:"role_id"`
+	ConnId string `json:"connId" db:"conn_id"`
 }
 
 type PowerDto struct {
-	Id       uint64 `json:"id"`
-	RoleId   uint64 `json:"roleId" db:"role_id"`
-	ConnId   uint64 `json:"connId" db:"conn_id"`
+	Id       string `json:"id"`
+	RoleId   string `json:"roleId" db:"role_id"`
+	ConnId   string `json:"connId" db:"conn_id"`
 	ConnName string `json:"connName" db:"conn_name"`
 }

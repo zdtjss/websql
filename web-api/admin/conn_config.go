@@ -6,7 +6,6 @@ import (
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
-	"go-web/utils/store"
 	"net/http"
 	"strings"
 
@@ -18,16 +17,16 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(r.Body, cfg)
-	if cfg.Id == 0 {
+	if cfg.Id == "" {
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
-		stmt.Exec(utils.RandomInt64(), &cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url)
+		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url)
 	} else {
 		if cfg.Pwd == "" {
 			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ? where id = ?")
-			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, &cfg.Url, &cfg.Id)
+			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, cfg.Id)
 		} else {
 			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
-			stmt.Exec(&cfg.Name, &cfg.DbType, &cfg.ParentId, &cfg.User, utils.AESEncode(cfg.Pwd), &cfg.Url, &cfg.Id)
+			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, cfg.Id)
 		}
 		config.RealseConn(convertToDBParam(cfg))
 	}
@@ -37,20 +36,18 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 func DelConn(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
-	id := utils.AtoUint64(r.FormValue("id"))
-	config.Mngtdb.Exec("delete from t_conn where id = ?", id)
+	config.Mngtdb.Exec("delete from t_conn where id = ?", r.FormValue("id"))
 	utils.WriteJson(w, "")
 }
 
 func ShowTree(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	connId := utils.AtoUint64(r.FormValue("connId"))
+	connId := r.FormValue("connId")
 	key := r.Form.Get("key")
 	curType := r.Form.Get("type")
 	level := r.Form.Get("level")
 	authorization := r.Header.Get("Authorization")
-	var userPower UserPower
-	store.Get(authorization, &userPower)
+	userPower := GetUserPower(authorization)
 
 	nextType := getNextType(curType)
 
@@ -80,7 +77,7 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, data)
 }
 
-func listConn(parentId string, userPower UserPower) []*Tree {
+func listConn(parentId string, userPower *UserPower) []*Tree {
 	if parentId == "" {
 		return nil
 	}
@@ -88,7 +85,7 @@ func listConn(parentId string, userPower UserPower) []*Tree {
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_conn")
 	if strings.EqualFold(parentId, "noneParent") {
-		sql.WriteString(" where (parent_id = 0 or parent_id is null)")
+		sql.WriteString(" where (parent_id = '' or parent_id is null)")
 	} else if parentId != "" {
 		param = append(param, parentId)
 		sql.WriteString(" where parent_id = ?")
@@ -122,11 +119,11 @@ func ListConnBase(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, cfgList)
 }
 
-func listConnBase() map[uint64][]*ConnCfgBase {
+func listConnBase() map[string][]*ConnCfgBase {
 	cfgList := []*ConnCfgBase{}
 	err := config.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
 	logutils.PanicErr(err)
-	rolePowerMap := make(map[uint64][]*ConnCfgBase, len(cfgList))
+	rolePowerMap := make(map[string][]*ConnCfgBase, len(cfgList))
 	for _, conn := range cfgList {
 		v, ok := rolePowerMap[conn.ParentId]
 		if !ok {
@@ -155,9 +152,8 @@ func getNextType(curType string) string {
 	return t
 }
 
-func GetConn(id uint64, authorization string) *sqlx.DB {
-	var userPower UserPower
-	store.Get(authorization, &userPower)
+func GetConn(id string, authorization string) *sqlx.DB {
+	userPower := GetUserPower(authorization)
 	if !slices.Contains(userPower.Power, id) {
 		logutils.PanicErr(errors.New("无权访问"))
 	}
@@ -173,9 +169,9 @@ func convertToDBParam(cfg *ConnCfg) *config.DBParam {
 }
 
 type ConnCfg struct {
-	Id         uint64  `json:"id"`
+	Id         string  `json:"id"`
 	DbType     string  `json:"dbType" db:"db_type"`
-	ParentId   uint64  `json:"parentId" db:"parent_id"`
+	ParentId   string  `json:"parentId" db:"parent_id"`
 	ParentName *string `json:"parentName" db:"parent_name"`
 	Name       string  `json:"name"`
 	User       string  `json:"user"`
@@ -184,17 +180,17 @@ type ConnCfg struct {
 }
 
 type ConnCfgBase struct {
-	Id       uint64 `json:"id"`
+	Id       string `json:"id"`
 	Name     string `json:"name"`
-	ParentId uint64 `json:"parentId" db:"parent_id"`
+	ParentId string `json:"parentId" db:"parent_id"`
 }
 
 type Tree struct {
-	Id       uint64         `json:"id"`
+	Id       string         `json:"id"`
 	Label    string         `json:"label"`
 	Type     string         `json:"type"`
 	Data     map[string]any `json:"data"`
-	Parent   uint64         `json:"parent"`
+	Parent   string         `json:"parent"`
 	Children []*Tree        `json:"children"`
 }
 

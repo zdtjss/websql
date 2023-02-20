@@ -419,10 +419,10 @@ function loadTree(node, resolve) {
 }
 
 function findConn(node) {
-  let connId = 0
+  let connId = ""
   if (node.level === 0) {
     return connId
-  } else if (node.data.type === 'conn') {
+  } else if (node.data.type === "conn") {
     connId = node.data.id
   } else {
     connId = findConn(node.parent)
@@ -495,7 +495,7 @@ function logout() {
 }
 
 function refreshTree() {
-  http.get("/showTree", { params: { connId: 0, key: "", type: "dir", level: 0 } })
+  http.get("/showTree", { params: { connId: "", key: "", type: "dir", level: 0 } })
     .then((resp) => {
       treeData.value = resp.data.data
     })
@@ -521,6 +521,7 @@ function saveUser(row) {
     .then((resp) => {
       row.editable = false
       ElMessage("保存成功")
+      row.roleName = row.roleId.map((val) => roleList.value.filter(item => item.id === val)[0].name)
     })
 }
 

@@ -11,7 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func listSchema(key uint64, authorization string) []*Tree {
+func listSchema(key string, authorization string) []*Tree {
 	schemaName := ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listSchema"])
@@ -24,7 +24,7 @@ func listSchema(key uint64, authorization string) []*Tree {
 	return tree
 }
 
-func listTable(key uint64, schema, authorization string) []*Tree {
+func listTable(key string, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], schema)
@@ -37,7 +37,7 @@ func listTable(key uint64, schema, authorization string) []*Tree {
 	return tree
 }
 
-func listColumns(key uint64, table, authorization string) []*Tree {
+func listColumns(key string, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listColumns"], table)
@@ -50,7 +50,7 @@ func listColumns(key uint64, table, authorization string) []*Tree {
 	return tree
 }
 
-func listAllColumns(key uint64, schema, authorization string) []*Tree {
+func listAllColumns(key string, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
@@ -67,11 +67,11 @@ func listAllColumns(key uint64, schema, authorization string) []*Tree {
 func ListTableFat(w http.ResponseWriter, r *http.Request) {
 	authorization := r.Header.Get("Authorization")
 	r.ParseForm()
-	tables := queryTableInfo(utils.AtoUint64(r.FormValue("connId")), r.Form.Get("schema"), authorization)
+	tables := queryTableInfo(r.FormValue("connId"), r.Form.Get("schema"), authorization)
 	utils.WriteJson(w, tables)
 }
 
-func queryTableInfo(key uint64, schema, authorization string) []*Table {
+func queryTableInfo(key string, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
 	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listTable"])
@@ -98,7 +98,7 @@ func ParseVal(dbType, colType string, val string) (retVal any) {
 	return ParseValHandler[dbType](colType, val)
 }
 
-func ColumnMap(table string, connId uint64, authorization string) map[string]string {
+func ColumnMap(table string, connId string, authorization string) map[string]string {
 	columnMap := make(map[string]string)
 	dc := GetConn(connId, authorization)
 	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["ColumnMap"])
