@@ -1,69 +1,69 @@
-CREATE TABLE IF NOT EXISTS T_CONN (
-	ID VARCHAR(36) PRIMARY KEY,
-	DB_TYPE VARCHAR(64),
-	PARENT_ID VARCHAR(36),
-	NAME VARCHAR(64),
-	USER VARCHAR(64),
-	PWD VARCHAR(256),
-	URL VARCHAR(512)
+create table if not exists t_conn (
+	id varchar(36) primary key,
+	db_type varchar(64),
+	parent_id varchar(36),
+	name varchar(64),
+	user varchar(64),
+	pwd varchar(256),
+	url varchar(512)
 );
 
-CREATE TABLE IF NOT EXISTS T_POWER (
-	ID VARCHAR(36) PRIMARY KEY,
-	ROLE_ID VARCHAR(36),
-	CONN_ID VARCHAR(36)
+create table if not exists t_power (
+	id varchar(36) primary key,
+	role_id varchar(36),
+	conn_id varchar(36)
 );
 
-CREATE TABLE IF NOT EXISTS T_ROLE (
-	ID VARCHAR(36) PRIMARY KEY,
-	NAME VARCHAR(64)
+create table if not exists t_role (
+	id varchar(36) primary key,
+	name varchar(64)
 );
 
-INSERT INTO T_ROLE (
-	ID,
-	NAME
-) VALUES (
+insert into t_role (
+	id,
+	name
+) values (
 	'1',
 	'admin'
 );
 
-CREATE TABLE IF NOT EXISTS T_TREE (
-	ID VARCHAR(36) PRIMARY KEY,
-	LABEL VARCHAR(64),
-	PARENT VARCHAR(36)
+create table if not exists t_tree (
+	id varchar(36) primary key,
+	label varchar(64),
+	parent varchar(36)
 );
 
-CREATE TABLE IF NOT EXISTS T_USER (
-	ID VARCHAR(36) PRIMARY KEY,
-	LOGIN_NAME VARCHAR(64),
-	NAME VARCHAR(64),
-	PWD VARCHAR(256)
+create table if not exists t_user (
+	id varchar(36) primary key,
+	login_name varchar(64),
+	name varchar(64),
+	pwd varchar(256)
 );
 
 -- 管理员id一定是 1
-INSERT INTO T_USER (
-	ID,
-	LOGIN_NAME,
-	NAME,
-	PWD
-) VALUES (
+insert into t_user (
+	id,
+	login_name,
+	name,
+	pwd
+) values (
 	'1',
 	'admin',
 	'管理员',
 	'7e2e1f2e1eb71a6f7915a96201237ff0'
 );
 
-CREATE TABLE IF NOT EXISTS T_USER_ROLE (
-	ID VARCHAR(36) PRIMARY KEY,
-	USER_ID BIGINT,
-	ROLE_ID BIGINT
+create table if not exists t_user_role (
+	id varchar(36) primary key,
+	user_id bigint,
+	role_id bigint
 );
 
-INSERT INTO T_USER_ROLE (
-	ID,
-	USER_ID,
-	ROLE_ID
-) VALUES (
+insert into t_user_role (
+	id,
+	user_id,
+	role_id
+) values (
 	'1',
 	'1',
 	'1'
