@@ -10,9 +10,6 @@ import vue from '@vitejs/plugin-vue'
 // https://vitejs.dev/config
 export default defineConfig({
   build: {
-    sourcemap: true,
-    outDir: "../static",
-    emptyOutDir: true,
     chunkSizeWarningLimit: 1800,
     rollupOptions: {
       output: {
