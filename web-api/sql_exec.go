@@ -12,15 +12,14 @@ import (
 )
 
 func ExecSQL(w http.ResponseWriter, r *http.Request) {
-	authorization := r.Header.Get("Authorization")
 
 	r.ParseForm()
 	connId := r.Form.Get("connId")
-	// schema := r.Form.Get("schema")
 	sqlStr := r.Form.Get("sql")
 	maxLine := r.Form.Get("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
 
+	authorization := r.Header.Get("Authorization")
 	conn := admin.GetConn(connId, authorization)
 
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
@@ -67,12 +66,8 @@ func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 	defer tx.Rollback()
 	logutils.PanicErrf("事务开启失败， %s", err)
 	resultData := []map[string]any{}
-	for _, s := range sqlArr {
-		relSql := utils.ExtractSql(s)
-		if relSql == "" {
-			continue
-		}
-		rs, err2 := tx.Exec(relSql)
+	for idx := range sqlArr {
+		rs, err2 := tx.Exec(sqlArr[idx])
 		logutils.PanicErr(err2)
 		affected, err := rs.RowsAffected()
 		logutils.PanicErr(err)

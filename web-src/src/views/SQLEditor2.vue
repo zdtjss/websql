@@ -188,7 +188,7 @@ function exec() {
     }
     currentSelectTable = extractTableName(sqlExec)
     exectingSql.value = true
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlExec, maxLine: maxLine.value } })
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: extractEffectiveSql(sqlExec), maxLine: maxLine.value } })
         .then((resp) => {
             columns.value = resp.data.data.columns.map((col: any) => {
                 return {
@@ -217,6 +217,23 @@ function exec() {
             console.log(error);
             exectingSql.value = false
         });
+}
+
+function extractEffectiveSql(sql: string) {
+    let relSql = sql.trim()
+    if (relSql == "" || relSql.startsWith("--") || relSql.startsWith("//") || relSql.startsWith("/*")) {
+        const nsql = []
+        const sqlArr = relSql.split("\n")
+        for (let i = 0; i < sqlArr.length; i++) {
+            const row = sqlArr[i]
+            if (row == "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
+                continue
+            }
+            nsql.push(row)
+        }
+        relSql = nsql.join("\n")
+    }
+    return relSql
 }
 
 function extractTableName(sqlExec: string) {

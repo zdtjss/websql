@@ -147,7 +147,7 @@
           </el-table>
         </el-tab-pane>
         <el-tab-pane label="连接" name="conn">
-          <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;"
+          <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;" empty-text="暂无连接"
             @cell-dblclick="(row) => row.editable = true">
             <el-table-column prop="name" label="连接名称" width="150" :show-overflow-tooltip="true">
               <template #default="scope">
