@@ -38,12 +38,12 @@ var SQL_DIALECT = map[string]map[string]string{
 
 // 查询页面或导出excel显示的结果数据
 // 由数据库查询到的数据不便直接展示
-var ConvertColHandler = map[string]func(colType string, val any) any{
-	"mysql": func(colType string, val any) any {
+var ConvertColHandler = map[string]func(colType *string, val *any) *any{
+	"mysql": func(colType *string, val *any) *any {
 		var v any
 		//判断是否为[]byte
-		if b, ok := val.([]byte); ok {
-			switch colType {
+		if b, ok := (*val).([]byte); ok {
+			switch *colType {
 			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
 				logutils.PanicErrf("转换类型失败", err)
@@ -65,18 +65,18 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			default:
 				v = string(b)
 			}
-		} else if t, ok := val.(time.Time); ok {
+		} else if t, ok := (*val).(time.Time); ok {
 			v = t.Format("2006-01-02 15:04:05")
 		} else {
-			v = val
+			return val
 		}
-		return v
+		return &v
 	},
-	"oracle": func(colType string, val any) any {
+	"oracle": func(colType *string, val *any) *any {
 		var v any
 		//判断是否为[]byte
-		if b, ok := val.([]byte); ok {
-			switch colType {
+		if b, ok := (*val).([]byte); ok {
+			switch *colType {
 			case "NUMBER", "INTEGER":
 				iv, err := strconv.ParseInt(string(b), 10, 32)
 				logutils.PanicErrf("转换类型失败", err)
@@ -92,61 +92,64 @@ var ConvertColHandler = map[string]func(colType string, val any) any{
 			default:
 				v = string(b)
 			}
-		} else if t, ok := val.(go_ora.TimeStamp); ok {
+		} else if t, ok := (*val).(go_ora.TimeStamp); ok {
 			v = time.Time(t).Format("2006-01-02 15:04:05")
 		} else {
-			v = val
+			return val
 		}
-		return v
+		return &v
 	},
 }
 
 // 通常是导入数据时将excel中数据转成数据库类型
-var ParseValHandler = map[string]func(colType string, val string) any{
-	"mysql": func(colType string, val string) any {
-		if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, colType) && val == "" {
-			return nil
+var ParseValHandler = map[string]func(colType *string, val *string) *any{
+	"mysql": func(colType *string, val *string) *any {
+		if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, *colType) && (*val) == "" {
+			var empty any
+			return &empty
 		}
 		var retVal any
-		switch colType {
+		switch *colType {
 		case "float", "double", "decimal":
-			f, err := strconv.ParseFloat(val, 64)
+			f, err := strconv.ParseFloat(*val, 64)
 			logutils.PanicErr(err)
 			retVal = f
 		case "int", "bigint", "smallint", "tinyint":
-			f, err := strconv.ParseInt(val, 10, 64)
+			f, err := strconv.ParseInt(*val, 10, 64)
 			logutils.PanicErr(err)
 			retVal = f
 		case "bit":
-			f, err := strconv.ParseBool(val)
+			f, err := strconv.ParseBool(*val)
 			logutils.PanicErr(err)
 			retVal = f
 		default:
-			retVal = val
+			var r any
+			r = *val
+			return &r
 		}
-		return retVal
+		return &retVal
 	},
-	"oracle": func(colType string, val string) any {
-		if slices.Contains([]string{"NUMBER", "TIMESTAMP(6)"}, colType) && val == "" {
+	"oracle": func(colType *string, val *string) *any {
+		if slices.Contains([]string{"NUMBER", "TIMESTAMP(6)"}, *colType) && (*val) == "" {
 			return nil
 		}
 		var retVal any
-		switch colType {
+		switch *colType {
 		case "NUMBER":
-			f, err := strconv.ParseFloat(val, 64)
+			f, err := strconv.ParseFloat(*val, 64)
 			logutils.PanicErr(err)
 			retVal = f
 		case "INTEGER":
-			f, err := strconv.ParseInt(val, 10, 64)
+			f, err := strconv.ParseInt(*val, 10, 64)
 			logutils.PanicErr(err)
 			retVal = f
 		case "TIMESTAMP(6)":
-			f, err := time.Parse("2006-01-02 15:04:05", val)
+			f, err := time.Parse("2006-01-02 15:04:05", *val)
 			logutils.PanicErr(err)
 			retVal = f
 		default:
 			retVal = val
 		}
-		return retVal
+		return &retVal
 	},
 }

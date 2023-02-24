@@ -37,7 +37,7 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 	columnComment := make([]string, len(columns))
 	columnMap := admin.ColumnMap(table, connId, authorization)
 	for i := 0; i < len(columns); i++ {
-		columnComment[i] = columnMap[columns[i]]
+		columnComment[i] = (*columnMap)[columns[i]]
 	}
 
 	cts, err := rows.ColumnTypes()
@@ -78,6 +78,7 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 		scanArgs[i] = &values[i]
 	}
 
+	driverName := connCtx.DriverName()
 	count := 2
 	//存所有行的内容totalValues
 	for rows.Next() {
@@ -89,7 +90,8 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 		//存每一行的内容
 		var row = make([]any, len(values))
 		for i := range values {
-			row[i] = admin.ConvertCol(connCtx.DriverName(), colTypeMap[columns[i]], values[i])
+			colType := colTypeMap[columns[i]]
+			row[i] = *admin.ConvertCol(&driverName, &colType, &values[i])
 		}
 
 		count++

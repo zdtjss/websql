@@ -132,11 +132,12 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	logutils.PanicErr(err)
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
-
+	driverName := tx.DriverName()
 	anyVal := make([]interface{}, len(columns))
 	for _, val := range data {
-		for i, v := range val {
-			anyVal[i] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
+		for i := range val {
+			colType := colTypeMap[columns[i]]
+			anyVal[i] = *admin.ParseVal(&driverName, &colType, &val[i])
 		}
 		_, err = stmt.Exec(anyVal...)
 		logutils.PanicErr(err)
@@ -183,15 +184,17 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
 
+	driverName := tx.DriverName()
 	anyVal := make([]any, len(columns))
 	for _, val := range data {
-		for i, v := range val {
+		for i := range val {
+			colType := colTypeMap[columns[i]]
 			if !slices.Contains(keyIdx, i) {
 				valCount++
-				anyVal[valCount] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
+				anyVal[valCount] = *admin.ParseVal(&driverName, &colType, &val[i])
 			} else {
 				paramCount++
-				anyVal[len(columns)-len(keys)+paramCount] = admin.ParseVal(tx.DriverName(), colTypeMap[columns[i]], v)
+				anyVal[len(columns)-len(keys)+paramCount] = *admin.ParseVal(&driverName, &colType, &val[i])
 			}
 		}
 

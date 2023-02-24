@@ -88,17 +88,17 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 	return tables
 }
 
-func ConvertCol(dbType, colType string, val any) any {
+func ConvertCol(dbType, colType *string, val *any) *any {
 
-	return ConvertColHandler[dbType](colType, val)
+	return ConvertColHandler[*dbType](colType, val)
 }
 
-func ParseVal(dbType, colType string, val string) (retVal any) {
+func ParseVal(dbType, colType *string, val *string) *any {
 
-	return ParseValHandler[dbType](colType, val)
+	return ParseValHandler[*dbType](colType, val)
 }
 
-func ColumnMap(table string, connId string, authorization string) map[string]string {
+func ColumnMap(table string, connId string, authorization string) *map[string]string {
 	columnMap := make(map[string]string)
 	dc := GetConn(connId, authorization)
 	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["ColumnMap"])
@@ -111,7 +111,7 @@ func ColumnMap(table string, connId string, authorization string) map[string]str
 		rs.Scan(&name, &comment)
 		columnMap[name] = comment
 	}
-	return columnMap
+	return &columnMap
 }
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
