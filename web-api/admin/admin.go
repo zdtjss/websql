@@ -172,11 +172,11 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
 	if name != "" {
-		sql.WriteString(" and like('%" + name + "%', name)")
+		sql.WriteString(" and name like '%" + name + "%'")
 	} else if loginName != "" {
-		sql.WriteString(" and like('%" + loginName + "%', login_name)")
+		sql.WriteString(" and login_name like '%" + loginName + "%'")
 	} else if key != "" {
-		sql.WriteString(" and (like('%" + key + "%', login_name) or like('%" + key + "%', name))")
+		sql.WriteString(" and (login_name like '%" + key + "%' or name like '%" + key + "%')")
 	} else if len(userIdList) > 0 {
 		for _, userId := range userIdList {
 			param = append(param, userId)
