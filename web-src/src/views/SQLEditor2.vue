@@ -83,9 +83,9 @@ import copyToClipboard from '../js/utils/copy-to-clipboard.js'
 hljs.registerLanguage('sql', highlightSql.default);
 
 const props = defineProps<{
-    tabId: String,
-    connId: String,
-    schema: String
+    tabId: string,
+    connId: string,
+    schema: string
 }>()
 
 const maxLine = ref(10)
