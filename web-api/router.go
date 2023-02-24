@@ -51,6 +51,10 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
 	router.HandleFunc("/delUser", admin.DelUser).Methods("GET")
 
+	router.HandleFunc("/healthCheck", func(w http.ResponseWriter, r *http.Request) {
+		utils.WriteJson(w, "")
+	}).Methods("GET")
+
 	router.HandleFunc("/ext/", proxy)
 
 	router.Use(panicMiddleware)
