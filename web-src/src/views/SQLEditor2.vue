@@ -59,21 +59,21 @@
 </template>
 
 <script lang="ts" setup>
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
-import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
-import { EditorState } from '@codemirror/state';
-import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands';
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view'
+import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark"
+import { EditorState } from '@codemirror/state'
+import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql';
-import { syntaxHighlighting } from '@codemirror/language';
-import { autocompletion } from '@codemirror/autocomplete';
-import { ref, onMounted } from 'vue';
+import { syntaxHighlighting } from '@codemirror/language'
+import { autocompletion } from '@codemirror/autocomplete'
+import { ref, onMounted } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 
-import hljs from 'highlight.js/lib/core';
-import * as highlightSql from 'highlight.js/lib/languages/sql';
+import hljs from 'highlight.js/lib/core'
+import * as highlightSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
 
 import http from '../js/utils/httpProxy.js'
@@ -91,8 +91,8 @@ const props = defineProps<{
 const maxLine = ref(10)
 const columns: any = ref([])
 const result: any = ref([])
-let editorView = ref<EditorView>();
-const codemirror = ref(null);
+const editorView = ref<EditorView>()
+const codemirror = ref()
 const exportDialogVisible = ref(false)
 
 const showResult = ref(false)

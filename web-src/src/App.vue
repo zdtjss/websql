@@ -310,15 +310,11 @@ const userQuery = ref({
   name: "",
   loginName: ""
 })
-const role = ref({})
-const user = ref({})
 const connList = ref([])
 const roleConnTree = ref([])
 const powerListChecked = []
 const conCfgTreeData = ref([])
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }, { label: "Oracle", value: "oracle" }])
-
-const conn = ref({ dbType: "mysql" })
 
 onMounted(() => {
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
@@ -334,7 +330,7 @@ const addTab = (node) => {
   if (node.data.type !== "schema") {
     return
   }
-  const tabId = Date.now()
+  const tabId = Date.now().toString(36)
   editableTabs.value.push({
     tabId: tabId,
     title: node.data.label,
