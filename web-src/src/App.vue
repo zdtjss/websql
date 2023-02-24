@@ -272,7 +272,6 @@ import { ref, reactive, shallowRef, onMounted } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
-import dayjs from 'dayjs'
 
 const sqlEditor = shallowRef(SQLEditor2)
 
@@ -335,7 +334,7 @@ const addTab = (node) => {
   if (node.data.type !== "schema") {
     return
   }
-  const tabId = dayjs().format("YYYYMMDDHHmmssSSS")
+  const tabId = Date.now()
   editableTabs.value.push({
     tabId: tabId,
     title: node.data.label,

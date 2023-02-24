@@ -59,7 +59,7 @@ function queryData() {
         .then((resp) => {
             tableData.value = resp.data.data
         })
-        .catch(function (error) {
+        .catch((error) => {
             console.log(error);
         });
 }
