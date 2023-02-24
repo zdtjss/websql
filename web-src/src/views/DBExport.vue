@@ -40,7 +40,7 @@ import { onMounted, ref } from 'vue'
 import http from '../js/utils/httpProxy.js'
 
 const props = defineProps({
-    connId: Number,
+    connId: String,
     schema: String,
     opt: String
 })

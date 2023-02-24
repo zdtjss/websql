@@ -49,12 +49,11 @@
             </el-table-column>
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                <el-tree-select ref="roleConnTree" v-show="scope.row.editable" v-model="scope.row.connIdList"
-                  style="width:100%" :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
-                  placeholder="请选择" :render-after-expand="false" :check-on-click-node="true" show-checkbox
-                  :check-strictly="false" />
-              </template>
+                  <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
+                  <el-tree-select ref="roleConnTree" v-model="scope.row.connIdList" v-show="scope.row.editable" @check="checkPower"
+                    style="width:100%" :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
+                    :check-on-click-node="true" show-checkbox placeholder="请选择" />
+                </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
               <template #header>
@@ -315,7 +314,8 @@ const userQuery = ref({
 const role = ref({})
 const user = ref({})
 const connList = ref([])
-const roleConnTree = ref()
+const roleConnTree = ref([])
+const powerListChecked = []
 const conCfgTreeData = ref([])
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }, { label: "Oracle", value: "oracle" }])
 
@@ -572,9 +572,8 @@ function addRole() {
 
 function roleDblClick(row) {
   row.editable = true
-  if (row.powerList) {
-    row.connIdList = row.powerList.map(r => r.connId)
-  }
+  powerListChecked.splice(0, powerListChecked.length)
+  row.connIdList = row.powerList ? row.powerList.map(r => r.connId) : []
   http.get("/connBaseTree")
     .then((resp) => {
       connListSelect.value = resp.data.data
@@ -584,12 +583,16 @@ function roleDblClick(row) {
 function saveRole(row) {
   const param = Object.assign({}, row)
   param.connIdList = []
-  roleConnTree.value.getCheckedNodes(false, true).forEach((val) => param.connIdList.push(val.id))
+  param.connIdList.push(...powerListChecked)
   http.post("/saveRole", param)
     .then((resp) => {
       loadCfgData({ props: { name: 'role' } })
       ElMessage("保存成功")
     })
+}
+
+function checkPower(data, status) {
+  powerListChecked.push(...status.checkedKeys)
 }
 
 function delRole(row) {
