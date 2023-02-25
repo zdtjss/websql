@@ -21,3 +21,5 @@ nway.s3db
 web-src/package-lock.json
 static/
 nway.sqlite3.db
+web-src/auto-imports.d.ts
+web-src/components.d.ts
