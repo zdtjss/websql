@@ -115,9 +115,9 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			logutils.PanicErr(err)
 			retVal = f
 		case "int", "bigint", "smallint", "tinyint":
-			f, err := strconv.ParseInt(*val, 10, 64)
+			f, err := strconv.ParseFloat(*val, 64)
 			logutils.PanicErr(err)
-			retVal = f
+			retVal = int64(f)
 		case "bit":
 			f, err := strconv.ParseBool(*val)
 			logutils.PanicErr(err)
