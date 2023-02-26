@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"go-web/logutils"
 	"strconv"
 	"time"
@@ -44,24 +45,14 @@ var ConvertColHandler = map[string]func(colType *string, val *any) *any{
 		//判断是否为[]byte
 		if b, ok := (*val).([]byte); ok {
 			switch *colType {
-			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT":
-				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.PanicErrf("转换类型失败", err)
-				v = int(iv)
-			case "BIGINT":
-				iv, err := strconv.ParseInt(string(b), 10, 64)
-				logutils.PanicErrf("转换类型失败", err)
-				v = iv
-			case "FLOAT":
-				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.PanicErrf("转换类型失败", err)
-				v = float32(iv)
-			case "DOUBLE", "DECIMAL":
-				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.PanicErrf("转换类型失败", err)
-				v = iv
 			case "BIT":
-				v = b[0] == byte(1)
+				ba := bytes.NewBufferString("")
+				for _, bc := range b {
+					if bc != byte(0) {
+						ba.WriteString(strconv.FormatUint(uint64(bc), 2))
+					}
+				}
+				v = "b'" + ba.String() + "'"
 			default:
 				v = string(b)
 			}
@@ -77,18 +68,6 @@ var ConvertColHandler = map[string]func(colType *string, val *any) *any{
 		//判断是否为[]byte
 		if b, ok := (*val).([]byte); ok {
 			switch *colType {
-			case "NUMBER", "INTEGER":
-				iv, err := strconv.ParseInt(string(b), 10, 32)
-				logutils.PanicErrf("转换类型失败", err)
-				v = int(iv)
-			case "FLOAT":
-				iv, err := strconv.ParseFloat(string(b), 32)
-				logutils.PanicErrf("转换类型失败", err)
-				v = float32(iv)
-			case "DOUBLE", "DECIMAL":
-				iv, err := strconv.ParseFloat(string(b), 64)
-				logutils.PanicErrf("转换类型失败", err)
-				v = iv
 			default:
 				v = string(b)
 			}
@@ -119,9 +98,13 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			logutils.PanicErr(err)
 			retVal = int64(f)
 		case "bit":
-			f, err := strconv.ParseBool(*val)
-			logutils.PanicErr(err)
-			retVal = f
+			if (*val)[0:1] == "b" {
+				retVal = *val
+			} else {
+				f, err := strconv.ParseInt(*val, 2, 8)
+				logutils.PanicErr(err)
+				retVal = f
+			}
 		default:
 			var r any
 			r = *val
