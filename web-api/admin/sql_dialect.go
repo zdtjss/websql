@@ -2,8 +2,10 @@ package admin
 
 import (
 	"bytes"
+	"fmt"
 	"go-web/logutils"
 	"strconv"
+	"strings"
 	"time"
 
 	go_ora "github.com/sijms/go-ora/v2"
@@ -39,22 +41,45 @@ var SQL_DIALECT = map[string]map[string]string{
 
 // 查询页面或导出excel显示的结果数据
 // 由数据库查询到的数据不便直接展示
-var ConvertColHandler = map[string]func(colType *string, val *any) *any{
-	"mysql": func(colType *string, val *any) *any {
+var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool) *any{
+	"mysql": func(colType *string, val *any, overSign bool) *any {
 		var v any
 		//判断是否为[]byte
 		if b, ok := (*val).([]byte); ok {
+			strVal := string(b)
 			switch *colType {
+			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT":
+				iv, err := strconv.ParseInt(strVal, 10, 64)
+				logutils.PanicErrf("数字解析失败", err)
+				// js 数字类型上限大小
+				if overSign && iv > 9007199254740992 {
+					v = fmt.Sprintf("s:%d", iv)
+				} else {
+					v = iv
+				}
+			case "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE":
+				fv, err := strconv.ParseFloat(strVal, 64)
+				logutils.PanicErrf("数字解析失败", err)
+				// js 数字类型上限大小
+				if overSign && fv > 9007199254740992 {
+					v = fmt.Sprintf("s:%f", fv)
+				} else {
+					v = fv
+				}
+			case "BOOL", "BOOLEAN":
+				v = b[0] != byte(0)
 			case "BIT":
 				ba := bytes.NewBufferString("")
-				for _, bc := range b {
-					if bc != byte(0) {
-						ba.WriteString(strconv.FormatUint(uint64(bc), 2))
-					}
+				for idx := range b {
+					ba.WriteString(strconv.FormatUint(uint64(b[idx]), 2))
 				}
-				v = "b'" + ba.String() + "'"
+				if len(b) > 1 {
+					v = "b'" + strings.TrimLeft(ba.String(), "0") + "'"
+				} else {
+					v = "b'" + ba.String() + "'"
+				}
 			default:
-				v = string(b)
+				v = strVal
 			}
 		} else if t, ok := (*val).(time.Time); ok {
 			v = t.Format("2006-01-02 15:04:05")
@@ -63,11 +88,41 @@ var ConvertColHandler = map[string]func(colType *string, val *any) *any{
 		}
 		return &v
 	},
-	"oracle": func(colType *string, val *any) *any {
+	"oracle": func(colType *string, val *any, overSign bool) *any {
 		var v any
 		//判断是否为[]byte
 		if b, ok := (*val).([]byte); ok {
+			strVal := string(b)
 			switch *colType {
+			case "NUMBER":
+				i, err := strconv.ParseInt(strVal, 10, 64)
+				if err != nil && strings.Contains(err.Error(), "invalid syntax") {
+					f, err := strconv.ParseFloat(strVal, 64)
+					logutils.PanicErr(err)
+					// js 数字类型上限大小
+					if overSign && f > 9007199254740992 {
+						v = fmt.Sprintf("s:%f", f)
+					} else {
+						v = f
+					}
+				} else {
+					logutils.PanicErr(err)
+					// js 数字类型上限大小
+					if overSign && i > 9007199254740992 {
+						v = fmt.Sprintf("s:%d", i)
+					} else {
+						v = i
+					}
+				}
+			case "INTEGER":
+				i, err := strconv.ParseInt(strVal, 10, 64)
+				logutils.PanicErr(err)
+				// js 数字类型上限大小
+				if overSign && i > 9007199254740992 {
+					v = fmt.Sprintf("s:%d", i)
+				} else {
+					v = i
+				}
 			default:
 				v = string(b)
 			}
@@ -89,11 +144,11 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 		}
 		var retVal any
 		switch *colType {
-		case "float", "double", "decimal":
+		case "float", "double", "decimal", "numeric":
 			f, err := strconv.ParseFloat(*val, 64)
 			logutils.PanicErr(err)
 			retVal = f
-		case "int", "bigint", "smallint", "tinyint":
+		case "int", "bigint", "smallint", "mediumint", "tinyint":
 			f, err := strconv.ParseFloat(*val, 64)
 			logutils.PanicErr(err)
 			retVal = int64(f)
@@ -106,8 +161,7 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 				retVal = f
 			}
 		default:
-			var r any
-			r = *val
+			var r any = *val
 			return &r
 		}
 		return &retVal
@@ -118,10 +172,16 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 		}
 		var retVal any
 		switch *colType {
-		case "NUMBER":
-			f, err := strconv.ParseFloat(*val, 64)
-			logutils.PanicErr(err)
-			retVal = f
+		case "NUMBER", "FLOAT":
+			i, err := strconv.ParseInt(*val, 10, 64)
+			if err != nil && strings.Contains(err.Error(), "invalid syntax") {
+				f, err := strconv.ParseFloat(*val, 64)
+				logutils.PanicErr(err)
+				retVal = f
+			} else {
+				logutils.PanicErr(err)
+				retVal = i
+			}
 		case "INTEGER":
 			f, err := strconv.ParseInt(*val, 10, 64)
 			logutils.PanicErr(err)
@@ -131,7 +191,8 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			logutils.PanicErr(err)
 			retVal = f
 		default:
-			retVal = val
+			var r any = *val
+			return &r
 		}
 		return &retVal
 	},

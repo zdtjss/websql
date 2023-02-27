@@ -132,7 +132,7 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) *[]map[string]any {
 			key := columns[i] //列名
 			colType := colTypeMap[key]
 			// 列名与值对应
-			row[key] = *admin.ConvertColHandler[dbtype](&colType, &values[i])
+			row[key] = *admin.ConvertColHandler[dbtype](&colType, &values[i], true)
 		}
 		// 将product归到集合中
 		dataMaps = append(dataMaps, row)

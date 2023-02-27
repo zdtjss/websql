@@ -434,6 +434,10 @@ function calHeight() {
 function fmtValForInsert(val: any) {
     if (val === null) {
         return "null"
+    } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
+        return val
+    } else if (val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
+        return val.substring(2)
     } else if (typeof val === "string") {
         return "'" + val + "'"
     }
@@ -442,11 +446,15 @@ function fmtValForInsert(val: any) {
 
 function fmtValForUpdate(val: any) {
     if (val === null) {
-        return " is null"
+        return " = null"
+    } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
+        return val
+    } else if (val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
+        return " = " + val.substring(2, val.length)
     } else if (typeof val === "string") {
         return " = '" + val + "'"
     }
-    return " = " +val
+    return " = " + val
 }
 
 </script>

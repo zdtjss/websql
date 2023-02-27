@@ -88,9 +88,9 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 	return tables
 }
 
-func ConvertCol(dbType, colType *string, val *any) *any {
+func ConvertCol(dbType, colType *string, val *any, overSign bool) *any {
 
-	return ConvertColHandler[*dbType](colType, val)
+	return ConvertColHandler[*dbType](colType, val, overSign)
 }
 
 func ParseVal(dbType, colType *string, val *string) *any {

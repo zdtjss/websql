@@ -91,7 +91,7 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 		var row = make([]any, len(values))
 		for i := range values {
 			colType := colTypeMap[columns[i]]
-			row[i] = *admin.ConvertCol(&driverName, &colType, &values[i])
+			row[i] = *admin.ConvertCol(&driverName, &colType, &values[i], false)
 		}
 
 		count++
