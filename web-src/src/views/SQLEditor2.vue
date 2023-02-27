@@ -434,9 +434,9 @@ function calHeight() {
 function fmtValForInsert(val: any) {
     if (val === null) {
         return "null"
-    } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
+    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
         return val
-    } else if (typeof val === "string" && val.startsWith("s:") && val.length > 2 && new Number(val.substring(2)).toString() !== "NaN") {
+    } else if (typeof val === "string" && val.length > 2 && val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
         return val.substring(2)
     } else if (typeof val === "string") {
         return "'" + val + "'"
@@ -447,9 +447,9 @@ function fmtValForInsert(val: any) {
 function fmtValForUpdate(val: any) {
     if (val === null) {
         return " = null"
-    } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
+    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
         return val
-    } else if (typeof val === "string" && val.startsWith("s:") && val.length > 2 && new Number(val.substring(2)).toString() !== "NaN") {
+    } else if (typeof val === "string" && val.length > 2 && val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
         return " = " + val.substring(2, val.length)
     } else if (typeof val === "string") {
         return " = '" + val + "'"
