@@ -436,7 +436,7 @@ function fmtValForInsert(val: any) {
         return "null"
     } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
         return val
-    } else if (val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
+    } else if (typeof val === "string" && val.startsWith("s:") && val.length > 2 && new Number(val.substring(2)).toString() !== "NaN") {
         return val.substring(2)
     } else if (typeof val === "string") {
         return "'" + val + "'"
@@ -449,7 +449,7 @@ function fmtValForUpdate(val: any) {
         return " = null"
     } else if (val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
         return val
-    } else if (val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
+    } else if (typeof val === "string" && val.startsWith("s:") && val.length > 2 && new Number(val.substring(2)).toString() !== "NaN") {
         return " = " + val.substring(2, val.length)
     } else if (typeof val === "string") {
         return " = '" + val + "'"
