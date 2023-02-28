@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 	"fmt"
+	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	"go-web/utils/store"
@@ -39,6 +40,10 @@ func GetUserPower(authorization string) *UserPower {
 }
 
 func CheckAdminPower(r *http.Request) {
+	// 非远程模式下不做权限管理
+	if !config.IsRemote {
+		return
+	}
 	authorization := r.Header.Get("Authorization")
 	var userPower = GetUserPower(authorization)
 	if userPower.UserId != "1" {

@@ -8,6 +8,7 @@ import (
 )
 
 var Cfg *Config
+var IsRemote bool
 
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")

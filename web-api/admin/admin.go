@@ -234,6 +234,10 @@ func findUserPower(userId string) []string {
 }
 
 func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
+	// 非远程模式下不做权限管理
+	if !config.IsRemote {
+		return
+	}
 	powerCount := len(userPower.Power)
 	sql.WriteString(" and ")
 	if powerCount == 0 {

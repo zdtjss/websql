@@ -45,6 +45,7 @@ func main() {
 
 	if *isRemote {
 		store.InitRedis()
+		config.IsRemote = true
 	}
 
 	// 检测是否启动成功

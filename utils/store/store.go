@@ -19,7 +19,7 @@ func Add(key string, val any) {
 			fval, err = conv.ToStringE(val)
 			logutils.PrintErr(err)
 		} else if err == nil {
-			fval = string(data)
+			fval = string(*data)
 		}
 		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
 		logutils.PanicErrf("key:%s 缓存失败", err, key)
@@ -52,6 +52,6 @@ func Get(key string, dist any) {
 		}
 	} else {
 		v := store[key]
-		utils.UnmarshalJson(bytes.NewBuffer(utils.ToJsonString(v)), &dist)
+		utils.UnmarshalJson(bytes.NewBuffer(*utils.ToJsonString(v)), &dist)
 	}
 }

@@ -3,6 +3,7 @@ package webapi
 import (
 	"bufio"
 	"compress/gzip"
+	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
@@ -50,6 +51,10 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/findUser", admin.FindUser).Methods("GET")
 	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
 	router.HandleFunc("/delUser", admin.DelUser).Methods("GET")
+
+	router.HandleFunc("/sysMode", func(w http.ResponseWriter, r *http.Request) {
+		utils.WriteJson(w, map[string]bool{"isRemote": config.IsRemote})
+	}).Methods("GET")
 
 	router.HandleFunc("/healthCheck", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJson(w, "")
@@ -116,7 +121,7 @@ func panicMiddleware(next http.Handler) http.Handler {
 			if err := recover(); err != nil {
 				w.Header().Set("content-type", "application/json;charset=UTF-8")
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
+				w.Write(*utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
 			}
 		}()
 		// Call the next handler, which can be another middleware in the chain, or the final handler.

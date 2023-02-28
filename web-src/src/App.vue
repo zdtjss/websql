@@ -2,12 +2,12 @@
   <el-container class="layout-container-demo">
     <el-aside :width="treeDivWidth">
       <div style="text-align: right;margin-right: 10px;">
-        <el-icon v-show="isAdmin" color="#409EFC"
+        <el-icon v-show="isAdmin || !isRemote" color="#409EFC"
           @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
           style="cursor: pointer;margin-left: 8px;" title="配置">
           <Tools />
         </el-icon>
-        <el-icon v-show="!loginSucc" color="#409EFC" @click="loginDialogVisible = true"
+        <el-icon v-show="!loginSucc && isRemote" color="#409EFC" @click="loginDialogVisible = true"
           style="cursor: pointer;margin-left: 8px;" title="登录">
           <User />
         </el-icon>
@@ -38,7 +38,7 @@
     <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
       style="height:650px;">
       <el-tabs v-model="defaultTabAdmin" type="card" style="height:500px;" @tab-click="loadCfgData">
-        <el-tab-pane label="角色" name="role">
+        <el-tab-pane v-if="isRemote" label="角色" name="role">
           <el-table :data="roleList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="roleDblClick">
             <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true">
@@ -79,7 +79,7 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
-        <el-tab-pane label="用户" name="user">
+        <el-tab-pane v-if="isRemote" label="用户" name="user">
           <el-form v-model="userQuery">
             <el-row>
               <el-form-item label="姓名" :label-width="formLabelWidth">
@@ -268,14 +268,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, shallowRef, onMounted } from 'vue'
+import { ref, reactive, shallowRef, onMounted, computed } from 'vue'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 
 const sqlEditor = shallowRef(SQLEditor2)
 
-const defaultTabAdmin = ref("role")
+const defaultTabAdmin = computed(() => {
+  return isRemote.value  ? "role" : "conn"
+})
 
 const editableTabsValue = ref('')
 const editableTabs = ref([])
@@ -291,6 +293,8 @@ const loginName = ref()
 const loginFormRef = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
+const isRemote = ref(null)
+  
 const logining = ref(false)
 const loginRules = reactive({
   name: [
@@ -317,13 +321,11 @@ const conCfgTreeData = ref([])
 const dbTypeList = ref([{ label: "MySQL", value: "mysql" }, { label: "Oracle", value: "oracle" }])
 
 onMounted(() => {
+  getSysModel()
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
   storedTabs.forEach(tab => tab.component = sqlEditor)
   editableTabs.value.push(...storedTabs)
   editableTabsValue.value = localStorage.getItem("editableTabsValue") || ""
-  if (!loginSucc.value) {
-    loginDialogVisible.value = true
-  }
 })
 
 const addTab = (node) => {
@@ -384,7 +386,8 @@ function resizeTreeArea(event) {
 }
 
 function loadTree(node, resolve) {
-  if ((Object.keys(node.data).length === 0 && !loginSucc.value) || node.data.type === 'column') {
+
+  if ((Object.keys(node.data).length === 0 && !loginSucc.value && isRemote.value) || node.data.type === 'column') {
     resolve([])
     return
   }
@@ -490,6 +493,15 @@ function logout() {
       ElMessage(resp.data.data)
       sessionStorage.removeItem("authentication")
     })
+}
+
+function getSysModel() {
+  http.get("/sysMode").then((resp) => {
+    isRemote.value = resp.data.data.isRemote
+    if (!loginSucc.value && isRemote.value) {
+      loginDialogVisible.value = true
+    }
+  })
 }
 
 function refreshTree() {
