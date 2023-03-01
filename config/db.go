@@ -23,6 +23,7 @@ func InitMngtDbConn() {
 	Mngtdb = sqlxDb
 }
 
+// 此方法没有权限管理，不建议直接使用，请请使用admin.GetConn
 func GetConn(param *DBParam) *sqlx.DB {
 	val, ok := DBMap[createKey(param)]
 	if ok {

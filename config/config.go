@@ -8,6 +8,8 @@ import (
 )
 
 var Cfg *Config
+
+// true：远程模式，有严格的权限管理；false 本地模式，没有权限管理
 var IsRemote bool
 
 func ReadConfig() *Config {
