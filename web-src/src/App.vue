@@ -3,7 +3,7 @@
     <el-aside :width="treeDivWidth">
       <div style="text-align: right;margin-right: 10px;">
         <el-icon v-show="isAdmin || !isRemote" color="#409EFC"
-          @click="cfgDialogVisible = true; loadCfgData({ props: { name: 'role' } })"
+          @click="cfgDialogVisible = true; loadCfgData({ props: { name: defaultTabAdmin } })"
           style="cursor: pointer;margin-left: 8px;" title="配置">
           <Tools />
         </el-icon>
@@ -148,7 +148,7 @@
         </el-tab-pane>
         <el-tab-pane label="连接" name="conn">
           <el-table :data="connList" :max-height="450" style="width: 100%;overflow-y: auto;" empty-text="暂无连接"
-            @cell-dblclick="(row) => row.editable = true">
+            @cell-dblclick="(row) => row.editable = true" v-loading="loadingConn">
             <el-table-column prop="name" label="连接名称" width="150" :show-overflow-tooltip="true">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
@@ -276,7 +276,7 @@ import { dbSchemaProxy } from '@/stores/sql'
 const sqlEditor = shallowRef(SQLEditor2)
 
 const defaultTabAdmin = computed(() => {
-  return isRemote.value  ? "role" : "conn"
+  return isRemote.value ? "role" : "conn"
 })
 
 const editableTabsValue = ref('')
@@ -304,6 +304,8 @@ const loginRules = reactive({
     { required: true, message: '请输入密码', trigger: 'blur' },
   ],
 })
+
+const loadingConn = ref(false)
 
 const formLabelWidth = '100px'
 const cfgDialogVisible = ref(false)
@@ -444,11 +446,12 @@ function saveConnCfg(row) {
 }
 
 function listConnCfg() {
+  loadingConn.value = true
   http.get("/listConn2")
     .then((resp) => {
       connList.value = resp.data.data.map(e => Object.assign({ editable: false }, e))
       setTimeout(listDirTree(), 1000)
-    })
+    }).finally(() => loadingConn.value = false)
 }
 
 function delConnCfg(row) {
