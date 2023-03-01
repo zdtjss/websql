@@ -244,7 +244,6 @@ function checkSql(sql: string) {
     let hasInvalid = false
     const sqlArr = sql.split(";")
     for (let i = 0; i < sqlArr.length; i++) {
-        debugger
         if ((sqlArr[i].trimStart().startsWith("update ") || sqlArr[i].trimStart().startsWith("deleet ")) && sqlArr[i].indexOf(" where ") === -1) {
             hasInvalid = true
             ElMessage.warning("修改数据时须指定where条件")
