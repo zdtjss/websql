@@ -186,9 +186,13 @@ function exec() {
         ElMessage({ message: "请先选择SQL", type: "error" })
         return
     }
+    const effiectiveSql = extractEffectiveSql(sqlExec)
+    if (checkSql(effiectiveSql)) {
+        return
+    }
     currentSelectTable = extractTableName(sqlExec)
     exectingSql.value = true
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: extractEffectiveSql(sqlExec), maxLine: maxLine.value } })
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: effiectiveSql, maxLine: maxLine.value } })
         .then((resp) => {
             columns.value = resp.data.data.columns.map((col: any) => {
                 return {
@@ -220,7 +224,7 @@ function exec() {
 }
 
 function extractEffectiveSql(sql: string) {
-    let relSql = sql.trim()
+    let relSql = sql.trimStart()
     if (relSql == "" || relSql.startsWith("--") || relSql.startsWith("//") || relSql.startsWith("/*")) {
         const nsql = []
         const sqlArr = relSql.split("\n")
@@ -234,6 +238,20 @@ function extractEffectiveSql(sql: string) {
         relSql = nsql.join("\n")
     }
     return relSql
+}
+
+function checkSql(sql: string) {
+    let hasInvalid = false
+    const sqlArr = sql.split(";")
+    for (let i = 0; i < sqlArr.length; i++) {
+        debugger
+        if ((sqlArr[i].trimStart().startsWith("update ") || sqlArr[i].trimStart().startsWith("deleet ")) && sqlArr[i].indexOf(" where ") === -1) {
+            hasInvalid = true
+            ElMessage.warning("修改数据时须指定where条件")
+            break
+        }
+    }
+    return hasInvalid
 }
 
 function extractTableName(sqlExec: string) {
