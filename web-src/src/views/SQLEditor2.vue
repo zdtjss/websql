@@ -343,7 +343,7 @@ function exportCurrentToSqlInsert() {
             rowVal.push(fmtValForInsert(val))
         }
         valueArr.push(rowVal.join(","))
-        sqlArr.push(sql + columnArr.join(",") + ") \n values (" + valueArr.join(",") + ")")
+        sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
     }
 
     copyToClipboard(sqlArr.length > 0 ? sqlArr.join(";\n") + ";" : "",

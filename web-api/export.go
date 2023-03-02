@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"fmt"
 	"go-web/logutils"
 	admin "go-web/web-api/admin"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -19,8 +19,9 @@ func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 	table := r.Form.Get("table")
 	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
+	current := time.Now().Format("_202303021501")
 	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Add("content-disposition", "attachment;filename="+table+".xlsx")
+	w.Header().Add("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
 	queryAndWrite(schema+"."+table, w, connId, authorization)
 }
 
@@ -28,7 +29,7 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 	log.Println("正在导出：", table)
 
 	connCtx := admin.GetConn(connId, authorization)
-	rows, err := connCtx.Query(fmt.Sprintf("SELECT * from %s", table))
+	rows, err := connCtx.Query(strings.Join([]string{"SELECT * from ", table}, ""))
 	logutils.PanicErr(err)
 
 	columns, err := rows.Columns()

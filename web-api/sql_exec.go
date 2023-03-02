@@ -67,6 +67,9 @@ func batchExec(sql *string, db *sqlx.DB) *[]map[string]any {
 	logutils.PanicErrf("事务开启失败， %s", err)
 	resultData := []map[string]any{}
 	for idx := range sqlArr {
+		if sqlArr[idx] == "" {
+			continue
+		}
 		rs, err2 := tx.Exec(sqlArr[idx])
 		logutils.PanicErr(err2)
 		affected, err := rs.RowsAffected()
