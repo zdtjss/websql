@@ -12,4 +12,7 @@ call npm run build
 del /s /q %target%\static\*
 xcopy /Y /e dist %target%\static
 
+cd ..
+start /b %target%\WebSql.exe
+
 PAUSE
