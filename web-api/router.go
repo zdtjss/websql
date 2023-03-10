@@ -104,14 +104,10 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))
-	if st, _ := file.Stat(); st.Size() <= 20 {
-		io.Copy(w, bufio.NewReader(file))
-	} else {
-		w.Header().Set("Content-Encoding", "gzip")
-		w2, _ := gzip.NewWriterLevel(w, 1)
-		defer w2.Close()
-		io.Copy(w2, bufio.NewReader(file))
-	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w2, _ := gzip.NewWriterLevel(w, 1)
+	defer w2.Close()
+	io.Copy(w2, bufio.NewReader(file))
 }
 
 // 一定是最后一个引入的
