@@ -98,6 +98,7 @@ const exportDialogVisible = ref(false)
 const showResult = ref(false)
 const resultHide = ref(false)
 const sqlDivHeight = ref("")
+let defaultSqlDivHeight:string
 const resultDivHeight = ref("")
 const toggleResultTitle = ref("")
 
@@ -111,7 +112,8 @@ const tableCreateDialogVisible = ref(false)
 
 onMounted(() => {
     // 默认高度
-    sqlDivHeight.value = (calHeight() - 65) + "px"
+    defaultSqlDivHeight = (calHeight() - 65) + "px"
+    sqlDivHeight.value = defaultSqlDivHeight
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -214,8 +216,10 @@ function exec() {
             });
             exectingSql.value = false
 
-            showResult.value = false
-            toggleResult()
+            // showResult.value = false
+            if ( defaultSqlDivHeight === sqlDivHeight.value) {
+                toggleResult()
+            }
         })
         .catch(function (error) {
             console.log(error);
