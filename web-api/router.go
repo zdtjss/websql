@@ -121,7 +121,7 @@ func panicMiddleware(next http.Handler) http.Handler {
 			if err := recover(); err != nil {
 				w.Header().Set("content-type", "application/json;charset=UTF-8")
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write(*utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
+				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
 			}
 		}()
 		// Call the next handler, which can be another middleware in the chain, or the final handler.

@@ -233,7 +233,7 @@ func findUserPower(userId string) []string {
 	return resIds
 }
 
-func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
+func appendPmsn(sql *bytes.Buffer, col string, param []any, userPower *UserPower) {
 	// 非远程模式下不做权限管理
 	if !config.IsRemote {
 		return
@@ -248,8 +248,10 @@ func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPowe
 	sql.WriteString(" in ( ")
 	sql.WriteString(strings.Repeat("?,", powerCount)[0 : powerCount*2-1])
 	sql.WriteString(") ")
+
+	initLen := len(param)
 	for i := 0; i < powerCount; i++ {
-		(*param) = append((*param), userPower.Power[i])
+		param[initLen+i] = userPower.Power[i]
 	}
 }
 

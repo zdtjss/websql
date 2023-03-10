@@ -23,7 +23,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	conn := admin.GetConn(connId, authorization)
 
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
-		rspData := TableDataList{Columns: &[]Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
+		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		rspData.Data = batchExec(&sqlStr, conn)
 		utils.WriteJson(w, rspData)
 	} else {
@@ -44,7 +44,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		data := GetResultRows(conn.DriverName(), rows)
 
-		rspData := &TableDataList{Columns: &columnList, Data: data}
+		rspData := &TableDataList{Columns: columnList, Data: data}
 
 		utils.WriteJson(w, rspData)
 	}
@@ -60,7 +60,7 @@ func page(dbtype string, sql *string) *string {
 	return &pageSql
 }
 
-func batchExec(sql *string, db *sqlx.DB) *[]map[string]any {
+func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := db.DB.Begin()
 	defer tx.Rollback()
@@ -78,7 +78,7 @@ func batchExec(sql *string, db *sqlx.DB) *[]map[string]any {
 	}
 	err = tx.Commit()
 	logutils.PanicErr(err)
-	return &resultData
+	return resultData
 }
 
 func checkPrefx(src string, prefix []string) bool {
@@ -99,7 +99,7 @@ func checkContains(src string, suffix []string) bool {
 	return false
 }
 
-func GetResultRows(dbtype string, rows *sqlx.Rows) *[]map[string]any {
+func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 	dataMaps := make([]map[string]any, 0)
 	cts, err := rows.ColumnTypes()
 	logutils.PanicErrf("获取字段类型失败", err)
@@ -140,7 +140,7 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) *[]map[string]any {
 		// 将product归到集合中
 		dataMaps = append(dataMaps, row)
 	}
-	return &dataMaps
+	return dataMaps
 }
 
 type Column struct {
@@ -149,6 +149,6 @@ type Column struct {
 }
 
 type TableDataList struct {
-	Columns *[]Column                 `json:"columns"`
-	Data    *[]map[string]interface{} `json:"data"`
+	Columns []Column                 `json:"columns"`
+	Data    []map[string]interface{} `json:"data"`
 }
