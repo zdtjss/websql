@@ -539,7 +539,6 @@ function saveUser(row) {
 }
 
 function delUser(row) {
-  debugger
   if (row.id) {
     http.get("/delUser", { params: { id: row.id } })
       .then((resp) => {

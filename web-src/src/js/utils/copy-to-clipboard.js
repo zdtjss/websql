@@ -4,8 +4,7 @@ export default function copyToClipboard(text, onSucc, onError) {
         navigator.clipboard
             .writeText(text)
             .then(() => onSucc())
-            .catch((err) => {
-                console.log(err)
+            .catch(() => {
                 copyToClipboard2(text, onSucc, onError)
             })
     } else {
