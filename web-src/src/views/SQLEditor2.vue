@@ -217,7 +217,7 @@ function exec() {
             exectingSql.value = false
 
             // showResult.value = false
-            if ( defaultSqlDivHeight === sqlDivHeight.value) {
+            if (defaultSqlDivHeight === sqlDivHeight.value || resultHide.value) {
                 toggleResult()
             }
         })
