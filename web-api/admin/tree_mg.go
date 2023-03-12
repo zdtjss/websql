@@ -33,7 +33,7 @@ func findByParent(parentId string, userPower *UserPower) []*Tree {
 		param = append(param, parentId)
 		sql.WriteString(" parent = ?")
 	}
-	appendPmsn(&sql, "id", param, userPower)
+	appendPmsn(&sql, "id", &param, userPower)
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, sql.String(), param...)
 	logutils.PanicErr(err)

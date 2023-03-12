@@ -90,7 +90,7 @@ func listConn(parentId string, userPower *UserPower) []*Tree {
 		param = append(param, parentId)
 		sql.WriteString(" where parent_id = ?")
 	}
-	appendPmsn(&sql, "id", param, userPower)
+	appendPmsn(&sql, "id", &param, userPower)
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
