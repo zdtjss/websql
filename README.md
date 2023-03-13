@@ -1,39 +1,34 @@
-# go-web
+# Web-SQL
+    web版数据库管理工具，由go语言编写，可以做到无依赖了跨平台，编译后无需安装运行环境，支持本地模式和部署模式，可以满足个人和企业需求。开源协议宽松，可以自由使用。
+    ![%E4%B8%BB%E9%A1%B5.png](%E4%B8%BB%E9%A1%B5.png)
+## 试用地址 http://124.221.221.247
+## 运行参数
+    -port 运行端口号，默认80
+    -https 是否为https，默认false
+    -remote 是否为远程模式，默认false。远程模式下有严格的权限管理，也有会话管理，适合远程、多实例部署。false下没有权限管理，适合本地使用。
+## 配置文件
+    文件名：config.json
+    ```
+    {
+    // 详情参考https://pkg.go.dev/github.com/mattn/go-sqlite3
+    // https://pkg.go.dev/github.com/go-sql-driver/mysql
+    // https://pkg.go.dev/github.com/sijms/go-ora/v2
+    "db": {
+        "type": "sqlite3",  // sqlite3、 mysql、oracle（oracle暂时只有sql相关操作靠谱）
+        "dsn": "nway.sqlite3.db"    // sqlite3：数据库文件路径；mysql：user:password@tcp(host:port)/db?params
+    },
+    // 详情参考 https://pkg.go.dev/github.com/redis/go-redis/v9
+    "redis": {
+        "addr": "", // host:port
+        "password":"",
+        "db": 0
+    }
+    }
+```
 
-#### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+# 构建自己的Docker镜像
+```
+    FROM zdtjss/websql:latest
 
-#### 软件架构
-软件架构说明
-
-
-#### 安装教程
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 使用说明
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
-
-
-#### 特技
-
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+    COPY ./config.json .
+```
