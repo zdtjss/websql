@@ -12,21 +12,21 @@
     -remote 是否为远程模式，默认false。远程模式下有严格的权限管理，也有会话管理，适合远程、多实例部署。false下没有权限管理，适合本地使用。
 ## 配置文件
     文件名：config.json
-    ```
+```
     {
-    // 详情参考https://pkg.go.dev/github.com/mattn/go-sqlite3
-    // https://pkg.go.dev/github.com/go-sql-driver/mysql
-    // https://pkg.go.dev/github.com/sijms/go-ora/v2
-    "db": {
-        "type": "sqlite3",  // sqlite3、 mysql、oracle（oracle暂时只有sql相关操作靠谱）
-        "dsn": "nway.sqlite3.db"    // sqlite3：数据库文件路径；mysql：user:password@tcp(host:port)/db?params
-    },
-    // 详情参考 https://pkg.go.dev/github.com/redis/go-redis/v9
-    "redis": {
-        "addr": "", // host:port
-        "password":"",
-        "db": 0
-    }
+        // 详情参考https://pkg.go.dev/github.com/mattn/go-sqlite3
+        // https://pkg.go.dev/github.com/go-sql-driver/mysql
+        // https://pkg.go.dev/github.com/sijms/go-ora/v2
+        "db": {
+            "type": "sqlite3",  // sqlite3、 mysql、oracle（oracle暂时只有sql相关操作靠谱）
+            "dsn": "nway.sqlite3.db"    // sqlite3：数据库文件路径；mysql：user:password@tcp(host:port)/db?params
+        },
+        // 详情参考 https://pkg.go.dev/github.com/redis/go-redis/v9
+        "redis": {
+            "addr": "", // host:port
+            "password":"",
+            "db": 0
+        }
     }
 ```
 
