@@ -62,6 +62,7 @@ func MainRegister(router *mux.Router) {
 
 	router.HandleFunc("/ext/", proxy)
 
+	router.Use(hostCheck)
 	router.Use(panicMiddleware)
 
 	// router.NotFoundHandler = &NotFound{}
@@ -120,6 +121,21 @@ func panicMiddleware(next http.Handler) http.Handler {
 				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
 			}
 		}()
+		// Call the next handler, which can be another middleware in the chain, or the final handler.
+		next.ServeHTTP(w, r)
+	})
+}
+
+// 应该是第一个引入
+func hostCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !config.IsRemote && !(strings.HasPrefix(r.RemoteAddr, "[::1]:") || strings.HasPrefix(r.RemoteAddr, "127.0.0.1:")) {
+			w.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
+			w.Header().Set("content-type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Println("非法IP:" + r.RemoteAddr)
+			return
+		}
 		// Call the next handler, which can be another middleware in the chain, or the final handler.
 		next.ServeHTTP(w, r)
 	})
