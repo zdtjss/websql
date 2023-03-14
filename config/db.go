@@ -5,9 +5,9 @@ import (
 	"log"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/sijms/go-ora/v2"
+	_ "modernc.org/sqlite"
+	"github.com/jmoiron/sqlx"
 )
 
 // 打开数据库，如果不存在，则创建
