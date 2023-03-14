@@ -5,7 +5,7 @@ web版数据库管理工具，由go语言编写，可以做到无依赖跨平台
 
 ## 试用地址 http://124.221.221.247
   管理员账号：admin/1
-  
+
 ![1.png](1.png)
 
 ## 运行参数
@@ -19,21 +19,21 @@ web版数据库管理工具，由go语言编写，可以做到无依赖跨平台
   文件名：config.json
 
 ```
-    {
-        // 详情参考https://pkg.go.dev/modernc.org/sqlite
-        // https://pkg.go.dev/github.com/go-sql-driver/mysql
-        // https://pkg.go.dev/github.com/sijms/go-ora/v2
-        "db": {
-            "type": "sqlite",  // sqlite、 mysql、oracle（oracle暂时只有sql相关操作靠谱）
-            "dsn": "nway.sqlite3.db"    // sqlite：数据库文件路径；mysql：user:password@tcp(host:port)/db?params
-        },
-        // 详情参考 https://pkg.go.dev/github.com/redis/go-redis/v9
-        "redis": {
-            "addr": "", // host:port
-            "password":"",
-            "db": 0
-        }
+{
+    // 详情参考https://pkg.go.dev/modernc.org/sqlite
+    // https://pkg.go.dev/github.com/go-sql-driver/mysql
+    // https://pkg.go.dev/github.com/sijms/go-ora/v2
+    "db": {
+        "type": "sqlite",  // sqlite、 mysql、oracle（oracle暂时只有sql相关操作靠谱）
+        "dsn": "nway.sqlite3.db"    // sqlite：数据库文件路径；mysql：user:password@tcp(host:port)/db?params
+    },
+    // 详情参考 https://pkg.go.dev/github.com/redis/go-redis/v9
+    "redis": {
+        "addr": "", // host:port
+        "password":"",
+        "db": 0
     }
+}
 ```
 
 # 构建自己的Docker镜像
