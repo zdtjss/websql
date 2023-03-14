@@ -38,7 +38,7 @@ web版数据库管理工具，由go语言编写，可以做到无依赖跨平台
 
 # 构建自己的Docker镜像
 ```
-    FROM zdtjss/websql:latest
+FROM zdtjss/websql:latest
 
-    COPY ./config.json .
+COPY ./config.json .
 ```
