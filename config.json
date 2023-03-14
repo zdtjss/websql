@@ -1,6 +1,6 @@
 {
   "db": {
-    "type": "sqlite3",
+    "type": "sqlite",
     "dsn": "./nway.sqlite3.db"
   },
   "redis": {
