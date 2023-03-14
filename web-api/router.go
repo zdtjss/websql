@@ -132,7 +132,6 @@ func hostCheck(next http.Handler) http.Handler {
 		if !config.IsRemote && !(strings.HasPrefix(r.RemoteAddr, "[::1]:") || strings.HasPrefix(r.RemoteAddr, "127.0.0.1:")) {
 			w.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
 			w.Header().Set("content-type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusInternalServerError)
 			log.Println("非法IP:" + r.RemoteAddr)
 			return
 		}
