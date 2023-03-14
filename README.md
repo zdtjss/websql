@@ -4,15 +4,20 @@ web版数据库管理工具，由go语言编写，可以做到无依赖跨平台
 
 
 ## 试用地址 http://124.221.221.247
-    管理员账号：admin/1
+  管理员账号：admin/1
+  
 ![1.png](1.png)
 
 ## 运行参数
-    -port 运行端口号，默认80
-    -https 是否为https，默认false
-    -remote 是否为远程模式，默认false。远程模式下有严格的权限管理，也有会话管理，适合远程、多实例部署。false下没有权限管理，仅支持本机使用。
+  -port 运行端口号，默认80
+
+  -https 是否为https，默认false
+
+  -remote 是否为远程模式，默认false。远程模式下有严格的权限管理，也有会话管理，适合远程、多实例部署。false下没有权限管理，仅支持本机使用。
+
 ## 配置文件
-    文件名：config.json
+  文件名：config.json
+
 ```
     {
         // 详情参考https://pkg.go.dev/modernc.org/sqlite
