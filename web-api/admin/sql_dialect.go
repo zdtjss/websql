@@ -82,7 +82,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				v = strVal
 			}
 		} else if t, ok := (*val).(time.Time); ok {
-			v = t.Format("2006-01-02 15:04:05")
+			v = t.Format(time.DateTime)
 		} else {
 			return val
 		}
@@ -127,7 +127,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				v = string(b)
 			}
 		} else if t, ok := (*val).(go_ora.TimeStamp); ok {
-			v = time.Time(t).Format("2006-01-02 15:04:05")
+			v = time.Time(t).Format(time.DateTime)
 		} else {
 			return val
 		}
@@ -153,10 +153,12 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			logutils.PanicErr(err)
 			retVal = int64(f)
 		case "bit":
-			if (*val)[0:1] == "b" {
-				retVal = *val
+			if (*val)[0:2] == "b'" {
+				b, err := strconv.ParseBool((*val)[2:3])
+				logutils.PanicErr(err)
+				retVal = b
 			} else {
-				f, err := strconv.ParseInt(*val, 2, 8)
+				f, err := strconv.ParseBool(*val)
 				logutils.PanicErr(err)
 				retVal = f
 			}

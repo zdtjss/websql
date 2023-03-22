@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
@@ -27,9 +28,13 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	operType := r.Form.Get("optType")
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
-	file, _, err := r.FormFile("file")
+	file, fileHeader, err := r.FormFile("file")
 	logutils.PanicErr(err)
 	defer file.Close()
+
+	if fileHeader.Filename[strings.Index(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
+		logutils.PanicErr(errors.New("表名不匹配（文件名中横线后为表名）"))
+	}
 
 	excel, err := excelize.OpenReader(file)
 	logutils.PanicErr(err)
@@ -43,7 +48,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	tx, _ := admin.GetConn(connId, authorization).Beginx()
 	defer tx.Rollback()
 
-	rows, err := excel.Rows(table)
+	rows, err := excel.Rows("Sheet1")
 	logutils.PanicErr(err)
 	defer rows.Close()
 
@@ -53,6 +58,9 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		logutils.PanicErr(err)
 		header = append(header, row...)
 	}
+
+	// 忽略第二行
+	rows.Next()
 
 	count := -1
 	maxLines := 100

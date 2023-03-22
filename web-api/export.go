@@ -19,7 +19,7 @@ func ExportXlsx(w http.ResponseWriter, r *http.Request) {
 	table := r.Form.Get("table")
 	connId := r.Form.Get("connId")
 	schema := r.Form.Get("schema")
-	current := time.Now().Format("_202303021501")
+	current := time.Now().Format(time.DateOnly)
 	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Add("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
 	queryAndWrite(schema+"."+table, w, connId, authorization)
@@ -57,9 +57,10 @@ func queryAndWrite(table string, out io.Writer, connId string, authorization str
 		}
 	}()
 
-	sheetName := table[strings.Index(table, ".")+1:]
-	excel.SetSheetName("Sheet1", sheetName)
-	streamWriter, _ := excel.NewStreamWriter(sheetName)
+	// sheetName := table[strings.Index(table, ".")+1:]
+	// excel.SetSheetName("Sheet1", sheetName)
+	streamWriter, err := excel.NewStreamWriter("Sheet1")
+	logutils.PanicErr(err)
 
 	var columns2 = make([]any, len(columns))
 	for idx := range columns {
