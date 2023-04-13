@@ -43,9 +43,10 @@ func main() {
 		config.InitDB(*initSqlFile)
 	}
 
-	if *isRemote {
+	config.IsRemote = *isRemote
+
+	if *isRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
-		config.IsRemote = true
 	}
 
 	// https 默认端口 443
