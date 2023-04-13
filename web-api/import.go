@@ -113,6 +113,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 		return
 	}
 
+	colNum := len(columns)
 	sql := bytes.Buffer{}
 
 	sql.WriteString("insert into ")
@@ -123,13 +124,13 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	sql.WriteString(strings.Join(columns, ","))
 	sql.WriteString(") values (")
 	if tx.DriverName() == "oracle" {
-		plc := make([]string, len(columns))
-		for idx := 0; idx < len(columns); idx++ {
+		plc := make([]string, colNum)
+		for idx := 0; idx < colNum; idx++ {
 			plc[idx] = ":" + fmt.Sprint(idx+1)
 		}
 		sql.WriteString(strings.Join(plc, ","))
 	} else {
-		plc := strings.Repeat("?,", len(columns))
+		plc := strings.Repeat("?,", colNum)
 		sql.Write([]byte(plc[:len(plc)-1]))
 	}
 	sql.WriteString(" )")
@@ -141,9 +142,13 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
 	driverName := tx.DriverName()
-	anyVal := make([]interface{}, len(columns))
+
 	for _, val := range data {
+		anyVal := make([]interface{}, colNum)
 		for i := range val {
+			if i+1 > colNum {
+				logutils.PanicErr(errors.New("excel中字段数量超出了表字中段数量"))
+			}
 			colType := colTypeMap[columns[i]]
 			anyVal[i] = *admin.ParseVal(&driverName, &colType, &val[i])
 		}
@@ -192,17 +197,21 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	colTypeMap := admin.QueryColType(schema, table, tx)
 
+	colNum := len(columns)
 	driverName := tx.DriverName()
-	anyVal := make([]any, len(columns))
+	anyVal := make([]any, colNum)
 	for _, val := range data {
 		for i := range val {
+			if i+1 > colNum {
+				logutils.PanicErr(errors.New("excel中字段数量超出了表字中段数量"))
+			}
 			colType := colTypeMap[columns[i]]
 			if !slices.Contains(keyIdx, i) {
 				valCount++
 				anyVal[valCount] = *admin.ParseVal(&driverName, &colType, &val[i])
 			} else {
 				paramCount++
-				anyVal[len(columns)-len(keys)+paramCount] = *admin.ParseVal(&driverName, &colType, &val[i])
+				anyVal[colNum-len(keys)+paramCount] = *admin.ParseVal(&driverName, &colType, &val[i])
 			}
 		}
 
