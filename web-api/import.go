@@ -32,7 +32,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	logutils.PanicErr(err)
 	defer file.Close()
 
-	if fileHeader.Filename[strings.Index(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
+	if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
 		logutils.PanicErr(errors.New("表名不匹配（文件名中横线后为表名）"))
 	}
 

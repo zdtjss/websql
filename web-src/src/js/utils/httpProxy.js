@@ -3,7 +3,7 @@ import axios from 'axios';
 const env = import.meta.env
 
 const http = axios.create({
-    timeout: 1000 * 3 * 60
+    timeout: 1000 * 30 * 60
 });
 
 http.interceptors.request.use((config) => {
