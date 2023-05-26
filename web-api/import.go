@@ -17,7 +17,6 @@ import (
 )
 
 func ImportXlsx(w http.ResponseWriter, r *http.Request) {
-	log.Println("收到新增/更新请求")
 	r.ParseMultipartForm(30 * 1024 * 1024)
 
 	authorization := r.Header.Get("Authorization")
@@ -27,6 +26,8 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	table := r.Form.Get("table")
 	operType := r.Form.Get("optType")
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
+
+	log.Println("收到新增/更新请求，正在准备导入" + table)
 
 	file, fileHeader, err := r.FormFile("file")
 	logutils.PanicErr(err)
