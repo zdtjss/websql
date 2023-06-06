@@ -128,6 +128,8 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 			}
 		} else if t, ok := (*val).(go_ora.TimeStamp); ok {
 			v = time.Time(t).Format(time.DateTime)
+		} else if t, ok := (*val).(time.Time); ok {
+			v = time.Time(t).Format(time.DateTime)
 		} else {
 			return val
 		}

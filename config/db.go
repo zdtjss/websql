@@ -3,11 +3,12 @@ package config
 import (
 	"go-web/logutils"
 	"log"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 	_ "github.com/sijms/go-ora/v2"
 	_ "modernc.org/sqlite"
-	"github.com/jmoiron/sqlx"
 )
 
 // 打开数据库，如果不存在，则创建
@@ -25,12 +26,24 @@ func InitMngtDbConn() {
 
 // 此方法没有权限管理，不建议直接使用，请请使用admin.GetConn
 func GetConn(param *DBParam) *sqlx.DB {
-	val, ok := DBMap[createKey(param)]
+	key := createKey(param)
+	val, ok := DBMap[key]
 	if ok {
 		return val
 	} else {
 		initDBConn(param)
-		return DBMap[createKey(param)]
+		conn := DBMap[key]
+		t := time.NewTicker(1 * time.Hour)
+		go func() {
+			for {
+				<-t.C
+				err := conn.Ping()
+				if err != nil {
+					delete(DBMap, key)
+				}
+			}
+		}()
+		return conn
 	}
 }
 
@@ -40,6 +53,7 @@ func initDBConn(param *DBParam) {
 		logutils.PanicErrf("连接数据库失败", err)
 	}
 	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(5)
 	DBMap[createKey(param)] = db
 	log.Printf("数据库连接成功, env = %s, db = %s", param.Name, param.User)
 }
