@@ -377,7 +377,14 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: dbSchemaProxy.getDbType(props.schema) }) : "",
+    let sqlLang = sql
+    const dbType = dbSchemaProxy.getDbType(props.schema).toLowerCase()
+    if (dbType === "oracle") {
+        sqlLang = "plsql"
+    } else if (dbType === "mysql") {
+        sqlLang = "mysql"
+    }
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: sqlLang }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
         () => ElMessage({ message: "导出失败", type: "error" })
     )
@@ -396,13 +403,9 @@ function showCreateScript() {
     }
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlStr, maxLine: maxLine.value } })
         .then((resp) => {
-            if (dbType === 'mysql') {
-                tableCreateDdl.value = hljs.highlight(resp.data.data.data[0]["Create Table"], { language: 'sql' }).value
-            } else if (dbType === 'oracle') {
-                tableCreateDdl.value =  hljs.highlight(resp.data.data.data[0]["Create Table"], { language: 'sql' }).value
-            }
-        })
-        .catch(function (error) {
+            const data = resp.data.data.data[0]
+            tableCreateDdl.value = hljs.highlight(data[Object.keys(data)[0].trim()], { language: 'sql' }).value
+        }).catch(function (error) {
             console.log(error);
         });
 }
