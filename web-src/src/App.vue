@@ -434,7 +434,7 @@ function findConn(node) {
 }
 
 function addConn() {
-  connList.value.push({ dbType: "mysql", editable: true })
+  connList.value.unshift({ dbType: "mysql", editable: true })
 }
 
 function saveConnCfg(row) {
