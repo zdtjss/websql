@@ -179,7 +179,7 @@ function formatSql() {
         return
     }
     const editorState = <EditorState>editorView.value?.state
-    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: dbSchemaProxy.getDbType(props.schema) }) + "\n"))
+    editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: getSqlLang() }) + "\n"))
 }
 
 function exec() {
@@ -377,17 +377,22 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    let sqlLang = sql
+    
+    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: getSqlLang() }) : "",
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "导出失败", type: "error" })
+    )
+}
+
+function getSqlLang() {
+    let sqlLang = "sql"
     const dbType = dbSchemaProxy.getDbType(props.schema).toLowerCase()
     if (dbType === "oracle") {
         sqlLang = "plsql"
     } else if (dbType === "mysql") {
         sqlLang = "mysql"
     }
-    copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: sqlLang }) : "",
-        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () => ElMessage({ message: "导出失败", type: "error" })
-    )
+    return sqlLang
 }
 
 function showCreateScript() {
