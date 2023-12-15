@@ -45,3 +45,12 @@ CREATE TABLE IF NOT EXISTS t_user_role (
 );
 
 INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('1', '1', '1');
+
+
+create table if not exists t_backup (
+	id text  primary key,
+	user text,
+	exec_time timestamp,
+	exec_sql text,
+	data clob
+);

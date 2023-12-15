@@ -68,3 +68,12 @@ insert into t_user_role (
 	'1',
 	'1'
 );
+
+
+create table if not exists t_backup (
+	id bigint primary key,
+	user varchar(30),
+	exec_time timestamp,
+	exec_sql text,
+	data clob
+);

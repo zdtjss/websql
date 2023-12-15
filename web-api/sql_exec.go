@@ -1,12 +1,15 @@
 package webapi
 
 import (
+	"bytes"
+	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -21,10 +24,11 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 	authorization := r.Header.Get("Authorization")
 	conn := admin.GetConn(connId, authorization)
+	user := admin.GetUser(authorization)
 
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, conn)
+		rspData.Data = batchExec(&sqlStr, conn, user)
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
@@ -60,25 +64,55 @@ func page(dbtype string, sql *string) *string {
 	return &pageSql
 }
 
-func batchExec(sql *string, db *sqlx.DB) []map[string]any {
+func batchExec(sql *string, db *sqlx.DB, user *admin.User) []map[string]any {
 	sqlArr := strings.Split(*sql, ";")
-	tx, err := db.DB.Begin()
+	tx, err := db.Beginx()
 	defer tx.Rollback()
 	logutils.PanicErrf("事务开启失败， %s", err)
 	resultData := []map[string]any{}
+	mgntTx, _ := config.Mngtdb.Beginx()
+	defer mgntTx.Rollback()
 	for idx := range sqlArr {
-		if sqlArr[idx] == "" {
+		sqlStr := sqlArr[idx]
+		if sqlStr == "" {
 			continue
 		}
-		rs, err2 := tx.Exec(sqlArr[idx])
+		if strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") {
+			backup(sqlStr, user, tx, mgntTx)
+		}
+		rs, err2 := tx.Exec(sqlStr)
 		logutils.PanicErr(err2)
 		affected, err := rs.RowsAffected()
 		logutils.PanicErr(err)
 		resultData = append(resultData, map[string]any{"受影响行数": affected})
 	}
+	err = mgntTx.Commit()
+	logutils.PanicErr(err)
 	err = tx.Commit()
 	logutils.PanicErr(err)
 	return resultData
+}
+
+func backup(ddlSql string, user *admin.User, datTtx, mgntTx *sqlx.Tx) {
+	backupSql := bytes.NewBufferString("select * from ")
+	if strings.HasPrefix(ddlSql, "update ") {
+		tmp := strings.TrimSpace(strings.TrimPrefix(ddlSql, "update "))
+		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
+	} else if strings.HasPrefix(ddlSql, "delete ") {
+		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(ddlSql, "delete ")), "from ")
+		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
+	}
+	backupSql.WriteString(ddlSql[strings.Index(ddlSql, " where "):])
+	rows, err := datTtx.Queryx(backupSql.String())
+	logutils.PanicErr(err)
+	data := GetResultRows(datTtx.DriverName(), rows)
+
+	backupInsertSql := "insert into t_backup (id,user,exec_time,exec_sql,data) values(?,?,?,?,?)"
+	stmt, err := mgntTx.Preparex(backupInsertSql)
+	logutils.PanicErr(err)
+	time.Sleep(time.Microsecond)
+	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, time.Now(), ddlSql, string(utils.ToJsonString(data)))
+	logutils.PanicErr(err3)
 }
 
 func checkPrefx(src string, prefix []string) bool {
