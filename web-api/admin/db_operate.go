@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
+	dbutils "go-web/utils/db"
 	"log"
 	"net/http"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func listSchema(key string, authorization string) []*Tree {
 	schemaName := ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listSchema"])
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listSchema"])
 	logutils.PanicErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -27,7 +28,7 @@ func listSchema(key string, authorization string) []*Tree {
 func listTable(key string, schema, authorization string) []*Tree {
 	tableName, tableComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listTable"], schema)
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -40,7 +41,7 @@ func listTable(key string, schema, authorization string) []*Tree {
 func listColumns(key string, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listColumns"], table)
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listColumns"], table)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -53,7 +54,7 @@ func listColumns(key string, table, authorization string) []*Tree {
 func listAllColumns(key string, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
@@ -74,7 +75,7 @@ func ListTableFat(w http.ResponseWriter, r *http.Request) {
 func queryTableInfo(key string, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
-	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["listTable"])
+	stmt, err := dc.Prepare(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"])
 	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.PrintErr(err2)
@@ -90,18 +91,18 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 
 func ConvertCol(dbType, colType *string, val *any, overSign bool) *any {
 
-	return ConvertColHandler[*dbType](colType, val, overSign)
+	return dbutils.ConvertColHandler[*dbType](colType, val, overSign)
 }
 
 func ParseVal(dbType, colType *string, val *string) *any {
 
-	return ParseValHandler[*dbType](colType, val)
+	return dbutils.ParseValHandler[*dbType](colType, val)
 }
 
 func ColumnMap(table string, connId string, authorization string) *map[string]string {
 	columnMap := make(map[string]string)
 	dc := GetConn(connId, authorization)
-	stmt, err := dc.Prepare(SQL_DIALECT[dc.DriverName()]["ColumnMap"])
+	stmt, err := dc.Prepare(dbutils.SQL_DIALECT[dc.DriverName()]["ColumnMap"])
 	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
 	logutils.PrintErr(err2)
@@ -116,7 +117,7 @@ func ColumnMap(table string, connId string, authorization string) *map[string]st
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 	primaryKeys := make([]string, 0)
-	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
+	stmt, err := tx.Prepare(dbutils.SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
 	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema, table)
 	logutils.PrintErr(err2)
@@ -135,7 +136,7 @@ func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 
 func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 	colTypeMap := make(map[string]string, 0)
-	stmt, err := tx.Prepare(SQL_DIALECT[tx.DriverName()]["QueryColType"])
+	stmt, err := tx.Prepare(dbutils.SQL_DIALECT[tx.DriverName()]["QueryColType"])
 	logutils.PrintErr(err)
 	rs, err2 := stmt.Query(schema, table)
 	logutils.PrintErr(err2)

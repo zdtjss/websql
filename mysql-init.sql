@@ -75,5 +75,5 @@ create table if not exists t_backup (
 	user varchar(30),
 	exec_time timestamp,
 	exec_sql text,
-	data clob
+	data json
 );

@@ -1,4 +1,4 @@
-package admin
+package db
 
 import (
 	"bytes"
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	go_ora "github.com/sijms/go-ora/v2"
 	"golang.org/x/exp/slices"
 )
 
@@ -126,12 +125,19 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 			default:
 				v = string(b)
 			}
-		} else if t, ok := (*val).(go_ora.TimeStamp); ok {
-			v = time.Time(t).Format(time.DateTime)
 		} else if t, ok := (*val).(time.Time); ok {
 			v = time.Time(t).Format(time.DateTime)
 		} else {
 			return val
+		}
+		return &v
+	}, "sqlite": func(colType *string, val *any, overSign bool) *any {
+		var v any
+		//判断是否为[]byte
+		if t, ok := (*val).(time.Time); ok {
+			v = time.Time(t).Format(time.DateTime)
+		} else {
+			v = val
 		}
 		return &v
 	},

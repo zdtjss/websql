@@ -52,5 +52,5 @@ create table if not exists t_backup (
 	user text,
 	exec_time timestamp,
 	exec_sql text,
-	data clob
+	data JSON
 );
