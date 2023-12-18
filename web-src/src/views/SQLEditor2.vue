@@ -17,6 +17,7 @@
                 </template>
             </el-dropdown>
             <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
+            <el-button @click="queryBackupData" style="margin-left: 12px;">还原</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.alt.shift.r="exec"
@@ -55,6 +56,19 @@
                 </el-scrollbar>
             </el-row>
         </el-dialog>
+        <el-dialog v-model="backupDataDialogVisible" :draggable="true"
+            title="自动备份的数据" width="1000px" style="height:650px;overflow-y: auto;">
+            <el-table :data="backupData" stripe style="width: 100%">
+                <el-table-column type="index" width="50" />
+                <el-table-column prop="exec_time" label="时间" width="180" />
+                <el-table-column prop="exec_sql" label="SQL" width="300" />
+                <el-table-column prop="data" label="原数据" />
+            </el-table>
+            <div style="position: absolute;right: 10px;margin-top: 5px;">
+                <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
+                    v-model:current-page="backupDataCurrent" @current-change="queryBackupData" />
+            </div>
+        </el-dialog>
     </el-container>
 </template>
 
@@ -69,7 +83,7 @@ import { autocompletion } from '@codemirror/autocomplete'
 import { ref, onMounted } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
-import { format } from 'sql-formatter'
+import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 
 import hljs from 'highlight.js/lib/core'
@@ -98,7 +112,7 @@ const exportDialogVisible = ref(false)
 const showResult = ref(false)
 const resultHide = ref(false)
 const sqlDivHeight = ref("")
-let defaultSqlDivHeight:string
+let defaultSqlDivHeight: string
 const resultDivHeight = ref("")
 const toggleResultTitle = ref("")
 
@@ -109,6 +123,12 @@ const tableName = ref("")
 const tableCreateDdl = ref("")
 const tableCreateDdlRef = ref()
 const tableCreateDialogVisible = ref(false)
+
+const backupData = ref([])
+const backupDataTotal = ref(0)
+const backupDataCurrent = ref(0)
+const backupDataSize = ref(3)
+const backupDataDialogVisible = ref(false)
 
 onMounted(() => {
     // 默认高度
@@ -180,6 +200,15 @@ function formatSql() {
     }
     const editorState = <EditorState>editorView.value?.state
     editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: getSqlLang() }) + "\n"))
+}
+
+function queryBackupData() {
+    http.get("/backupData", { params: { connId: props.connId, schema: props.schema, current: backupDataCurrent.value, pageSize: backupDataSize.value } })
+        .then((resp) => {
+            backupData.value = resp.data.data.data
+            backupDataTotal.value = resp.data.data.total
+            backupDataDialogVisible.value = true
+        })
 }
 
 function exec() {
@@ -377,15 +406,15 @@ function exportCurrentToSqlUpdate() {
         sqlArr.push(sql + rowVal.join(", "))
     }
 
-    
+
     copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: getSqlLang() }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
         () => ElMessage({ message: "导出失败", type: "error" })
     )
 }
 
-function getSqlLang() {
-    let sqlLang = "sql"
+function getSqlLang(): SqlLanguage {
+    let sqlLang: SqlLanguage = "sql"
     const dbType = dbSchemaProxy.getDbType(props.schema).toLowerCase()
     if (dbType === "oracle") {
         sqlLang = "plsql"

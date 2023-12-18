@@ -21,6 +21,8 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		key := Md5sum(utils.RandomStr())
 		w.Header().Set("Authentication", key)
 		store.Add(formatStoreKey(key), UserPower{UserId: user.Id, Power: power})
+		user.Pwd = ""
+		store.Add(formatStoreKey(key+"_user"), user)
 		utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
 	} else {
 		logutils.PanicErr(errors.New("用户名或密码不正确"))
@@ -37,6 +39,12 @@ func GetUserPower(authorization string) *UserPower {
 	var userPower = new(UserPower)
 	store.Get(formatStoreKey(authorization), userPower)
 	return userPower
+}
+
+func GetUser(authorization string) *User {
+	var user = new(User)
+	store.Get(formatStoreKey(authorization+"_user"), user)
+	return user
 }
 
 func CheckAdminPower(r *http.Request) {

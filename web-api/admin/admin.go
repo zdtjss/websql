@@ -9,8 +9,11 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	dbutils "go-web/utils/db"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -160,6 +163,32 @@ func DelUser(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	config.Mngtdb.Exec("delete from t_user where id = ?", r.FormValue("id"))
 	utils.WriteJson(w, "")
+}
+
+func BackupData(w http.ResponseWriter, r *http.Request) {
+	CheckAdminPower(r)
+	r.ParseForm()
+	user := GetUser(r.Header.Get("Authorization"))
+
+	total := 0
+	var data any
+	stmt, err := config.Mngtdb.Preparex("select count(*) from t_backup where user = ? ")
+	logutils.PanicErr(err)
+	defer stmt.Close()
+	stmt.QueryRow(user.LoginName).Scan(&total)
+
+	if total != 0 {
+		current, _ := strconv.Atoi((r.FormValue("current")))
+		pageSize, _ := strconv.Atoi((r.FormValue("pageSize")))
+		stmt2, err2 := config.Mngtdb.Preparex("select * from t_backup where user = ? order by exec_time desc limit ?,?")
+		logutils.PanicErr(err2)
+		defer stmt2.Close()
+		rows, err := stmt2.Queryx(user.LoginName, (current-1)*pageSize, pageSize)
+		logutils.PanicErr(err)
+		defer rows.Close()
+		data = dbutils.GetResultRows(config.Mngtdb.DriverName(), rows)
+	}
+	utils.WriteJson(w, map[string]any{"data": data, "total": total})
 }
 
 func FindUser(w http.ResponseWriter, r *http.Request) {
