@@ -65,6 +65,7 @@ func MainRegister(router *mux.Router) {
 
 	router.Use(hostCheck)
 	router.Use(panicMiddleware)
+	router.Use(CORSMiddleware)
 
 	// router.NotFoundHandler = &NotFound{}
 	// router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
@@ -110,6 +111,14 @@ func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w2, _ := gzip.NewWriterLevel(w, 1)
 	defer w2.Close()
 	io.Copy(w2, bufio.NewReader(file))
+}
+
+func CORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // 一定是最后一个引入的
