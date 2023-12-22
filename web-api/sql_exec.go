@@ -74,7 +74,7 @@ func batchExec(sql *string, db *sqlx.DB, user *admin.User) []map[string]any {
 	mgntTx, _ := config.Mngtdb.Beginx()
 	defer mgntTx.Rollback()
 	for idx := range sqlArr {
-		sqlStr := sqlArr[idx]
+		sqlStr := strings.TrimSpace(sqlArr[idx])
 		if sqlStr == "" {
 			continue
 		}
