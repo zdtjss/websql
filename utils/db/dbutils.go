@@ -20,10 +20,10 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 	columns, _ := rows.Columns() //列名
 	count := len(columns)
 
-	values, valuesPoints := make([]any, count), make([]any, count)
-
 	// 2. 遍历Rows读取每一行
 	for rows.Next() {
+		values, valuesPoints := make([]any, count), make([]any, count)
+
 		// for i, v := range values { // 这种写法获取不到地址
 		// 	valuesPoints[i] = &v
 		// }
