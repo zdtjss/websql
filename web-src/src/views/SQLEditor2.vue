@@ -17,7 +17,7 @@
                 </template>
             </el-dropdown>
             <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
-            <el-button @click="queryBackupData" style="margin-left: 12px;">还原</el-button>
+            <el-button @click="queryBackupData" style="margin-left: 12px;">自动备份的数据</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.alt.shift.r="exec"
@@ -62,7 +62,7 @@
                 <el-table-column type="index" width="50" />
                 <el-table-column prop="exec_time" label="时间" width="180" />
                 <el-table-column prop="exec_sql" label="SQL" width="300" />
-                <el-table-column prop="data" label="原数据" />
+                <el-table-column prop="data" label="原数据" show-overflow-tooltip/>
             </el-table>
             <div style="position: absolute;right: 10px;margin-top: 5px;">
                 <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
@@ -127,7 +127,7 @@ const tableCreateDialogVisible = ref(false)
 const backupData = ref([])
 const backupDataTotal = ref(0)
 const backupDataCurrent = ref(0)
-const backupDataSize = ref(3)
+const backupDataSize = ref(5)
 const backupDataDialogVisible = ref(false)
 
 onMounted(() => {
