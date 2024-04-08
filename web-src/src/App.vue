@@ -2,7 +2,7 @@
   <el-container class="layout-container-demo">
     <el-aside :width="treeDivWidth">
       <div style="text-align: right;margin-right: 10px;">
-        <el-icon v-show="isAdmin || !isRemote" color="#409EFC"
+        <el-icon v-show="currentUser.isAdmin || !isRemote" color="#409EFC"
           @click="cfgDialogVisible = true; loadCfgData({ props: { name: defaultTabAdmin } })"
           style="cursor: pointer;margin-left: 8px;" title="配置">
           <Tools />
@@ -10,6 +10,10 @@
         <el-icon v-show="!loginSucc && isRemote" color="#409EFC" @click="loginDialogVisible = true"
           style="cursor: pointer;margin-left: 8px;" title="登录">
           <User />
+        </el-icon>
+        <el-icon v-show="loginSucc && isRemote" color="#409EFC" @click="register"
+          style="cursor: pointer;margin-left: 8px;" title="注册指纹/面容">
+          <Bell />
         </el-icon>
         <el-icon v-show="loginSucc" color="#409EFC" @click="logout" style="cursor: pointer;margin-left: 8px;"
           title="退出">
@@ -269,6 +273,7 @@
 
 <script setup>
 import { ref, reactive, shallowRef, onMounted, computed } from 'vue'
+import { client, parsers } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
@@ -288,10 +293,15 @@ const treeDivWidth = ref("260px")
 
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
-const isAdmin = ref(false)
+const currentUser = ref({
+  isAdmin: false,
+  name: ""
+})
 const loginName = ref()
 const loginFormRef = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
+
+const bioLocalStorageKey = "nway_websql_bio_credential_id"
 
 const isRemote = ref(null)
   
@@ -472,10 +482,12 @@ function login() {
       const params = new URLSearchParams();
       params.append("name", loginForm.value.name);
       params.append("password", loginForm.value.password);
+      params.append("loginType", "pwd");
       http.post("/login", params)
         .then((resp) => {
           refreshTree()
-          isAdmin.value = resp.data.data.isAdmin
+          debugger
+          currentUser.value = resp.data.data
           sessionStorage.setItem("authentication", resp.headers.get("authentication"))
           loginForm.value = {}
           logining.value = false
@@ -487,11 +499,69 @@ function login() {
   })
 }
 
+
+async function register() {
+
+  if (!client.isAvailable()) {
+    ElMessage({
+      showClose: true,
+      message: '您的设备不支持生物识别',
+      type: 'error',
+    })
+    return;
+  }
+  let res = await client.register(currentUser.value.name, window.crypto.randomUUID())
+
+  const parsed = parsers.parseRegistration(res)
+
+  window.localStorage.setItem(bioLocalStorageKey, parsed.credential.id)
+  
+  const params = new URLSearchParams();
+  params.append("bioKey", parsed.credential.id);
+  http.post("/saveUserBio", params).then((resp) => {
+    if (data.code == 200) {
+      ElMessage("注册成功")
+    } else {
+      errMsg.value = data.msg
+    }
+  }).catch((error) => {
+    errMsg.value = error
+  });
+}
+
+async function loginBio() {
+  const credentialId = window.localStorage.getItem(bioLocalStorageKey)
+  // 第一个参数指定值，可以简化用户选择的操作
+  let res = await client.authenticate(credentialId == null ? [] : [credentialId], window.crypto.randomUUID())
+  const params = new URLSearchParams();
+  params.append("key", res.credentialId);
+  params.append("loginType", "bio");
+  http.post("/login", params).then((resp) => {
+    if (resp.data.code == 200) {
+      if (!credentialId) {
+        window.localStorage.setItem(bioLocalStorageKey, res.credentialId)
+      }
+      refreshTree()
+      currentUser.value = resp.data.data
+      sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+      loginForm.value = {}
+      logining.value = false
+      loginSucc.value = true
+      loginDialogVisible.value = false
+      ElMessage("登陆成功")
+    } else {
+      errMsg.value = data.msg
+    }
+  }).catch((error) => {
+    errMsg.value = error
+  });
+}
+
 function logout() {
   http.post("/logout")
     .then((resp) => {
       refreshTree()
-      isAdmin.value = false
+      currentUser.value = {}
       loginSucc.value = false
       ElMessage(resp.data.data)
       sessionStorage.removeItem("authentication")
@@ -502,7 +572,12 @@ function getSysModel() {
   http.get("/sysMode").then((resp) => {
     isRemote.value = resp.data.data.isRemote
     if (!loginSucc.value && isRemote.value) {
-      loginDialogVisible.value = true
+      const credentialId = window.localStorage.getItem(bioLocalStorageKey)
+      if (credentialId && client.isAvailable()) {
+        loginBio()
+      } else {
+        loginDialogVisible.value = true
+      }
     }
   })
 }

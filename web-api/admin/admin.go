@@ -134,6 +134,18 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, "")
 }
 
+func SaveUserBio(w http.ResponseWriter, r *http.Request) {
+	CheckAdminPower(r)
+	r.ParseForm()
+	bioKey := r.PostForm.Get("bioKey")
+	authorization := r.Header.Get("Authorization")
+	user := GetUser(authorization)
+	stmt, _ := config.Mngtdb.Prepare("update t_user set bio = ? where id = ?")
+	_, err := stmt.Exec(Md5sum(bioKey), user.Id)
+	logutils.PanicErrf("保存用户失败", err)
+	utils.WriteJson(w, "")
+}
+
 func checkUserExist(user *User, tx *sqlx.Tx) {
 	checkSqlParam := make([]any, 2)
 	checkSqlParam[0] = &user.LoginName
@@ -250,6 +262,16 @@ func findByLoginName(loginName string) *User {
 	return &users[0]
 }
 
+func findByBio(bioKey string) *User {
+	var users []User
+	err := config.Mngtdb.Select(&users, "select id,name from t_user where bio = ?", Md5sum(bioKey))
+	logutils.PanicErr(err)
+	if len(users) == 0 {
+		return nil
+	}
+	return &users[0]
+}
+
 func findUserPower(userId string) []string {
 	resIds := []string{}
 	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
@@ -344,6 +366,7 @@ type User struct {
 	LoginName string    `json:"loginName" db:"login_name"`
 	Name      string    `json:"name"`
 	Pwd       string    `json:"pwd"`
+	Bio       string    `json:"bio"`
 }
 
 type UserPower struct {

@@ -53,6 +53,8 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
 	router.HandleFunc("/delUser", admin.DelUser).Methods("GET")
 
+	router.HandleFunc("/saveUserBio", admin.SaveUserBio).Methods("POST")
+
 	router.HandleFunc("/backupData", admin.BackupData).Methods("GET")
 
 	router.HandleFunc("/sysMode", func(w http.ResponseWriter, r *http.Request) {

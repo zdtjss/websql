@@ -14,19 +14,29 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	name := r.PostForm.Get("name")
 	pwd := r.PostForm.Get("password")
+	key := r.PostForm.Get("key")
+	loginType := r.PostForm.Get("loginType")
 
-	user := findByLoginName(name)
-	if user != nil && user.Pwd == Md5sum(pwd) {
-		power := findUserPower(user.Id)
-		key := Md5sum(utils.RandomStr())
-		w.Header().Set("Authentication", key)
-		store.Add(formatStoreKey(key), UserPower{UserId: user.Id, Power: power})
-		user.Pwd = ""
-		store.Add(formatStoreKey(key+"_user"), user)
-		utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
-	} else {
-		logutils.PanicErr(errors.New("用户名或密码不正确"))
+	var user *User
+	switch loginType {
+	case "pwd":
+		user = findByLoginName(name)
+		if user == nil || user.Pwd != Md5sum(pwd) {
+			logutils.PanicErr(errors.New("用户名或密码不正确"))
+		}
+	case "bio":
+		user = findByBio(key)
+		if user == nil {
+			logutils.PanicErr(errors.New("无效的指纹/面容信息"))
+		}
 	}
+	power := findUserPower(user.Id)
+	token := Md5sum(utils.RandomStr())
+	w.Header().Set("Authentication", token)
+	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
+	user.Pwd = ""
+	store.Add(formatStoreKey(token+"_user"), user)
+	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {

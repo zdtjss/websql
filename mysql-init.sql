@@ -37,7 +37,8 @@ create table if not exists t_user (
 	id varchar(36) primary key,
 	login_name varchar(64),
 	name varchar(64),
-	pwd varchar(256)
+	pwd varchar(256),
+	bio varchar(512)
 );
 
 -- 管理员id一定是 1
@@ -45,12 +46,14 @@ insert into t_user (
 	id,
 	login_name,
 	name,
-	pwd
+	pwd,
+	bio
 ) values (
 	'1',
 	'admin',
 	'管理员',
-	'7e2e1f2e1eb71a6f7915a96201237ff0'
+	'7e2e1f2e1eb71a6f7915a96201237ff0',
+	''
 );
 
 create table if not exists t_user_role (

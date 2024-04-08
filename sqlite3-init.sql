@@ -32,11 +32,12 @@ CREATE TABLE IF NOT EXISTS t_user (
 	id TEXT PRIMARY KEY,
 	login_name TEXT,
 	name TEXT,
-	pwd TEXT
+	pwd TEXT,
+	bio TEXT
 );
 
 -- 管理员id一定是 1 
-INSERT INTO "t_user" ("id", "login_name", "name", "pwd") VALUES ('1', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0');
+INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('1', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
 
 CREATE TABLE IF NOT EXISTS t_user_role (
 	id BIGINT PRIMARY KEY,
