@@ -17,7 +17,7 @@
                 </template>
             </el-dropdown>
             <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
-            <el-button @click="queryBackupData" style="margin-left: 12px;">自动备份的数据</el-button>
+            <el-button @click="queryBackupData" style="margin-left: 12px;">备份</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
         <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.alt.shift.r="exec"
@@ -58,13 +58,13 @@
         </el-dialog>
         <el-dialog v-model="backupDataDialogVisible" :draggable="true"
             title="自动备份的数据" width="1000px" style="height:650px;overflow-y: auto;">
-            <el-table :data="backupData" stripe style="width: 100%">
+            <el-table :data="backupData" stripe style="width: 100%;" :max-height="510">
                 <el-table-column type="index" width="50" />
                 <el-table-column prop="exec_time" label="时间" width="180" />
                 <el-table-column prop="exec_sql" label="SQL" width="300" />
                 <el-table-column prop="data" label="原数据" show-overflow-tooltip/>
             </el-table>
-            <div style="position: absolute;right: 10px;margin-top: 5px;">
+            <div style="position: absolute;right: 10px;bottom: 5px;">
                 <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
                     v-model:current-page="backupDataCurrent" @current-change="queryBackupData" />
             </div>

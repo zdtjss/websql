@@ -1,6 +1,7 @@
 {
   "name": "web-sql",
   "version": "0.1.0",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "run-p type-check build-only",

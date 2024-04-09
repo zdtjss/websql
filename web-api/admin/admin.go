@@ -106,7 +106,7 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	checkUserExist(user, tx)
 	if user.Id == "" {
 		user.Id = utils.RandomStr()
-		stmt, _ := tx.Prepare("insert into t_user (id, name, login_name, pwd) values (?, ?, ?, ?)")
+		stmt, _ := tx.Prepare("insert into t_user (id, name, login_name, pwd, bio) values (?, ?, ?, ?, '')")
 		tx.Stmt(stmt).Exec(user.Id, user.Name, user.LoginName, Md5sum(user.Pwd))
 	} else {
 		var pwdDb string
