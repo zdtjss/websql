@@ -55,7 +55,8 @@ func MainRegister(router *mux.Router) {
 
 	router.HandleFunc("/saveUserBio", admin.SaveUserBio).Methods("POST")
 
-	router.HandleFunc("/backupData", admin.BackupData).Methods("GET")
+	router.HandleFunc("/listBackupData", admin.ListBackupData).Methods("GET")
+	router.HandleFunc("/showBackupData", admin.ShowBackupData).Methods("GET")
 
 	router.HandleFunc("/sysMode", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJson(w, map[string]bool{"isRemote": config.IsRemote})

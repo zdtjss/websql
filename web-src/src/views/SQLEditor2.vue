@@ -1,7 +1,7 @@
 <template>
     <el-container>
         <el-header height="30px" class="toolbar">
-            <el-button @click="exec" :loading="exectingSql" title="Alt + Shift + R">执行</el-button>
+            <el-button @click="exec" :loading="exectingSql" title="F9">执行</el-button>
             <el-button @click="exportDb">导表</el-button>
             <el-button @click="exportCurrentToXlsx">excel</el-button>
             <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
@@ -17,10 +17,10 @@
                 </template>
             </el-dropdown>
             <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
-            <el-button @click="queryBackupData" style="margin-left: 12px;">备份</el-button>
+            <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
             <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
         </el-header>
-        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.alt.shift.r="exec"
+        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.f9="exec"
             @keyup.ctrl.shift.f="formatSql">
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
@@ -56,19 +56,37 @@
                 </el-scrollbar>
             </el-row>
         </el-dialog>
-        <el-dialog v-model="backupDataDialogVisible" :draggable="true"
-            title="自动备份的数据" width="1000px" style="height:650px;overflow-y: auto;">
-            <el-table :data="backupData" stripe style="width: 100%;" :max-height="510">
+        <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
+            style="height:650px;overflow-y: auto;">
+            <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="510">
                 <el-table-column type="index" width="50" />
-                <el-table-column prop="exec_time" label="时间" width="180" />
-                <el-table-column prop="exec_sql" label="SQL" width="300" />
-                <el-table-column prop="data" label="原数据" show-overflow-tooltip/>
+                <el-table-column prop="user" label="操作人" width="100" />
+                <el-table-column prop="conn_name" label="数据库" width="180" />
+                <el-table-column prop="exec_time" label="操作时间" width="150" />
+                <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
+                <el-table-column label="" width="35">
+                    <template #default="scope">
+                        <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
+                            <View />
+                        </el-icon>
+                    </template>
+                </el-table-column>
             </el-table>
             <div style="position: absolute;right: 10px;bottom: 5px;">
-                <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
-                    v-model:current-page="backupDataCurrent" @current-change="queryBackupData" />
+                <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal"
+                    v-model:page-size="backupDataSize" v-model:current-page="backupDataCurrent"
+                    @current-change="listBackupData" />
             </div>
         </el-dialog>
+        <el-drawer v-model="backupDataDrawerShow">
+            <template #header>
+                <h3>备份的数据</h3>
+                <a @click="exportBackupData" style="margin-right: 10px;cursor: pointer;">下载</a>
+            </template>
+            <template #default>
+                <pre style="white-space: pre;">{{ backupData }}</pre>
+            </template>
+        </el-drawer>
     </el-container>
 </template>
 
@@ -82,7 +100,7 @@ import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { ref, onMounted } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 
@@ -124,11 +142,14 @@ const tableCreateDdl = ref("")
 const tableCreateDdlRef = ref()
 const tableCreateDialogVisible = ref(false)
 
-const backupData = ref([])
+const backupDataList = ref([])
 const backupDataTotal = ref(0)
 const backupDataCurrent = ref(0)
-const backupDataSize = ref(5)
+const backupDataSize = ref(10)
 const backupDataDialogVisible = ref(false)
+
+const backupData = ref("")
+const backupDataDrawerShow = ref(false)
 
 onMounted(() => {
     // 默认高度
@@ -202,15 +223,49 @@ function formatSql() {
     editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: getSqlLang() }) + "\n"))
 }
 
-function queryBackupData() {
-    http.get("/backupData", { params: { connId: props.connId, schema: props.schema, current: backupDataCurrent.value, pageSize: backupDataSize.value } })
+function listBackupData() {
+    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: backupDataCurrent.value, pageSize: backupDataSize.value } })
         .then((resp) => {
-            backupData.value = resp.data.data.data
+            backupDataList.value = resp.data.data.data
             backupDataTotal.value = resp.data.data.total
             backupDataDialogVisible.value = true
         })
 }
 
+function showBackupData(backupId: any) {
+    http.get("/showBackupData", { params: { backupId: backupId } })
+        .then((resp) => {
+            backupData.value = JSON.stringify(JSON.parse(resp.data.data), null, 4)
+            backupDataDrawerShow.value = true
+        })
+}
+
+function exportBackupData() {
+
+    let header: any = {}
+    let keys: any = []
+
+    const jsonObj = JSON.parse(backupData.value)
+    if (Array.isArray(jsonObj)) {
+        keys = Object.keys(jsonObj[0])
+    } else {
+        keys = Object.keys(jsonObj)
+    }
+
+    keys.forEach((key: any) => {
+        header[key] = key
+    })
+
+    const obj = {
+        header: header,
+        title: '',
+        key: keys,
+        data: Array.isArray(jsonObj) ? jsonObj : [jsonObj],
+        filename: "导出的备份数据",
+        autoWidth: false
+    }
+    excel.exportJsonToExcel(obj)
+}
 function exec() {
     const sqlExec = getSelection()?.toString()
     if (!sqlExec) {
@@ -533,11 +588,13 @@ function fmtValForUpdate(val: any) {
     height: 100%;
 }
 
-.result {}
-
 /** 表头可选择复制 */
 .el-table-v2__header-cell-text {
     user-select: text;
+}
+
+.el-drawer__header {
+    margin-bottom: -20px
 }
 </style>
 <style lang="less" scoped>

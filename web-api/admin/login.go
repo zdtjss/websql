@@ -12,7 +12,7 @@ import (
 
 func Login(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	name := r.PostForm.Get("name")
+	loginName := r.PostForm.Get("name")
 	pwd := r.PostForm.Get("password")
 	key := r.PostForm.Get("key")
 	loginType := r.PostForm.Get("loginType")
@@ -20,7 +20,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	var user *User
 	switch loginType {
 	case "pwd":
-		user = findByLoginName(name)
+		user = findByLoginName(loginName)
 		if user == nil || user.Pwd != Md5sum(pwd) {
 			logutils.PanicErr(errors.New("用户名或密码不正确"))
 		}
@@ -35,6 +35,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Authentication", token)
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
+	user.LoginName = loginName
 	store.Add(formatStoreKey(token+"_user"), user)
 	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
 }

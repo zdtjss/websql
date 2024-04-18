@@ -29,7 +29,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, conn, user)
+		rspData.Data = batchExec(&sqlStr, conn, user, connId)
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
@@ -65,7 +65,7 @@ func page(dbtype string, sql *string) *string {
 	return &pageSql
 }
 
-func batchExec(sql *string, db *sqlx.DB, user *admin.User) []map[string]any {
+func batchExec(sql *string, db *sqlx.DB, user *admin.User, connId string) []map[string]any {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := db.Beginx()
 	defer tx.Rollback()
@@ -79,7 +79,7 @@ func batchExec(sql *string, db *sqlx.DB, user *admin.User) []map[string]any {
 			continue
 		}
 		if strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") {
-			backup(sqlStr, user, tx, mgntTx)
+			backup(sqlStr, user, tx, mgntTx, connId)
 		}
 		rs, err2 := tx.Exec(sqlStr)
 		logutils.PanicErr(err2)
@@ -94,7 +94,7 @@ func batchExec(sql *string, db *sqlx.DB, user *admin.User) []map[string]any {
 	return resultData
 }
 
-func backup(ddlSql string, user *admin.User, datTtx, mgntTx *sqlx.Tx) {
+func backup(ddlSql string, user *admin.User, datTtx, mgntTx *sqlx.Tx, connId string) {
 	backupSql := bytes.NewBufferString("select * from ")
 	if strings.HasPrefix(ddlSql, "update ") {
 		tmp := strings.TrimSpace(strings.TrimPrefix(ddlSql, "update "))
@@ -107,12 +107,11 @@ func backup(ddlSql string, user *admin.User, datTtx, mgntTx *sqlx.Tx) {
 	rows, err := datTtx.Queryx(backupSql.String())
 	logutils.PanicErr(err)
 	data := dbutils.GetResultRows(datTtx.DriverName(), rows)
-
-	backupInsertSql := "insert into t_backup (id,user,exec_time,exec_sql,data) values(?,?,?,?,?)"
+	backupInsertSql := "insert into t_backup (id,user,conn_id,exec_time,exec_sql,data) values(?,?,?,?,?,?)"
 	stmt, err := mgntTx.Preparex(backupInsertSql)
 	logutils.PanicErr(err)
 	time.Sleep(time.Microsecond)
-	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, time.Now(), ddlSql, string(utils.ToJsonString(data)))
+	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, time.Now(), ddlSql, string(utils.ToJsonString(data)))
 	logutils.PanicErr(err3)
 }
 

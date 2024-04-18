@@ -177,13 +177,28 @@ func DelUser(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, "")
 }
 
-func BackupData(w http.ResponseWriter, r *http.Request) {
+func ShowBackupData(w http.ResponseWriter, r *http.Request) {
+	CheckAdminPower(r)
+	r.ParseForm()
+	backupId := r.Form.Get("backupId")
+	stmt, err := config.Mngtdb.Preparex("select data from t_backup where id = ?")
+	logutils.PanicErr(err)
+	rowsx, err2 := stmt.Query(backupId)
+	logutils.PanicErr(err2)
+	var backupData any
+	if rowsx.Next() {
+		rowsx.Scan(&backupData)
+	}
+	utils.WriteJson(w, backupData)
+}
+
+func ListBackupData(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
 	user := GetUser(r.Header.Get("Authorization"))
 
 	total := 0
-	var data any
+	var data []map[string]any
 	stmt, err := config.Mngtdb.Preparex("select count(*) from t_backup where user = ? ")
 	logutils.PanicErr(err)
 	defer stmt.Close()
@@ -192,7 +207,7 @@ func BackupData(w http.ResponseWriter, r *http.Request) {
 	if total != 0 {
 		current, _ := strconv.Atoi((r.FormValue("current")))
 		pageSize, _ := strconv.Atoi((r.FormValue("pageSize")))
-		stmt2, err2 := config.Mngtdb.Preparex("select * from t_backup where user = ? order by exec_time desc limit ?,?")
+		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.user,a.conn_id,b.name conn_name,a.exec_sql,exec_time from t_backup a left join t_conn b on a.conn_id = b.id where a.user = ? order by exec_time desc limit ?,?")
 		logutils.PanicErr(err2)
 		defer stmt2.Close()
 		rows, err := stmt2.Queryx(user.LoginName, (current-1)*pageSize, pageSize)
