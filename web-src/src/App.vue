@@ -53,11 +53,11 @@
             </el-table-column>
             <el-table-column label="连接" :show-overflow-tooltip="true">
               <template #default="scope">
-                  <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
-                  <el-tree-select ref="roleConnTree" v-model="scope.row.connIdList" v-show="scope.row.editable" @check="checkPower"
-                    style="width:100%" :data="connListSelect" node-key="id" multiple collapse-tags collapse-tags-tooltip
-                    :check-on-click-node="true" show-checkbox placeholder="请选择" />
-                </template>
+                <span v-show="!scope.row.editable">{{ scope.row.connNameListStr }}</span>
+                <el-tree-select ref="roleConnTree" v-model="scope.row.connIdList" v-show="scope.row.editable"
+                  @check="checkPower" style="width:100%" :data="connListSelect" node-key="id" multiple collapse-tags
+                  collapse-tags-tooltip :check-on-click-node="true" show-checkbox placeholder="请选择" />
+              </template>
             </el-table-column>
             <el-table-column style="text-align: center; " width="80">
               <template #header>
@@ -161,9 +161,7 @@
             </el-table-column>
             <el-table-column prop="dbType" label="数据库类型" width="100">
               <template #default="scope">
-                <span v-show="!scope.row.editable">{{
-                  dbTypeList.filter(t => t.value === scope.row.dbType)[0].label
-                }}</span>
+                <span v-show="!scope.row.editable">{{ dbTypeList.filter(t => t.value === scope.row.dbType)[0].label }}</span>
                 <el-select v-show="scope.row.editable" v-model="scope.row.dbType" placeholder="请选择">
                   <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
                 </el-select>
@@ -240,8 +238,8 @@
             </el-tree>
           </div>
           <div style="float: right; margin-right: 100px;">
-              <el-button type="primary" @click="saveTree">保存</el-button>
-            </div>
+            <el-button type="primary" @click="saveTree">保存</el-button>
+          </div>
         </el-tab-pane>
       </el-tabs>
       <template #footer>
@@ -304,7 +302,7 @@ const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
 
 const isRemote = ref(null)
-  
+
 const logining = ref(false)
 const loginRules = reactive({
   name: [
@@ -475,6 +473,45 @@ function delConnCfg(row) {
   }
 }
 
+
+async function register() {
+
+  if (!client.isAvailable()) {
+    ElMessage({
+      showClose: true,
+      message: '您的设备不支持生物识别',
+      type: 'error',
+    })
+    return;
+  }
+  let res = await client.register(currentUser.value.name, window.crypto.randomUUID())
+
+  const parsed = parsers.parseRegistration(res)
+
+  window.localStorage.setItem(bioLocalStorageKey, parsed.credential.id)
+
+  const params = new URLSearchParams();
+  params.append("bioKey", parsed.credential.id);
+  http.post("/saveUserBio", params).then((resp) => {
+    if (data.code == 200) {
+      ElMessage("注册成功")
+    } else {
+      ElMessage(data.msg)
+    }
+  }).catch((error) => {
+    ElMessage(error)
+  });
+}
+
+function toLogin() {
+  const credentialId = window.localStorage.getItem(bioLocalStorageKey)
+  if (credentialId && client.isAvailable()) {
+    loginBio()
+  } else {
+    loginDialogVisible.value = true
+  }
+}
+
 function login() {
   loginFormRef.value.validate(isValid => {
     if (isValid) {
@@ -498,36 +535,6 @@ function login() {
   })
 }
 
-
-async function register() {
-
-  if (!client.isAvailable()) {
-    ElMessage({
-      showClose: true,
-      message: '您的设备不支持生物识别',
-      type: 'error',
-    })
-    return;
-  }
-  let res = await client.register(currentUser.value.name, window.crypto.randomUUID())
-
-  const parsed = parsers.parseRegistration(res)
-
-  window.localStorage.setItem(bioLocalStorageKey, parsed.credential.id)
-  
-  const params = new URLSearchParams();
-  params.append("bioKey", parsed.credential.id);
-  http.post("/saveUserBio", params).then((resp) => {
-    if (data.code == 200) {
-      ElMessage("注册成功")
-    } else {
-      ElMessage(data.msg)
-    }
-  }).catch((error) => {
-    ElMessage(error)
-  });
-}
-
 async function loginBio() {
   const credentialId = window.localStorage.getItem(bioLocalStorageKey)
   // 第一个参数指定值，可以简化用户选择的操作
@@ -549,10 +556,10 @@ async function loginBio() {
       loginDialogVisible.value = false
       ElMessage("登陆成功")
     } else {
-      errMsg.value = data.msg
+      ElMessage(data.msg)
     }
   }).catch((error) => {
-    errMsg.value = error
+    ElMessage(error)
   });
 }
 
@@ -565,15 +572,6 @@ function logout() {
       ElMessage(resp.data.data)
       sessionStorage.removeItem("authentication")
     })
-}
-
-function toLogin() {
-  const credentialId = window.localStorage.getItem(bioLocalStorageKey)
-  if (credentialId && client.isAvailable()) {
-    loginBio()
-  } else {
-    loginDialogVisible.value = true
-  }
 }
 
 function getSysModel() {

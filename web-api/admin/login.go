@@ -24,18 +24,19 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		if user == nil || user.Pwd != Md5sum(pwd) {
 			logutils.PanicErr(errors.New("用户名或密码不正确"))
 		}
+		user.LoginName = loginName
 	case "bio":
 		user = findByBio(key)
 		if user == nil {
 			logutils.PanicErr(errors.New("无效的指纹/面容信息"))
 		}
+		*&user.LoginName = user.LoginName
 	}
 	power := findUserPower(user.Id)
 	token := Md5sum(utils.RandomStr())
 	w.Header().Set("Authentication", token)
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
-	user.LoginName = loginName
 	store.Add(formatStoreKey(token+"_user"), user)
 	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
 }

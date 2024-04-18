@@ -279,7 +279,7 @@ func findByLoginName(loginName string) *User {
 
 func findByBio(bioKey string) *User {
 	var users []User
-	err := config.Mngtdb.Select(&users, "select id,name from t_user where bio = ?", Md5sum(bioKey))
+	err := config.Mngtdb.Select(&users, "select id,login_name,name from t_user where bio = ?", Md5sum(bioKey))
 	logutils.PanicErr(err)
 	if len(users) == 0 {
 		return nil

@@ -62,9 +62,9 @@
                 <el-table-column type="index" width="50" />
                 <el-table-column prop="user" label="操作人" width="100" />
                 <el-table-column prop="conn_name" label="数据库" width="180" />
-                <el-table-column prop="exec_time" label="操作时间" width="150" />
+                <el-table-column prop="exec_time" label="操作时间" width="170" />
                 <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
-                <el-table-column label="" width="35">
+                <el-table-column label="" width="38">
                     <template #default="scope">
                         <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
                             <View />
