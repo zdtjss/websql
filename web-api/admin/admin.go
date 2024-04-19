@@ -196,21 +196,22 @@ func ListBackupData(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
 	user := GetUser(r.Header.Get("Authorization"))
+	connId := r.Form.Get("connId")
 
 	total := 0
 	var data []map[string]any
-	stmt, err := config.Mngtdb.Preparex("select count(*) from t_backup where user = ? ")
+	stmt, err := config.Mngtdb.Preparex("select count(*) from t_backup where user = ? and conn_id = ?")
 	logutils.PanicErr(err)
 	defer stmt.Close()
-	stmt.QueryRow(user.LoginName).Scan(&total)
+	stmt.QueryRow(user.LoginName, connId).Scan(&total)
 
 	if total != 0 {
 		current, _ := strconv.Atoi((r.FormValue("current")))
 		pageSize, _ := strconv.Atoi((r.FormValue("pageSize")))
-		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.user,a.conn_id,b.name conn_name,a.exec_sql,exec_time from t_backup a left join t_conn b on a.conn_id = b.id where a.user = ? order by exec_time desc limit ?,?")
+		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.exec_sql,exec_time from t_backup a where a.user = ? and conn_id = ? order by exec_time desc limit ?,?")
 		logutils.PanicErr(err2)
 		defer stmt2.Close()
-		rows, err := stmt2.Queryx(user.LoginName, (current-1)*pageSize, pageSize)
+		rows, err := stmt2.Queryx(user.LoginName, connId, (current-1)*pageSize, pageSize)
 		logutils.PanicErr(err)
 		defer rows.Close()
 		data = dbutils.GetResultRows(config.Mngtdb.DriverName(), rows)

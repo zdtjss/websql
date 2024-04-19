@@ -27,13 +27,19 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	conn := admin.GetConn(connId, authorization)
 	user := admin.GetUser(authorization)
 
-	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "CREATE ") || strings.HasPrefix(sqlStr, "UPDATE ") || strings.HasPrefix(sqlStr, "DELETE ") || strings.HasPrefix(sqlStr, "INSERT ") || strings.HasPrefix(sqlStr, "ALTER ") {
+	blankIdx := strings.Index(sqlStr, " ")
+	nlIdx := strings.Index(sqlStr, "\n")
+
+	// 关键字转小写 select delete update
+	sqlStr = strings.Join([]string{strings.ToLower(sqlStr[0:min(blankIdx, nlIdx)]), sqlStr[min(blankIdx, nlIdx):]}, "")
+
+	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "drop ") {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		rspData.Data = batchExec(&sqlStr, conn, user, connId)
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
-		if checkPrefx(sqlStr, []string{"select ", "SELECT ", "select\n", "SELECT\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
+		if checkPrefx(sqlStr, []string{"select ", "select\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
 			sqlStr = *page(conn.DriverName(), &sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
@@ -53,6 +59,13 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		utils.WriteJson(w, rspData)
 	}
+}
+
+func min(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func page(dbtype string, sql *string) *string {

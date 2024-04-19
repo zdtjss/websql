@@ -30,7 +30,6 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		if user == nil {
 			logutils.PanicErr(errors.New("无效的指纹/面容信息"))
 		}
-		*&user.LoginName = user.LoginName
 	}
 	power := findUserPower(user.Id)
 	token := Md5sum(utils.RandomStr())

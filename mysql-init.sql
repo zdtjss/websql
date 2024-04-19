@@ -58,8 +58,8 @@ insert into t_user (
 
 create table if not exists t_user_role (
 	id varchar(36) primary key,
-	user_id bigint,
-	role_id bigint
+	user_id varchar(36),
+	role_id varchar(36)
 );
 
 insert into t_user_role (
@@ -74,9 +74,10 @@ insert into t_user_role (
 
 
 create table if not exists t_backup (
-	id bigint primary key,
+	id varchar(36) primary key,
 	user varchar(30),
-	exec_time timestamp,
+	conn_id varchar(36),
+	exec_time datetime,
 	exec_sql text,
 	data json
 );
