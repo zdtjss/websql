@@ -19,7 +19,7 @@
     "sql-formatter": "^15.0.2",
     "@codemirror/lang-sql": "^6.5.4",
     "@codemirror/theme-one-dark": "^6.1.2",
-    "@passwordless-id/webauthn": "^1.5.0",
+    "@passwordless-id/webauthn": "^1.6.1",
     "xlsx": "^0.18.5",
     "highlight.js":"^11.9.0"
   },
