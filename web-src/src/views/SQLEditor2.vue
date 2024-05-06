@@ -98,7 +98,7 @@ import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { ref, onMounted } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
-import { ElMessage, ElNotification } from 'element-plus'
+import { ElMessage, Eltooltip } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 
@@ -276,16 +276,26 @@ function exec() {
     }
     currentSelectTable = extractTableName(sqlExec)
     exectingSql.value = true
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: effiectiveSql, maxLine: maxLine.value } })
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable ,sql: effiectiveSql, maxLine: maxLine.value } })
         .then((resp) => {
             columns.value = resp.data.data.columns.map((col: any) => {
                 return {
                     key: col.name,
                     title: col.name,
-                    dataKey: col.name,
+                    dataKey: col.comment,
                     width: 150,
-                    minWidth: "150px"
-                }
+                    minWidth: "150px",
+                    headerCellRenderer: () => {
+                        return (
+                            <el-tooltip
+                                class="box-item"
+                                effect="dark"
+                                content="Top Left prompts info"
+                                placement="top-start"
+                            >
+                        )
+                    },
+                 }
             })
             columns.value.unshift({
                 dataKey: "col-idx",

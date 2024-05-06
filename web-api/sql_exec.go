@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -19,6 +20,8 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
 	connId := r.Form.Get("connId")
+	schema := r.Form.Get("schema")
+	tableName := r.Form.Get("tableName")
 	sqlStr := r.Form.Get("sql")
 	maxLine := r.Form.Get("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
@@ -49,8 +52,19 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		cts, err3 := rows.ColumnTypes()
 		logutils.PanicErr(err3)
 		columnList := make([]Column, len(cts))
+
+		var realTableName, realSchema = tableName, schema
+		if strings.Contains(tableName, ".") {
+			realTableName = string(tableName[strings.Index(tableName, ".")+1:])
+			realSchema = string(tableName[0:strings.Index(tableName, ".")])
+		}
+		columnMap := map[string]string{}
+		if IsAlphaNumeric(realTableName) && strings.Index(sqlStr, " from ") == strings.LastIndex(sqlStr, " from ") {
+			columnMap = admin.ColumnMap(strings.ToLower(realTableName), strings.ToLower(realSchema), conn)
+		}
+
 		for idx, val := range cts {
-			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName()}
+			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName(), Comment: columnMap[val.Name()]}
 		}
 
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
@@ -59,6 +73,17 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		utils.WriteJson(w, rspData)
 	}
+}
+
+// 判断字符串是否为字母数字
+func IsAlphaNumeric(str string) bool {
+	// 遍历字符串，判断每个字符是否为字母数字
+	for _, ch := range str {
+		if unicode.IsLetter(ch) || unicode.IsDigit(ch) {
+			return true
+		}
+	}
+	return false
 }
 
 func min(a, b int) int {
@@ -147,8 +172,9 @@ func checkContains(src string, suffix []string) bool {
 }
 
 type Column struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Comment string `json:"comment"`
 }
 
 type TableDataList struct {

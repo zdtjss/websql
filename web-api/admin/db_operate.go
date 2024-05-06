@@ -99,12 +99,11 @@ func ParseVal(dbType, colType *string, val *string) *any {
 	return dbutils.ParseValHandler[*dbType](colType, val)
 }
 
-func ColumnMap(table string, connId string, authorization string) *map[string]string {
+func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 	columnMap := make(map[string]string)
-	dc := GetConn(connId, authorization)
-	stmt, err := dc.Prepare(dbutils.SQL_DIALECT[dc.DriverName()]["ColumnMap"])
+	stmt, err := conn.Prepare(dbutils.SQL_DIALECT[conn.DriverName()]["ColumnMap"])
 	logutils.PrintErr(err)
-	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:])
+	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:], schema)
 	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {
@@ -112,7 +111,7 @@ func ColumnMap(table string, connId string, authorization string) *map[string]st
 		rs.Scan(&name, &comment)
 		columnMap[name] = comment
 	}
-	return &columnMap
+	return columnMap
 }
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
