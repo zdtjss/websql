@@ -166,7 +166,6 @@ const backupDataDialogVisible = ref(false)
 
 const canEdit = ref(false)
 const rowData = ref({})
-const dataRowIndex = ref()
 const dataDetailsDialogVisible = ref(false)
 
 const backupData = ref("")
@@ -345,10 +344,6 @@ function exec() {
 }
 
 function openDataDetails(rowIndex:number) {
-    debugger
-    console.log(result.value[rowIndex])
-    console.log(columns.value)
-    dataRowIndex.value = rowIndex
     dataDetailsDialogVisible.value = true
     rowData.value = result.value[rowIndex]
 }
