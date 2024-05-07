@@ -1,0 +1,10 @@
+.data-view {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    display: inline-block;
+    position: absolute;
+    right: 0px;
+    bottom: 0px;
+    background-image: url("../assets/edit.svg");
+}

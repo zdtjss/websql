@@ -85,6 +85,24 @@
                 <pre style="white-space: pre;">{{ backupData }}</pre>
             </template>
         </el-drawer>
+        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" title="详情/修改" width="1000px"
+            style="height:650px;overflow-y: auto;">
+            <div style="height: 530px;overflow-y: auto;">
+                <el-form :model="rowData" label-width="auto">
+                    <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment" >
+                        <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"  format="YYYY-MM-DD hh:mm:ss" value-format="x" />
+                        <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME'" v-model="rowData[col.dataKey]" type="textarea" />
+                    </el-form-item>
+                </el-form>
+            </div>
+            <template #footer>
+                <div class="dialog-footer">
+                    <el-button :disabled="!canEdit" type="primary" @click="saveData(rowData)">
+                        保存
+                    </el-button>
+                </div>
+            </template>
+        </el-dialog>
     </el-container>
 </template>
 
@@ -96,9 +114,9 @@ import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/comm
 import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, h } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
-import { ElMessage, Eltooltip } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 
@@ -145,6 +163,11 @@ const backupDataTotal = ref(0)
 const backupDataCurrent = ref(0)
 const backupDataSize = ref(10)
 const backupDataDialogVisible = ref(false)
+
+const canEdit = ref(false)
+const rowData = ref({})
+const dataRowIndex = ref()
+const dataDetailsDialogVisible = ref(false)
 
 const backupData = ref("")
 const backupDataDrawerShow = ref(false)
@@ -278,29 +301,31 @@ function exec() {
     exectingSql.value = true
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable ,sql: effiectiveSql, maxLine: maxLine.value } })
         .then((resp) => {
+            canEdit.value = resp.data.data.canEdit
             columns.value = resp.data.data.columns.map((col: any) => {
-                return {
+                const colDef = {
                     key: col.name,
                     title: col.name,
-                    dataKey: col.comment,
+                    dataKey: col.name,
+                    comment: col.comment,
+                    dataType: col.type,
                     width: 150,
                     minWidth: "150px",
                     headerCellRenderer: () => {
-                        return (
-                            <el-tooltip
-                                class="box-item"
-                                effect="dark"
-                                content="Top Left prompts info"
-                                placement="top-start"
-                            >
-                        )
-                    },
+                        return h('div', { class: "el-table-v2__header-cell-text", title: col.comment }, col.name)
+                    }
                  }
+                return colDef
             })
             columns.value.unshift({
                 dataKey: "col-idx",
-                width: 55,
-                fixed: true
+                width: 60,
+                fixed: true,
+                cellRenderer: ({ cellData, rowIndex }) => {
+                    return h('div', {},
+                        [h('div', { class: "el-table-v2__cell-text" }, cellData), h('div', { class: "data-view", onClick:  () => openDataDetails(rowIndex ) })]
+                    )
+                }
             })
             result.value = resp.data.data.data
             result.value.forEach((row: any, idx: number) => {
@@ -317,6 +342,19 @@ function exec() {
             console.log(error);
             exectingSql.value = false
         });
+}
+
+function openDataDetails(rowIndex:number) {
+    debugger
+    console.log(result.value[rowIndex])
+    console.log(columns.value)
+    dataRowIndex.value = rowIndex
+    dataDetailsDialogVisible.value = true
+    rowData.value = result.value[rowIndex]
+}
+
+function saveData(rowData) {
+console.log(rowData)
 }
 
 function extractEffectiveSql(sql: string) {

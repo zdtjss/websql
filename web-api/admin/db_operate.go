@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
@@ -114,7 +115,7 @@ func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 	return columnMap
 }
 
-func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
+func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare(dbutils.SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
 	logutils.PrintErr(err)
@@ -128,9 +129,9 @@ func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) []string {
 	if len(primaryKeys) == 0 {
 		msg := fmt.Sprintf("%s 没有主键", table)
 		log.Println(msg)
-		panic(msg)
+		return nil, errors.New(msg)
 	}
-	return primaryKeys
+	return primaryKeys, nil
 }
 
 func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {

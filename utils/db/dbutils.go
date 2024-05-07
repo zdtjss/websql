@@ -4,6 +4,7 @@ import (
 	"go-web/logutils"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/exp/slices"
 )
 
 func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
@@ -48,4 +49,14 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 		dataMaps = append(dataMaps, row)
 	}
 	return dataMaps
+}
+
+func KeyIdx(keys, columns []string) []int {
+	keyIdx := make([]int, 0)
+	for i := 0; i < len(columns); i++ {
+		if slices.Contains(keys, columns[i]) {
+			keyIdx = append(keyIdx, i)
+		}
+	}
+	return keyIdx
 }

@@ -52,24 +52,39 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		cts, err3 := rows.ColumnTypes()
 		logutils.PanicErr(err3)
 		columnList := make([]Column, len(cts))
+		columnNameList := make([]string, len(cts))
 
 		var realTableName, realSchema = tableName, schema
 		if strings.Contains(tableName, ".") {
 			realTableName = string(tableName[strings.Index(tableName, ".")+1:])
 			realSchema = string(tableName[0:strings.Index(tableName, ".")])
 		}
+		var keyIdx []int
+		var keys []string
 		columnMap := map[string]string{}
 		if IsAlphaNumeric(realTableName) && strings.Index(sqlStr, " from ") == strings.LastIndex(sqlStr, " from ") {
+
 			columnMap = admin.ColumnMap(strings.ToLower(realTableName), strings.ToLower(realSchema), conn)
+
+			tx, _ := conn.Beginx()
+			defer tx.Rollback()
+			var err error
+			keys, err = admin.QueryPrimaryKey(schema, realTableName, tx)
+			logutils.PrintErr(err)
 		}
 
 		for idx, val := range cts {
+			columnNameList = append(columnNameList, val.Name())
 			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName(), Comment: columnMap[val.Name()]}
+		}
+
+		if len(keys) != 0 {
+			keyIdx = dbutils.KeyIdx(keys, columnNameList)
 		}
 
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
 
-		rspData := &TableDataList{Columns: columnList, Data: data}
+		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0}
 
 		utils.WriteJson(w, rspData)
 	}
@@ -180,4 +195,5 @@ type Column struct {
 type TableDataList struct {
 	Columns []Column                 `json:"columns"`
 	Data    []map[string]interface{} `json:"data"`
+	CanEdit bool                     `json:"canEdit"`
 }

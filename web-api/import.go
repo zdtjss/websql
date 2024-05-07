@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-web/logutils"
 	"go-web/utils"
+	dbutils "go-web/utils/db"
 	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
@@ -81,7 +82,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 			if strings.EqualFold(operType, "insert") {
 				insertToDb(schema, table, header, totalValues, tx)
 			} else {
-				updateToDb(schema, table, header, totalValues, tx)
+				UpdateToDb(schema, table, header, totalValues, tx)
 			}
 			count = -1
 		}
@@ -91,7 +92,7 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(operType, "insert") {
 			insertToDb(schema, table, header, totalValues[:count+1], tx)
 		} else {
-			updateToDb(schema, table, header, totalValues[:count+1], tx)
+			UpdateToDb(schema, table, header, totalValues[:count+1], tx)
 		}
 	}
 
@@ -159,14 +160,17 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 }
 
-func updateToDb(schema, table string, columns []string, data [][]string, tx *sqlx.Tx) {
+func UpdateToDb(schema, table string, columns []string, data [][]string, tx *sqlx.Tx) {
 
 	if len(data) == 0 {
 		return
 	}
 
-	keys := admin.QueryPrimaryKey(schema, table, tx)
-	keyIdx := keyIdx(keys, columns)
+	keys, err := admin.QueryPrimaryKey(schema, table, tx)
+
+	logutils.PanicErr(err)
+
+	keyIdx := dbutils.KeyIdx(keys, columns)
 
 	sql := bytes.Buffer{}
 	where := bytes.Buffer{}
@@ -223,14 +227,4 @@ func updateToDb(schema, table string, columns []string, data [][]string, tx *sql
 		logutils.PanicErr(err)
 	}
 
-}
-
-func keyIdx(keys, columns []string) []int {
-	keyIdx := make([]int, 0)
-	for i := 0; i < len(columns); i++ {
-		if slices.Contains(keys, columns[i]) {
-			keyIdx = append(keyIdx, i)
-		}
-	}
-	return keyIdx
 }
