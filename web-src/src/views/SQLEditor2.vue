@@ -32,7 +32,7 @@
             </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
-                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" fixed />
+                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35" fixed />
                 </template>
             </el-auto-resizer>
         </el-footer>
@@ -91,7 +91,7 @@
                 <el-form :model="rowData" label-width="auto">
                     <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment" >
                         <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"  format="YYYY-MM-DD hh:mm:ss" value-format="x" />
-                        <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME'" v-model="rowData[col.dataKey]" type="textarea" />
+                        <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME'" v-model="rowData[col.dataKey]" type="textarea" autosize/>
                     </el-form-item>
                 </el-form>
             </div>
@@ -136,7 +136,7 @@ const props = defineProps<{
     schema: string
 }>()
 
-const maxLine = ref(10)
+const maxLine = ref(15)
 const columns: any = ref([])
 const result: any = ref([])
 const editorView = ref<EditorView>()
@@ -322,7 +322,7 @@ function exec() {
                 fixed: true,
                 cellRenderer: ({ cellData, rowIndex }) => {
                     return h('div', {},
-                        [h('div', { class: "el-table-v2__cell-text" }, cellData), h('div', { class: "data-view", onClick:  () => openDataDetails(rowIndex ) })]
+                        [h('div', { class: "el-table-v2__cell-text", title: cellData }, cellData), h('div', { class: "data-view", onClick: () => openDataDetails(rowIndex) })]
                     )
                 }
             })
