@@ -8,3 +8,10 @@
     bottom: 3px;
     background-image: url("../assets/edit.svg");
 }
+
+.el-tabs__header {
+    margin-bottom: 5px;
+}
+.el-tabs {
+    --el-tabs-header-height: 30px !important;
+}

@@ -25,8 +25,8 @@
             <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
         </el-main>
         <div style="width: 100%; border: 1px solid #9e9e9e30; cursor: row-resize;" @mousedown="resizeResultArea"></div>
-        <el-footer id="result" class="result" :style="{ height: resultDivHeight }">
-            <el-icon @click="toggleResult" style="right: 0px;position: absolute;" :title="toggleResultTitle" :size="22">
+        <el-footer id="result" v-if="showResultArea" class="result" :style="{ height: resultDivHeight }">
+            <el-icon @click="toggleResult" style="right: 0px;position: absolute;cursor: pointer;" :title="toggleResultTitle" :size="22">
                 <ArrowDown v-if="showResult" style="margin-top:15px;" />
                 <ArrowUp v-if="resultHide" />
             </el-icon>
@@ -43,7 +43,7 @@
             width="1000px" style="height:650px;overflow-y: auto;">
             <el-row>
                 <el-form-item label="表名">
-                    <el-input v-model="tableName" style="width: 300px;" />
+                    <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
                 </el-form-item>
                 <el-form-item>
                     <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
@@ -58,7 +58,7 @@
         </el-dialog>
         <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
             style="height:650px;overflow-y: auto;">
-            <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="510">
+            <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="520">
                 <el-table-column type="index" width="50" />
                 <el-table-column prop="exec_time" label="操作时间" width="170" />
                 <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
@@ -88,7 +88,7 @@
         <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" title="详情/修改" width="1000px"
             style="height:650px;overflow-y: auto;">
             <div style="height: 530px;overflow-y: auto;">
-                <el-form :model="rowData" label-width="auto">
+                <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
                     <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment" >
                         <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"  format="YYYY-MM-DD hh:mm:ss" value-format="x" />
                         <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME'" v-model="rowData[col.dataKey]" type="textarea" autosize/>
@@ -144,6 +144,7 @@ const codemirror = ref()
 const exportDialogVisible = ref(false)
 
 const showResult = ref(false)
+const showResultArea = ref(false)
 const resultHide = ref(false)
 const sqlDivHeight = ref("")
 let defaultSqlDivHeight: string
@@ -161,7 +162,7 @@ const tableCreateDialogVisible = ref(false)
 const backupDataList = ref([])
 const backupDataTotal = ref(0)
 const backupDataCurrent = ref(0)
-const backupDataSize = ref(10)
+const backupDataSize = ref(12)
 const backupDataDialogVisible = ref(false)
 
 const canEdit = ref(false)
@@ -173,7 +174,7 @@ const backupDataDrawerShow = ref(false)
 
 onMounted(() => {
     // 默认高度
-    defaultSqlDivHeight = (calHeight() - 65) + "px"
+    defaultSqlDivHeight = (calHeight() - 3) + "px"
     sqlDivHeight.value = defaultSqlDivHeight
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
@@ -335,6 +336,9 @@ function exec() {
             // showResult.value = false
             if (defaultSqlDivHeight === sqlDivHeight.value || resultHide.value) {
                 toggleResult()
+            }
+            if(!showResultArea.value) {
+                showResultArea.value = true
             }
         })
         .catch(function (error) {
@@ -621,7 +625,7 @@ function fmtValForUpdate(val: any) {
 
 .sql_area {
     padding: 0px;
-    margin-top: 10px;
+    margin-top: 5px;
     border-top: dashed 1px gray;
 }
 
@@ -634,8 +638,17 @@ function fmtValForUpdate(val: any) {
     user-select: text;
 }
 
+.el-table-v2__header-row, .el-table-v2__header-wrapper {
+    height: 35px !important;
+}
+
 .el-drawer__header {
     margin-bottom: -20px
+}
+
+.el-button {
+    height: 25px;
+    padding: 8px 10px;
 }
 </style>
 <style lang="less" scoped>

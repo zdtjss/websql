@@ -129,6 +129,7 @@ func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
 	if len(primaryKeys) == 0 {
 		msg := fmt.Sprintf("%s 没有主键", table)
 		log.Println(msg)
+		tx.Rollback()
 		return nil, errors.New(msg)
 	}
 	return primaryKeys, nil
