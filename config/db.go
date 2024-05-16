@@ -21,6 +21,9 @@ func InitMngtDbConn() {
 	if err != nil {
 		panic(err)
 	}
+	if Cfg.DB.DriverName == "sqlite" {
+		sqlxDb.Exec("PRAGMA journal_mode = wal;")
+	}
 	Mngtdb = sqlxDb
 }
 
