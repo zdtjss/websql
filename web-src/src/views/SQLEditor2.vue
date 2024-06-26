@@ -97,7 +97,7 @@
                         <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'" inactive-value="b'0'"/>
                         <el-input
                             v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
-                            v-model="rowData[col.dataKey]" type="textarea" autosize />
+                            v-model="rowData[col.dataKey]" type="textarea" autosize :disabled="tableKeys.includes(col.dataKey)"/>
                     </el-form-item>
                 </el-form>
             </div>
