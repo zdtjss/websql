@@ -26,13 +26,15 @@
         </el-main>
         <div style="width: 100%; border: 1px solid #9e9e9e30; cursor: row-resize;" @mousedown="resizeResultArea"></div>
         <el-footer id="result" v-if="showResultArea" class="result" :style="{ height: resultDivHeight }">
-            <el-icon @click="toggleResult" style="right: 0px;position: absolute;cursor: pointer;" :title="toggleResultTitle" :size="22">
+            <el-icon @click="toggleResult" style="right: 0px;position: absolute;cursor: pointer;"
+                :title="toggleResultTitle" :size="22">
                 <ArrowDown v-if="showResult" style="margin-top:15px;" />
                 <ArrowUp v-if="resultHide" />
             </el-icon>
             <el-auto-resizer>
                 <template #default="{ height, width }">
-                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35" fixed />
+                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35"
+                        fixed />
                 </template>
             </el-auto-resizer>
         </el-footer>
@@ -85,13 +87,17 @@
                 <pre style="white-space: pre;">{{ backupData }}</pre>
             </template>
         </el-drawer>
-        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" title="详情/修改" width="1000px"
-            style="height:650px;overflow-y: auto;">
+        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable + '详情/修改'"
+            width="1000px" style="height:650px;overflow-y: auto;">
             <div style="height: 530px;overflow-y: auto;">
                 <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
-                    <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment" >
-                        <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"  format="YYYY-MM-DD hh:mm:ss" value-format="x" />
-                        <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME'" v-model="rowData[col.dataKey]" type="textarea" autosize/>
+                    <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
+                        <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]"
+                            type="datetime" value-format="YYYY-MM-DD HH:mm:ss" />
+                        <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'" inactive-value="b'0'"/>
+                        <el-input
+                            v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
+                            v-model="rowData[col.dataKey]" type="textarea" autosize />
                     </el-form-item>
                 </el-form>
             </div>
@@ -152,7 +158,7 @@ const resultDivHeight = ref("")
 const toggleResultTitle = ref("")
 
 const exectingSql = ref(false)
-let currentSelectTable = ""
+const currentSelectTable = ref("")
 
 const tableName = ref("")
 const tableCreateDdl = ref("")
@@ -166,7 +172,10 @@ const backupDataSize = ref(12)
 const backupDataDialogVisible = ref(false)
 
 const canEdit = ref(false)
+const tableKeys = ref([])
 const rowData = ref({})
+// 原始的数据 
+let originRowData: any = {}
 const dataDetailsDialogVisible = ref(false)
 
 const backupData = ref("")
@@ -297,11 +306,12 @@ function exec() {
     if (checkSql(effiectiveSql)) {
         return
     }
-    currentSelectTable = extractTableName(sqlExec)
+    currentSelectTable.value = extractTableName(sqlExec)
     exectingSql.value = true
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable ,sql: effiectiveSql, maxLine: maxLine.value } })
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql, maxLine: maxLine.value } })
         .then((resp) => {
             canEdit.value = resp.data.data.canEdit
+            tableKeys.value = resp.data.data.keys
             columns.value = resp.data.data.columns.map((col: any) => {
                 const colDef = {
                     key: col.name,
@@ -314,7 +324,7 @@ function exec() {
                     headerCellRenderer: () => {
                         return h('div', { class: "el-table-v2__header-cell-text", title: col.comment }, col.name)
                     }
-                 }
+                }
                 return colDef
             })
             columns.value.unshift({
@@ -337,7 +347,7 @@ function exec() {
             if (defaultSqlDivHeight === sqlDivHeight.value || resultHide.value) {
                 toggleResult()
             }
-            if(!showResultArea.value) {
+            if (!showResultArea.value) {
                 showResultArea.value = true
             }
         })
@@ -347,13 +357,44 @@ function exec() {
         });
 }
 
-function openDataDetails(rowIndex:number) {
+function openDataDetails(rowIndex: number) {
     dataDetailsDialogVisible.value = true
     rowData.value = result.value[rowIndex]
+    originRowData = JSON.parse(JSON.stringify(result.value[rowIndex]))
 }
 
-function saveData(rowData) {
-console.log(rowData)
+function saveData(rowData: any) {
+    let isChanged: boolean = false
+
+    let effiectiveSql = "update " + currentSelectTable.value + " set "
+
+    for (let key in originRowData) {
+        if (originRowData[key] != rowData[key]) {
+            isChanged = true
+            effiectiveSql += " " + key + " = " + fmtValForUpdate(rowData[key])
+        }
+    }
+    if (!isChanged && canEdit.value) {
+        ElMessage({ message: "没有被修改的数据", type: "warning" })
+        return
+    }
+    effiectiveSql += " where "
+
+    for (let key in tableKeys.value) {
+        effiectiveSql += tableKeys.value[key] + " = " + fmtValForUpdate(originRowData[tableKeys.value[key]])
+    }
+
+    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql } })
+        .then((resp) => {
+            if (!resp.data.data.msg) {
+                dataDetailsDialogVisible.value = false
+            }
+            const respConlumn = resp.data.data.columns[0].name
+            const respData = resp.data.data.data[0]
+            ElMessage({ message: resp.data.data.msg ? resp.data.data.msg : " 修改了 " + respData[respConlumn] + " 条数据", type: "warning"})
+        }).catch(function (error) {
+            console.log(error);
+        });
 }
 
 function extractEffectiveSql(sql: string) {
@@ -435,7 +476,7 @@ function exportCurrentToXlsx() {
             delete row["col-idx"]
             return row
         }),
-        filename: currentSelectTable,
+        filename: currentSelectTable.value,
         autoWidth: false
     }
     excel.exportJsonToExcel(obj)
@@ -464,7 +505,7 @@ function exportCurrentToSqlInsert() {
     }
     let sqlArr = []
     const columnArr: any = []
-    let sql = `insert into ${currentSelectTable} (`
+    let sql = `insert into ${currentSelectTable.value} (`
     for (let i = 1; i < columns.value.length; i++) {
         columnArr.push(columns.value[i]["key"])
     }
@@ -491,21 +532,22 @@ function exportCurrentToSqlUpdate() {
         return
     }
     let sqlArr = []
-    let sql = `update ${currentSelectTable} set `
+    let sql = `update ${currentSelectTable.value} set `
     for (let j = 0; j < result.value.length; j++) {
         let rowVal = []
         for (let i = 2; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
-            if (i === columns.value.length - 1) {
-                rowVal.push((column + fmtValForUpdate(val)) + " where " + columns.value[1]["key"] + fmtValForUpdate(result.value[j][columns.value[1]["key"]]))
-            } else {
-                rowVal.push(column + fmtValForUpdate(val))
-            }
+            rowVal.push(column + " = " + fmtValForUpdate(val))
         }
-        sqlArr.push(sql + rowVal.join(", "))
-    }
 
+        let conditionVal = []
+        for (let i = 0; i < tableKeys.value.length; i++) {
+            conditionVal.push(tableKeys.value[i] + " = " + fmtValForUpdate(result.value[j][tableKeys.value[i]]))
+        }
+
+        sqlArr.push(sql + rowVal.join(", ") + " where " + conditionVal.join(" and "))
+    }
 
     copyToClipboard(sqlArr.length > 0 ? format(sqlArr.join(";\n") + ";", { language: getSqlLang() }) : "",
         () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
@@ -604,15 +646,15 @@ function fmtValForInsert(val: any) {
 
 function fmtValForUpdate(val: any) {
     if (val === null) {
-        return " = null"
-    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
+        return "null"
+    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "'") {
         return val
     } else if (typeof val === "string" && val.length > 2 && val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
-        return " = " + val.substring(2, val.length)
+        return val.substring(2, val.length)
     } else if (typeof val === "string") {
-        return " = '" + val + "'"
+        return "'" + val + "'"
     }
-    return " = " + val
+    return val
 }
 
 </script>
@@ -638,7 +680,8 @@ function fmtValForUpdate(val: any) {
     user-select: text;
 }
 
-.el-table-v2__header-row, .el-table-v2__header-wrapper {
+.el-table-v2__header-row,
+.el-table-v2__header-wrapper {
     height: 35px !important;
 }
 

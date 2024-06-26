@@ -48,7 +48,10 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			params = append(params, maxLineI)
 		}
 		rows, err2 := conn.Queryx(sqlStr, params...)
-		logutils.PanicErr(err2)
+		if err2 != nil {
+			defer rows.Close()
+			logutils.PanicErr(err2)
+		}
 		cts, err3 := rows.ColumnTypes()
 		logutils.PanicErr(err3)
 		columnList := make([]Column, len(cts))
@@ -84,7 +87,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
 
-		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0}
+		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
 		utils.WriteJson(w, rspData)
 	}
@@ -196,4 +199,5 @@ type TableDataList struct {
 	Columns []Column                 `json:"columns"`
 	Data    []map[string]interface{} `json:"data"`
 	CanEdit bool                     `json:"canEdit"`
+	Keys    []string                 `json:"keys"`
 }
