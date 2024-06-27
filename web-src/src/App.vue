@@ -45,7 +45,7 @@
         <el-tab-pane v-if="isRemote" label="角色" name="role">
           <el-table :data="roleList" :max-height="450" style="width: 100%;overflow-y: auto;"
             @cell-dblclick="roleDblClick">
-            <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true">
+            <el-table-column prop="name" label="角色名" :show-overflow-tooltip="true" width="150">
               <template #default="scope">
                 <el-input v-show="scope.row.editable" v-model="scope.row.name" />
                 <span v-show="!scope.row.editable">{{ scope.row.name }}</span>

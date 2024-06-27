@@ -12,15 +12,13 @@ http.interceptors.request.use((config) => {
     return config
 });
 
-http.interceptors.response.use(function (response) {
-    return response;
-}, function (error) {
-    if (error.response && error.response.data) {
-        ElMessage.error(error.response.data.msg)
-    } else {
-        ElMessage.error(error.message)
-    }
-    return Promise.reject(error);
-});
+http.interceptors.response.use((response) => response, (error) => {
+        if (error.response && error.response.data) {
+            ElMessage.error(error.response.data.msg)
+        } else {
+            ElMessage.error(error.message)
+        }
+        return Promise.reject(error);
+    });
 
 export default http
