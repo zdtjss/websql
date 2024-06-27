@@ -22,7 +22,12 @@ func InitMngtDbConn() {
 		panic(err)
 	}
 	if Cfg.DB.DriverName == "sqlite" {
-		sqlxDb.Exec("PRAGMA journal_mode = wal;")
+		// https://pkg.go.dev/modernc.org/sqlite#section-readme
+		// Q: How can I write to a database concurrently without getting the database is locked error (or SQLITE_BUSY)?
+		// A: You can't. The C sqlite implementation does not allow concurrent writes, and this libary does not modify that behaviour.
+		//	  You can, however, use DB.SetMaxOpenConns(1) so that only 1 connection is ever used by the DB, allowing concurrent access to DB without making the writes concurrent.
+		//	  More information on issues #65 and #106.
+		sqlxDb.SetMaxOpenConns(1)
 	}
 	Mngtdb = sqlxDb
 }
