@@ -103,7 +103,7 @@
             </div>
             <template #footer>
                 <div class="dialog-footer">
-                    <el-button v-if="canEdit" type="primary" @click="saveData(rowData)">
+                    <el-button v-if="canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
                         保存
                     </el-button>
                     <el-button  v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
@@ -180,6 +180,7 @@ const rowData:any = ref({})
 // 原始的数据 
 let originRowData: any = {}
 const dataDetailsDialogVisible = ref(false)
+const onDataSaving = ref(false)
 
 const backupData = ref("")
 const backupDataDrawerShow = ref(false)
@@ -367,34 +368,29 @@ function openDataDetails(rowIndex: number) {
 
 function saveData(rowData: any) {
 
-    let isChanged: boolean = false
-
     let effiectiveSql = "update " + currentSelectTable.value + " set "
 
-    for (let key in originRowData) {
-        if (originRowData[key] != rowData[key]) {
-            isChanged = true
-            effiectiveSql += " " + key + " = " + fmtValForUpdate(rowData[key])
-        }
-    }
-    if (!isChanged && canEdit.value) {
-        ElMessage({ message: "没有被修改的数据", type: "warning" })
+    const updateColumnSets = Object.keys(originRowData).filter((key) => originRowData[key] != rowData[key]).map((key) => key + " = " + fmtValForUpdate(rowData[key]))
+
+    if (updateColumnSets.length === 0 && canEdit.value) {
+        ElMessage({ message: "数据未修改", type: "warning" })
         return
     }
-    effiectiveSql += " where "
 
-    for (let key in tableKeys.value) {
-        effiectiveSql += tableKeys.value[key] + " = " + fmtValForUpdate(originRowData[tableKeys.value[key]])
-    }
+    effiectiveSql += updateColumnSets.join(", ") + " where "
+    effiectiveSql += tableKeys.value.map((key: string) => key + " = " + fmtValForUpdate(originRowData[key])).join(" and ")
+
+    onDataSaving.value = true
 
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql } })
         .then((resp) => {
+            onDataSaving.value = false
             if (!resp.data.data.msg) {
                 dataDetailsDialogVisible.value = false
             }
             const respConlumn = resp.data.data.columns[0].name
             const respData = resp.data.data.data[0]
-            ElMessage({ message: resp.data.data.msg ? resp.data.data.msg : " 修改了 " + respData[respConlumn] + " 条数据", type: "warning"})
+            ElMessage({ message: resp.data.data.msg ? resp.data.data.msg : " 修改了 " + respData[respConlumn] + " 条数据", type: "warning" })
         }).catch((error) => {
             console.log(error);
         });
