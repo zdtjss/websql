@@ -87,7 +87,7 @@
                 <pre style="white-space: pre;">{{ backupData }}</pre>
             </template>
         </el-drawer>
-        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable + '详情/修改'"
+        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable"
             width="1000px" style="height:650px;overflow-y: auto;">
             <div style="height: 530px;overflow-y: auto;">
                 <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
@@ -103,8 +103,11 @@
             </div>
             <template #footer>
                 <div class="dialog-footer">
-                    <el-button :disabled="!canEdit" type="primary" @click="saveData(rowData)">
+                    <el-button v-if="canEdit" type="primary" @click="saveData(rowData)">
                         保存
+                    </el-button>
+                    <el-button  v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
+                        关闭
                     </el-button>
                 </div>
             </template>
@@ -172,8 +175,8 @@ const backupDataSize = ref(12)
 const backupDataDialogVisible = ref(false)
 
 const canEdit = ref(false)
-const tableKeys = ref([])
-const rowData = ref({})
+const tableKeys = ref([] as string[])
+const rowData:any = ref({})
 // 原始的数据 
 let originRowData: any = {}
 const dataDetailsDialogVisible = ref(false)
@@ -311,7 +314,7 @@ function exec() {
     http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql, maxLine: maxLine.value } })
         .then((resp) => {
             canEdit.value = resp.data.data.canEdit
-            tableKeys.value = resp.data.data.keys
+            tableKeys.value = resp.data.data.keys || []
             columns.value = resp.data.data.columns.map((col: any) => {
                 const colDef = {
                     key: col.name,
@@ -331,7 +334,7 @@ function exec() {
                 dataKey: "col-idx",
                 width: 60,
                 fixed: true,
-                cellRenderer: ({ cellData, rowIndex }) => {
+                cellRenderer: ({ cellData, rowIndex }: { cellData: any, rowIndex: number }) => {
                     return h('div', {},
                         [h('div', { class: "el-table-v2__cell-text", title: cellData }, cellData), h('div', { class: "data-view", onClick: () => openDataDetails(rowIndex) })]
                     )
@@ -350,8 +353,7 @@ function exec() {
             if (!showResultArea.value) {
                 showResultArea.value = true
             }
-        })
-        .catch(function (error) {
+        }).catch((error) => {
             console.log(error);
             exectingSql.value = false
         });
@@ -364,6 +366,7 @@ function openDataDetails(rowIndex: number) {
 }
 
 function saveData(rowData: any) {
+
     let isChanged: boolean = false
 
     let effiectiveSql = "update " + currentSelectTable.value + " set "
@@ -392,7 +395,7 @@ function saveData(rowData: any) {
             const respConlumn = resp.data.data.columns[0].name
             const respData = resp.data.data.data[0]
             ElMessage({ message: resp.data.data.msg ? resp.data.data.msg : " 修改了 " + respData[respConlumn] + " 条数据", type: "warning"})
-        }).catch(function (error) {
+        }).catch((error) => {
             console.log(error);
         });
 }
@@ -581,7 +584,7 @@ function showCreateScript() {
         .then((resp) => {
             const data = resp.data.data.data[0]
             tableCreateDdl.value = hljs.highlight(data[Object.keys(data)[0].trim()], { language: 'sql' }).value
-        }).catch(function (error) {
+        }).catch((error) => {
             console.log(error);
         });
 }

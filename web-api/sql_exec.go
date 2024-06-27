@@ -55,7 +55,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		cts, err3 := rows.ColumnTypes()
 		logutils.PanicErr(err3)
 		columnList := make([]Column, len(cts))
-		columnNameList := make([]string, len(cts))
+		columnNameList := make([]string, 0)
 
 		var realTableName, realSchema = tableName, schema
 		if strings.Contains(tableName, ".") {
