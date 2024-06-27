@@ -48,8 +48,8 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 			params = append(params, maxLineI)
 		}
 		rows, err2 := conn.Queryx(sqlStr, params...)
+
 		if err2 != nil {
-			defer rows.Close()
 			logutils.PanicErr(err2)
 		}
 		cts, err3 := rows.ColumnTypes()
