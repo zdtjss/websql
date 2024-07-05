@@ -370,7 +370,7 @@ function saveData(rowData: any) {
 
     let effiectiveSql = "update " + currentSelectTable.value + " set "
 
-    const updateColumnSets = Object.keys(originRowData).filter((key) => originRowData[key] != rowData[key]).map((key) => key + " = " + fmtValForUpdate(rowData[key]))
+    const updateColumnSets = Object.keys(originRowData).filter((key) => originRowData[key] != rowData[key]).map((key) => key + " = " + fmtVal(rowData[key]))
 
     if (updateColumnSets.length === 0 && canEdit.value) {
         ElMessage({ message: "数据未修改", type: "warning" })
@@ -378,7 +378,7 @@ function saveData(rowData: any) {
     }
 
     effiectiveSql += updateColumnSets.join(", ") + " where "
-    effiectiveSql += tableKeys.value.map((key: string) => key + " = " + fmtValForUpdate(originRowData[key])).join(" and ")
+    effiectiveSql += tableKeys.value.map((key: string) => key + " = " + fmtVal(originRowData[key])).join(" and ")
 
     onDataSaving.value = true
 
@@ -513,7 +513,7 @@ function exportCurrentToSqlInsert() {
         let valueArr = []
         for (let i = 1; i < columns.value.length; i++) {
             let val = result.value[j][columns.value[i]["key"]]
-            rowVal.push(fmtValForInsert(val))
+            rowVal.push(fmtVal(val))
         }
         valueArr.push(rowVal.join(","))
         sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
@@ -537,12 +537,12 @@ function exportCurrentToSqlUpdate() {
         for (let i = 2; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
-            rowVal.push(column + " = " + fmtValForUpdate(val))
+            rowVal.push(column + " = " + fmtVal(val))
         }
 
         let conditionVal = []
         for (let i = 0; i < tableKeys.value.length; i++) {
-            conditionVal.push(tableKeys.value[i] + " = " + fmtValForUpdate(result.value[j][tableKeys.value[i]]))
+            conditionVal.push(tableKeys.value[i] + " = " + fmtVal(result.value[j][tableKeys.value[i]]))
         }
 
         sqlArr.push(sql + rowVal.join(", ") + " where " + conditionVal.join(" and "))
@@ -630,20 +630,7 @@ function calHeight() {
     return document.body.scrollHeight - 100
 }
 
-function fmtValForInsert(val: any) {
-    if (val === null) {
-        return "null"
-    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "''") {
-        return val
-    } else if (typeof val === "string" && val.length > 2 && val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
-        return val.substring(2)
-    } else if (typeof val === "string") {
-        return "'" + val + "'"
-    }
-    return val
-}
-
-function fmtValForUpdate(val: any) {
+function fmtVal(val: any) {
     if (val === null) {
         return "null"
     } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "'") {
