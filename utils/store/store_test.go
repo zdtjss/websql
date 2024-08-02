@@ -2,12 +2,13 @@ package store
 
 import (
 	"fmt"
+	"go-web/config"
 	"testing"
 )
 
 func TestGetItem(t *testing.T) {
 
-	Add("abc", UserPower{UserId: "1"})
+	Add("abc", UserPower{UserId: config.AdminId})
 
 	var userPower UserPower
 
@@ -18,7 +19,7 @@ func TestGetItem(t *testing.T) {
 
 func TestGetItem2(t *testing.T) {
 
-	setItem("abc", UserPower{UserId: "1"})
+	setItem("abc", UserPower{UserId: config.AdminId})
 
 	var userPower = new(UserPower)
 

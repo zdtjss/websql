@@ -19,13 +19,7 @@ create table if not exists t_role (
 	name varchar(64)
 );
 
-insert into t_role (
-	id,
-	name
-) values (
-	'1',
-	'admin'
-);
+insert into t_role (id, name) values ('825683877266722816', 'admin');
 
 create table if not exists t_tree (
 	id varchar(36) primary key,
@@ -41,20 +35,8 @@ create table if not exists t_user (
 	bio varchar(512)
 );
 
--- 管理员id一定是 1
-insert into t_user (
-	id,
-	login_name,
-	name,
-	pwd,
-	bio
-) values (
-	'1',
-	'admin',
-	'管理员',
-	'7e2e1f2e1eb71a6f7915a96201237ff0',
-	''
-);
+-- 管理员id一定是 825683877312860160 密码是 1
+INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860160', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
 
 create table if not exists t_user_role (
 	id varchar(36) primary key,
@@ -62,16 +44,7 @@ create table if not exists t_user_role (
 	role_id varchar(36)
 );
 
-insert into t_user_role (
-	id,
-	user_id,
-	role_id
-) values (
-	'1',
-	'1',
-	'1'
-);
-
+INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('825683877367386112', '825683877312860160', '825683877266722816');
 
 create table if not exists t_backup (
 	id varchar(36) primary key,
