@@ -11,22 +11,22 @@
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore"
   },
   "dependencies": {
-    "vue": "^3.3.4",
-    "element-plus": "^2.6.3",
+    "vue": "^3.4.38",
+    "element-plus": "^2.8.0",
     "@element-plus/icons-vue": "^2.3.1",
-    "axios": "^1.6.2",
+    "axios": "^1.7.0",
     "codemirror": "^6.0.1",
-    "sql-formatter": "^15.0.2",
-    "@codemirror/lang-sql": "^6.5.4",
+    "sql-formatter": "^15.4.0",
+    "@codemirror/lang-sql": "^6.7.1",
     "@codemirror/theme-one-dark": "^6.1.2",
-    "@passwordless-id/webauthn": "^1.6.1",
+    "@passwordless-id/webauthn": "^2.1.0",
     "xlsx": "^0.18.5",
-    "highlight.js":"^11.9.0"
+    "highlight.js":"^11.10.0"
   },
   "devDependencies": {
-    "@rushstack/eslint-patch": "^1.2.0",
-    "@types/node": "^20.10.4",
-    "@vitejs/plugin-vue": "^4.5.2",
+    "@rushstack/eslint-patch": "^1.10.0",
+    "@types/node": "^22.5.0",
+    "@vitejs/plugin-vue": "^5.1.2",
     "@vue/eslint-config-prettier": "^7.0.0",
     "@vue/eslint-config-typescript": "^11.0.0",
     "@vue/tsconfig": "^0.5.0",
@@ -35,11 +35,11 @@
     "npm-run-all": "^4.1.5",
     "prettier": "^3.0.3",
     "typescript": "~5.2.2",
-    "unplugin-auto-import": "^0.17.2",
-    "unplugin-vue-components": "^0.26.0",
+    "unplugin-auto-import": "^0.18.2",
+    "unplugin-vue-components": "^0.27.0",
     "unplugin-icons": "^0.18.1",
     "vite": "^5.2.8",
-    "vue-tsc": "^1.8.25",
+    "vue-tsc": "^2.0.29",
     "less": "^4.1.3"
   }
 }
