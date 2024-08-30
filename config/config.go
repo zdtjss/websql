@@ -52,4 +52,5 @@ type Config struct {
 		Password string `json:"password"`
 		DB       int    `json:"db"`
 	} `json:"redis"`
+	OutterUser string `json:"outterUser"`
 }

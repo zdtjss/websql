@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -282,6 +284,36 @@ func findByBio(bioKey string) *User {
 	var users []User
 	err := config.Mngtdb.Select(&users, "select id,login_name,name from t_user where bio = ?", Md5sum(bioKey))
 	logutils.PanicErr(err)
+	if len(users) == 0 {
+		return nil
+	}
+	return &users[0]
+}
+
+func findByToken(token string) *User {
+	var users []User
+
+	cfg := config.Cfg
+	req, err := http.NewRequest("GET", cfg.OutterUser, nil)
+	logutils.PanicErr(err)
+	req.Header.Add("Authorization", token)
+	resp, err := http.DefaultClient.Do(req)
+	logutils.PanicErr(err)
+	body, err := io.ReadAll(resp.Body)
+	logutils.PanicErr(err)
+	defer resp.Body.Close()
+
+	var outterUser struct {
+		Code uint16         `json:"code"`
+		Msg  string         `json:"msg"`
+		Data map[string]any `json:"data"`
+	}
+	err = json.Unmarshal(body, &outterUser)
+	logutils.PanicErr(err)
+
+	err = config.Mngtdb.Select(&users, "select id,login_name,name from t_user where login_name = ?", outterUser.Data["workNum"])
+	logutils.PanicErr(err)
+
 	if len(users) == 0 {
 		return nil
 	}

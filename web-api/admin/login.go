@@ -30,6 +30,11 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		if user == nil {
 			logutils.PanicErr(errors.New("无效的指纹/面容信息"))
 		}
+	case "token":
+		user = findByToken(key)
+		if user == nil {
+			logutils.PanicErr(errors.New("传入的登录信息无效"))
+		}
 	}
 	power := findUserPower(user.Id)
 	token := Md5sum(utils.RandomStr())
@@ -37,7 +42,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
 	store.Add(formatStoreKey(token+"_user"), user)
-	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1"})
+	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1", "authentication": token})
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {

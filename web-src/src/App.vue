@@ -503,12 +503,40 @@ async function register() {
 }
 
 function toLogin() {
-  const credentialId = window.localStorage.getItem(bioLocalStorageKey)
-  if (credentialId && client.isAvailable()) {
-    loginBio()
+  const searchParams = new URLSearchParams(window.location.search);
+  const authorization = searchParams.get('authorization');
+  if (authorization) {
+    loginByToken(authorization)
   } else {
-    loginDialogVisible.value = true
+    const credentialId = window.localStorage.getItem(bioLocalStorageKey)
+    if (credentialId && client.isAvailable()) {
+      loginBio()
+    } else {
+      loginDialogVisible.value = true
+    }
   }
+}
+
+function loginByToken(token) {
+  const params = new URLSearchParams();
+  params.append("key", token);
+  params.append("loginType", "token");
+  http.post("/login", params).then((resp) => {
+    if (resp.data.code == 200) {
+      currentUser.value = resp.data.data
+      sessionStorage.setItem("authentication", resp.data.data["authentication"])
+      refreshTree()
+      loginForm.value = {}
+      logining.value = false
+      loginSucc.value = true
+      loginDialogVisible.value = false
+      ElMessage("登陆成功")
+    } else {
+      ElMessage(data.msg)
+    }
+  }).catch((error) => {
+    ElMessage(error)
+  });
 }
 
 function login() {
@@ -521,9 +549,9 @@ function login() {
       params.append("loginType", "pwd");
       http.post("/login", params)
         .then((resp) => {
-          refreshTree()
           currentUser.value = resp.data.data
           sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+          refreshTree()
           loginForm.value = {}
           logining.value = false
           loginSucc.value = true
@@ -546,9 +574,9 @@ async function loginBio() {
       if (!credentialId) {
         window.localStorage.setItem(bioLocalStorageKey, res.credentialId)
       }
-      refreshTree()
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+      refreshTree()
       loginForm.value = {}
       logining.value = false
       loginSucc.value = true
