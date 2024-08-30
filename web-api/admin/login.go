@@ -42,7 +42,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
 	store.Add(formatStoreKey(token+"_user"), user)
-	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id == "1", "authentication": token})
+	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id ==  config.AdminId, "authentication": token})
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +70,7 @@ func CheckAdminPower(r *http.Request) {
 	}
 	authorization := r.Header.Get("Authorization")
 	var userPower = GetUserPower(authorization)
-	if userPower.UserId != "1" {
+	if userPower.UserId != config.AdminId {
 		logutils.PanicErr(errors.New("无权访问"))
 	}
 }

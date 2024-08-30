@@ -7,7 +7,11 @@ import (
 	"path/filepath"
 )
 
-var Cfg *Config
+var (
+	Cfg *Config
+	// 管理员用户id
+	AdminId string = "825683877312860160"
+)
 
 // true：远程模式，有严格的权限管理；false 本地模式，没有权限管理
 var IsRemote bool

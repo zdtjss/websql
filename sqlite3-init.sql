@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS t_role (
 	name TEXT
 );
 
-insert into t_role (id, name) values ('1', 'admin');
+insert into t_role (id, name) values ('825683877266722816', 'admin');
 
 CREATE TABLE IF NOT EXISTS t_tree (
 	id TEXT PRIMARY KEY,
@@ -36,17 +36,16 @@ CREATE TABLE IF NOT EXISTS t_user (
 	bio TEXT
 );
 
--- 管理员id一定是 1 
-INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('1', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
+-- 管理员id一定是 825683877312860160 密码是 1
+INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860160', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
 
 CREATE TABLE IF NOT EXISTS t_user_role (
-	id BIGINT PRIMARY KEY,
-	user_id BIGINT,
-	role_id BIGINT
+	id TEXT PRIMARY KEY,
+	user_id TEXT,
+	role_id TEXT
 );
 
-INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('1', '1', '1');
-
+INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('825683877367386112', '825683877312860160', '825683877266722816');
 
 create table if not exists t_backup (
 	id text  primary key,

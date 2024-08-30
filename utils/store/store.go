@@ -6,22 +6,15 @@ import (
 	"go-web/utils"
 	"time"
 
-	"github.com/dablelv/go-huge-util/conv"
+	"github.com/duke-git/lancet/v2/convertor"
 )
 
 var store = make(map[string]any, 10)
 
 func Add(key string, val any) {
 	if RDB != nil {
-		var fval string
-		data, err := utils.ToJsonString2(val)
-		if err != nil && val != nil {
-			fval, err = conv.ToStringE(val)
-			logutils.PrintErr(err)
-		} else if err == nil {
-			fval = string(data)
-		}
-		err = RDB.Set(ctx, key, fval, 30*time.Minute).Err()
+		fval := convertor.ToString(val)
+		err := RDB.Set(ctx, key, fval, 30*time.Minute).Err()
 		logutils.PanicErrf("key:%s 缓存失败", err, key)
 	} else {
 		store[key] = val
