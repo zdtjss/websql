@@ -5,8 +5,12 @@
   },
   "redis": {
     "addr": "",
-    "password":"",
+    "password": "",
     "db": 0
   },
-  "outterUser":"http://localhost:8081/nway-system/login/getLoginUser"
+  "https": {
+    "organization": "Nway",
+    "commonName": "nway.shdm.com"
+  },
+  "outterUser": "http://localhost:8081/nway-system/login/getLoginUser"
 }
