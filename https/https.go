@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"go-web/config"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -101,7 +102,8 @@ func generateKeyPair(validFor time.Duration) (rawCert, rawKey []byte, err error)
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"Nway"},
+			Organization: []string{config.Cfg.Https.Organization},
+			CommonName:   config.Cfg.Https.CommonName,
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,

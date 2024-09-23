@@ -56,5 +56,9 @@ type Config struct {
 		Password string `json:"password"`
 		DB       int    `json:"db"`
 	} `json:"redis"`
+	Https struct {
+		Organization string `json:"organization"`
+		CommonName   string `json:"commonName"`
+	}
 	OutterUser string `json:"outterUser"`
 }
