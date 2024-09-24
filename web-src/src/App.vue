@@ -271,7 +271,7 @@
 
 <script setup>
 import { ref, reactive, shallowRef, onMounted, computed } from 'vue'
-import { client, parsers } from '@passwordless-id/webauthn'
+import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
@@ -292,8 +292,9 @@ const treeDivWidth = ref("260px")
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
 const currentUser = ref({
-  isAdmin: false,
-  name: ""
+  id: "",
+  name: "",
+  isAdmin: false
 })
 const loginName = ref()
 const loginFormRef = ref()
@@ -483,16 +484,21 @@ async function register() {
     })
     return;
   }
-  let res = await client.register(currentUser.value.name, window.crypto.randomUUID())
+  
+  let registration  = await client.register({
+    challenge: server.randomChallenge(),
+    user: { id: currentUser.value.id, name: currentUser.value.name }
+  })
 
-  const parsed = parsers.parseRegistration(res)
+  const parsed = parsers.parseRegistration(registration)
+  console.log(JSON.stringify(parsed))
 
-  window.localStorage.setItem(bioLocalStorageKey, parsed.credential.id)
+  window.localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
   const params = new URLSearchParams();
   params.append("bioKey", parsed.credential.id);
   http.post("/saveUserBio", params).then((resp) => {
-    if (data.code == 200) {
+    if (resp.data.code == 200) {
       ElMessage("注册成功")
     } else {
       ElMessage(data.msg)
@@ -563,17 +569,21 @@ function login() {
 }
 
 async function loginBio() {
-  const credentialId = window.localStorage.getItem(bioLocalStorageKey)
+  
+  const credential = window.localStorage.getItem(bioLocalStorageKey)
   // 第一个参数指定值，可以简化用户选择的操作
-  let res = await client.authenticate(credentialId == null ? [] : [credentialId], window.crypto.randomUUID())
+  let authentication = await client.authenticate({
+    allowCredentials: credential == null ? [] : [JSON.parse(credential)],
+    challenge: server.randomChallenge()
+  })
+  
+  const authenticationParsed = await parsers.parseAuthentication(authentication);
+
   const params = new URLSearchParams();
-  params.append("key", res.credentialId);
+  params.append("key", authenticationParsed.credentialId);
   params.append("loginType", "bio");
   http.post("/login", params).then((resp) => {
     if (resp.data.code == 200) {
-      if (!credentialId) {
-        window.localStorage.setItem(bioLocalStorageKey, res.credentialId)
-      }
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.headers.get("authentication"))
       refreshTree()
@@ -584,6 +594,7 @@ async function loginBio() {
       ElMessage("登陆成功")
     } else {
       ElMessage(data.msg)
+      loginDialogVisible.value = true
     }
   }).catch((error) => {
     ElMessage(error)
