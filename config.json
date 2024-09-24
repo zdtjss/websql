@@ -1,4 +1,5 @@
 {
+  "isRemote": true,
   "db": {
     "type": "sqlite",
     "dsn": "./nway.sqlite3.db"
@@ -9,8 +10,13 @@
     "db": 0
   },
   "https": {
+    "enable": true,
     "organization": "Nway",
-    "commonName": "nway.shdm.com"
+    "commonName": "websql.nway.com"
   },
-  "outterUser": "http://localhost:8081/nway-system/login/getLoginUser"
+  "outterUser": "http://localhost:8081/nway-system/login/getLoginUser",
+  "allowedIP": [
+    "[::1]",
+    "127.0.0.1"
+  ]
 }

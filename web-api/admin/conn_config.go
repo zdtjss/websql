@@ -154,7 +154,7 @@ func getNextType(curType string) string {
 
 func GetConn(id string, authorization string) *sqlx.DB {
 	userPower := GetUserPower(authorization)
-	if config.IsRemote && !slices.Contains(userPower.Power, id) {
+	if config.Cfg.IsRemote && !slices.Contains(userPower.Power, id) {
 		logutils.PanicErr(errors.New("无权访问"))
 	}
 	cfgList := []ConnCfg{}

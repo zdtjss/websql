@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"go-web/logutils"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -13,12 +14,11 @@ var (
 	AdminId string = "825683877312860160"
 )
 
-// true：远程模式，有严格的权限管理；false 本地模式，没有权限管理
-var IsRemote bool
-
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")
+	log.Printf("使用配置文件 %s", configFile)
 	fileData, err := os.ReadFile(configFile)
+	logutils.PanicErr(err)
 	var config Config
 	err = json.Unmarshal(fileData, &config)
 	logutils.PanicErr(err)
@@ -47,7 +47,9 @@ func FindFile(fileName string) string {
 }
 
 type Config struct {
-	DB struct {
+	// true：远程模式，有严格的权限管理；false 本地模式，没有权限管理
+	IsRemote bool `json:"isRemote"`
+	DB       struct {
 		DriverName     string `json:"type"`
 		DataSourceName string `json:"dsn"`
 	} `json:"db"`
@@ -59,6 +61,7 @@ type Config struct {
 	Https struct {
 		Organization string `json:"organization"`
 		CommonName   string `json:"commonName"`
-	}
-	OutterUser string `json:"outterUser"`
+	} `json:"https"`
+	OutterUser string   `json:"outterUser"`
+	AllowedIP  []string `json:"allowedIP"`
 }

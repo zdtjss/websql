@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -59,7 +60,7 @@ func MainRegister(router *mux.Router) {
 	router.HandleFunc("/showBackupData", admin.ShowBackupData).Methods("GET")
 
 	router.HandleFunc("/sysMode", func(w http.ResponseWriter, r *http.Request) {
-		utils.WriteJson(w, map[string]bool{"isRemote": config.IsRemote})
+		utils.WriteJson(w, map[string]bool{"isRemote": config.Cfg.IsRemote})
 	}).Methods("GET")
 
 	router.HandleFunc("/healthCheck", func(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +146,9 @@ func panicMiddleware(next http.Handler) http.Handler {
 // 应该是第一个引入
 func hostCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !config.IsRemote && !(strings.HasPrefix(r.RemoteAddr, "[::1]:") || strings.HasPrefix(r.RemoteAddr, "127.0.0.1:")) {
+		if !config.Cfg.IsRemote && !slices.ContainsFunc(config.Cfg.AllowedIP, func(allowedIp string) bool {
+			return strings.HasPrefix(r.RemoteAddr, allowedIp+":")
+		}) {
 			w.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
 			w.Header().Set("content-type", "text/html; charset=utf-8")
 			log.Println("非法IP:" + r.RemoteAddr)

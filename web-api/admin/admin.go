@@ -145,7 +145,7 @@ func SaveUserBio(w http.ResponseWriter, r *http.Request) {
 	stmt, _ := config.Mngtdb.Prepare("update t_user set bio = ? where id = ?")
 	_, err := stmt.Exec(Md5sum(bioKey), user.Id)
 	logutils.PanicErrf("保存用户失败", err)
-	utils.WriteJson(w, "")
+	utils.WriteJson(w, "设置成功")
 }
 
 func checkUserExist(user *User, tx *sqlx.Tx) {
@@ -334,7 +334,7 @@ func findUserPower(userId string) []string {
 
 func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
 	// 非远程模式下不做权限管理
-	if !config.IsRemote {
+	if !config.Cfg.IsRemote {
 		return
 	}
 	powerCount := len(userPower.Power)

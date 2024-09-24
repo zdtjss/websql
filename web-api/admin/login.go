@@ -42,7 +42,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
 	store.Add(formatStoreKey(token+"_user"), user)
-	utils.WriteJson(w, map[string]any{"name": user.Name, "isAdmin": user.Id ==  config.AdminId, "authentication": token})
+	utils.WriteJson(w, map[string]any{"id": user.Id, "name": user.Name, "isAdmin": user.Id == config.AdminId, "authentication": token})
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +65,7 @@ func GetUser(authorization string) *User {
 
 func CheckAdminPower(r *http.Request) {
 	// 非远程模式下不做权限管理
-	if !config.IsRemote {
+	if !config.Cfg.IsRemote {
 		return
 	}
 	authorization := r.Header.Get("Authorization")
