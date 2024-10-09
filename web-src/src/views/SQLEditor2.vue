@@ -197,6 +197,16 @@ onMounted(() => {
     })
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
+    window.addEventListener('resize', () => {
+        if (showResult.value) {
+            sqlDivHeight.value = (calHeight() * 0.3)  + "px"
+            resultDivHeight.value = (calHeight() * 0.7) + "px"
+        } else {
+            sqlDivHeight.value = (calHeight() - 15) + "px"
+            defaultSqlDivHeight = sqlDivHeight.value
+            resultDivHeight.value = "15px"
+        }
+    })
 })
 
 function createEditor(editorContainer: any, doc: any) {
@@ -346,7 +356,6 @@ function exec() {
                 row["col-idx"] = idx + 1
             });
             exectingSql.value = false
-
             // showResult.value = false
             if (defaultSqlDivHeight === sqlDivHeight.value || resultHide.value) {
                 toggleResult()
@@ -627,7 +636,7 @@ function toggleResult() {
 }
 
 function calHeight() {
-    return document.body.scrollHeight - 100
+    return document.body.scrollHeight - 75
 }
 
 function fmtVal(val: any) {
