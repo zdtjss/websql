@@ -407,6 +407,7 @@ function saveData(rowData: any) {
 
 function extractEffectiveSql(sql: string) {
     let relSql = sql.trimStart()
+    // 忽略注释的语句
     if (relSql == "" || relSql.startsWith("--") || relSql.startsWith("//") || relSql.startsWith("/*")) {
         const nsql = []
         const sqlArr = relSql.split("\n")
@@ -419,7 +420,38 @@ function extractEffectiveSql(sql: string) {
         }
         relSql = nsql.join("\n")
     }
+
+    // 补充schema
+    /* const sqlLower = relSql.toLowerCase()
+    const idxFromEnd = sqlLower.indexOf(" from ") + 6
+    if (idxFromEnd !== 5) {
+        relSql = fillSchema(relSql, "", props.schema, idxFromEnd, 0)
+    } */
+
     return relSql
+}
+
+function fillSchema(relSql: string, sqlResult: string, schema: string, searchStart: number, concatStart: number) :string {
+    if (searchStart >= relSql.length) {
+        return sqlResult
+    }
+    const idxTableNameBegin = relSql.substring(searchStart).search(/\s*\w+/)
+    const idxTableNameEnd = relSql.substring(searchStart + idxTableNameBegin).search(/\w+\s*/)
+    let tableName_ = idxTableNameBegin === idxTableNameEnd ? relSql.substring(searchStart) : relSql.substring(idxTableNameEnd, idxTableNameEnd - idxTableNameBegin)
+
+    tableName_ = tableName_.split(",").map(name => {
+        if (name.includes(".")) {
+            return name
+        }
+        debugger
+        const name_ = name.split(" ")
+        name_.splice(name.search(/\w+/), 0, schema, ".")
+        return name_.join(" ")
+    }).join(",")
+
+    const idxEnd = searchStart + idxTableNameBegin + tableName_.length
+    const finalSql = relSql.substring(concatStart, searchStart + idxTableNameBegin) + tableName_ + relSql.substring(idxEnd)
+    return fillSchema(relSql, finalSql, schema, idxEnd, idxEnd)
 }
 
 function checkSql(sql: string) {

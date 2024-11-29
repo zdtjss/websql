@@ -32,6 +32,9 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 	blankIdx := strings.Index(sqlStr, " ")
 	nlIdx := strings.Index(sqlStr, "\n")
+	if nlIdx == -1 {
+		nlIdx = len(sqlStr)
+	}
 
 	// 关键字转小写 select delete update
 	sqlStr = strings.Join([]string{strings.ToLower(sqlStr[0:min(blankIdx, nlIdx)]), sqlStr[min(blankIdx, nlIdx):]}, "")
