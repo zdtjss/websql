@@ -36,16 +36,22 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 		nlIdx = len(sqlStr)
 	}
 
-	// 关键字转小写 select delete update
-	sqlStr = strings.Join([]string{strings.ToLower(sqlStr[0:min(blankIdx, nlIdx)]), sqlStr[min(blankIdx, nlIdx):]}, "")
+	if checkPrefx(sqlStr, []string{"update", "delete"}) {
+		backup(sqlStr, user, connId, conn)
+	} else {
+		recordHistory(sqlStr, user, connId)
+	}
 
-	if strings.HasPrefix(sqlStr, "create ") || strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") || strings.HasPrefix(sqlStr, "insert ") || strings.HasPrefix(sqlStr, "alter ") || strings.HasPrefix(sqlStr, "drop ") {
+	// 关键字转小写 select delete update
+	sqlStr = strings.Join([]string{sqlStr[0:min(blankIdx, nlIdx)], sqlStr[min(blankIdx, nlIdx):]}, "")
+
+	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop ", "insert", "create"}) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, conn, user, connId)
+		rspData.Data = batchExec(&sqlStr, conn)
 		utils.WriteJson(w, rspData)
 	} else {
 		params := make([]any, 0)
-		if checkPrefx(sqlStr, []string{"select ", "select\n"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
+		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
 			sqlStr = *page(conn.DriverName(), &sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
@@ -124,7 +130,7 @@ func page(dbtype string, sql *string) *string {
 	return &pageSql
 }
 
-func batchExec(sql *string, db *sqlx.DB, user *admin.User, connId string) []map[string]any {
+func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := db.Beginx()
 	defer tx.Rollback()
@@ -136,9 +142,6 @@ func batchExec(sql *string, db *sqlx.DB, user *admin.User, connId string) []map[
 		sqlStr := strings.TrimSpace(sqlArr[idx])
 		if sqlStr == "" {
 			continue
-		}
-		if strings.HasPrefix(sqlStr, "update ") || strings.HasPrefix(sqlStr, "delete ") {
-			backup(sqlStr, user, tx, mgntTx, connId)
 		}
 		rs, err2 := tx.Exec(sqlStr)
 		logutils.PanicErr(err2)
@@ -153,30 +156,44 @@ func batchExec(sql *string, db *sqlx.DB, user *admin.User, connId string) []map[
 	return resultData
 }
 
-func backup(ddlSql string, user *admin.User, datTtx, mgntTx *sqlx.Tx, connId string) {
+func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
+	operationType := ""
 	backupSql := bytes.NewBufferString("select * from ")
 	if strings.HasPrefix(ddlSql, "update ") {
+		operationType = "update"
 		tmp := strings.TrimSpace(strings.TrimPrefix(ddlSql, "update "))
 		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
 	} else if strings.HasPrefix(ddlSql, "delete ") {
+		operationType = "delete"
 		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(ddlSql, "delete ")), "from ")
 		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
 	}
 	backupSql.WriteString(ddlSql[strings.Index(ddlSql, " where "):])
-	rows, err := datTtx.Queryx(backupSql.String())
+	rows, err := conn.Queryx(backupSql.String())
 	logutils.PanicErr(err)
-	data := dbutils.GetResultRows(datTtx.DriverName(), rows)
-	backupInsertSql := "insert into t_backup (id,user,conn_id,exec_time,exec_sql,data) values(?,?,?,?,?,?)"
-	stmt, err := mgntTx.Preparex(backupInsertSql)
+	data := dbutils.GetResultRows(conn.DriverName(), rows)
+	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
+	stmt, err := conn.Preparex(backupInsertSql)
 	logutils.PanicErr(err)
 	time.Sleep(time.Microsecond)
-	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, time.Now(), ddlSql, string(utils.ToJsonString(data)))
+	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, operationType, time.Now(), ddlSql, string(utils.ToJsonString(data)))
+	logutils.PanicErr(err3)
+}
+
+func recordHistory(ddlSql string, user *admin.User, connId string) {
+	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql) values(?,?,?,?,?,?)"
+	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
+	logutils.PanicErr(err)
+	time.Sleep(time.Microsecond)
+	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, "select", time.Now(), ddlSql)
 	logutils.PanicErr(err3)
 }
 
 func checkPrefx(src string, prefix []string) bool {
+	src = strings.ToUpper(src)
 	for _, p := range prefix {
-		if strings.HasPrefix(src, p) {
+		p = strings.ToUpper(p)
+		if strings.HasPrefix(src, p+" ") || strings.HasPrefix(src, p+"\n") {
 			return true
 		}
 	}

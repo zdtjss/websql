@@ -54,3 +54,13 @@ create table if not exists t_backup (
 	exec_sql text,
 	data json
 );
+
+create table if not exists t_history (
+	id varchar(36) primary key,
+	user varchar(30),
+	conn_id varchar(36),
+	operation_type varchar(36),
+	exec_time datetime,
+	exec_sql text,
+	data json
+);

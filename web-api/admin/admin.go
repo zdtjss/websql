@@ -183,7 +183,7 @@ func ShowBackupData(w http.ResponseWriter, r *http.Request) {
 	CheckAdminPower(r)
 	r.ParseForm()
 	backupId := r.Form.Get("backupId")
-	stmt, err := config.Mngtdb.Preparex("select data from t_backup where id = ?")
+	stmt, err := config.Mngtdb.Preparex("select data from t_history where id = ?")
 	logutils.PanicErr(err)
 	rowsx, err2 := stmt.Query(backupId)
 	logutils.PanicErr(err2)
@@ -202,7 +202,7 @@ func ListBackupData(w http.ResponseWriter, r *http.Request) {
 
 	total := 0
 	var data []map[string]any
-	stmt, err := config.Mngtdb.Preparex("select count(*) from t_backup where user = ? and conn_id = ?")
+	stmt, err := config.Mngtdb.Preparex("select count(*) from t_history where user = ? and conn_id = ? and operation_type in ('update','delete')")
 	logutils.PanicErr(err)
 	defer stmt.Close()
 	stmt.QueryRow(user.LoginName, connId).Scan(&total)
@@ -210,7 +210,7 @@ func ListBackupData(w http.ResponseWriter, r *http.Request) {
 	if total != 0 {
 		current, _ := strconv.Atoi((r.FormValue("current")))
 		pageSize, _ := strconv.Atoi((r.FormValue("pageSize")))
-		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.exec_sql,exec_time from t_backup a where a.user = ? and conn_id = ? order by exec_time desc limit ?,?")
+		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.exec_sql,exec_time from t_history a where a.user = ? and conn_id = ?  and operation_type in ('update','delete') order by exec_time desc limit ?,?")
 		logutils.PanicErr(err2)
 		defer stmt2.Close()
 		rows, err := stmt2.Queryx(user.LoginName, connId, (current-1)*pageSize, pageSize)
