@@ -173,7 +173,7 @@ func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
 	logutils.PanicErr(err)
 	data := dbutils.GetResultRows(conn.DriverName(), rows)
 	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
-	stmt, err := conn.Preparex(backupInsertSql)
+	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
 	logutils.PanicErr(err)
 	time.Sleep(time.Microsecond)
 	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, operationType, time.Now(), ddlSql, string(utils.ToJsonString(data)))
