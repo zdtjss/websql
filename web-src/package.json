@@ -16,10 +16,10 @@
     "@element-plus/icons-vue": "^2.3.1",
     "axios": "^1.7.9",
     "codemirror": "^6.0.1",
-    "sql-formatter": "^15.4.10",
+    "sql-formatter": "^15.5.2",
     "@codemirror/lang-sql": "^6.8.0",
     "@codemirror/theme-one-dark": "^6.1.2",
-    "@passwordless-id/webauthn": "^2.2.0",
+    "@passwordless-id/webauthn": "^2.3.0",
     "xlsx": "^0.18.5",
     "highlight.js":"^11.11.1"
   },
