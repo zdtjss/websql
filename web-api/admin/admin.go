@@ -10,6 +10,7 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -311,7 +312,9 @@ func findByToken(token string) *User {
 	err = json.Unmarshal(body, &outterUser)
 	logutils.PanicErr(err)
 
-	err = config.Mngtdb.Select(&users, "select id,login_name,name from t_user where login_name = ?", outterUser.Data["workNum"])
+	log.Println(utils.ToJsonString(outterUser))
+
+	err = config.Mngtdb.Select(&users, "select id,login_name,name from t_user where login_name = ?", outterUser.Data["employeeId"])
 	logutils.PanicErr(err)
 
 	if len(users) == 0 {

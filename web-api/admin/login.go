@@ -38,6 +38,9 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	}
 	power := findUserPower(user.Id)
 	token := Md5sum(utils.RandomStr())
+	if loginType == "token" {
+		token = key
+	}
 	w.Header().Set("Authentication", token)
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
