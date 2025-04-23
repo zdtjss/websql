@@ -7,7 +7,7 @@
           style="cursor: pointer;margin-left: 8px;" title="配置">
           <Tools />
         </el-icon>
-        <div v-if="showLoginBtn">
+        <div v-if="showLoginBtn" style="display: inline-block;">
           <el-icon v-show="!loginSucc && isRemote" color="#409EFC" @click="toLogin"
             style="cursor: pointer;margin-left: 8px;" title="登录">
             <User />
@@ -515,7 +515,7 @@ async function register() {
   });
 }
 
-function toLogin() {debugger
+function toLogin() {
   const searchParams = new URLSearchParams(window.location.search);
   const authorization = searchParams.get('authorization');
   if (authorization) {
