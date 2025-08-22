@@ -5,33 +5,36 @@ import (
 	"errors"
 	"fmt"
 	"go-web/logutils"
-	"go-web/utils"
 	dbutils "go-web/utils/db"
 	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/exp/slices"
 )
 
-func ImportXlsx(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(30 * 1024 * 1024)
+func ImportXlsx(c *gin.Context) {
 
-	authorization := r.Header.Get("Authorization")
+	authorization := c.GetHeader("Authorization")
 
-	connId := r.Form.Get("connId")
-	schema := r.Form.Get("schema")
-	table := r.Form.Get("table")
-	operType := r.Form.Get("optType")
+	connId := c.Query("connId")
+	schema := c.Query("schema")
+	table := c.Query("table")
+	operType := c.Query("optType")
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	log.Println("收到新增/更新请求，正在准备导入" + table)
 
-	file, fileHeader, err := r.FormFile("file")
+	fileHeader, err := c.FormFile("file")
 	logutils.PanicErr(err)
+
+	file, err := fileHeader.Open()
+	logutils.PanicErr(err)
+
 	defer file.Close()
 
 	if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
@@ -101,10 +104,10 @@ func ImportXlsx(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
-			utils.WriteJson(w, "导入完成")
+			c.JSON(http.StatusOK, "导入完成")
 		} else {
 			log.Println("更新完成")
-			utils.WriteJson(w, "更新完成")
+			c.JSON(http.StatusOK, "更新完成")
 		}
 	}
 }

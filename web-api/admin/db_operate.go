@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"go-web/logutils"
-	"go-web/utils"
 	dbutils "go-web/utils/db"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -66,11 +66,10 @@ func listAllColumns(key string, schema, authorization string) []*Tree {
 	return tree
 }
 
-func ListTableFat(w http.ResponseWriter, r *http.Request) {
-	authorization := r.Header.Get("Authorization")
-	r.ParseForm()
-	tables := queryTableInfo(r.FormValue("connId"), r.Form.Get("schema"), authorization)
-	utils.WriteJson(w, tables)
+func ListTableFat(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	tables := queryTableInfo(c.Query("connId"), c.Query("schema"), authorization)
+	c.JSON(http.StatusOK, tables)
 }
 
 func queryTableInfo(key string, schema, authorization string) []*Table {

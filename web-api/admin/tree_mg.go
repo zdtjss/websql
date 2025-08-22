@@ -5,22 +5,22 @@ import (
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
-	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-func SaveTree(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func SaveTree(c *gin.Context) {
+	CheckAdminPower(c)
 	tree := []*DirTree{}
-	utils.UnmarshalJson(r.Body, &tree)
+	utils.UnmarshalJson(c.Request.Body, &tree)
 	doTreeInsert(tree)
 }
 
-func DelTreeNode(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	config.Mngtdb.Exec("delete from t_tree where id = ?", r.FormValue("id"))
-	utils.WriteJson(w, "")
+func DelTreeNode(c *gin.Context) {
+	CheckAdminPower(c)
+	config.Mngtdb.Exec("delete from t_tree where id = ?", c.PostForm("id"))
+	utils.WriteJson(c.Writer, "")
 }
 
 func findByParent(parentId string, userPower *UserPower) []*Tree {
@@ -44,8 +44,8 @@ func findByParent(parentId string, userPower *UserPower) []*Tree {
 	return tree
 }
 
-func ListDirTree(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func ListDirTree(c *gin.Context) {
+	CheckAdminPower(c)
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
 	logutils.PanicErr(err)
@@ -62,12 +62,12 @@ func ListDirTree(w http.ResponseWriter, r *http.Request) {
 	for _, cfg := range firstLevel {
 		cfg.Children = findChild(cfg, tree, map[string][]*ConnCfgBase{})
 	}
-	utils.WriteJson(w, firstLevel)
+	utils.WriteJson(c.Writer, firstLevel)
 }
 
-func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
+func ConnBaseTree(c *gin.Context) {
 
-	CheckAdminPower(r)
+	CheckAdminPower(c)
 
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, "select * from t_tree")
@@ -92,7 +92,7 @@ func ConnBaseTree(w http.ResponseWriter, r *http.Request) {
 	for _, conn := range firstLevelConns {
 		firstLevel = append(firstLevel, &Tree{Label: conn.Name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
 	}
-	utils.WriteJson(w, firstLevel)
+	utils.WriteJson(c.Writer, firstLevel)
 }
 
 func findChild(curNode *Tree, nodes []*Tree, connMap map[string][]*ConnCfgBase) []*Tree {

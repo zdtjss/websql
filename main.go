@@ -18,13 +18,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/gin-gonic/gin"
 )
 
 var (
 	port    *string
 	isHttps *bool
-	router  = mux.NewRouter()
+	router  = gin.Default()
 )
 
 func main() {
@@ -34,6 +34,7 @@ func main() {
 	initSqlFile := flag.String("sql", "", "")
 	flag.Parse()
 
+	router.MaxMultipartMemory = 30 * 1024 * 1024
 	webapi.MainRegister(router)
 
 	config.InitMngtDbConn()

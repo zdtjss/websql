@@ -7,26 +7,25 @@ import (
 	"go-web/utils"
 	dbutils "go-web/utils/db"
 	admin "go-web/web-api/admin"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
-func ExecSQL(w http.ResponseWriter, r *http.Request) {
+func ExecSQL(c *gin.Context) {
 
-	r.ParseForm()
-	connId := r.Form.Get("connId")
-	schema := r.Form.Get("schema")
-	tableName := r.Form.Get("tableName")
-	sqlStr := r.Form.Get("sql")
-	maxLine := r.Form.Get("maxLine")
+	connId := c.Query("connId")
+	schema := c.Query("schema")
+	tableName := c.Query("tableName")
+	sqlStr := c.Query("sql")
+	maxLine := c.Query("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
 
-	authorization := r.Header.Get("Authorization")
+	authorization := c.GetHeader("Authorization")
 	conn := admin.GetConn(connId, authorization)
 	user := admin.GetUser(authorization)
 
@@ -48,7 +47,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop ", "insert", "create"}) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		rspData.Data = batchExec(&sqlStr, conn)
-		utils.WriteJson(w, rspData)
+		utils.WriteJson(c.Writer, rspData)
 	} else {
 		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
@@ -98,7 +97,7 @@ func ExecSQL(w http.ResponseWriter, r *http.Request) {
 
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
-		utils.WriteJson(w, rspData)
+		utils.WriteJson(c.Writer, rspData)
 	}
 }
 

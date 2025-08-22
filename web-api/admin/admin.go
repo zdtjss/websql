@@ -12,19 +12,19 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	dbutils "go-web/utils/db"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
-func SaveRole(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func SaveRole(c *gin.Context) {
+	CheckAdminPower(c)
 	role := &RoleSave{}
-	utils.UnmarshalJson(r.Body, role)
+	utils.UnmarshalJson(c.Request.Body, role)
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 	if role.Id == "" {
@@ -45,13 +45,12 @@ func SaveRole(w http.ResponseWriter, r *http.Request) {
 	}
 	err := tx.Commit()
 	logutils.PanicErrf("保存角色失败", err)
-	utils.WriteJson(w, "")
+	utils.WriteJson(c.Writer, "")
 }
 
-func DelRole(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	id := r.FormValue("id")
+func DelRole(c *gin.Context) {
+	CheckAdminPower(c)
+	id := c.GetString("id")
 
 	userCount := 0
 	config.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
@@ -66,10 +65,10 @@ func DelRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config.Mngtdb.Exec("delete from t_role where id = ?", id)
-	utils.WriteJson(w, "")
+	utils.WriteJson(c.Writer, "")
 }
 
-func RoleList(w http.ResponseWriter, r *http.Request) {
+func RoleList(c *gin.Context) {
 	roleList := []*Role{}
 	err := config.Mngtdb.Select(&roleList, "select * from t_role")
 	logutils.PanicErr(err)
@@ -82,28 +81,27 @@ func RoleList(w http.ResponseWriter, r *http.Request) {
 	for _, role := range roleList {
 		role.PowerList = rolePowerMap[role.Id]
 	}
-	utils.WriteJson(w, roleList)
+	utils.WriteJson(c.Writer, roleList)
 }
 
-func RoleBaseList(w http.ResponseWriter, r *http.Request) {
+func RoleBaseList(c *gin.Context) {
 	roleList := []*Role{}
 	err := config.Mngtdb.Select(&roleList, "select * from t_role")
 	logutils.PanicErr(err)
-	utils.WriteJson(w, roleList)
+	utils.WriteJson(c.Writer, roleList)
 }
 
-func FindUserByRole(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+func FindUserByRole(c *gin.Context) {
 	userList := []*User{}
-	err := config.Mngtdb.Select(&userList, "select * from t_user where role_id = ?", r.FormValue("roleId"))
+	err := config.Mngtdb.Select(&userList, "select * from t_user where role_id = ?", c.PostForm("roleId"))
 	logutils.PanicErr(err)
-	utils.WriteJson(w, userList)
+	utils.WriteJson(c.Writer, userList)
 }
 
-func SaveUser(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func SaveUser(c *gin.Context) {
+	CheckAdminPower(c)
 	user := &User{}
-	utils.UnmarshalJson(r.Body, user)
+	utils.UnmarshalJson(c.Request.Body, user)
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 	checkUserExist(user, tx)
@@ -134,19 +132,18 @@ func SaveUser(w http.ResponseWriter, r *http.Request) {
 	}
 	err := tx.Commit()
 	logutils.PanicErrf("保存用户失败", err)
-	utils.WriteJson(w, "")
+	utils.WriteJson(c.Writer, "")
 }
 
-func SaveUserBio(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	bioKey := r.PostForm.Get("bioKey")
-	authorization := r.Header.Get("Authorization")
+func SaveUserBio(c *gin.Context) {
+	CheckAdminPower(c)
+	bioKey := c.GetString("bioKey")
+	authorization := c.GetHeader("Authorization")
 	user := GetUser(authorization)
 	stmt, _ := config.Mngtdb.Prepare("update t_user set bio = ? where id = ?")
 	_, err := stmt.Exec(Md5sum(bioKey), user.Id)
 	logutils.PanicErrf("保存用户失败", err)
-	utils.WriteJson(w, "设置成功")
+	utils.WriteJson(c.Writer, "设置成功")
 }
 
 func checkUserExist(user *User, tx *sqlx.Tx) {
@@ -173,17 +170,15 @@ func Md5sum(s string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func DelUser(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	config.Mngtdb.Exec("delete from t_user where id = ?", r.FormValue("id"))
-	utils.WriteJson(w, "")
+func DelUser(c *gin.Context) {
+	CheckAdminPower(c)
+	config.Mngtdb.Exec("delete from t_user where id = ?", c.PostForm("id"))
+	utils.WriteJson(c.Writer, "")
 }
 
-func ShowBackupData(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	backupId := r.Form.Get("backupId")
+func ShowBackupData(c *gin.Context) {
+	CheckAdminPower(c)
+	backupId := c.GetString("backupId")
 	stmt, err := config.Mngtdb.Preparex("select data from t_history where id = ?")
 	logutils.PanicErr(err)
 	rowsx, err2 := stmt.Query(backupId)
@@ -192,14 +187,13 @@ func ShowBackupData(w http.ResponseWriter, r *http.Request) {
 	if rowsx.Next() {
 		rowsx.Scan(&backupData)
 	}
-	utils.WriteJson(w, backupData)
+	utils.WriteJson(c.Writer, backupData)
 }
 
-func ListBackupData(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	user := GetUser(r.Header.Get("Authorization"))
-	connId := r.Form.Get("connId")
+func ListBackupData(c *gin.Context) {
+	CheckAdminPower(c)
+	user := GetUser(c.GetHeader("Authorization"))
+	connId := c.GetString("connId")
 
 	total := 0
 	var data []map[string]any
@@ -209,8 +203,8 @@ func ListBackupData(w http.ResponseWriter, r *http.Request) {
 	stmt.QueryRow(user.LoginName, connId).Scan(&total)
 
 	if total != 0 {
-		current, _ := strconv.Atoi((r.FormValue("current")))
-		pageSize, _ := strconv.Atoi((r.FormValue("pageSize")))
+		current := c.GetInt("current")
+		pageSize := c.GetInt("pageSize")
 		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.exec_sql,exec_time from t_history a where a.user = ? and conn_id = ?  and operation_type in ('update','delete') order by exec_time desc limit ?,?")
 		logutils.PanicErr(err2)
 		defer stmt2.Close()
@@ -219,15 +213,14 @@ func ListBackupData(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		data = dbutils.GetResultRows(config.Mngtdb.DriverName(), rows)
 	}
-	utils.WriteJson(w, map[string]any{"data": data, "total": total})
+	utils.WriteJson(c.Writer, map[string]any{"data": data, "total": total})
 }
 
-func FindUser(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	key := r.FormValue("key")
-	name := r.FormValue("name")
-	loginName := r.FormValue("loginName")
-	userIdList := r.Form["userIdList[]"]
+func FindUser(c *gin.Context) {
+	key := c.GetString("key")
+	name := c.GetString("name")
+	loginName := c.GetString("loginName")
+	userIdList, _ := c.GetPostFormArray("userIdList")
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
@@ -268,7 +261,7 @@ func FindUser(w http.ResponseWriter, r *http.Request) {
 		user.RoleName = roleNames
 	}
 
-	utils.WriteJson(w, userList)
+	utils.WriteJson(c.Writer, userList)
 }
 
 func findByLoginName(loginName string) *User {

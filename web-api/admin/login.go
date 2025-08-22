@@ -7,15 +7,15 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	"go-web/utils/store"
-	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
-func Login(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	loginName := r.PostForm.Get("name")
-	pwd := r.PostForm.Get("password")
-	key := r.PostForm.Get("key")
-	loginType := r.PostForm.Get("loginType")
+func Login(c *gin.Context) {
+	loginName := c.GetString("name")
+	pwd := c.GetString("password")
+	key := c.GetString("key")
+	loginType := c.GetString("loginType")
 
 	var user *User
 	switch loginType {
@@ -41,17 +41,17 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	if loginType == "token" {
 		token = key
 	}
-	w.Header().Set("Authentication", token)
+	c.Header("Authentication", token)
 	store.Add(formatStoreKey(token), UserPower{UserId: user.Id, Power: power})
 	user.Pwd = ""
 	store.Add(formatStoreKey(token+"_user"), user)
-	utils.WriteJson(w, map[string]any{"id": user.Id, "name": user.Name, "isAdmin": user.Id == config.AdminId, "authentication": token})
+	utils.WriteJson(c.Writer, map[string]any{"id": user.Id, "name": user.Name, "isAdmin": user.Id == config.AdminId, "authentication": token})
 }
 
-func Logout(w http.ResponseWriter, r *http.Request) {
-	key := r.Header.Get("Authentication")
+func Logout(c *gin.Context) {
+	key := c.GetHeader("Authentication")
 	store.Remove(formatStoreKey(key))
-	utils.WriteJson(w, "退出成功")
+	utils.WriteJson(c.Writer, "退出成功")
 }
 
 func GetUserPower(authorization string) *UserPower {
@@ -66,12 +66,12 @@ func GetUser(authorization string) *User {
 	return user
 }
 
-func CheckAdminPower(r *http.Request) {
+func CheckAdminPower(c *gin.Context) {
 	// 非远程模式下不做权限管理
 	if !config.Cfg.IsRemote {
 		return
 	}
-	authorization := r.Header.Get("Authorization")
+	authorization := c.GetHeader("Authorization")
 	var userPower = GetUserPower(authorization)
 	if userPower.UserId != config.AdminId {
 		logutils.PanicErr(errors.New("无权访问"))
