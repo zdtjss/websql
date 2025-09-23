@@ -12,10 +12,10 @@ import (
 )
 
 func Login(c *gin.Context) {
-	loginName := c.GetString("name")
-	pwd := c.GetString("password")
-	key := c.GetString("key")
-	loginType := c.GetString("loginType")
+	loginName := c.PostForm("name")
+	pwd := c.PostForm("password")
+	key := c.PostForm("key")
+	loginType := c.PostForm("loginType")
 
 	var user *User
 	switch loginType {

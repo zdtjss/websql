@@ -35,15 +35,15 @@ func SaveConn(c *gin.Context) {
 
 func DelConn(c *gin.Context) {
 	CheckAdminPower(c)
-	config.Mngtdb.Exec("delete from t_conn where id = ?", c.GetString("id"))
+	config.Mngtdb.Exec("delete from t_conn where id = ?", c.Query("id"))
 	utils.WriteJson(c.Writer, "")
 }
 
 func ShowTree(c *gin.Context) {
-	connId := c.GetString("connId")
-	key := c.GetString("key")
-	curType := c.GetString("type")
-	level := c.GetString("level")
+	connId := c.Query("connId")
+	key := c.Query("key")
+	curType := c.Query("type")
+	level := c.Query("level")
 	authorization := c.GetHeader("Authorization")
 	userPower := GetUserPower(authorization)
 

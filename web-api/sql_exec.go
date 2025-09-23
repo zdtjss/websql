@@ -18,11 +18,11 @@ import (
 
 func ExecSQL(c *gin.Context) {
 
-	connId := c.Query("connId")
-	schema := c.Query("schema")
-	tableName := c.Query("tableName")
-	sqlStr := c.Query("sql")
-	maxLine := c.Query("maxLine")
+	connId := c.PostForm("connId")
+	schema := c.PostForm("schema")
+	tableName := c.PostForm("tableName")
+	sqlStr := c.PostForm("sql")
+	maxLine := c.PostForm("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
 
 	authorization := c.GetHeader("Authorization")

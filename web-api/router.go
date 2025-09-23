@@ -1,18 +1,14 @@
 package webapi
 
 import (
-	"bufio"
-	"compress/gzip"
+	"fmt"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"io"
 	"log"
-	"mime"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -25,6 +21,8 @@ import (
 var destAddr string = "http://localhost:8083"
 
 func MainRegister(router *gin.Engine) {
+
+	router.Use(CustomRecovery())
 
 	router.GET("/listTable", admin.ListTableFat)
 	router.GET("/exportXlsx", ExportXlsx)
@@ -69,15 +67,24 @@ func MainRegister(router *gin.Engine) {
 
 	router.Any("/ext/", proxy)
 
+	// router.NoRoute(notFound())
+
 	router.Use(hostCheck())
-	router.Use(panicMiddleware())
 	router.Use(CORSMiddleware())
 
-	// router.NotFoundHandler = &NotFound{}
-	// router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
-	// router.PathPrefix("/").Handler(&notFound{})
+	// 启用 gzip，排除静态文件
+	/* router.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPaths([]string{"/static/"}),
+		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
+	)) */
 
-	router.NoRoute(notFound())
+	// 2. 注册静态文件（可选，用于明确的静态资源）
+	router.Static("/assets", "./static/assets")
+
+	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
+	router.NoRoute(func(c *gin.Context) {
+		c.File("./static/index.html")
+	})
 
 	log.Println("路由注册完成")
 }
@@ -99,45 +106,10 @@ func proxy(c *gin.Context) {
 	defer resp.Body.Close()
 }
 
-func notFound() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		idx := strings.Index(c.Request.RequestURI, "?")
-		reqPath := c.Request.RequestURI
-		if idx != -1 {
-			reqPath = c.Request.RequestURI[:idx]
-		}
-		file, err := utils.Find("static" + reqPath)
-		if err != nil || strings.EqualFold("/", reqPath) {
-			file, err = utils.Find("static/index.html")
-			logutils.PanicErr(err)
-		}
-		defer file.Close()
-		c.Header("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))
-		c.Header("Content-Encoding", "gzip")
-		w2, _ := gzip.NewWriterLevel(c.Writer, 1)
-		defer w2.Close()
-		io.Copy(w2, bufio.NewReader(file))
-	}
-}
-
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Headers", "Authorization")
-	}
-}
-
-// 一定是最后一个引入的
-func panicMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		defer func() {
-			if err := recover(); err != nil {
-				c.Header("content-type", "application/json;charset=UTF-8")
-				c.Status(http.StatusInternalServerError)
-				c.Writer.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
-				log.Println(string(debug.Stack()))
-			}
-		}()
 	}
 }
 
@@ -155,45 +127,20 @@ func hostCheck() gin.HandlerFunc {
 	}
 }
 
-// spaHandler implements the http.Handler interface, so we can use it
-// to respond to HTTP requests. The path to the static directory and
-// path to the index file within that static directory are used to
-// serve the SPA in the given static directory.
-type spaHandler struct {
-	staticPath string
-	indexPath  string
-}
+func CustomRecovery() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
+		if recovered != nil {
+			// 获取堆栈信息
+			stack := string(debug.Stack())
 
-// ServeHTTP inspects the URL path to locate a file within the static dir
-// on the SPA handler. If a file is found, it will be served. If not, the
-// file located at the index path on the SPA handler will be served. This
-// is suitable behavior for serving an SPA (single page application).
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// get the absolute path to prevent directory traversal
-	path, err := filepath.Abs(r.URL.Path)
-	if err != nil {
-		// if we failed to get the absolute path respond with a 400 bad request
-		// and stop
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+			// 记录到 Gin 日志（默认是 stderr）
+			c.Error(fmt.Errorf("panic: %v\n%s", recovered, stack))
 
-	// prepend the path with the path to the static directory
-	path = filepath.Join(h.staticPath, path)
+			// 返回友好错误给客户端
+			c.JSON(http.StatusInternalServerError, utils.Result{Code: 500, Msg: recovered})
 
-	// check whether a file exists at the given path
-	_, err = os.Stat(path)
-	if os.IsNotExist(err) {
-		// file does not exist, serve index.html
-		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
-		return
-	} else if err != nil {
-		// if we got an error (that wasn't that the file doesn't exist) stating the
-		// file, return a 500 internal server error and stop
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// otherwise, use http.FileServer to serve the static dir
-	http.FileServer(http.Dir(h.staticPath)).ServeHTTP(w, r)
+			// 可选：记录到 Sentry、日志系统等
+			// logErrorToSentry(recovered, stack)
+		}
+	})
 }

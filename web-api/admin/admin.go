@@ -50,7 +50,7 @@ func SaveRole(c *gin.Context) {
 
 func DelRole(c *gin.Context) {
 	CheckAdminPower(c)
-	id := c.GetString("id")
+	id := c.Query("id")
 
 	userCount := 0
 	config.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
@@ -137,7 +137,7 @@ func SaveUser(c *gin.Context) {
 
 func SaveUserBio(c *gin.Context) {
 	CheckAdminPower(c)
-	bioKey := c.GetString("bioKey")
+	bioKey := c.Query("bioKey")
 	authorization := c.GetHeader("Authorization")
 	user := GetUser(authorization)
 	stmt, _ := config.Mngtdb.Prepare("update t_user set bio = ? where id = ?")
@@ -178,7 +178,7 @@ func DelUser(c *gin.Context) {
 
 func ShowBackupData(c *gin.Context) {
 	CheckAdminPower(c)
-	backupId := c.GetString("backupId")
+	backupId := c.Query("backupId")
 	stmt, err := config.Mngtdb.Preparex("select data from t_history where id = ?")
 	logutils.PanicErr(err)
 	rowsx, err2 := stmt.Query(backupId)
@@ -193,7 +193,7 @@ func ShowBackupData(c *gin.Context) {
 func ListBackupData(c *gin.Context) {
 	CheckAdminPower(c)
 	user := GetUser(c.GetHeader("Authorization"))
-	connId := c.GetString("connId")
+	connId := c.Query("connId")
 
 	total := 0
 	var data []map[string]any
@@ -217,9 +217,9 @@ func ListBackupData(c *gin.Context) {
 }
 
 func FindUser(c *gin.Context) {
-	key := c.GetString("key")
-	name := c.GetString("name")
-	loginName := c.GetString("loginName")
+	key := c.Query("key")
+	name := c.Query("name")
+	loginName := c.Query("loginName")
 	userIdList, _ := c.GetPostFormArray("userIdList")
 	param := []any{}
 	sql := bytes.Buffer{}
@@ -305,7 +305,7 @@ func findByToken(token string) *User {
 	err = json.Unmarshal(body, &outterUser)
 	logutils.PanicErr(err)
 
-	log.Println(utils.ToJsonString(outterUser))
+	log.Println(string(utils.ToJsonString(outterUser)))
 
 	err = config.Mngtdb.Select(&users, "select id,login_name,name from t_user where login_name = ?", outterUser.Data["employeeId"])
 	logutils.PanicErr(err)

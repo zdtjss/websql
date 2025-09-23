@@ -12,13 +12,19 @@ http.interceptors.request.use((config) => {
     return config
 });
 
-http.interceptors.response.use((response) => response, (error) => {
-        if (error.response && error.response.data) {
-            ElMessage.error(error.response.data.msg)
-        } else {
-            ElMessage.error(error.message)
-        }
-        return Promise.reject(error);
-    });
+http.interceptors.response.use((response) => {
+    if (response.data.code === 500) {
+        ElMessage({ message: response.data.msg, type: "error" })
+        return Promise.reject(new Error(response.data.msg || "业务错误"));
+    }
+    return response;
+}, (error) => {
+    if (error.response && error.response.data) {
+        ElMessage.error(error.response.data.msg)
+    } else {
+        ElMessage.error(error.message)
+    }
+    return Promise.reject(error);
+});
 
 export default http
