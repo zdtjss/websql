@@ -451,7 +451,6 @@ function fillSchema(relSql: string, sqlResult: string, schema: string, searchSta
         if (name.includes(".")) {
             return name
         }
-        debugger
         const name_ = name.split(" ")
         name_.splice(name.search(/\w+/), 0, schema, ".")
         return name_.join(" ")

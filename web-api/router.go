@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"fmt"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
@@ -130,17 +129,20 @@ func hostCheck() gin.HandlerFunc {
 func CustomRecovery() gin.HandlerFunc {
 	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
 		if recovered != nil {
-			// 获取堆栈信息
+
+			// 1. 记录堆栈（必须在 Abort 前！）
 			stack := string(debug.Stack())
+			log.Println("PANIC:", recovered)
+			log.Println(stack)
 
-			// 记录到 Gin 日志（默认是 stderr）
-			c.Error(fmt.Errorf("panic: %v\n%s", recovered, stack))
+			// 2. 终止中间件链
+			c.Abort()
 
-			// 返回友好错误给客户端
-			c.JSON(http.StatusInternalServerError, utils.Result{Code: 500, Msg: recovered})
-
-			// 可选：记录到 Sentry、日志系统等
-			// logErrorToSentry(recovered, stack)
+			// 4. 使用 c.JSON —— 自动设置 Content-Type + 状态码 + 安全序列化
+			c.JSON(http.StatusOK, gin.H{
+				"code": 500,
+				"msg":  recovered,
+			})
 		}
 	})
 }
