@@ -399,7 +399,13 @@ function saveData(rowData: any) {
 
     onDataSaving.value = true
 
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql } })
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("tableName", currentSelectTable.value)
+    params.append("sql", effiectiveSql)
+
+    http.post("/execSQL", params)
         .then((resp) => {
             onDataSaving.value = false
             if (!resp.data.data.msg) {
