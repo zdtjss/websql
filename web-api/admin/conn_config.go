@@ -101,8 +101,29 @@ func listConn(parentId string, userPower *UserPower) []*Tree {
 
 func ListConn2(c *gin.Context) {
 	CheckAdminPower(c)
+
+	name := c.Query("name")
+	parentId := c.Query("parentId")
+
 	cfgList := []ConnCfg{}
-	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
+
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
+	if name != "" {
+		sql.WriteString(" and c.name like '%" + name + "%'")
+	} else if parentId != "" {
+		sql.WriteString(" and c.parent_id = ?")
+
+		if parentId == "none" {
+			param = append(param, "")
+		} else {
+			param = append(param, parentId)
+		}
+
+	}
+
+	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
 	for idx := range cfgList {
 		cfgList[idx].Pwd = ""
