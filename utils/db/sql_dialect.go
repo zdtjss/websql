@@ -13,13 +13,14 @@ import (
 
 var SQL_DIALECT = map[string]map[string]string{
 	"mysql": {
-		"listSchema":      "select schema_name from information_schema.schemata",
-		"listTable":       "select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?",
-		"listColumns":     "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
-		"listAllColumns":  "select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?",
-		"ColumnMap":       "SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE lower(TABLE_NAME) = ? and lower(table_schema) = ?",
-		"QueryPrimaryKey": "select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'",
-		"QueryColType":    "select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?",
+		"listSchema":       "select schema_name from information_schema.schemata",
+		"listTable":        "select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?",
+		"listColumns":      "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
+		"listAllColumns":   "select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?",
+		"listTableColumns": "select * from information_schema.COLUMNS where table_schema = ? and table_name = ?",
+		"ColumnMap":        "SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE lower(TABLE_NAME) = ? and lower(table_schema) = ?",
+		"QueryPrimaryKey":  "select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'",
+		"QueryColType":     "select column_name,DATA_TYPE from information_schema.columns where TABLE_SCHEMA = ? and table_name = ?",
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
@@ -30,6 +31,8 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listAllColumns": `SELECT B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
+		"listTableColumns": `select column_name, COLUMN_COMMENT FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
+			 table_schema = ? and a.TABLE_NAME = ?`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,

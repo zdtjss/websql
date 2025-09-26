@@ -75,6 +75,23 @@ func ShowTree(c *gin.Context) {
 	utils.WriteJson(c.Writer, data)
 }
 
+func ListTableColumns(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+
+	param := ColumnsQuery{}
+	c.ShouldBindJSON(&param)
+
+	columns := listTableColumns(param.ConnId, param.TableName, param.Schema, authorization)
+	utils.WriteJson(c.Writer, columns)
+
+}
+
+type ColumnsQuery struct {
+	ConnId    string `json:"connId"`
+	Schema    string `json:"schema"`
+	TableName string `json:"tableName"`
+}
+
 func listConn(parentId string, userPower *UserPower) []*Tree {
 	if parentId == "" {
 		return nil

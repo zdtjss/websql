@@ -66,6 +66,13 @@ func listAllColumns(key string, schema, authorization string) []*Tree {
 	return tree
 }
 
+func listTableColumns(connId, tableName, schema, authorization string) []map[string]any {
+	dc := GetConn(connId, authorization)
+	rows, err := dc.Queryx(dbutils.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
+	logutils.PrintErr(err)
+	return dbutils.GetResultRows(dc.DriverName(), rows)
+}
+
 func ListTableFat(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	tables := queryTableInfo(c.Query("connId"), c.Query("schema"), authorization)

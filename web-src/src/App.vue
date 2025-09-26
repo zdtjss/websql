@@ -418,7 +418,7 @@ function refreshTree() {
 
 // 查看表信息处理函数
 function viewTableInfo(node) {
-  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, table: node.label }
+  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   tableMgntDialogVisible.value = true
 }
 
