@@ -14,7 +14,7 @@ import (
 var SQL_DIALECT = map[string]map[string]string{
 	"mysql": {
 		"listSchema":       "select schema_name from information_schema.schemata",
-		"listTable":        "select TABLE_NAME,table_comment from information_schema.tables WHERE table_schema = ?",
+		"listTable":        "select TABLE_NAME,TABLE_TYPE,table_comment from information_schema.tables WHERE table_schema = ?",
 		"listColumns":      "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
 		"listAllColumns":   "select column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?",
 		"listTableColumns": "select * from information_schema.COLUMNS where table_schema = ? and table_name = ?",

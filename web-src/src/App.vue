@@ -63,7 +63,7 @@
     </el-dialog>
 
     <!-- 表管理对话框 -->
-    <el-dialog v-model="tableMgntDialogVisible" @close="tableMgntDialogVisible = false;tableMeta = {}" :draggable="true" width="1000px"
+    <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle" @close="tableMgntDialogVisible = false;tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
       style="height:650px;">
       <TableEditor :tableMeta="tableMeta" />
       <template #footer>
@@ -144,6 +144,7 @@ const conCfgTreeData = ref([])
 
 const tableMgntDialogVisible = ref(false)
 const tableMeta = ref({})
+const tableMgntTitle = ref("")
 
 onMounted(() => {
   getSysModel()
@@ -418,6 +419,7 @@ function refreshTree() {
 
 // 查看表信息处理函数
 function viewTableInfo(node) {
+  tableMgntTitle.value = node.data.data != null ? node.data.data.text : ''
   tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   tableMgntDialogVisible.value = true
 }

@@ -82,7 +82,7 @@ func ListTableColumns(c *gin.Context) {
 	c.ShouldBindJSON(&param)
 
 	columns := listTableColumns(param.ConnId, param.TableName, param.Schema, authorization)
-	utils.WriteJson(c.Writer, columns)
+	utils.WriteJson(c.Writer, utils.SnakeToCamel(columns))
 
 }
 

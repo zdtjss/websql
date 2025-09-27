@@ -27,14 +27,23 @@ func listSchema(key string, authorization string) []*Tree {
 }
 
 func listTable(key string, schema, authorization string) []*Tree {
-	tableName, tableComment := "", ""
+	tableName, tableType, tableComment := "", "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
-		row.Scan(&tableName, &tableComment)
-		tree = append(tree, &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE})
+		row.Scan(&tableName, &tableType, &tableComment)
+		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE}
+		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
+			switch tableName {
+			case "VIEW":
+				treeNode.Type = "view"
+			case "BASE TABLE":
+				treeNode.Type = "table"
+			}
+		}
+		tree = append(tree, treeNode)
 	}
 	return tree
 }
