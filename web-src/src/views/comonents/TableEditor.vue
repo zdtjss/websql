@@ -15,7 +15,7 @@
                             </span>
                         </div>
                         <div v-if="scope.row.onColumnNameEdit">
-                            <el-input v-model="scope.row.columnName" style="margin-bottom: 10px;width: 85%;" />
+                            <el-input v-model="scope.row.columnName" style="margin-bottom: 10px;width: 200px;" />
                             <div style="display: inline-block;margin-left: 3px;">
                                 <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
                                     @click="modifyColumnName(scope.row.idx, scope.row.columnName)">
@@ -29,7 +29,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="类型" width="160">
+                <el-table-column label="类型" width="180">
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnType" style="margin-bottom: 10px;" />
                         <div v-if="!scope.row.isNew && !scope.row.onColumnTypeEdit" class="column_type">
@@ -42,7 +42,7 @@
                             </span>
                         </div>
                         <div v-if="scope.row.onColumnTypeEdit">
-                            <el-input v-model="scope.row.columnType" style="margin-bottom: 10px;width: 76%;" />
+                            <el-input v-model="scope.row.columnType" style="margin-bottom: 10px;width: 135px;" />
                             <div style="display: inline-block;margin-left: 3px;">
                                 <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
                                     @click="modifyColumnType(scope.row.idx, scope.row.columnType)">
@@ -77,7 +77,7 @@
                             </span>
                         </div>
                         <div v-if="scope.row.onColumnCommentEdit">
-                            <el-input v-model="scope.row.columnComment" style="margin-bottom: 10px;width: 76%;"
+                            <el-input v-model="scope.row.columnComment" style="margin-bottom: 10px;min-width: 76%;"
                                 type="textarea" autosize />
                             <div style="display: inline-block;margin-left: 3px;">
                                 <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
@@ -126,7 +126,8 @@
         <el-tab-pane label="统计" name="statistics">
 
         </el-tab-pane>
-        <el-tab-pane label="建表语句" name="showCreate">
+        <el-tab-pane label="create" name="showCreate">
+            <el-icon><CopyDocument /></el-icon>
             <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
@@ -196,7 +197,7 @@ function loadData(pane) {
     }
 }
 
-function getSqlLang(schma) {
+function getSqlLang(schema) {
     let sqlLang = "sql"
     const dbType = dbSchemaProxy.getDbType(schema).toLowerCase()
     if (dbType === "oracle") {
@@ -367,5 +368,12 @@ function execSql(sql, succ) {
 
 .modify_column_comment:hover {
     opacity: 0.8;
+}
+
+</style>
+
+<style>
+.el-table .cell {
+    padding: 0 5px !important;
 }
 </style>

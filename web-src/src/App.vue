@@ -432,13 +432,13 @@ function refreshTree() {
 
 // 查看表信息处理函数
 function viewTableInfo(node) {
-  tableMgntTitle.value = node.data.data != null ? node.data.data.text : ''
+  tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
   tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   tableMgntDialogVisible.value = true
 }
 
 function viewViewInfo(node) {
-  tableMgntTitle.value = node.data.data != null ? node.data.data.text : ''
+  tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
   tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   viewDialogVisible.value = true
 }

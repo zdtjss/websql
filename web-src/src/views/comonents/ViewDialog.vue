@@ -14,7 +14,7 @@
         <el-tab-pane label="统计" name="statistics">
 
         </el-tab-pane>
-        <el-tab-pane label="建表语句" name="showCreate">
+        <el-tab-pane label="create" name="showCreate">
             <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
@@ -63,7 +63,7 @@ function loadData(pane) {
         if (dbType === 'mysql') {
             sqlStr = "show create table " + props.tableMeta.tableName
         } else if (dbType === 'oracle') {
-            sqlStr = "select dbms_metadata.get_ddl('TABLE','" + props.tableMeta.tableName.toUpperCase() + "') from dual"
+            sqlStr = "select dbms_metadata.get_ddl('VIEW','" + props.tableMeta.tableName.toUpperCase() + "') from dual"
         } else {
             tableCreateDdl.value = "暂不支持"
             return
@@ -75,7 +75,6 @@ function loadData(pane) {
         params.append("maxLine", 1)
         http.post("/execSQL", params)
             .then((resp) => {
-                debugger
                 const data = resp.data.data.data[0]
                 const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(props.tableMeta.schema) })
                 tableCreateDdl.value =  hljs.highlight(sql, { language: 'sql' }).value

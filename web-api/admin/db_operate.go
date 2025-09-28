@@ -42,6 +42,8 @@ func listTable(key string, schema, authorization string) []*Tree {
 			case "BASE TABLE":
 				treeNode.Type = "table"
 			}
+		} else if dc.DriverName() == "oracle" {
+			treeNode.Type = strings.ToLower(tableType)
 		}
 		tree = append(tree, treeNode)
 	}
