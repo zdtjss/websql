@@ -137,6 +137,7 @@
 import { ref, onMounted } from 'vue'
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
+import { format } from 'sql-formatter'
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
@@ -187,11 +188,23 @@ function loadData(pane) {
         http.post("/execSQL", params)
             .then((resp) => {
                 const data = resp.data.data.data[0]
-                tableCreateDdl.value = hljs.highlight(data[Object.keys(data)[0].trim()], { language: 'sql' }).value
+                const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(props.tableMeta.schema) })
+                tableCreateDdl.value =  hljs.highlight(sql, { language: 'sql' }).value
             }).catch((error) => {
                 console.log(error);
             });
     }
+}
+
+function getSqlLang(schma) {
+    let sqlLang = "sql"
+    const dbType = dbSchemaProxy.getDbType(schema).toLowerCase()
+    if (dbType === "oracle") {
+        sqlLang = "plsql"
+    } else if (dbType === "mysql") {
+        sqlLang = "mysql"
+    }
+    return sqlLang
 }
 
 function modifyColumnName(seq, newName) {

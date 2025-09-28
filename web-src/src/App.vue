@@ -35,6 +35,7 @@
          <div class="table-node-wrapper">
             <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
             <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息" @click.stop="viewTableInfo(node)"></i>
+            <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息" @click.stop="viewViewInfo(node)"></i>
          </div>
         </template>
       </el-tree>
@@ -73,6 +74,17 @@
       </template>
     </el-dialog>
 
+    <!-- 视图查看对话框 -->
+    <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false;tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
+      style="height:650px;">
+      <ViewDialog :tableMeta="tableMeta" />
+      <template #footer>
+        <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+          <el-button @click="viewDialogVisible = false;tableMeta = {}">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 登录对话框 -->
     <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
       @opened="loginName.focus()">
@@ -100,6 +112,7 @@ import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import Configuration from './views/comonents/Configuration.vue'
 import TableEditor from './views/comonents/TableEditor.vue'
+import ViewDialog from './views/comonents/ViewDialog.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 
@@ -140,9 +153,9 @@ const loginRules = reactive({
 })
 
 const cfgDialogVisible = ref(false)
-const conCfgTreeData = ref([])
 
 const tableMgntDialogVisible = ref(false)
+const viewDialogVisible = ref(false)
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 
@@ -422,6 +435,12 @@ function viewTableInfo(node) {
   tableMgntTitle.value = node.data.data != null ? node.data.data.text : ''
   tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   tableMgntDialogVisible.value = true
+}
+
+function viewViewInfo(node) {
+  tableMgntTitle.value = node.data.data != null ? node.data.data.text : ''
+  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
+  viewDialogVisible.value = true
 }
 
 </script>

@@ -36,7 +36,7 @@ func listTable(key string, schema, authorization string) []*Tree {
 		row.Scan(&tableName, &tableType, &tableComment)
 		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE}
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
-			switch tableName {
+			switch tableType {
 			case "VIEW":
 				treeNode.Type = "view"
 			case "BASE TABLE":
@@ -65,7 +65,7 @@ func listAllColumns(key string, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
-	logutils.PrintErr(err)
+	logutils.PanicErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		*&columnComment = ""
@@ -78,7 +78,7 @@ func listAllColumns(key string, schema, authorization string) []*Tree {
 func listTableColumns(connId, tableName, schema, authorization string) []map[string]any {
 	dc := GetConn(connId, authorization)
 	rows, err := dc.Queryx(dbutils.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
-	logutils.PrintErr(err)
+	logutils.PanicErr(err)
 	return dbutils.GetResultRows(dc.DriverName(), rows)
 }
 
@@ -92,9 +92,9 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
 	stmt, err := dc.Prepare(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"])
-	logutils.PrintErr(err)
+	logutils.PanicErr(err)
 	rs, err2 := stmt.Query(schema)
-	logutils.PrintErr(err2)
+	logutils.PanicErr(err2)
 	var name, comment string
 	for rs.Next() {
 		*&comment = ""

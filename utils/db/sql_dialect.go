@@ -24,15 +24,15 @@ var SQL_DIALECT = map[string]map[string]string{
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
-		"listTable":  "select TABLE_NAME, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1",
+		"listTable":  "select TABLE_NAME, table_type, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
 		"listAllColumns": `SELECT B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
-		"listTableColumns": `select column_name, COLUMN_COMMENT FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			 table_schema = ? and a.TABLE_NAME = ?`,
+		"listTableColumns": `select a.column_name, a.comments COLUMN_COMMENT FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
+			where 'notexists' <> :1 and a.TABLE_NAME = :2`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
