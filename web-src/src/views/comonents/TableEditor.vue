@@ -5,44 +5,54 @@
                 <el-table-column label="名称" width="250">
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnName" style="margin-bottom: 10px;" />
-                        <div class="column_name">
-                            <span v-if="!scope.row.isNew">{{ scope.row.columnName }}</span>
-                            <span v-if="!scope.row.isNew" class="modify_column_name">
-                                <el-popconfirm width="220" icon-color="#626AEF" hide-icon hide-after="0"
-                                    @confirm="modifyColumnName(scope.row.idx, scope.row.columnName)">
-                                    <template #reference>
-                                        <el-icon :size="12" style="cursor: pointer;" title="修改名称">
-                                            <Edit />
-                                        </el-icon>
-                                    </template>
-                                    <template #actions="{ confirm }">
-                                        <el-input v-model="scope.row.columnName" style="margin-bottom: 10px;" />
-                                        <el-button type="primary" size="small" @click="confirm">保存</el-button>
-                                    </template>
-                                </el-popconfirm>
+                        <div v-if="!scope.row.isNew && !scope.row.onColumnNameEdit" class="column_name">
+                            <span>{{ scope.row.columnName }}</span>
+                            <span class="modify_column_name">
+                                <el-icon :size="12" style="cursor: pointer;" title="修改名称"
+                                    @click="scope.row.onColumnNameEdit = true">
+                                    <Edit />
+                                </el-icon>
                             </span>
+                        </div>
+                        <div v-if="scope.row.onColumnNameEdit">
+                            <el-input v-model="scope.row.columnName" style="margin-bottom: 10px;width: 85%;" />
+                            <div style="display: inline-block;margin-left: 3px;">
+                                <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
+                                    @click="modifyColumnName(scope.row.idx, scope.row.columnName)">
+                                    <Check />
+                                </el-icon>
+                                <el-icon title="取消" style="cursor: pointer;" :size="12"
+                                    @click="scope.row.onColumnNameEdit = false; scope.row.columnName = columnListOrigin[scope.row.idx].columnName">
+                                    <Close />
+                                </el-icon>
+                            </div>
                         </div>
                     </template>
                 </el-table-column>
                 <el-table-column label="类型" width="160">
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnType" style="margin-bottom: 10px;" />
-                        <div v-if="!scope.row.isNew" class="column_type">
+                        <div v-if="!scope.row.isNew && !scope.row.onColumnTypeEdit" class="column_type">
                             <span>{{ scope.row.columnType }}</span>
                             <span class="modify_column_type">
-                                <el-popconfirm width="220" icon-color="#626AEF" hide-icon hide-after="0"
-                                    @confirm="modifyColumnType(scope.row.idx, scope.row.columnType)">
-                                    <template #reference>
-                                        <el-icon :size="12" style="cursor: pointer;" title="修改类型">
-                                            <Edit />
-                                        </el-icon>
-                                    </template>
-                                    <template #actions="{ confirm }">
-                                        <el-input v-model="scope.row.columnType" style="margin-bottom: 10px;" />
-                                        <el-button type="primary" size="small" @click="confirm">保存</el-button>
-                                    </template>
-                                </el-popconfirm>
+                                <el-icon :size="12" style="cursor: pointer;" title="修改类型"
+                                    @click="scope.row.onColumnTypeEdit = true">
+                                    <Edit />
+                                </el-icon>
                             </span>
+                        </div>
+                        <div v-if="scope.row.onColumnTypeEdit">
+                            <el-input v-model="scope.row.columnType" style="margin-bottom: 10px;width: 76%;" />
+                            <div style="display: inline-block;margin-left: 3px;">
+                                <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
+                                    @click="modifyColumnType(scope.row.idx, scope.row.columnType)">
+                                    <Check />
+                                </el-icon>
+                                <el-icon title="取消" style="cursor: pointer;" :size="12"
+                                    @click="scope.row.onColumnTypeEdit = false; scope.row.columnType = columnListOrigin[scope.row.idx].columnType">
+                                    <Close />
+                                </el-icon>
+                            </div>
                         </div>
                     </template>
                 </el-table-column>
@@ -55,25 +65,30 @@
                 </el-table-column>
                 <el-table-column label="注释">
                     <template #default="scope">
-                        <el-input v-if="scope.row.isNew" v-model="scope.row.columnComment" type="textarea" autosize
-                            style="margin-bottom: 10px;" />
-                        <div v-if="!scope.row.isNew" class="column_comment">
+                        <el-input v-if="scope.row.isNew" v-model="scope.row.columnComment" style="margin-bottom: 10px;"
+                            type="textarea" autosize />
+                        <div v-if="!scope.row.isNew && !scope.row.onColumnCommentEdit" class="column_comment">
                             <span>{{ scope.row.columnComment }}</span>
                             <span class="modify_column_comment">
-                                <el-popconfirm width="300" icon-color="#626AEF" hide-icon hide-after="0"
-                                    @confirm="modifyColumnComment(scope.row.idx, scope.row.columnComment)">
-                                    <template #reference>
-                                        <el-icon :size="12" style="cursor: pointer;" title="修改注释">
-                                            <Edit />
-                                        </el-icon>
-                                    </template>
-                                    <template #actions="{ confirm }">
-                                        <el-input v-model="scope.row.columnComment" type="textarea" autosize
-                                            style="margin-bottom: 10px;" />
-                                        <el-button type="primary" size="small" @click="confirm">保存</el-button>
-                                    </template>
-                                </el-popconfirm>
+                                <el-icon :size="12" style="cursor: pointer;" title="修改注释"
+                                    @click="scope.row.onColumnCommentEdit = true">
+                                    <Edit />
+                                </el-icon>
                             </span>
+                        </div>
+                        <div v-if="scope.row.onColumnCommentEdit">
+                            <el-input v-model="scope.row.columnComment" style="margin-bottom: 10px;width: 76%;"
+                                type="textarea" autosize />
+                            <div style="display: inline-block;margin-left: 3px;">
+                                <el-icon title="保存" style="cursor: pointer;margin-right: 5px;" :size="12"
+                                    @click="modifyColumnComment(scope.row.idx, scope.row.columnComment)">
+                                    <Check />
+                                </el-icon>
+                                <el-icon title="取消" style="cursor: pointer;" :size="12"
+                                    @click="scope.row.onColumnCommentEdit = false; scope.row.columnComment = columnListOrigin[scope.row.idx].columnComment">
+                                    <Close />
+                                </el-icon>
+                            </div>
                         </div>
                     </template>
                 </el-table-column>
@@ -181,17 +196,26 @@ function loadData(pane) {
 
 function modifyColumnName(seq, newName) {
     const sql = "alter table " + props.tableMeta.tableName + " change " + columnListOrigin[seq].columnName + " " + newName + " " + columnListOrigin[seq].columnType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + columnListOrigin[seq].columnComment + "'";
-    execSql(sql)
+    execSql(sql, () => {
+        columnListOrigin[seq].columnName = newName
+        columnList.value[seq].onColumnNameEdit = false
+    })
 }
 
 function modifyColumnType(seq, newType) {
     const sql = "alter table " + props.tableMeta.tableName + " modify " + columnListOrigin[seq].columnName + " " + newType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + columnListOrigin[seq].columnComment + "'";
-    execSql(sql)
+    execSql(sql, () => {
+        columnListOrigin[seq].columnType = newType
+        columnList.value[seq].onColumnTypeEdit = false
+    })
 }
 
 function modifyColumnComment(seq, newComment) {
     const sql = "alter table " + props.tableMeta.tableName + " modify " + columnListOrigin[seq].columnName + " " + columnListOrigin[seq].columnType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + newComment + "'";
-    execSql(sql)
+    execSql(sql, () => {
+        columnListOrigin[seq].columnComment = newComment
+        columnList.value[seq].onColumnCommentEdit = false
+    })
 }
 
 function addCol(targetIdx) {
