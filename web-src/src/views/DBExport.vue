@@ -57,7 +57,7 @@ onMounted(() => {
 function queryData() {
     http.get("/listTable?connId=" + props.connId + "&schema=" + props.schema)
         .then((resp) => {
-            tableData.value = resp.data.data
+            tableData.value = resp.data
         })
         .catch((error) => {
             console.log(error);

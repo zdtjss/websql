@@ -87,17 +87,19 @@
                 <pre style="white-space: pre;">{{ backupData }}</pre>
             </template>
         </el-drawer>
-        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable"
-            width="1000px" style="height:650px;overflow-y: auto;">
+        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
+            style="height:650px;overflow-y: auto;">
             <div style="height: 530px;overflow-y: auto;">
                 <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
                     <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
                         <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]"
                             type="datetime" value-format="YYYY-MM-DD HH:mm:ss" />
-                        <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'" inactive-value="b'0'"/>
+                        <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'"
+                            inactive-value="b'0'" />
                         <el-input
                             v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
-                            v-model="rowData[col.dataKey]" type="textarea" autosize :disabled="tableKeys.includes(col.dataKey)"/>
+                            v-model="rowData[col.dataKey]" type="textarea" autosize
+                            :disabled="tableKeys.includes(col.dataKey)" />
                     </el-form-item>
                 </el-form>
             </div>
@@ -106,7 +108,7 @@
                     <el-button v-if="canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
                         保存
                     </el-button>
-                    <el-button  v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
+                    <el-button v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
                         关闭
                     </el-button>
                 </div>
@@ -145,7 +147,7 @@ const props = defineProps<{
     schema: string
 }>()
 
-const maxLine = ref(15)
+const maxLine = ref("15")
 const columns: any = ref([])
 const result: any = ref([])
 const editorView = ref<EditorView>()
@@ -176,7 +178,7 @@ const backupDataDialogVisible = ref(false)
 
 const canEdit = ref(false)
 const tableKeys = ref([] as string[])
-const rowData:any = ref({})
+const rowData: any = ref({})
 // 原始的数据 
 let originRowData: any = {}
 const dataDetailsDialogVisible = ref(false)
@@ -199,7 +201,7 @@ onMounted(() => {
     createEditor(codemirror, doc);
     window.addEventListener('resize', () => {
         if (showResult.value) {
-            sqlDivHeight.value = (calHeight() * 0.3)  + "px"
+            sqlDivHeight.value = (calHeight() * 0.3) + "px"
             resultDivHeight.value = (calHeight() * 0.7) + "px"
         } else {
             sqlDivHeight.value = (calHeight() - 15) + "px"
@@ -322,7 +324,13 @@ function exec() {
     }
     currentSelectTable.value = extractTableName(sqlExec)
     exectingSql.value = true
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql, maxLine: maxLine.value } })
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("tableName", currentSelectTable.value)
+    params.append("sql", effiectiveSql)
+    params.append("maxLine", maxLine.value)
+    http.post("/execSQL", params)
         .then((resp) => {
             canEdit.value = resp.data.data.canEdit
             tableKeys.value = resp.data.data.keys || []
@@ -391,7 +399,13 @@ function saveData(rowData: any) {
 
     onDataSaving.value = true
 
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, tableName: currentSelectTable.value, sql: effiectiveSql } })
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("tableName", currentSelectTable.value)
+    params.append("sql", effiectiveSql)
+
+    http.post("/execSQL", params)
         .then((resp) => {
             onDataSaving.value = false
             if (!resp.data.data.msg) {
@@ -431,7 +445,7 @@ function extractEffectiveSql(sql: string) {
     return relSql
 }
 
-function fillSchema(relSql: string, sqlResult: string, schema: string, searchStart: number, concatStart: number) :string {
+function fillSchema(relSql: string, sqlResult: string, schema: string, searchStart: number, concatStart: number): string {
     if (searchStart >= relSql.length) {
         return sqlResult
     }
@@ -443,7 +457,6 @@ function fillSchema(relSql: string, sqlResult: string, schema: string, searchSta
         if (name.includes(".")) {
             return name
         }
-        debugger
         const name_ = name.split(" ")
         name_.splice(name.search(/\w+/), 0, schema, ".")
         return name_.join(" ")
@@ -617,7 +630,12 @@ function showCreateScript() {
         ElMessage({ message: "暂不支持", type: "error" })
         return
     }
-    http.get("/execSQL", { params: { connId: props.connId, schema: props.schema, sql: sqlStr, maxLine: maxLine.value } })
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("sql", sqlStr)
+    params.append("maxLine", maxLine.value)
+    http.post("/execSQL", params)
         .then((resp) => {
             const data = resp.data.data.data[0]
             tableCreateDdl.value = hljs.highlight(data[Object.keys(data)[0].trim()], { language: 'sql' }).value

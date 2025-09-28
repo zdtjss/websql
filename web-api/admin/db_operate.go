@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"go-web/logutils"
-	"go-web/utils"
 	dbutils "go-web/utils/db"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -27,14 +27,23 @@ func listSchema(key string, authorization string) []*Tree {
 }
 
 func listTable(key string, schema, authorization string) []*Tree {
-	tableName, tableComment := "", ""
+	tableName, tableType, tableComment := "", "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
-		row.Scan(&tableName, &tableComment)
-		tree = append(tree, &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE})
+		row.Scan(&tableName, &tableType, &tableComment)
+		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE}
+		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
+			switch tableName {
+			case "VIEW":
+				treeNode.Type = "view"
+			case "BASE TABLE":
+				treeNode.Type = "table"
+			}
+		}
+		tree = append(tree, treeNode)
 	}
 	return tree
 }
@@ -66,11 +75,17 @@ func listAllColumns(key string, schema, authorization string) []*Tree {
 	return tree
 }
 
-func ListTableFat(w http.ResponseWriter, r *http.Request) {
-	authorization := r.Header.Get("Authorization")
-	r.ParseForm()
-	tables := queryTableInfo(r.FormValue("connId"), r.Form.Get("schema"), authorization)
-	utils.WriteJson(w, tables)
+func listTableColumns(connId, tableName, schema, authorization string) []map[string]any {
+	dc := GetConn(connId, authorization)
+	rows, err := dc.Queryx(dbutils.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
+	logutils.PrintErr(err)
+	return dbutils.GetResultRows(dc.DriverName(), rows)
+}
+
+func ListTableFat(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	tables := queryTableInfo(c.Query("connId"), c.Query("schema"), authorization)
+	c.JSON(http.StatusOK, tables)
 }
 
 func queryTableInfo(key string, schema, authorization string) []*Table {

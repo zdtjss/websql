@@ -1,203 +1,150 @@
 package webapi
 
 import (
-	"bufio"
-	"compress/gzip"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"io"
 	"log"
-	"mime"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
 
-	"github.com/gorilla/mux"
+	"github.com/gin-gonic/gin"
 	"golang.org/x/exp/maps"
 )
 
 // 不需要以/结尾
 var destAddr string = "http://localhost:8083"
 
-func MainRegister(router *mux.Router) {
+func MainRegister(router *gin.Engine) {
 
-	router.HandleFunc("/listTable", admin.ListTableFat).Methods("GET")
-	router.HandleFunc("/exportXlsx", ExportXlsx).Methods("GET")
-	router.HandleFunc("/importXlsx", ImportXlsx).Methods("POST")
-	router.HandleFunc("/execSQL", ExecSQL).Methods("GET")
+	router.Use(CustomRecovery())
 
-	router.HandleFunc("/saveConn", admin.SaveConn).Methods("POST")
-	router.HandleFunc("/delConn", admin.DelConn).Methods("GET")
-	router.HandleFunc("/connBaseTree", admin.ConnBaseTree).Methods("GET")
-	router.HandleFunc("/listConn2", admin.ListConn2).Methods("GET")
-	router.HandleFunc("/showTree", admin.ShowTree).Methods("GET")
+	router.GET("/listTable", admin.ListTableFat)
+	router.GET("/exportXlsx", ExportXlsx)
+	router.POST("/importXlsx", ImportXlsx)
+	router.POST("/execSQL", ExecSQL)
 
-	router.HandleFunc("/saveTree", admin.SaveTree).Methods("POST")
-	router.HandleFunc("/listDirTree", admin.ListDirTree).Methods("GET")
-	router.HandleFunc("/delTreeNode", admin.DelTreeNode).Methods("GET")
+	router.POST("/saveConn", admin.SaveConn)
+	router.GET("/delConn", admin.DelConn)
+	router.GET("/connBaseTree", admin.ConnBaseTree)
+	router.GET("/listConn2", admin.ListConn2)
+	router.GET("/showTree", admin.ShowTree)
 
-	router.HandleFunc("/login", admin.Login).Methods("POST")
-	router.HandleFunc("/logout", admin.Logout).Methods("POST")
+	router.POST("/listTableColumns", admin.ListTableColumns)
 
-	router.HandleFunc("/saveRole", admin.SaveRole).Methods("POST")
-	router.HandleFunc("/delRole", admin.DelRole).Methods("GET")
-	router.HandleFunc("/roleList", admin.RoleList).Methods("GET")
-	router.HandleFunc("/roleBaseList", admin.RoleBaseList).Methods("GET")
-	router.HandleFunc("/findUserByRole", admin.FindUserByRole).Methods("GET")
+	router.POST("/saveTree", admin.SaveTree)
+	router.GET("/listDirTree", admin.ListDirTree)
+	router.GET("/delTreeNode", admin.DelTreeNode)
 
-	router.HandleFunc("/findUser", admin.FindUser).Methods("GET")
-	router.HandleFunc("/saveUser", admin.SaveUser).Methods("POST")
-	router.HandleFunc("/delUser", admin.DelUser).Methods("GET")
+	router.POST("/login", admin.Login)
+	router.POST("/logout", admin.Logout)
 
-	router.HandleFunc("/saveUserBio", admin.SaveUserBio).Methods("POST")
+	router.POST("/saveRole", admin.SaveRole)
+	router.GET("/delRole", admin.DelRole)
+	router.GET("/roleList", admin.RoleList)
+	router.GET("/roleBaseList", admin.RoleBaseList)
+	router.GET("/findUserByRole", admin.FindUserByRole)
 
-	router.HandleFunc("/listBackupData", admin.ListBackupData).Methods("GET")
-	router.HandleFunc("/showBackupData", admin.ShowBackupData).Methods("GET")
+	router.GET("/findUser", admin.FindUser)
+	router.POST("/saveUser", admin.SaveUser)
+	router.GET("/delUser", admin.DelUser)
 
-	router.HandleFunc("/sysMode", func(w http.ResponseWriter, r *http.Request) {
-		utils.WriteJson(w, map[string]bool{"isRemote": config.Cfg.IsRemote})
-	}).Methods("GET")
+	router.POST("/saveUserBio", admin.SaveUserBio)
 
-	router.HandleFunc("/healthCheck", func(w http.ResponseWriter, r *http.Request) {
-		utils.WriteJson(w, "")
-	}).Methods("GET")
+	router.GET("/listBackupData", admin.ListBackupData)
+	router.GET("/showBackupData", admin.ShowBackupData)
 
-	router.HandleFunc("/ext/", proxy)
+	router.GET("/sysMode", func(c *gin.Context) {
+		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})
+	})
 
-	router.Use(hostCheck)
-	router.Use(panicMiddleware)
-	router.Use(CORSMiddleware)
+	router.GET("/healthCheck", func(c *gin.Context) {
+		utils.WriteJson(c.Writer, "")
+	})
 
-	// router.NotFoundHandler = &NotFound{}
-	// router.PathPrefix("/").Handler(spaHandler{staticPath: "static", indexPath: "index.html"})
-	router.PathPrefix("/").Handler(&notFound{})
+	router.Any("/ext/", proxy)
+
+	// router.NoRoute(notFound())
+
+	router.Use(hostCheck())
+	router.Use(CORSMiddleware())
+
+	// 启用 gzip，排除静态文件
+	/* router.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPaths([]string{"/static/"}),
+		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
+	)) */
+
+	// 2. 注册静态文件（可选，用于明确的静态资源）
+	router.Static("/assets", "./static/assets")
+
+	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
+	router.NoRoute(func(c *gin.Context) {
+		c.File("./static/index.html")
+	})
 
 	log.Println("路由注册完成")
 }
 
 // 对外代理的接口注册
-func proxy(w http.ResponseWriter, r *http.Request) {
+func proxy(c *gin.Context) {
 
-	req, _ := http.NewRequest(r.Method, destAddr+r.RequestURI[4:], r.Body)
-	defer r.Body.Close()
-	*&req.Header = r.Header
+	req, _ := http.NewRequest(c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
+	defer c.Request.Body.Close()
+	*&req.Header = c.Request.Header
 	resp, err := http.DefaultClient.Do(req)
 	logutils.PanicErr(err)
 
-	maps.Copy(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
+	maps.Copy(c.Request.Header, resp.Header)
+	c.Status(resp.StatusCode)
 
-	_, err2 := io.Copy(w, resp.Body)
+	_, err2 := io.Copy(c.Writer, resp.Body)
 	logutils.PanicErr(err2)
 	defer resp.Body.Close()
 }
 
-type notFound struct {
-}
-
-func (n *notFound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	idx := strings.Index(r.RequestURI, "?")
-	reqPath := r.RequestURI
-	if idx != -1 {
-		reqPath = r.RequestURI[:idx]
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Headers", "Authorization")
 	}
-	file, err := utils.Find("static" + reqPath)
-	if err != nil || strings.EqualFold("/", reqPath) {
-		file, err = utils.Find("static/index.html")
-		logutils.PanicErr(err)
-	}
-	defer file.Close()
-	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(file.Name())))
-	w.Header().Set("Content-Encoding", "gzip")
-	w2, _ := gzip.NewWriterLevel(w, 1)
-	defer w2.Close()
-	io.Copy(w2, bufio.NewReader(file))
-}
-
-func CORSMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization")
-		next.ServeHTTP(w, r)
-	})
-}
-
-// 一定是最后一个引入的
-func panicMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				w.Header().Set("content-type", "application/json;charset=UTF-8")
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write(utils.ToJsonString(utils.Result{Code: 500, Msg: err}))
-				log.Println(string(debug.Stack()))
-			}
-		}()
-		// Call the next handler, which can be another middleware in the chain, or the final handler.
-		next.ServeHTTP(w, r)
-	})
 }
 
 // 应该是第一个引入
-func hostCheck(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func hostCheck() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if !config.Cfg.IsRemote && !slices.ContainsFunc(config.Cfg.AllowedIP, func(allowedIp string) bool {
-			return strings.HasPrefix(r.RemoteAddr, allowedIp+":")
+			return strings.HasPrefix(c.Request.RemoteAddr, allowedIp+":")
 		}) {
-			w.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
-			w.Header().Set("content-type", "text/html; charset=utf-8")
-			log.Println("非法IP:" + r.RemoteAddr)
+			c.Writer.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
+			c.Header("content-type", "text/html; charset=utf-8")
+			log.Println("非法IP:" + c.Request.RemoteAddr)
 			return
 		}
-		// Call the next handler, which can be another middleware in the chain, or the final handler.
-		next.ServeHTTP(w, r)
+	}
+}
+
+func CustomRecovery() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
+		if recovered != nil {
+
+			// 1. 记录堆栈（必须在 Abort 前！）
+			stack := string(debug.Stack())
+			log.Println("PANIC:", recovered)
+			log.Println(stack)
+
+			// 2. 终止中间件链
+			c.Abort()
+
+			// 4. 使用 c.JSON —— 自动设置 Content-Type + 状态码 + 安全序列化
+			c.JSON(http.StatusOK, gin.H{
+				"code": 500,
+				"msg":  recovered,
+			})
+		}
 	})
-}
-
-// spaHandler implements the http.Handler interface, so we can use it
-// to respond to HTTP requests. The path to the static directory and
-// path to the index file within that static directory are used to
-// serve the SPA in the given static directory.
-type spaHandler struct {
-	staticPath string
-	indexPath  string
-}
-
-// ServeHTTP inspects the URL path to locate a file within the static dir
-// on the SPA handler. If a file is found, it will be served. If not, the
-// file located at the index path on the SPA handler will be served. This
-// is suitable behavior for serving an SPA (single page application).
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// get the absolute path to prevent directory traversal
-	path, err := filepath.Abs(r.URL.Path)
-	if err != nil {
-		// if we failed to get the absolute path respond with a 400 bad request
-		// and stop
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// prepend the path with the path to the static directory
-	path = filepath.Join(h.staticPath, path)
-
-	// check whether a file exists at the given path
-	_, err = os.Stat(path)
-	if os.IsNotExist(err) {
-		// file does not exist, serve index.html
-		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
-		return
-	} else if err != nil {
-		// if we got an error (that wasn't that the file doesn't exist) stating the
-		// file, return a 500 internal server error and stop
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// otherwise, use http.FileServer to serve the static dir
-	http.FileServer(http.Dir(h.staticPath)).ServeHTTP(w, r)
 }

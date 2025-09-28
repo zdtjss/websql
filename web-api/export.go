@@ -5,24 +5,23 @@ import (
 	admin "go-web/web-api/admin"
 	"io"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
 )
 
-func ExportXlsx(w http.ResponseWriter, r *http.Request) {
-	authorization := r.Header.Get("Authorization")
-	r.ParseForm()
-	table := r.Form.Get("table")
-	connId := r.Form.Get("connId")
-	schema := r.Form.Get("schema")
+func ExportXlsx(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	table := c.Query("table")
+	connId := c.Query("connId")
+	schema := c.Query("schema")
 	current := time.Now().Format(time.DateOnly)
-	w.Header().Add("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Add("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
-	queryAndWrite(schema+"."+table, schema, w, connId, authorization)
+	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
+	queryAndWrite(schema+"."+table, schema, c.Writer, connId, authorization)
 }
 
 func queryAndWrite(table, schema string, out io.Writer, connId string, authorization string) {

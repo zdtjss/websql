@@ -6,17 +6,17 @@ import (
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
-	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/exp/slices"
 )
 
-func SaveConn(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func SaveConn(c *gin.Context) {
+	CheckAdminPower(c)
 	cfg := &ConnCfg{}
-	utils.UnmarshalJson(r.Body, cfg)
+	utils.UnmarshalJson(c.Request.Body, cfg)
 	if cfg.Id == "" {
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
 		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url)
@@ -30,23 +30,21 @@ func SaveConn(w http.ResponseWriter, r *http.Request) {
 		}
 		config.RealseConn(convertToDBParam(cfg))
 	}
-	utils.WriteJson(w, "")
+	utils.WriteJson(c.Writer, "")
 }
 
-func DelConn(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
-	r.ParseForm()
-	config.Mngtdb.Exec("delete from t_conn where id = ?", r.FormValue("id"))
-	utils.WriteJson(w, "")
+func DelConn(c *gin.Context) {
+	CheckAdminPower(c)
+	config.Mngtdb.Exec("delete from t_conn where id = ?", c.Query("id"))
+	utils.WriteJson(c.Writer, "")
 }
 
-func ShowTree(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	connId := r.FormValue("connId")
-	key := r.Form.Get("key")
-	curType := r.Form.Get("type")
-	level := r.Form.Get("level")
-	authorization := r.Header.Get("Authorization")
+func ShowTree(c *gin.Context) {
+	connId := c.Query("connId")
+	key := c.Query("key")
+	curType := c.Query("type")
+	level := c.Query("level")
+	authorization := c.GetHeader("Authorization")
 	userPower := GetUserPower(authorization)
 
 	nextType := getNextType(curType)
@@ -74,7 +72,24 @@ func ShowTree(w http.ResponseWriter, r *http.Request) {
 	case TREE_NODE_TYPE_ALLCOLUMN:
 		data = listAllColumns(connId, key, authorization)
 	}
-	utils.WriteJson(w, data)
+	utils.WriteJson(c.Writer, data)
+}
+
+func ListTableColumns(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+
+	param := ColumnsQuery{}
+	c.ShouldBindJSON(&param)
+
+	columns := listTableColumns(param.ConnId, param.TableName, param.Schema, authorization)
+	utils.WriteJson(c.Writer, utils.SnakeToCamel(columns))
+
+}
+
+type ColumnsQuery struct {
+	ConnId    string `json:"connId"`
+	Schema    string `json:"schema"`
+	TableName string `json:"tableName"`
 }
 
 func listConn(parentId string, userPower *UserPower) []*Tree {
@@ -101,22 +116,43 @@ func listConn(parentId string, userPower *UserPower) []*Tree {
 	return tree
 }
 
-func ListConn2(w http.ResponseWriter, r *http.Request) {
-	CheckAdminPower(r)
+func ListConn2(c *gin.Context) {
+	CheckAdminPower(c)
+
+	name := c.Query("name")
+	parentId := c.Query("parentId")
+
 	cfgList := []ConnCfg{}
-	err := config.Mngtdb.Select(&cfgList, "select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id")
+
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
+	if name != "" {
+		sql.WriteString(" and c.name like '%" + name + "%'")
+	} else if parentId != "" {
+		sql.WriteString(" and c.parent_id = ?")
+
+		if parentId == "none" {
+			param = append(param, "")
+		} else {
+			param = append(param, parentId)
+		}
+
+	}
+
+	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
 	for idx := range cfgList {
 		cfgList[idx].Pwd = ""
 	}
-	utils.WriteJson(w, cfgList)
+	utils.WriteJson(c.Writer, cfgList)
 }
 
-func ListConnBase(w http.ResponseWriter, r *http.Request) {
+func ListConnBase(c *gin.Context) {
 	cfgList := []*ConnCfgBase{}
 	err := config.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
 	logutils.PanicErr(err)
-	utils.WriteJson(w, cfgList)
+	utils.WriteJson(c.Writer, cfgList)
 }
 
 func listConnBase() map[string][]*ConnCfgBase {
