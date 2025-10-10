@@ -124,11 +124,11 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 	logutils.PanicErr(err)
 	rs, err2 := stmt.Query(schema)
 	logutils.PanicErr(err2)
-	var name, comment string
+	var tableName, tableType, tableComment string
 	for rs.Next() {
-		*&comment = ""
-		rs.Scan(&name, &comment)
-		table := &Table{name, comment}
+		*&tableComment = ""
+		rs.Scan(&tableName, &tableType, &tableComment)
+		table := &Table{tableName, tableComment}
 		tables = append(tables, table)
 	}
 	return tables
