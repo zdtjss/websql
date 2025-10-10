@@ -16,7 +16,7 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listSchema":       "select schema_name from information_schema.schemata",
 		"listTable":        "select TABLE_NAME,TABLE_TYPE,table_comment from information_schema.tables WHERE table_schema = ?",
 		"listColumns":      "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
-		"listAllColumns":   "select TABLE_NAME, column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ?",
+		"listAllColumns":   "select TABLE_NAME, column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ? order by TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION",
 		"listTableColumns": "select * from information_schema.COLUMNS where table_schema = ? and table_name = ?",
 		"ColumnMap":        "SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE lower(TABLE_NAME) = ? and lower(table_schema) = ?",
 		"QueryPrimaryKey":  "select column_name from information_schema.columns where TABLE_SCHEMA = ? and table_name = ? and column_key = 'PRI'",
@@ -30,7 +30,7 @@ var SQL_DIALECT = map[string]map[string]string{
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
 		"listAllColumns": `SELECT a.TABLE_NAME,B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME`,
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and 'notexists' <> :1 order by a.TABLE_NAME,b.COLUMN_ID`,
 		"listTableColumns": `select a.column_name,case when nullable='Y' then 'YES' else 'NO' end is_nullable, data_type column_type, a.comments COLUMN_COMMENT FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME and a.column_name = b.column_name
 			where 'notexists' <> :1 and a.TABLE_NAME = :2`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
