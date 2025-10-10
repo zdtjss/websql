@@ -234,8 +234,8 @@ function createEditor(editorContainer: any, doc: any) {
             ]),
             sql({
                 dialect: dbSchemaProxy.getDialect(props.schema),
-                schema: <any>dbSchemaProxy.getAll(),
-                tables: dbSchemaProxy.getTable(props.schema)
+                schema: <any>dbSchemaProxy.getAll(props.schema),
+                // tables: dbSchemaProxy.getTable(props.schema)
             }),
             history(),
             lineNumbers(),

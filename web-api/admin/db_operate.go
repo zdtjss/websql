@@ -29,12 +29,39 @@ func listSchema(key string, authorization string) []*Tree {
 func listTable(key string, schema, authorization string) []*Tree {
 	tableName, tableType, tableComment := "", "", ""
 	dc := GetConn(key, authorization)
-	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
+
+	tableName, columnName, columnComment := "", "", ""
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
+	logutils.PanicErr(err)
+	tableColumns := make([]map[string]string, 0)
+	for row.Next() {
+		*&columnComment = ""
+		row.Scan(&tableName, &columnName, &columnComment)
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": columnComment})
+	}
+
+	grouped := make(map[string][]Column)
+
+	for _, col := range tableColumns {
+		tableName := col["tableName"]
+		// 确保 key 存在
+		if grouped[tableName] == nil {
+			grouped[tableName] = make([]Column, 0)
+		}
+		// 只保留 columnName 和 columnComment（可选）
+		fieldInfo := Column{
+			Name:    col["columnName"],
+			Comment: col["columnComment"],
+		}
+		grouped[tableName] = append(grouped[tableName], fieldInfo)
+	}
+
+	row, err = dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
 	tree := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&tableName, &tableType, &tableComment)
-		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment}, Type: TREE_NODE_TYPE_TABLE}
+		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment, "columns": grouped[tableName]}, Type: TREE_NODE_TYPE_TABLE}
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
 			switch tableType {
 			case "VIEW":
@@ -168,6 +195,11 @@ func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 }
 
 type Table struct {
+	Name    string `json:"name"`
+	Comment string `json:"comment"`
+}
+
+type Column struct {
 	Name    string `json:"name"`
 	Comment string `json:"comment"`
 }

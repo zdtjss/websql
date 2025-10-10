@@ -239,11 +239,6 @@ function loadTree(node, resolve) {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
 
         addTab(node)
-
-        /* http.get("/showTree", { params: { connId: findConn(node), key: node.data.label, type: "all_column" } })
-          .then((resp2) => {
-            dbSchemaProxy.addTable(node.data.label + "_col", resp2.data.data)
-          }) */
       }
       if (resp.data.data) {
         resolve(resp.data.data.map(e => {
