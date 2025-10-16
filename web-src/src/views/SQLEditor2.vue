@@ -201,8 +201,8 @@ onMounted(() => {
     createEditor(codemirror, doc);
     window.addEventListener('resize', () => {
         if (showResult.value) {
-            sqlDivHeight.value = (calHeight() * 0.3) + "px"
-            resultDivHeight.value = (calHeight() * 0.7) + "px"
+            sqlDivHeight.value = (calHeight() * 0.5) + "px"
+            resultDivHeight.value = (calHeight() * 0.5) + "px"
         } else {
             sqlDivHeight.value = (calHeight() - 15) + "px"
             defaultSqlDivHeight = sqlDivHeight.value
@@ -420,17 +420,24 @@ function saveData(rowData: any) {
 }
 
 function extractEffectiveSql(sql: string) {
+
     let relSql = sql.trimStart()
     // 忽略注释的语句
     if (relSql == "" || relSql.startsWith("--") || relSql.startsWith("//") || relSql.startsWith("/*")) {
         const nsql = []
         const sqlArr = relSql.split("\n")
         for (let i = 0; i < sqlArr.length; i++) {
-            const row = sqlArr[i]
+            let row = sqlArr[i]
             if (row == "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
                 continue
             }
-            nsql.push(row)
+            row = row.trimEnd()
+            // 删除句尾的分号
+            if (row.endsWith(";")) {
+                nsql.push(row.substring(0, row.length - 1))
+            } else {
+                nsql.push(row)
+            }
         }
         relSql = nsql.join("\n")
     }
@@ -441,6 +448,12 @@ function extractEffectiveSql(sql: string) {
     if (idxFromEnd !== 5) {
         relSql = fillSchema(relSql, "", props.schema, idxFromEnd, 0)
     } */
+
+    relSql = relSql.trimEnd()
+    // 删除句尾的分号
+    if (relSql.endsWith(";")) {
+        return relSql.substring(0, relSql.length - 1)
+    }
 
     return relSql
 }
@@ -679,8 +692,8 @@ function toggleResult() {
     } else {
         resultHide.value = false
         showResult.value = true
-        sqlDivHeight.value = (calHeight() * 0.3) + "px"
-        resultDivHeight.value = (calHeight() * 0.7) + "px"
+        sqlDivHeight.value = (calHeight() * 0.5) + "px"
+        resultDivHeight.value = (calHeight() * 0.5) + "px"
         toggleResultTitle.value = "隐藏结果"
     }
 }

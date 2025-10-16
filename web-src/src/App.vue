@@ -1,6 +1,6 @@
 <template>
-  <el-container class="layout-container-demo">
-    <el-aside :width="treeDivWidth">
+  <el-splitter style="height: calc(100vh * 0.98);">
+    <el-splitter-panel :collapsible="true" size="15%">
       <div style="text-align: right;margin-right: 10px;">
         <el-icon v-show="currentUser.isAdmin || !isRemote" color="#409EFC" @click="cfgDialogVisible = true"
           style="cursor: pointer;margin-left: 8px;" title="配置">
@@ -32,78 +32,78 @@
       <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
         :props="{ isLeaf: 'isLeaf' }">
         <template #default="{ node, data }">
-         <div class="table-node-wrapper">
+          <div class="table-node-wrapper">
             <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
-            <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息" @click.stop="viewTableInfo(node)"></i>
-            <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息" @click.stop="viewViewInfo(node)"></i>
-         </div>
+            <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息"
+              @click.stop="viewTableInfo(node)"></i>
+            <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息"
+              @click.stop="viewViewInfo(node)"></i>
+          </div>
         </template>
       </el-tree>
-    </el-aside>
-    <div style="height: 100%; border: 1px solid #9e9e9e; cursor: col-resize;" @mousedown="resizeTreeArea"></div>
-    <el-container>
-      <el-main>
-        <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="demo-tabs" closable
-          @tab-remove="removeTab">
-          <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :label="item.title" :name="item.tabId">
-            <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" />
-          </el-tab-pane>
-        </el-tabs>
-      </el-main>
-    </el-container>
+    </el-splitter-panel>
+    <el-splitter-panel>
+      <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="demo-tabs" closable
+        @tab-remove="removeTab">
+        <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :label="item.title" :name="item.tabId">
+          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" />
+        </el-tab-pane>
+      </el-tabs>
+    </el-splitter-panel>
+  </el-splitter>
 
-    <!-- 配置管理对话框 -->
-    <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
-      style="height:650px;">
-      <Configuration :isRemote="isRemote" />
-      <template #footer>
-        <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-          <el-button @click="cfgDialogVisible = false">关闭</el-button>
-        </div>
-      </template>
-    </el-dialog>
+  <!-- 配置管理对话框 -->
+  <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
+    style="height:650px;">
+    <Configuration :isRemote="isRemote" />
+    <template #footer>
+      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+        <el-button @click="cfgDialogVisible = false">关闭</el-button>
+      </div>
+    </template>
+  </el-dialog>
 
-    <!-- 表管理对话框 -->
-    <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle" @close="tableMgntDialogVisible = false;tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
-      style="height:650px;">
-      <TableEditor :tableMeta="tableMeta" />
-      <template #footer>
-        <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-          <el-button @click="tableMgntDialogVisible = false;tableMeta = {}">关闭</el-button>
-        </div>
-      </template>
-    </el-dialog>
+  <!-- 表管理对话框 -->
+  <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
+    @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
+    style="height:650px;">
+    <TableEditor :tableMeta="tableMeta" />
+    <template #footer>
+      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+        <el-button @click="tableMgntDialogVisible = false; tableMeta = {}">关闭</el-button>
+      </div>
+    </template>
+  </el-dialog>
 
-    <!-- 视图查看对话框 -->
-    <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false;tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
-      style="height:650px;">
-      <ViewDialog :tableMeta="tableMeta" />
-      <template #footer>
-        <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-          <el-button @click="viewDialogVisible = false;tableMeta = {}">关闭</el-button>
-        </div>
-      </template>
-    </el-dialog>
+  <!-- 视图查看对话框 -->
+  <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false; tableMeta = {}"
+    :draggable="true" destroy-on-close width="1000px" style="height:650px;">
+    <ViewDialog :tableMeta="tableMeta" />
+    <template #footer>
+      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+        <el-button @click="viewDialogVisible = false; tableMeta = {}">关闭</el-button>
+      </div>
+    </template>
+  </el-dialog>
 
-    <!-- 登录对话框 -->
-    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
-      @opened="loginName.focus()">
-      <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
-        <el-form-item label="用户名" prop="name">
-          <el-input ref="loginName" v-model="loginForm.name" />
-        </el-form-item>
-        <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
-          <el-input v-model="loginForm.password" type="password" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="login" :loading="logining">登录</el-button>
-          <el-button @click="loginDialogVisible = false">关闭</el-button>
-        </span>
-      </template>
-    </el-dialog>
-  </el-container>
+  <!-- 登录对话框 -->
+  <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
+    @opened="loginName.focus()">
+    <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
+      <el-form-item label="用户名" prop="name">
+        <el-input ref="loginName" v-model="loginForm.name" />
+      </el-form-item>
+      <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
+        <el-input v-model="loginForm.password" type="password" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <span class="dialog-footer">
+        <el-button type="primary" @click="login" :loading="logining">登录</el-button>
+        <el-button @click="loginDialogVisible = false">关闭</el-button>
+      </span>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -212,18 +212,6 @@ function restoreTab() {
     // 清空可能带来负面清理
     localStorage.clear()
     dbSchemaProxy.cleanCache()
-  }
-}
-
-function resizeTreeArea(event) {
-  const startX = event.clientX
-  const ogiWidth = new Number(treeDivWidth.value.substring(0, treeDivWidth.value.length - 2))
-  document.onmousemove = (e) => {
-    treeDivWidth.value = (ogiWidth + e.clientX - startX) + "px"
-  }
-  document.onmouseup = () => {
-    document.onmouseup = null
-    document.onmousemove = null
   }
 }
 
