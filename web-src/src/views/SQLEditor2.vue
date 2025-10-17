@@ -1,120 +1,115 @@
 <template>
-    <el-container>
-        <el-header height="30px" class="toolbar">
-            <el-button @click="exec" :loading="exectingSql" title="F9">执行</el-button>
-            <el-button @click="exportDb">导表</el-button>
-            <el-button @click="exportCurrentToXlsx">excel</el-button>
-            <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
-                <el-button>
-                    SQL<el-icon class="el-icon--right"><arrow-down /></el-icon>
-                </el-button>
-                <template #dropdown>
-                    <el-dropdown-menu>
-                        <el-dropdown-item command="insert">insert</el-dropdown-item>
-                        <el-dropdown-item command="update">update</el-dropdown-item>
-                        <el-dropdown-item command="create">create</el-dropdown-item>
-                    </el-dropdown-menu>
-                </template>
-            </el-dropdown>
-            <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
-            <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
-            <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
-        </el-header>
-        <el-main id="sqlArea" class="sql_area" :style="{ height: sqlDivHeight }" @keyup.f9="exec"
-            @keyup.ctrl.shift.f="formatSql">
-            <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
-        </el-main>
-        <div style="width: 100%; border: 1px solid #9e9e9e30; cursor: row-resize;" @mousedown="resizeResultArea"></div>
-        <el-footer id="result" v-if="showResultArea" class="result" :style="{ height: resultDivHeight }">
-            <el-icon @click="toggleResult" style="right: 0px;position: absolute;cursor: pointer;"
-                :title="toggleResultTitle" :size="22">
-                <ArrowDown v-if="showResult" style="margin-top:15px;" />
-                <ArrowUp v-if="resultHide" />
-            </el-icon>
-            <el-auto-resizer>
-                <template #default="{ height, width }">
-                    <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35"
-                        fixed />
-                </template>
-            </el-auto-resizer>
-        </el-footer>
-        <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
-            <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
-        </el-dialog>
-        <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
-            width="1000px" style="height:650px;overflow-y: auto;">
-            <el-row>
-                <el-form-item label="表名">
-                    <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
-                </el-form-item>
-                <el-form-item>
-                    <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
-                    <el-button @click="copyCreateScript" style="margin-left:12px;" size="small">复制</el-button>
-                </el-form-item>
-            </el-row>
-            <el-row>
-                <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
-                    <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
-                </el-scrollbar>
-            </el-row>
-        </el-dialog>
-        <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
-            style="height:650px;overflow-y: auto;">
-            <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="520">
-                <el-table-column type="index" width="50" />
-                <el-table-column prop="exec_time" label="操作时间" width="170" />
-                <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
-                <el-table-column label="" width="38">
-                    <template #default="scope">
-                        <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
-                            <View />
-                        </el-icon>
+    <div style="height: calc(100vh - 60px);" @keyup.f9="exec" @keyup.ctrl.shift.f="formatSql">
+        <el-splitter layout="vertical">
+
+            <div class="toolbar">
+                <el-button @click="exec" :loading="exectingSql" title="F9">执行</el-button>
+                <el-button @click="exportDb">导表</el-button>
+                <el-button @click="exportCurrentToXlsx">excel</el-button>
+                <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
+                    <el-button>
+                        SQL<el-icon class="el-icon--right"><arrow-down /></el-icon>
+                    </el-button>
+                    <template #dropdown>
+                        <el-dropdown-menu>
+                            <el-dropdown-item command="insert">insert</el-dropdown-item>
+                            <el-dropdown-item command="update">update</el-dropdown-item>
+                            <el-dropdown-item command="create">create</el-dropdown-item>
+                        </el-dropdown-menu>
                     </template>
-                </el-table-column>
-            </el-table>
-            <div style="position: absolute;right: 10px;bottom: 5px;">
-                <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal"
-                    v-model:page-size="backupDataSize" v-model:current-page="backupDataCurrent"
-                    @current-change="listBackupData" />
+                </el-dropdown>
+                <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
+                <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
+                <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
             </div>
-        </el-dialog>
-        <el-drawer v-model="backupDataDrawerShow">
-            <template #header>
-                <h3>备份的数据</h3>
-                <a @click="exportBackupData" style="margin-right: 10px;cursor: pointer;">下载</a>
-            </template>
-            <template #default>
-                <pre style="white-space: pre;">{{ backupData }}</pre>
-            </template>
-        </el-drawer>
-        <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
-            style="height:650px;overflow-y: auto;">
-            <div style="height: 530px;overflow-y: auto;">
-                <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
-                    <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
-                        <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]"
-                            type="datetime" value-format="YYYY-MM-DD HH:mm:ss" />
-                        <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'"
-                            inactive-value="b'0'" />
-                        <el-input
-                            v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
-                            v-model="rowData[col.dataKey]" type="textarea" autosize
-                            :disabled="tableKeys.includes(col.dataKey)" />
-                    </el-form-item>
-                </el-form>
-            </div>
-            <template #footer>
-                <div class="dialog-footer">
-                    <el-button v-if="canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
-                        保存
-                    </el-button>
-                    <el-button v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
-                        关闭
-                    </el-button>
+            <el-splitter-panel size="55%">
+                <div id="sqlArea" class="sql_area" style="height: calc(100vh * 0.55 - 55px);">
+                    <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
                 </div>
-            </template>
-        </el-dialog>
-    </el-container>
+            </el-splitter-panel>
+            <el-splitter-panel size="45%">
+                <el-auto-resizer>
+                    <template #default="{ height, width }">
+                        <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35" fixed />
+                    </template>
+                </el-auto-resizer>
+            </el-splitter-panel>
+        </el-splitter>
+    </div>
+    <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
+        <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
+    </el-dialog>
+    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
+        width="1000px" style="height:650px;overflow-y: auto;">
+        <el-row>
+            <el-form-item label="表名">
+                <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
+            </el-form-item>
+            <el-form-item>
+                <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
+                <el-button @click="copyCreateScript" style="margin-left:12px;" size="small">复制</el-button>
+            </el-form-item>
+        </el-row>
+        <el-row>
+            <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
+                <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
+            </el-scrollbar>
+        </el-row>
+    </el-dialog>
+    <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
+        style="height:650px;overflow-y: auto;">
+        <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="520">
+            <el-table-column type="index" width="50" />
+            <el-table-column prop="exec_time" label="操作时间" width="170" />
+            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
+            <el-table-column label="" width="38">
+                <template #default="scope">
+                    <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
+                        <View />
+                    </el-icon>
+                </template>
+            </el-table-column>
+        </el-table>
+        <div style="position: absolute;right: 10px;bottom: 5px;">
+            <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
+                v-model:current-page="backupDataCurrent" @current-change="listBackupData" />
+        </div>
+    </el-dialog>
+    <el-drawer v-model="backupDataDrawerShow">
+        <template #header>
+            <h3>备份的数据</h3>
+            <a @click="exportBackupData" style="margin-right: 10px;cursor: pointer;">下载</a>
+        </template>
+        <template #default>
+            <pre style="white-space: pre;">{{ backupData }}</pre>
+        </template>
+    </el-drawer>
+    <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
+        style="height:650px;overflow-y: auto;">
+        <div style="height: 530px;overflow-y: auto;">
+            <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
+                <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
+                    <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"
+                        value-format="YYYY-MM-DD HH:mm:ss" />
+                    <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'"
+                        inactive-value="b'0'" />
+                    <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
+                        v-model="rowData[col.dataKey]" type="textarea" autosize
+                        :disabled="tableKeys.includes(col.dataKey)" />
+                </el-form-item>
+            </el-form>
+        </div>
+        <template #footer>
+            <div class="dialog-footer">
+                <el-button v-if="canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
+                    保存
+                </el-button>
+                <el-button v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
+                    关闭
+                </el-button>
+            </div>
+        </template>
+    </el-dialog>
 </template>
 
 <script lang="ts" setup>
@@ -154,14 +149,6 @@ const editorView = ref<EditorView>()
 const codemirror = ref()
 const exportDialogVisible = ref(false)
 
-const showResult = ref(false)
-const showResultArea = ref(false)
-const resultHide = ref(false)
-const sqlDivHeight = ref("")
-let defaultSqlDivHeight: string
-const resultDivHeight = ref("")
-const toggleResultTitle = ref("")
-
 const exectingSql = ref(false)
 const currentSelectTable = ref("")
 
@@ -188,9 +175,6 @@ const backupData = ref("")
 const backupDataDrawerShow = ref(false)
 
 onMounted(() => {
-    // 默认高度
-    defaultSqlDivHeight = (calHeight() - 3) + "px"
-    sqlDivHeight.value = defaultSqlDivHeight
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -199,16 +183,6 @@ onMounted(() => {
     })
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
-    window.addEventListener('resize', () => {
-        if (showResult.value) {
-            sqlDivHeight.value = (calHeight() * 0.5) + "px"
-            resultDivHeight.value = (calHeight() * 0.5) + "px"
-        } else {
-            sqlDivHeight.value = (calHeight() - 15) + "px"
-            defaultSqlDivHeight = sqlDivHeight.value
-            resultDivHeight.value = "15px"
-        }
-    })
 })
 
 function createEditor(editorContainer: any, doc: any) {
@@ -364,13 +338,6 @@ function exec() {
                 row["col-idx"] = idx + 1
             });
             exectingSql.value = false
-            // showResult.value = false
-            if (defaultSqlDivHeight === sqlDivHeight.value || resultHide.value) {
-                toggleResult()
-            }
-            if (!showResultArea.value) {
-                showResultArea.value = true
-            }
         }).catch((error) => {
             console.log(error);
             exectingSql.value = false
@@ -666,36 +633,6 @@ function copyCreateScript() {
 
 function onKeyup() {
     localStorage.setItem(getSqlKey(), getEditorDoc())
-}
-
-function resizeResultArea(event: MouseEvent) {
-    const startY = event.clientY
-    const ogiHeight = sqlDivHeight.value === "" ? startY : Number.parseFloat(sqlDivHeight.value.substring(0, sqlDivHeight.value.length - 2))
-    const resultHeight = resultDivHeight.value === "" ? startY : Number.parseFloat(resultDivHeight.value.substring(0, resultDivHeight.value.length - 2))
-    document.onmousemove = (e) => {
-        sqlDivHeight.value = (ogiHeight + e.clientY - startY) + "px"
-        resultDivHeight.value = (resultHeight - (e.clientY - startY)) + "px"
-    }
-    document.onmouseup = () => {
-        document.onmouseup = null
-        document.onmousemove = null
-    }
-}
-
-function toggleResult() {
-    if (showResult.value) {
-        resultHide.value = true
-        showResult.value = false
-        sqlDivHeight.value = (calHeight() - 15) + "px"
-        resultDivHeight.value = "15px"
-        toggleResultTitle.value = "显示结果"
-    } else {
-        resultHide.value = false
-        showResult.value = true
-        sqlDivHeight.value = (calHeight() * 0.5) + "px"
-        resultDivHeight.value = (calHeight() * 0.5) + "px"
-        toggleResultTitle.value = "隐藏结果"
-    }
 }
 
 function calHeight() {
