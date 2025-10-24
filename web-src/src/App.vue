@@ -107,7 +107,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, shallowRef, onMounted, computed } from 'vue'
+import { ref, reactive, shallowRef, onMounted } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
 import Configuration from './views/comonents/Configuration.vue'
