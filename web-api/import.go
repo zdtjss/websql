@@ -21,10 +21,10 @@ func ImportXlsx(c *gin.Context) {
 
 	authorization := c.GetHeader("Authorization")
 
-	connId := c.Query("connId")
-	schema := c.Query("schema")
-	table := c.Query("table")
-	operType := c.Query("optType")
+	connId := c.PostForm("connId")
+	schema := c.PostForm("schema")
+	table := c.PostForm("table")
+	operType := c.PostForm("optType")
 	// start, _ := strconv.Atoi(r.Form.Get("start"))
 
 	log.Println("收到新增/更新请求，正在准备导入" + table)
@@ -38,7 +38,7 @@ func ImportXlsx(c *gin.Context) {
 	defer file.Close()
 
 	if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
-		logutils.PanicErr(errors.New("表名不匹配（文件名中横线后为表名）"))
+		logutils.PanicErr(errors.New("表名不匹配（文件名中横线后为表名，如用户列数据导入-t_user.xlsx）"))
 	}
 
 	excel, err := excelize.OpenReader(file)
@@ -130,7 +130,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	sql.WriteString(") values (")
 	if tx.DriverName() == "oracle" {
 		plc := make([]string, colNum)
-		for idx := 0; idx < colNum; idx++ {
+		for idx := range colNum {
 			plc[idx] = ":" + fmt.Sprint(idx+1)
 		}
 		sql.WriteString(strings.Join(plc, ","))
@@ -149,7 +149,7 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 	driverName := tx.DriverName()
 
 	for _, val := range data {
-		anyVal := make([]interface{}, colNum)
+		anyVal := make([]any, colNum)
 		for i := range val {
 			if i+1 > colNum {
 				logutils.PanicErr(errors.New("excel中字段数量超出了表字中段数量"))

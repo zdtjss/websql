@@ -107,11 +107,11 @@ function upload(options) {
     http.post("/importXlsx", param, {
         headers: { "content-type": "multipart/form-data" }
     }).then((res) => {
-        if (res && res.data.code === 200) {
-            ElMessage.success(res.data.data);
+        if (res && res.status === 200) {
+            ElMessage.success(res.data);
         } else {
-            if (res && res.data.msg) {
-                ElMessage.error(res.data.msg);
+            if (res && res.data) {
+                ElMessage.error(res.data);
             } else {
                 ElMessage.error('导入失败');
             }

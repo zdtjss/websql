@@ -45,7 +45,12 @@
     <el-splitter-panel>
       <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="demo-tabs" closable
         @tab-remove="removeTab">
-        <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :label="item.title" :name="item.tabId">
+        <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId">
+          <template #label>
+            <span>
+              <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
+            </span>
+          </template>
           <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" />
         </el-tab-pane>
       </el-tabs>
@@ -125,7 +130,6 @@ const editableTabs = ref([])
 
 const connTree = ref()
 const treeData = ref([])
-const treeDivWidth = ref("260px")
 
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
@@ -175,10 +179,12 @@ const addTab = (node) => {
     return
   }
   const tabId = Date.now().toString(36)
+  const conn = findConn(node)
   editableTabs.value.push({
     tabId: tabId,
     title: node.data.label,
-    connId: findConn(node),
+    connId: conn.id,
+    connName: conn.label,
     schema: node.data.label,
     component: sqlEditor,
   })
@@ -221,7 +227,8 @@ function loadTree(node, resolve) {
     resolve([])
     return
   }
-  http.get("/showTree", { params: { connId: findConn(node), key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
+  const conn = findConn(node)
+  http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
@@ -245,15 +252,15 @@ function loadTree(node, resolve) {
 }
 
 function findConn(node) {
-  let connId = ""
+  let conn = ""
   if (node.level === 0) {
-    return connId
+    return conn
   } else if (node.data.type === "conn") {
-    connId = node.data.id
+    conn = node.data
   } else {
-    connId = findConn(node.parent)
+    conn = findConn(node.parent)
   }
-  return connId
+  return conn
 }
 
 async function register() {
