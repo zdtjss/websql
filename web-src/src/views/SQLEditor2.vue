@@ -30,7 +30,8 @@
             <el-splitter-panel size="45%">
                 <el-auto-resizer>
                     <template #default="{ height, width }">
-                        <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35" fixed />
+                        <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35"
+                            fixed />
                     </template>
                 </el-auto-resizer>
             </el-splitter-panel>
@@ -47,13 +48,11 @@
             </el-form-item>
             <el-form-item>
                 <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
-                <el-button @click="copyCreateScript" style="margin-left:12px;" size="small">复制</el-button>
             </el-form-item>
         </el-row>
         <el-row>
-            <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
-                <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
-            </el-scrollbar>
+            <TableEditor :tableMeta="tableMeta" />
+            <!-- <ViewDialog :tableMeta="tableMeta" /> -->
         </el-row>
     </el-dialog>
     <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
@@ -125,6 +124,8 @@ import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
+import TableEditor from './comonents/TableEditor.vue'
+import ViewDialog from './comonents/ViewDialog.vue'
 
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -156,6 +157,8 @@ const tableName = ref("")
 const tableCreateDdl = ref("")
 const tableCreateDdlRef = ref()
 const tableCreateDialogVisible = ref(false)
+
+const tableMeta = ref({})
 
 const backupDataList = ref([])
 const backupDataTotal = ref(0)
@@ -600,28 +603,7 @@ function getSqlLang(): SqlLanguage {
 }
 
 function showCreateScript() {
-    let sqlStr = ""
-    const dbType = dbSchemaProxy.getDbType(props.schema)
-    if (dbType === 'mysql') {
-        sqlStr = "show create table " + tableName.value
-    } else if (dbType === 'oracle') {
-        sqlStr = "select dbms_metadata.get_ddl('TABLE','" + tableName.value.toUpperCase() + "') from dual"
-    } else {
-        ElMessage({ message: "暂不支持", type: "error" })
-        return
-    }
-    const params = new URLSearchParams()
-    params.append("connId", props.connId)
-    params.append("schema", props.schema)
-    params.append("sql", sqlStr)
-    params.append("maxLine", maxLine.value)
-    http.post("/execSQL", params)
-        .then((resp) => {
-            const data = resp.data.data.data[0]
-            tableCreateDdl.value = hljs.highlight(data[Object.keys(data)[0].trim()], { language: 'sql' }).value
-        }).catch((error) => {
-            console.log(error);
-        });
+    tableMeta.value = { connId: props.connId, schema: props.schema, tableName: tableName.value }
 }
 
 function copyCreateScript() {

@@ -127,7 +127,9 @@
 
         </el-tab-pane>
         <el-tab-pane label="create" name="showCreate">
-            <el-icon><CopyDocument /></el-icon>
+            <el-icon>
+                <CopyDocument />
+            </el-icon>
             <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
@@ -135,7 +137,7 @@
     </el-tabs>
 </template>
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch  } from 'vue'
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { format } from 'sql-formatter'
@@ -159,8 +161,16 @@ onMounted(() => {
     loadData({ props: { name: 'columns' } })
 })
 
-
+// 监听 props.tableMeta 的变化
+watch(() => props.tableMeta, (newVal, oldVal) => {
+  if (newVal && newVal !== oldVal) {
+    loadData({ props: { name: 'columns' } });
+  }
+}, { deep: true, immediate: true });
 function loadData(pane) {
+    if (!props.tableMeta || !props.tableMeta.connId) {
+        return;
+    }
     if (pane.props.name === "columns") {
         http.post("/listTableColumns", props.tableMeta)
             .then((resp) => {
@@ -190,7 +200,7 @@ function loadData(pane) {
             .then((resp) => {
                 const data = resp.data.data.data[0]
                 const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(props.tableMeta.schema) })
-                tableCreateDdl.value =  hljs.highlight(sql, { language: 'sql' }).value
+                tableCreateDdl.value = hljs.highlight(sql, { language: 'sql' }).value
             }).catch((error) => {
                 console.log(error);
             });
@@ -369,7 +379,6 @@ function execSql(sql, succ) {
 .modify_column_comment:hover {
     opacity: 0.8;
 }
-
 </style>
 
 <style>
