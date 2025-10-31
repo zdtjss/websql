@@ -127,7 +127,7 @@
 
         </el-tab-pane>
         <el-tab-pane label="create" name="showCreate">
-            <el-icon>
+            <el-icon style="margin-top: 5px;position: absolute;right: 0px;cursor: pointer;z-index: 9999999;" size="16" @click="copyCreateScript">
                 <CopyDocument />
             </el-icon>
             <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
@@ -144,6 +144,7 @@ import { format } from 'sql-formatter'
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
+import copyToClipboard from '@/js/utils/copy-to-clipboard.js'
 
 hljs.registerLanguage('sql', highlightSql.default);
 
@@ -152,6 +153,7 @@ const activeName = ref("colums")
 let columnListOrigin = []
 const columnList = ref([])
 const tableCreateDdl = ref("")
+const tableCreateDdlRef = ref()
 
 const props = defineProps({
     tableMeta: Object,
@@ -302,6 +304,12 @@ function execSql(sql, succ) {
         });
 }
 
+function copyCreateScript() {
+    copyToClipboard(tableCreateDdlRef.value.innerText,
+        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
+        () => ElMessage({ message: "复制失败", type: "error" })
+    )
+}
 </script>
 
 <style lang="less" scoped>

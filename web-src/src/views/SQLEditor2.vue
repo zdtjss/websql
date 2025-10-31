@@ -40,20 +40,19 @@
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
         <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
     </el-dialog>
-    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
+    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true" destroy-on-close
         width="1000px" style="height:650px;overflow-y: auto;">
-        <el-row>
-            <el-form-item label="表名">
-                <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
-            </el-form-item>
-            <el-form-item>
-                <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
-            </el-form-item>
-        </el-row>
-        <el-row>
-            <TableEditor :tableMeta="tableMeta" />
-            <!-- <ViewDialog :tableMeta="tableMeta" /> -->
-        </el-row>
+        <div>
+            <el-switch v-model="isTable" class="ml-2" inline-prompt size="large"
+                style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff;margin-right: 10px;" active-text="表"
+                inactive-text="视图" />
+            <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
+            <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
+        </div>
+        <div>
+            <TableEditor v-if="isTable" :tableMeta="tableMeta" />
+            <ViewDialog v-else :tableMeta="tableMeta" />
+        </div>
     </el-dialog>
     <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
         style="height:650px;overflow-y: auto;">
@@ -154,10 +153,10 @@ const exectingSql = ref(false)
 const currentSelectTable = ref("")
 
 const tableName = ref("")
-const tableCreateDdl = ref("")
 const tableCreateDdlRef = ref()
 const tableCreateDialogVisible = ref(false)
 
+const isTable = ref(true)
 const tableMeta = ref({})
 
 const backupDataList = ref([])

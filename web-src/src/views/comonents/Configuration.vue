@@ -337,7 +337,8 @@ function roleDblClick(row) {
 function saveRole(row) {
     const param = Object.assign({}, row)
     param.connIdList = []
-    param.connIdList.push(...powerListChecked)
+    param.connIdList.push(...roleConnTree.value.getHalfCheckedKeys())
+    param.connIdList.push(...roleConnTree.value.getCheckedKeys())
     http.post("/saveRole", param)
         .then((resp) => {
             loadCfgData({ props: { name: 'role' } })
