@@ -1,5 +1,5 @@
 <template>
-  <el-splitter style="height: calc(100vh * 0.98);">
+  <el-splitter style="height: calc(100vh - 16px);">
     <el-splitter-panel :collapsible="true" size="15%">
       <div style="text-align: right;margin-right: 10px;">
         <el-icon v-show="currentUser.isAdmin || !isRemote" color="#409EFC" @click="cfgDialogVisible = true"
@@ -438,7 +438,7 @@ function viewViewInfo(node) {
 <style scoped>
 .layout-container-demo {
   /* width: calc(100vw * 0.98); */
-  height: calc(100vh * 0.97);
+  height: calc(100vh);
 }
 
 .layout-container-demo .el-header {
