@@ -223,7 +223,7 @@ function restoreTab() {
 
 function loadTree(node, resolve) {
 
-  if ((Object.keys(node.data).length === 0 && !loginSucc.value && isRemote.value) || node.data.type === 'column') {
+  if ((Object.keys(node.data).length === 0 && !loginSucc.value && isRemote.value) || node.data.type === 'table' || node.data.type === 'view') {
     resolve([])
     return
   }
@@ -232,12 +232,11 @@ function loadTree(node, resolve) {
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
-
         addTab(node)
       }
       if (resp.data.data) {
         resolve(resp.data.data.map(e => {
-          if (e.type === "column") {
+          if (e.type === "table" || e.type === "view") {
             return Object.assign({ isLeaf: true }, e)
           }
           return e
