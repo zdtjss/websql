@@ -9,13 +9,12 @@ import (
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
+	dbutils "go-web/utils/db"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	dbutils "go-web/utils/db"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -189,30 +188,73 @@ func ShowBackupData(c *gin.Context) {
 	}
 	utils.WriteJson(c.Writer, backupData)
 }
-
 func ListBackupData(c *gin.Context) {
 	CheckAdminPower(c)
 	user := GetUser(c.GetHeader("Authorization"))
 	connId := c.Query("connId")
 
-	total := 0
-	var data []map[string]any
-	stmt, err := config.Mngtdb.Preparex("select count(*) from t_history where user = ? and conn_id = ? and operation_type in ('update','delete')")
-	logutils.PanicErr(err)
-	defer stmt.Close()
-	stmt.QueryRow(user.LoginName, connId).Scan(&total)
+	// 构建动态SQL查询
+	var (
+		countSQL  string
+		querySQL  string
+		countArgs []any
+		queryArgs []any
+	)
 
-	if total != 0 {
-		current := c.GetInt("current")
-		pageSize := c.GetInt("pageSize")
-		stmt2, err2 := config.Mngtdb.Preparex("select a.id,a.exec_sql,exec_time from t_history a where a.user = ? and conn_id = ?  and operation_type in ('update','delete') order by exec_time desc limit ?,?")
-		logutils.PanicErr(err2)
-		defer stmt2.Close()
-		rows, err := stmt2.Queryx(user.LoginName, connId, (current-1)*pageSize, pageSize)
-		logutils.PanicErr(err)
-		defer rows.Close()
-		data = dbutils.GetResultRows(config.Mngtdb.DriverName(), rows)
+	// 基础SQL部分
+	baseWhere := "WHERE conn_id = ? AND operation_type IN ('update','delete')"
+	baseCountSQL := "SELECT COUNT(*) FROM t_history a " + baseWhere
+	baseQuerySQL := "SELECT a.id, a.exec_sql, a.exec_time FROM t_history a " + baseWhere +
+		" ORDER BY a.exec_time DESC LIMIT ?, ?"
+
+	if user.Id != config.AdminId {
+		// 非管理员：添加user条件
+		countSQL = "SELECT COUNT(*) FROM t_history a WHERE a.user = ? AND conn_id = ? AND operation_type IN ('update','delete')"
+		querySQL = "SELECT a.id, a.exec_sql, exec_time FROM t_history a WHERE a.user = ? AND conn_id = ? AND operation_type IN ('update','delete') ORDER BY exec_time DESC LIMIT ?,?"
+		countArgs = []any{user.LoginName, connId}
+	} else {
+		// 管理员：忽略user条件
+		countSQL = baseCountSQL
+		querySQL = baseQuerySQL
+		countArgs = []any{connId}
 	}
+
+	// 执行count查询
+	stmt, err := config.Mngtdb.Preparex(countSQL)
+	logutils.PanicErrf("准备count查询失败", err)
+	defer stmt.Close()
+
+	var total int
+	err = stmt.QueryRow(countArgs...).Scan(&total)
+	logutils.PanicErrf("执行count查询失败", err)
+
+	if total == 0 {
+		utils.WriteJson(c.Writer, map[string]any{"data": []map[string]any{}, "total": 0})
+		return
+	}
+
+	// 获取分页参数
+	current := c.GetInt("current")
+	pageSize := c.GetInt("pageSize")
+	offset := (current - 1) * pageSize
+
+	// 构建查询参数
+	if user.Id != config.AdminId {
+		queryArgs = []any{user.LoginName, connId, offset, pageSize}
+	} else {
+		queryArgs = []any{connId, offset, pageSize}
+	}
+
+	// 执行数据查询
+	stmt2, err := config.Mngtdb.Preparex(querySQL)
+	logutils.PanicErrf("准备数据查询失败", err)
+	defer stmt2.Close()
+
+	rows, err := stmt2.Queryx(queryArgs...)
+	logutils.PanicErrf("执行数据查询失败", err)
+	defer rows.Close()
+
+	data := dbutils.GetResultRows(config.Mngtdb.DriverName(), rows)
 	utils.WriteJson(c.Writer, map[string]any{"data": data, "total": total})
 }
 
