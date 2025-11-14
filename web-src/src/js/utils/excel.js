@@ -78,7 +78,7 @@ export const exportJsonToExcel = ({
         const arr = json_to_array(key, data)
         auto_width(ws, arr)
     }
-    XLSX.utils.book_append_sheet(wb, ws, "Sheet Export")
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1")
     XLSX.writeFile(wb, filename + '.xlsx')
 }
 export default {

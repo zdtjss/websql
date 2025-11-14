@@ -4,21 +4,21 @@
             <el-table :data="tableData" :stripe="true" :highlight-current-row="true" width="100%" height="650">
                 <el-table-column prop="name" label="表名" />
                 <el-table-column prop="comment" label="注释" :show-overflow-tooltip="true" />
-                <el-table-column label="操作" style="text-align: center; " width="260">
+                <el-table-column v-if="canImport" label="操作" align="center" width="260">
                     <template #default="scope">
                         <el-row :gutter="10">
                             <el-col :span="6">
                                 <el-button size="small" @click="exportXlsx(scope.row)"
                                     :loading="scope.row.exporting">导出</el-button>
                             </el-col>
-                            <el-col :span="9">
+                            <el-col :span="9" v-if="props.canImport">
                                 <el-upload :file-list="fileListInsert" :http-request="upload"
                                     :data="{ row: scope.row, table: scope.row.name, optType: 'insert' }"
                                     @on-progress="scope.row.inserting = true" :show-file-list="false" :limit="1">
                                     <el-button size="small" :loading="scope.row.inserting">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
-                            <el-col :span="9">
+                            <el-col :span="9" v-if="props.canImport">
                                 <el-upload :file-list="fileListUpdate" :http-request="upload"
                                     :data="{ row: scope.row, table: scope.row.name, optType: 'update' }"
                                     @on-progress="scope.row.updateing = true" :show-file-list="false" :limit="1">
@@ -26,6 +26,11 @@
                                 </el-upload>
                             </el-col>
                         </el-row>
+                    </template>
+                </el-table-column>
+                <el-table-column v-else label="操作" align="center" width="100">
+                    <template #default="scope">
+                        <el-button size="small" @click="exportXlsx(scope.row)" :loading="scope.row.exporting">导出</el-button>
                     </template>
                 </el-table-column>
             </el-table>
@@ -42,7 +47,8 @@ import http from '../js/utils/httpProxy.js'
 const props = defineProps({
     connId: String,
     schema: String,
-    opt: String
+    opt: String,
+    canImport: Boolean,
 })
 
 const fileListInsert = ref([])
@@ -75,12 +81,12 @@ function exportXlsx(row) {
         const downloadElement = document.createElement('a');
         const href = window.URL.createObjectURL(blob);
         let contentDisposition = res.headers['content-disposition'];  //从response的headers中获取filename, 后端response.setHeader("Content-disposition", "attachment; filename=xxxx.docx") 设置的文件名;
-        let patt = new RegExp("filename=([^;]+\\.[^\\.;]+);*");
-        let result = patt.exec(contentDisposition);
-        let filename = decodeURI(result[1]);
+        // let patt = new RegExp("filename=([^;]+\\.[^\\.;]+);*");
+        // let result = patt.exec(contentDisposition);
+        // let filename = decodeURI(result[1]);
         downloadElement.style.display = 'none';
         downloadElement.href = href;
-        downloadElement.download = filename; //下载后文件名
+        downloadElement.download = (row.comment ? row.comment + "-" : "") + row.name + ".xlsx"; //下载后文件名
         document.body.appendChild(downloadElement);
         downloadElement.click(); //点击下载
         document.body.removeChild(downloadElement); //下载完成移除元素

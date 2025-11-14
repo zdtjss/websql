@@ -20,7 +20,12 @@
                 </el-dropdown>
                 <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
                 <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
-                <span style="float:right;">最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
+                <div style="float:right;">
+                    <div style="display: inline-block;margin-right: 15px;">
+                        <span>允许修改</span><span><input v-model="canModify" type="checkbox"></input></span>
+                    </div>
+                    <span>最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
+                </div>
             </div>
             <el-splitter-panel size="55%">
                 <div id="sqlArea" class="sql_area" style="height: calc(100vh * 0.55 - 55px);">
@@ -38,14 +43,14 @@
         </el-splitter>
     </div>
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
-        <DBExport :connId="props.connId" :schema="props.schema" opt="insert" />
+        <DBExport :connId="props.connId" :schema="props.schema" opt="insert" :canImport="canModify"/>
     </el-dialog>
-    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true" destroy-on-close
-        width="1000px" style="height:650px;overflow-y: auto;">
+    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
+        destroy-on-close width="1000px" style="height:650px;overflow-y: auto;">
         <div>
             <el-switch v-model="isTable" class="ml-2" inline-prompt size="large"
-                style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff;margin-right: 10px;" active-text="表"
-                inactive-text="视图" />
+                style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff;margin-right: 10px;"
+                active-text="表" inactive-text="视图" />
             <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
             <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
         </div>
@@ -99,10 +104,10 @@
         </div>
         <template #footer>
             <div class="dialog-footer">
-                <el-button v-if="canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
+                <el-button v-if="canModify && canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
                     保存
                 </el-button>
-                <el-button v-if="!canEdit" type="primary" @click="dataDetailsDialogVisible = false">
+                <el-button v-if="!(canModify && canEdit)" type="primary" @click="dataDetailsDialogVisible = false">
                     关闭
                 </el-button>
             </div>
@@ -118,7 +123,7 @@ import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/comm
 import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
-import { ref, onMounted, h } from 'vue'
+import { ref, onMounted, watch, h } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
@@ -139,7 +144,8 @@ hljs.registerLanguage('sql', highlightSql.default);
 const props = defineProps<{
     tabId: string,
     connId: string,
-    schema: string
+    schema: string,
+    schemaPath: string,
 }>()
 
 const maxLine = ref("15")
@@ -173,6 +179,8 @@ let originRowData: any = {}
 const dataDetailsDialogVisible = ref(false)
 const onDataSaving = ref(false)
 
+const canModify = ref(false)
+
 const backupData = ref("")
 const backupDataDrawerShow = ref(false)
 
@@ -185,6 +193,15 @@ onMounted(() => {
     })
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
+    const schemaPathLower = props.schemaPath.toLowerCase()
+    canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat")  != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
+})
+
+watch(canModify, (can) => {
+     const schemaPathLower = props.schemaPath.toLowerCase()
+    if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_read") != -1)) {
+        ElMessage({ message: "当前可能为生产库，请谨慎修改。", type: "error" })
+    }
 })
 
 function createEditor(editorContainer: any, doc: any) {
@@ -453,11 +470,17 @@ function checkSql(sql: string) {
     let hasInvalid = false
     const sqlArr = sql.split(";")
     for (let i = 0; i < sqlArr.length; i++) {
-        if ((sqlArr[i].trimStart().startsWith("update ") || sqlArr[i].trimStart().startsWith("delete ")) && sqlArr[i].indexOf(" where ") === -1) {
+        const sqlLowerCase = sqlArr[i].toLowerCase().trimStart()
+        if(!canModify.value && (sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ") || sqlLowerCase.startsWith("alter "))) {
+            ElMessage.warning("当前模式不允许修改")
+            hasInvalid = true
+            break
+        }
+        if ((sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ")) && sqlLowerCase.indexOf(" where ") === -1) {
             hasInvalid = true
             ElMessage.warning("请明确 where 条件")
             break
-        }
+        } 
     }
     return hasInvalid
 }

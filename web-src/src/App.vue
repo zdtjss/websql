@@ -51,7 +51,7 @@
               <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
             </span>
           </template>
-          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" />
+          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" />
         </el-tab-pane>
       </el-tabs>
     </el-splitter-panel>
