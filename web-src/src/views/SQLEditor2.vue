@@ -1,6 +1,6 @@
 <template>
     <div style="height: calc(100vh - 60px);" @keyup.f9="exec" @keyup.ctrl.shift.f="formatSql">
-        <el-splitter layout="vertical">
+        <el-splitter layout="vertical"  @resize="onResultDivResize">
 
             <div class="toolbar">
                 <el-button @click="exec" :loading="exectingSql" title="F9">执行</el-button>
@@ -28,7 +28,7 @@
                 </div>
             </div>
             <el-splitter-panel size="55%">
-                <div id="sqlArea" class="sql_area" style="height: calc(100vh * 0.55 - 55px);">
+                <div id="sqlArea" ref="sqlAreaRef" class="sql_area" style="height: calc(100vh * 0.55 - 55px);">
                     <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
                 </div>
             </el-splitter-panel>
@@ -123,7 +123,7 @@ import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/comm
 import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
-import { ref, onMounted, watch, h } from 'vue'
+import { ref, onMounted, watch, h, nextTick } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
@@ -147,6 +147,8 @@ const props = defineProps<{
     schema: string,
     schemaPath: string,
 }>()
+
+const sqlAreaRef:any = ref(null)
 
 const maxLine = ref("15")
 const columns: any = ref([])
@@ -639,8 +641,16 @@ function onKeyup() {
     localStorage.setItem(getSqlKey(), getEditorDoc())
 }
 
-function calHeight() {
-    return document.body.scrollHeight - 75
+function onResultDivResize(index: number, sizes: number[]) {
+    nextTick(() => { // 确保 DOM 已更新
+        if (sqlAreaRef.value) {
+            sqlAreaRef.value.style.height = (sizes[index] - 25) + "px"
+            // 或者强制覆盖
+            sqlAreaRef.value.style.setProperty('height', (sizes[index] - 25) + "px", 'important')
+        }
+    })
+
+    console.log(index, JSON.stringify(sizes))
 }
 
 function fmtVal(val: any) {
