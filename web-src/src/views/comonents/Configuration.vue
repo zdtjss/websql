@@ -228,6 +228,8 @@ import http from '@/js/utils/httpProxy'
 
 const loadingConn = ref(false)
 
+
+const roleConnIdList = ref([])
 const formLabelWidth = '100px'
 const userList = ref([])
 const connListSelect = ref([])
@@ -336,9 +338,7 @@ function roleDblClick(row) {
 
 function saveRole(row) {
     const param = Object.assign({}, row)
-    param.connIdList = []
-    param.connIdList.push(...roleConnTree.value.getHalfCheckedKeys())
-    param.connIdList.push(...roleConnTree.value.getCheckedKeys())
+    param.connIdList = roleConnIdList.value
     http.post("/saveRole", param)
         .then((resp) => {
             loadCfgData({ props: { name: 'role' } })
@@ -346,8 +346,12 @@ function saveRole(row) {
         })
 }
 
-function checkPower(data, status) {
-    powerListChecked.push(...status.checkedKeys)
+function checkPower(checkedNodes, checkedKeys) {
+    powerListChecked.value = []
+    roleConnIdList.value = []
+    powerListChecked.push(...checkedKeys.checkedKeys)
+    roleConnIdList.value.push(...checkedKeys.checkedKeys)
+    roleConnIdList.value.push(...checkedKeys.halfCheckedKeys)
 }
 
 function delRole(row) {
