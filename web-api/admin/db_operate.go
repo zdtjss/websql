@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"go-web/logutils"
+	"go-web/utils"
 	dbutils "go-web/utils/db"
 	"log"
 	"net/http"
@@ -202,4 +203,98 @@ type Table struct {
 type Column struct {
 	Name    string `json:"name"`
 	Comment string `json:"comment"`
+}
+
+func TableOptions(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	param := ColumnsQuery{}
+	c.ShouldBindJSON(&param)
+	dc := GetConn(param.ConnId, authorization)
+	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
+	sqlStr, ok := dialect["tableOptions"]
+	if !ok {
+		utils.WriteJson(c.Writer, map[string]any{})
+		return
+	}
+	args := []any{}
+	if dc.DriverName() == "oracle" {
+		args = append(args, param.TableName)
+	} else {
+		args = append(args, param.Schema, param.TableName)
+	}
+	rows, err := dc.Queryx(sqlStr, args...)
+	logutils.PanicErr(err)
+	data := dbutils.GetResultRows(dc.DriverName(), rows)
+	if len(data) > 0 {
+		utils.WriteJson(c.Writer, data[0])
+	} else {
+		utils.WriteJson(c.Writer, map[string]any{})
+	}
+}
+
+func TableStatistics(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	param := ColumnsQuery{}
+	c.ShouldBindJSON(&param)
+	dc := GetConn(param.ConnId, authorization)
+	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
+	sqlStr, ok := dialect["tableStatistics"]
+	if !ok {
+		utils.WriteJson(c.Writer, map[string]any{})
+		return
+	}
+	args := []any{}
+	if dc.DriverName() == "oracle" {
+		args = append(args, param.TableName)
+	} else {
+		args = append(args, param.Schema, param.TableName)
+	}
+	rows, err := dc.Queryx(sqlStr, args...)
+	logutils.PanicErr(err)
+	data := dbutils.GetResultRows(dc.DriverName(), rows)
+	if len(data) > 0 {
+		utils.WriteJson(c.Writer, data[0])
+	} else {
+		utils.WriteJson(c.Writer, map[string]any{})
+	}
+}
+
+func ListIndexes(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	param := ColumnsQuery{}
+	c.ShouldBindJSON(&param)
+	dc := GetConn(param.ConnId, authorization)
+	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
+	sqlStr, ok := dialect["listIndexes"]
+	if !ok {
+		utils.WriteJson(c.Writer, []map[string]any{})
+		return
+	}
+	args := []any{}
+	if dc.DriverName() == "oracle" {
+		args = append(args, param.TableName)
+	} else {
+		args = append(args, param.Schema, param.TableName)
+	}
+	rows, err := dc.Queryx(sqlStr, args...)
+	logutils.PanicErr(err)
+	data := dbutils.GetResultRows(dc.DriverName(), rows)
+	utils.WriteJson(c.Writer, data)
+}
+
+func SchemaOverview(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	connId := c.Query("connId")
+	schema := c.Query("schema")
+	dc := GetConn(connId, authorization)
+	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
+	sqlStr, ok := dialect["schemaOverview"]
+	if !ok {
+		utils.WriteJson(c.Writer, []map[string]any{})
+		return
+	}
+	rows, err := dc.Queryx(sqlStr, schema)
+	logutils.PanicErr(err)
+	data := dbutils.GetResultRows(dc.DriverName(), rows)
+	utils.WriteJson(c.Writer, data)
 }

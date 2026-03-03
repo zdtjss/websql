@@ -35,6 +35,10 @@ func MainRegister(router *gin.Engine) {
 	router.GET("/showTree", admin.ShowTree)
 
 	router.POST("/listTableColumns", admin.ListTableColumns)
+	router.POST("/tableOptions", admin.TableOptions)
+	router.POST("/tableStatistics", admin.TableStatistics)
+	router.POST("/listIndexes", admin.ListIndexes)
+	router.GET("/schemaOverview", admin.SchemaOverview)
 
 	router.POST("/saveTree", admin.SaveTree)
 	router.GET("/listDirTree", admin.ListDirTree)

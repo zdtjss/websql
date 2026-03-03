@@ -34,6 +34,8 @@
         <template #default="{ node, data }">
           <div class="table-node-wrapper">
             <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
+            <i v-if="data.type === 'schema'" class="icon-schema-overview icon icon16" title="全库结构视图"
+              @click.stop="openSchemaOverview(node)"></i>
             <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息"
               @click.stop="viewTableInfo(node)"></i>
             <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息"
@@ -72,7 +74,7 @@
   <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
     @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
     style="height:650px;">
-    <TableEditor :tableMeta="tableMeta" />
+    <TableEditor :tableMeta="tableMeta" @tableDrop="tableMgntDialogVisible = false; tableMeta = {}" />
     <template #footer>
       <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
         <el-button @click="tableMgntDialogVisible = false; tableMeta = {}">关闭</el-button>
@@ -115,6 +117,7 @@
 import { ref, reactive, shallowRef, onMounted } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
+import SchemaOverview from './views/SchemaOverview.vue'
 import Configuration from './views/comonents/Configuration.vue'
 import TableEditor from './views/comonents/TableEditor.vue'
 import ViewDialog from './views/comonents/ViewDialog.vue'
@@ -124,6 +127,7 @@ import { dbSchemaProxy } from '@/stores/sql'
 const showLoginBtn = ref(true)
 
 const sqlEditor = shallowRef(SQLEditor2)
+const schemaOverviewComp = shallowRef(SchemaOverview)
 
 const editableTabsValue = ref('')
 const editableTabs = ref([])
@@ -166,7 +170,13 @@ const tableMgntTitle = ref("")
 onMounted(() => {
   getSysModel()
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
-  storedTabs.forEach(tab => tab.component = sqlEditor)
+  storedTabs.forEach(tab => {
+    if (tab.tabId && tab.tabId.startsWith('overview-')) {
+      tab.component = schemaOverviewComp
+    } else {
+      tab.component = sqlEditor
+    }
+  })
   editableTabs.value.push(...storedTabs)
   editableTabsValue.value = localStorage.getItem("editableTabsValue") || ""
 
@@ -432,6 +442,27 @@ function viewViewInfo(node) {
   viewDialogVisible.value = true
 }
 
+function openSchemaOverview(node) {
+  const conn = findConn(node)
+  const tabId = 'overview-' + conn.id + '-' + node.data.label
+  // 如果已存在则切换过去
+  const existing = editableTabs.value.find(t => t.tabId === tabId)
+  if (existing) {
+    editableTabsValue.value = tabId
+    return
+  }
+  editableTabs.value.push({
+    tabId: tabId,
+    title: '📊 ' + node.data.label,
+    connId: conn.id,
+    connName: conn.label,
+    schema: node.data.label,
+    component: schemaOverviewComp,
+  })
+  editableTabsValue.value = tabId
+  restoreTab()
+}
+
 </script>
 
 <style scoped>
@@ -460,6 +491,7 @@ function viewViewInfo(node) {
 .table-node-wrapper {
   position: relative;
   display: inline-block;
+  padding-right: 22px;
 }
 
 .icon-view-table {
@@ -480,6 +512,31 @@ function viewViewInfo(node) {
 
 .table-node-wrapper:hover .icon-view-table {
   opacity: 1;
+}
+
+.icon-schema-overview {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  right: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+.icon-schema-overview::after {
+  content: '📊';
+}
+.table-node-wrapper:hover .icon-schema-overview {
+  opacity: 1;
+}
+.icon-schema-overview:hover {
+  opacity: 0.8 !important;
 }
 
 .icon-view-table:hover {
