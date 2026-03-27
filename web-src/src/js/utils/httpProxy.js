@@ -14,6 +14,10 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
     (response) => {
+        // Skip business-code check for binary/blob responses
+        if (response.config.responseType === 'blob') {
+            return response;
+        }
         // 假设后端总是返回 HTTP 200，用 data.code 表示业务状态
         const { code, msg } = response.data;
         if (code === 500) {

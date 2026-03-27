@@ -5,6 +5,7 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
+	"go-web/web-api/ai"
 	"io"
 	"log"
 	"net/http"
@@ -25,6 +26,7 @@ func MainRegister(router *gin.Engine) {
 
 	router.GET("/listTable", admin.ListTableFat)
 	router.GET("/exportXlsx", ExportXlsx)
+	router.POST("/exportXlsxBySql", ExportXlsxBySql)
 	router.POST("/importXlsx", ImportXlsx)
 	router.POST("/execSQL", ExecSQL)
 
@@ -38,7 +40,6 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/tableOptions", admin.TableOptions)
 	router.POST("/tableStatistics", admin.TableStatistics)
 	router.POST("/listIndexes", admin.ListIndexes)
-	router.GET("/schemaOverview", admin.SchemaOverview)
 
 	router.POST("/saveTree", admin.SaveTree)
 	router.GET("/listDirTree", admin.ListDirTree)
@@ -61,6 +62,13 @@ func MainRegister(router *gin.Engine) {
 
 	router.GET("/listBackupData", admin.ListBackupData)
 	router.GET("/showBackupData", admin.ShowBackupData)
+
+	router.POST("/ai/config/save", ai.HandleSaveConfig)
+	router.GET("/ai/config/get", ai.HandleGetConfig)
+	router.POST("/ai/config/test", ai.HandleTestConfig)
+	router.POST("/ai/generateSql", ai.HandleGenerateSql)
+	router.POST("/ai/generateSqlStream", ai.HandleGenerateSqlStream)
+	router.POST("/ai/chat", ai.HandleChat)
 
 	router.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})

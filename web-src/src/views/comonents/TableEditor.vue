@@ -1,7 +1,7 @@
 <template>
-    <el-tabs v-model="activeName" type="card" style="height:500px;" @tab-click="loadData">
+    <el-tabs v-model="activeName" type="card" class="table-editor-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
-            <el-table :data="columnList" style="width: 100%" height="470">
+            <el-table :data="columnList" style="width: 100%" class="col-table">
                 <el-table-column label="名称" width="250">
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnName" style="margin-bottom: 10px;" />
@@ -151,7 +151,7 @@
             <div style="margin-bottom: 8px;">
                 <el-button size="small" @click="showAddIndexDialog">新建索引</el-button>
             </div>
-            <el-table :data="indexList" style="width: 100%" height="430" row-key="rowKey">
+            <el-table :data="indexList" style="width: 100%" class="col-table" row-key="rowKey">
                 <el-table-column prop="indexName" label="索引名" width="200" />
                 <el-table-column prop="columnName" label="字段" width="200" />
                 <el-table-column label="唯一" width="80">
@@ -161,7 +161,26 @@
                 </el-table-column>
                 <el-table-column prop="seqInIndex" label="序号" width="60" />
                 <el-table-column prop="indexType" label="类型" width="120" />
-                <el-table-column prop="indexComment" label="注释" />
+                <el-table-column label="注释">
+                    <template #default="scope">
+                        <div v-if="!scope.row.onCommentEdit" class="column_comment">
+                            <span>{{ scope.row.indexComment || '-' }}</span>
+                            <span class="modify_icon">
+                                <el-icon :size="12" style="cursor: pointer;" title="修改注释"
+                                    @click="scope.row.onCommentEdit = true; scope.row._editComment = scope.row.indexComment">
+                                    <Edit />
+                                </el-icon>
+                            </span>
+                        </div>
+                        <div v-else>
+                            <el-input v-model="scope.row._editComment" size="small" style="width: 140px;" />
+                            <el-icon title="保存" style="cursor: pointer;margin-left:4px;margin-right:4px;" :size="12"
+                                @click="saveIndexComment(scope.row)"><Check /></el-icon>
+                            <el-icon title="取消" style="cursor: pointer;" :size="12"
+                                @click="scope.row.onCommentEdit = false"><Close /></el-icon>
+                        </div>
+                    </template>
+                </el-table-column>
                 <el-table-column label="操作" width="70">
                     <template #default="scope">
                         <el-popconfirm :title="'删除索引 ' + scope.row.indexName + '？'" hide-after="0" @confirm="dropIndex(scope.row.indexName)">
@@ -177,12 +196,39 @@
         </el-tab-pane>
 
         <el-tab-pane label="选项" name="option">
-            <div v-if="Object.keys(tableOptionsData).length > 0" style="padding: 10px;">
-                <el-descriptions :column="2" border>
-                    <el-descriptions-item v-for="(val, key) in tableOptionsData" :key="key" :label="optionLabel(key)">
-                        {{ val ?? '-' }}
-                    </el-descriptions-item>
-                </el-descriptions>
+            <div v-if="editableOptions.length > 0" style="padding: 10px;">
+                <el-table :data="editableOptions" border size="small" style="width: 100%;">
+                    <el-table-column label="选项" width="160">
+                        <template #default="scope">{{ optionLabel(scope.row.key) }}</template>
+                    </el-table-column>
+                    <el-table-column label="值">
+                        <template #default="scope">
+                            <div v-if="!scope.row.editing" class="column_comment">
+                                <span>{{ scope.row.value ?? '-' }}</span>
+                                <span v-if="EDITABLE_OPTIONS.has(scope.row.key)" class="modify_icon">
+                                    <el-icon :size="12" style="cursor: pointer;" title="修改"
+                                        @click="scope.row.editing = true; scope.row._edit = scope.row.value">
+                                        <Edit />
+                                    </el-icon>
+                                </span>
+                            </div>
+                            <div v-else style="display:flex;align-items:center;gap:4px;">
+                                <el-select v-if="scope.row.key === 'ENGINE'" v-model="scope.row._edit" size="small" style="width:160px;">
+                                    <el-option v-for="e in ENGINE_OPTIONS" :key="e" :label="e" :value="e" />
+                                </el-select>
+                                <el-select v-else-if="scope.row.key === 'TABLE_COLLATION'" v-model="scope.row._edit" size="small" filterable style="width:220px;">
+                                    <el-option v-for="c in COLLATION_OPTIONS" :key="c" :label="c" :value="c" />
+                                </el-select>
+                                <el-select v-else-if="scope.row.key === 'CHARACTER_SET_NAME'" v-model="scope.row._edit" size="small" filterable style="width:180px;">
+                                    <el-option v-for="c in CHARSET_OPTIONS" :key="c" :label="c" :value="c" />
+                                </el-select>
+                                <el-input v-else v-model="scope.row._edit" size="small" style="width:200px;" />
+                                <el-icon title="保存" style="cursor:pointer;" :size="12" @click="saveOption(scope.row)"><Check /></el-icon>
+                                <el-icon title="取消" style="cursor:pointer;" :size="12" @click="scope.row.editing = false"><Close /></el-icon>
+                            </div>
+                        </template>
+                    </el-table-column>
+                </el-table>
             </div>
             <el-empty v-else description="暂不支持" />
         </el-tab-pane>
@@ -205,22 +251,6 @@
             <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
-        </el-tab-pane>
-
-        <el-tab-pane label="操作" name="tableOps">
-            <div style="padding: 20px;">
-                <div style="margin-bottom: 20px;">
-                    <span style="margin-right: 10px;">重命名表：</span>
-                    <el-input v-model="newTableName" style="width: 300px;" :placeholder="props.tableMeta?.tableName" />
-                    <el-button style="margin-left: 10px;" @click="renameTable">执行</el-button>
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <span style="margin-right: 10px;">修改注释：</span>
-                    <el-input v-model="newTableComment" style="width: 300px;" placeholder="输入新的表注释" />
-                    <el-button style="margin-left: 10px;" @click="modifyTableComment">执行</el-button>
-                </div>
-                <el-divider />
-            </div>
         </el-tab-pane>
     </el-tabs>
 
@@ -271,11 +301,30 @@ const indexList = ref([])
 const tableOptionsData = ref({})
 const tableStatsData = ref({})
 
-const newTableName = ref("")
-const newTableComment = ref("")
-
 const addIndexDialogVisible = ref(false)
 const newIndex = ref({ name: "", type: "INDEX", columns: [] })
+
+// computed list for editable options table
+const editableOptions = ref([])
+
+// keys that can be modified via ALTER TABLE
+const EDITABLE_OPTIONS = new Set(['TABLE_COMMENT', 'ENGINE', 'TABLE_COLLATION', 'CHARACTER_SET_NAME', 'AUTO_INCREMENT'])
+
+const ENGINE_OPTIONS = ['InnoDB', 'MyISAM', 'MEMORY', 'CSV', 'ARCHIVE', 'BLACKHOLE', 'NDB']
+
+const CHARSET_OPTIONS = [
+    'utf8mb4', 'utf8', 'latin1', 'gbk', 'gb2312', 'ascii',
+    'binary', 'utf16', 'utf32', 'ucs2', 'cp1251', 'cp1256',
+]
+
+const COLLATION_OPTIONS = [
+    'utf8mb4_general_ci', 'utf8mb4_unicode_ci', 'utf8mb4_bin',
+    'utf8mb4_0900_ai_ci', 'utf8mb4_0900_as_cs',
+    'utf8_general_ci', 'utf8_unicode_ci', 'utf8_bin',
+    'latin1_swedish_ci', 'latin1_general_ci', 'latin1_bin',
+    'gbk_chinese_ci', 'gbk_bin',
+    'gb2312_chinese_ci', 'ascii_general_ci', 'ascii_bin',
+]
 
 const props = defineProps({
     tableMeta: Object,
@@ -284,12 +333,14 @@ const props = defineProps({
 const emit = defineEmits(['tableDrop'])
 
 onMounted(() => {
-    loadData({ props: { name: 'colums' } })
+    loadData('colums')
 })
 
 watch(() => props.tableMeta, (newVal, oldVal) => {
     if (newVal && newVal !== oldVal) {
-        loadData({ props: { name: 'colums' } });
+        tableCreateDdl.value = ""
+        activeName.value = 'colums'
+        loadData('colums')
     }
 }, { deep: true, immediate: true });
 
@@ -299,7 +350,8 @@ function getPostBody() {
 
 function loadData(pane) {
     if (!props.tableMeta || !props.tableMeta.connId) return
-    const name = pane.props?.name ?? pane.paneName
+    // el-tabs @tab-click passes a TabsPaneContext; paneName is the tab's name value
+    const name = pane?.paneName ?? pane?.props?.name ?? pane
     if (name === "colums") {
         http.post("/listTableColumns", getPostBody())
             .then((resp) => {
@@ -338,7 +390,12 @@ function loadIndexes() {
 
 function loadOptions() {
     http.post("/tableOptions", getPostBody())
-        .then((resp) => { tableOptionsData.value = resp.data.data || {} })
+        .then((resp) => {
+            tableOptionsData.value = resp.data.data || {}
+            editableOptions.value = Object.entries(tableOptionsData.value).map(([key, value]) => ({
+                key, value, editing: false, _edit: value
+            }))
+        })
 }
 
 function loadStatistics() {
@@ -347,10 +404,10 @@ function loadStatistics() {
 }
 
 function loadCreateDdl() {
+    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
     let sqlStr = ""
-    const dbType = dbSchemaProxy.getDbType(props.tableMeta.schema)
     if (dbType === 'mysql') {
-        sqlStr = "show create table " + props.tableMeta.tableName
+        sqlStr = "show create table `" + props.tableMeta.tableName + "`"
     } else if (dbType === 'oracle') {
         sqlStr = "select dbms_metadata.get_ddl('TABLE','" + props.tableMeta.tableName.toUpperCase() + "') from dual"
     } else {
@@ -365,20 +422,61 @@ function loadCreateDdl() {
     http.post("/execSQL", params)
         .then((resp) => {
             const data = resp.data.data.data[0]
-            const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(props.tableMeta.schema) })
+            const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang() })
             tableCreateDdl.value = hljs.highlight(sql, { language: 'sql' }).value
         }).catch((error) => { console.log(error) });
 }
 
-function getSqlLang(schema) {
-    const dbType = dbSchemaProxy.getDbType(schema).toLowerCase()
+function saveOption(row) {
+    const val = row._edit
+    let sql = ""
+    if (row.key === 'TABLE_COMMENT') {
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COMMENT = '${val}'`
+    } else if (row.key === 'ENGINE') {
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` ENGINE = ${val}`
+    } else if (row.key === 'TABLE_COLLATION') {
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COLLATE = ${val}`
+    } else if (row.key === 'CHARACTER_SET_NAME') {
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` CHARACTER SET = ${val}`
+    } else if (row.key === 'AUTO_INCREMENT') {
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` AUTO_INCREMENT = ${val}`
+    }
+    if (!sql) return
+    execSql(sql, () => {
+        row.value = val
+        row.editing = false
+        ElMessage({ message: '修改成功', type: 'success' })
+    })
+}
+
+function saveIndexComment(row) {
+    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
+    if (dbType === 'mysql') {
+        // Fallback: drop and recreate
+        execSql(`DROP INDEX \`${row.indexName}\` ON \`${props.tableMeta.tableName}\``, () => {
+            const unique = row.nonUnique == 0 ? 'UNIQUE ' : ''
+            execSql(`CREATE ${unique}INDEX \`${row.indexName}\` ON \`${props.tableMeta.tableName}\` (\`${row.columnName}\`) COMMENT '${row._editComment}'`, () => {
+                row.indexComment = row._editComment
+                row.onCommentEdit = false
+                ElMessage({ message: '索引注释已更新', type: 'success' })
+            })
+        })
+        return
+    }
+    // Oracle / others: not supported
+    ElMessage({ message: '当前数据库不支持修改索引注释', type: 'warning' })
+    row.onCommentEdit = false
+}
+
+function getSqlLang() {
+    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
     if (dbType === "oracle") return "plsql"
     if (dbType === "mysql") return "mysql"
     return "sql"
 }
 
 const OPTION_LABELS = {
-    ENGINE: '存储引擎', TABLE_COLLATION: '排序规则', TABLE_COMMENT: '表注释',
+    ENGINE: '存储引擎', TABLE_COLLATION: '排序规则', CHARACTER_SET_NAME: '字符集', TABLE_COMMENT: '表注释',
     ROW_FORMAT: '行格式', AUTO_INCREMENT: '自增值', CREATE_OPTIONS: '创建选项',
     TABLESPACE_NAME: '表空间', PCT_FREE: 'PCT_FREE', INI_TRANS: 'INI_TRANS',
     LOGGING: '日志', COMPRESSION: '压缩', TABLE_NAME: '表名',
@@ -470,12 +568,12 @@ function doColAdd(column) {
         sql += " default '" + column.columnDefault + "' "
     }
     sql += " comment '" + column.columnComment + "' after " + column.after;
-    execSql(sql, () => loadData({ props: { name: 'colums' } }))
+    execSql(sql, () => loadData('colums'))
 }
 
 function delCol(seq) {
     const sql = "alter table " + props.tableMeta.tableName + " drop " + columnListOrigin[seq].columnName;
-    execSql(sql, () => loadData({ props: { name: 'colums' } }))
+    execSql(sql, () => loadData('colums'))
 }
 
 // ========== 索引操作 ==========
@@ -499,7 +597,7 @@ function createIndex() {
 }
 
 function dropIndex(indexName) {
-    const dbType = dbSchemaProxy.getDbType(props.tableMeta.schema)
+    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
     let sql = ""
     if (dbType === "mysql") {
         sql = "DROP INDEX " + indexName + " ON " + props.tableMeta.tableName
@@ -509,55 +607,6 @@ function dropIndex(indexName) {
     execSql(sql, () => {
         loadIndexes()
         ElMessage({ message: "索引已删除", type: "success" })
-    })
-}
-
-// ========== 表级操作 ==========
-function renameTable() {
-    if (!newTableName.value) {
-        ElMessage({ message: "请输入新表名", type: "warning" })
-        return
-    }
-    const dbType = dbSchemaProxy.getDbType(props.tableMeta.schema)
-    let sql = ""
-    if (dbType === "oracle") {
-        sql = "ALTER TABLE " + props.tableMeta.tableName + " RENAME TO " + newTableName.value
-    } else {
-        sql = "RENAME TABLE " + props.tableMeta.tableName + " TO " + newTableName.value
-    }
-    execSql(sql, () => {
-        ElMessage({ message: "表已重命名为 " + newTableName.value, type: "success" })
-        props.tableMeta.tableName = newTableName.value
-    })
-}
-
-function modifyTableComment() {
-    if (newTableComment.value === "") {
-        ElMessage({ message: "请输入表注释", type: "warning" })
-        return
-    }
-    const dbType = dbSchemaProxy.getDbType(props.tableMeta.schema)
-    let sql = ""
-    if (dbType === "oracle") {
-        sql = "COMMENT ON TABLE " + props.tableMeta.tableName + " IS '" + newTableComment.value + "'"
-    } else {
-        sql = "ALTER TABLE " + props.tableMeta.tableName + " COMMENT = '" + newTableComment.value + "'"
-    }
-    execSql(sql, () => {
-        ElMessage({ message: "表注释已修改", type: "success" })
-    })
-}
-
-function truncateTable() {
-    execSql("TRUNCATE TABLE " + props.tableMeta.tableName, () => {
-        ElMessage({ message: "表已清空", type: "success" })
-    })
-}
-
-function dropTable() {
-    execSql("DROP TABLE " + props.tableMeta.tableName, () => {
-        ElMessage({ message: "表已删除", type: "success" })
-        emit('tableDrop')
     })
 }
 
@@ -583,6 +632,21 @@ function copyCreateScript() {
 </script>
 
 <style lang="less" scoped>
+.table-editor-tabs {
+    height: calc(100vh - 120px);
+    display: flex;
+    flex-direction: column;
+
+    :deep(.el-tabs__content) {
+        flex: 1;
+        overflow: auto;
+    }
+}
+
+.col-table {
+    width: 100%;
+}
+
 .modify_icon {
     width: 16px;
     height: 16px;

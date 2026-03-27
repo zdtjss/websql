@@ -34,10 +34,12 @@
         <template #default="{ node, data }">
           <div class="table-node-wrapper">
             <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
-            <i v-if="data.type === 'schema'" class="icon-schema-overview icon icon16" title="全库结构视图"
-              @click.stop="openSchemaOverview(node)"></i>
+            <i v-if="data.type === 'schema'" class="icon-table-manager icon icon16" title="表管理"
+              @click.stop="openTableManager(node)"></i>
             <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息"
               @click.stop="viewTableInfo(node)"></i>
+            <i v-if="data.type === 'table'" class="icon-browse-data icon icon16" title="浏览数据"
+              @click.stop="openDataBrowserFromNode(node)"></i>
             <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息"
               @click.stop="viewViewInfo(node)"></i>
           </div>
@@ -53,7 +55,7 @@
               <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
             </span>
           </template>
-          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" />
+          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" />
         </el-tab-pane>
       </el-tabs>
     </el-splitter-panel>
@@ -117,17 +119,19 @@
 import { ref, reactive, shallowRef, onMounted } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './views/SQLEditor2.vue'
-import SchemaOverview from './views/SchemaOverview.vue'
 import Configuration from './views/comonents/Configuration.vue'
 import TableEditor from './views/comonents/TableEditor.vue'
 import ViewDialog from './views/comonents/ViewDialog.vue'
+import TableManager from './views/TableManager.vue'
+import DataBrowser from './views/DataBrowser.vue'
 import http from './js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 
 const showLoginBtn = ref(true)
 
 const sqlEditor = shallowRef(SQLEditor2)
-const schemaOverviewComp = shallowRef(SchemaOverview)
+const tableManagerComp = shallowRef(TableManager)
+const dataBrowserComp = shallowRef(DataBrowser)
 
 const editableTabsValue = ref('')
 const editableTabs = ref([])
@@ -171,8 +175,10 @@ onMounted(() => {
   getSysModel()
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
   storedTabs.forEach(tab => {
-    if (tab.tabId && tab.tabId.startsWith('overview-')) {
-      tab.component = schemaOverviewComp
+    if (tab.tabId && tab.tabId.startsWith('tablemgr-')) {
+      tab.component = tableManagerComp
+    } else if (tab.tabId && tab.tabId.startsWith('databrowser-')) {
+      tab.component = dataBrowserComp
     } else {
       tab.component = sqlEditor
     }
@@ -442,10 +448,9 @@ function viewViewInfo(node) {
   viewDialogVisible.value = true
 }
 
-function openSchemaOverview(node) {
+function openTableManager(node) {
   const conn = findConn(node)
-  const tabId = 'overview-' + conn.id + '-' + node.data.label
-  // 如果已存在则切换过去
+  const tabId = 'tablemgr-' + conn.id + '-' + node.data.label
   const existing = editableTabs.value.find(t => t.tabId === tabId)
   if (existing) {
     editableTabsValue.value = tabId
@@ -453,14 +458,41 @@ function openSchemaOverview(node) {
   }
   editableTabs.value.push({
     tabId: tabId,
-    title: '📊 ' + node.data.label,
+    title: '🗂 表管理 - ' + node.data.label,
     connId: conn.id,
     connName: conn.label,
     schema: node.data.label,
-    component: schemaOverviewComp,
+    dbType: node.data.data?.dbType || dbSchemaProxy.getDbType(node.data.label) || '',
+    component: tableManagerComp,
   })
   editableTabsValue.value = tabId
   restoreTab()
+}
+
+function openDataBrowser({ connId, schema, tableName }) {
+  const tabId = 'databrowser-' + connId + '-' + schema + '-' + tableName
+  const existing = editableTabs.value.find(t => t.tabId === tabId)
+  if (existing) {
+    editableTabsValue.value = tabId
+    return
+  }
+  editableTabs.value.push({
+    tabId: tabId,
+    title: '📋 ' + tableName,
+    connId: connId,
+    schema: schema,
+    tableName: tableName,
+    component: dataBrowserComp,
+  })
+  editableTabsValue.value = tabId
+  restoreTab()
+}
+
+function openDataBrowserFromNode(node) {
+  const connId = node.parent.parent.data.id
+  const schema = node.parent.data.label
+  const tableName = node.label
+  openDataBrowser({ connId, schema, tableName })
 }
 
 </script>
@@ -491,7 +523,7 @@ function openSchemaOverview(node) {
 .table-node-wrapper {
   position: relative;
   display: inline-block;
-  padding-right: 22px;
+  padding-right: 64px;
 }
 
 .icon-view-table {
@@ -514,11 +546,12 @@ function openSchemaOverview(node) {
   opacity: 1;
 }
 
-.icon-schema-overview {
+
+.icon-table-manager {
   width: 16px;
   height: 16px;
   position: absolute;
-  right: -20px;
+  right: -40px;
   top: 50%;
   transform: translateY(-50%);
   cursor: pointer;
@@ -529,22 +562,46 @@ function openSchemaOverview(node) {
   line-height: 16px;
   text-align: center;
 }
-.icon-schema-overview::after {
-  content: '📊';
+.icon-table-manager::after {
+  content: '🗂';
 }
-.table-node-wrapper:hover .icon-schema-overview {
+.table-node-wrapper:hover .icon-table-manager {
   opacity: 1;
 }
-.icon-schema-overview:hover {
+.icon-table-manager:hover {
   opacity: 0.8 !important;
 }
-
 .icon-view-table:hover {
   opacity: 0.8 !important;
 }
 
 .icon-view-table:hover {
   opacity: 0.8;
+}
+
+.icon-browse-data {
+  width: 16px;
+  height: 16px;
+  position: absolute;
+  right: -40px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+.icon-browse-data::after {
+  content: '📋';
+}
+.table-node-wrapper:hover .icon-browse-data {
+  opacity: 1;
+}
+.icon-browse-data:hover {
+  opacity: 0.8 !important;
 }
 </style>
 

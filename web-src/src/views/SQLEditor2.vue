@@ -20,6 +20,7 @@
                 </el-dropdown>
                 <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
                 <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
+                <el-button @click="aiPanelVisible = true" style="margin-left: 12px;">AI</el-button>
                 <div style="float:right;">
                     <div style="display: inline-block;margin-right: 15px;">
                         <span>允许修改</span><span><input v-model="canModify" type="checkbox"></input></span>
@@ -113,6 +114,13 @@
             </div>
         </template>
     </el-dialog>
+    <AISqlPanel
+        v-model="aiPanelVisible"
+        :connId="props.connId"
+        :schema="props.schema"
+        :tableList="tableList"
+        @insertSql="onInsertSql"
+    />
 </template>
 
 <script lang="ts" setup>
@@ -123,13 +131,14 @@ import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/comm
 import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
-import { ref, onMounted, watch, h, nextTick } from 'vue'
+import { ref, onMounted, watch, h, nextTick, computed } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
+import AISqlPanel from './components/AISqlPanel.vue'
 
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -182,6 +191,16 @@ const dataDetailsDialogVisible = ref(false)
 const onDataSaving = ref(false)
 
 const canModify = ref(false)
+
+const aiPanelVisible = ref(false)
+
+const tableList = computed(() => {
+    try {
+        return dbSchemaProxy.getTable(props.schema).map((t: any) => t.label)
+    } catch {
+        return []
+    }
+})
 
 const backupData = ref("")
 const backupDataDrawerShow = ref(false)
@@ -664,6 +683,17 @@ function fmtVal(val: any) {
         return "'" + val + "'"
     }
     return val
+}
+
+function onInsertSql(sqlText: string) {
+    const editor = editorView.value as EditorView
+    if (!editor) return
+    const cursor = editor.state.selection.main.head
+    editor.dispatch({
+        changes: { from: cursor, insert: sqlText },
+        selection: { anchor: cursor + sqlText.length }
+    })
+    editor.focus()
 }
 
 </script>

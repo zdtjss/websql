@@ -64,4 +64,10 @@ type Config struct {
 	} `json:"https"`
 	OutterUser string   `json:"outterUser"`
 	AllowedIP  []string `json:"allowedIP"`
+	AI         struct {
+		Provider string `json:"provider"`
+		BaseURL  string `json:"baseUrl"`
+		Model    string `json:"model"`
+		ApiKey   string `json:"apiKey"`
+	} `json:"ai"`
 }

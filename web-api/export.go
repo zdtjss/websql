@@ -23,7 +23,6 @@ func ExportXlsx(c *gin.Context) {
 	c.Header("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
 	queryAndWrite(schema+"."+table, schema, c.Writer, connId, authorization)
 }
-
 func queryAndWrite(table, schema string, out io.Writer, connId string, authorization string) {
 	log.Println("正在导出：", table)
 
@@ -109,4 +108,83 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	excel.Write(out)
 	log.Println("导出完成：", table)
 
+}
+
+func ExportXlsxBySql(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	connId := c.PostForm("connId")
+	filename := c.PostForm("filename")
+	sqlStr := c.PostForm("sql")
+	if filename == "" {
+		filename = "export"
+	}
+	current := time.Now().Format(time.DateOnly)
+	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
+	queryAndWriteBySql(sqlStr, c.Writer, connId, authorization)
+}
+
+func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorization string) {
+	log.Println("正在导出SQL：", sqlStr)
+
+	connCtx := admin.GetConn(connId, authorization)
+	rows, err := connCtx.Query(sqlStr)
+	logutils.PanicErr(err)
+
+	columns, err := rows.Columns()
+	logutils.PanicErr(err)
+
+	cts, err := rows.ColumnTypes()
+	logutils.PanicErrf("获取字段类型失败", err)
+
+	colTypeMap := map[string]string{}
+	for _, ct := range cts {
+		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
+	}
+
+	excel := excelize.NewFile()
+	defer func() {
+		if err := excel.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
+
+	streamWriter, err := excel.NewStreamWriter("Sheet1")
+	logutils.PanicErr(err)
+
+	var columns2 = make([]any, len(columns))
+	for idx := range columns {
+		columns2[idx] = columns[idx]
+	}
+	streamWriter.SetRow("A1", columns2)
+
+	values := make([]any, len(columns))
+	scanArgs := make([]any, len(values))
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+
+	driverName := connCtx.DriverName()
+	count := 1
+	for rows.Next() {
+		err = rows.Scan(scanArgs...)
+		logutils.PanicErr(err)
+		var row = make([]any, len(values))
+		for i := range values {
+			colType := colTypeMap[columns[i]]
+			row[i] = *admin.ConvertCol(&driverName, &colType, &values[i], false)
+		}
+		count++
+		streamWriter.SetRow("A"+strconv.Itoa(count), row)
+	}
+
+	if err = rows.Err(); err != nil {
+		logutils.PanicErr(err)
+	}
+	if err := streamWriter.Flush(); err != nil {
+		logutils.PanicErrf("导出excel失败", err)
+		return
+	}
+	excel.Write(out)
+	log.Println("导出完成")
 }

@@ -194,6 +194,29 @@
                 </el-table-column>
             </el-table>
         </el-tab-pane>
+        <el-tab-pane label="AI 配置" name="ai">
+            <el-form :model="aiConfig" label-width="100px" style="max-width: 500px; padding: 20px;">
+                <el-form-item label="Provider">
+                    <el-radio-group v-model="aiConfig.provider">
+                        <el-radio value="Ollama">Ollama</el-radio>
+                        <el-radio value="OpenAI">OpenAI</el-radio>
+                    </el-radio-group>
+                </el-form-item>
+                <el-form-item label="Base URL">
+                    <el-input v-model="aiConfig.baseUrl" placeholder="http://localhost:11434" />
+                </el-form-item>
+                <el-form-item label="Model">
+                    <el-input v-model="aiConfig.model" placeholder="e.g. llama3" />
+                </el-form-item>
+                <el-form-item v-if="aiConfig.provider === 'OpenAI'" label="API Key">
+                    <el-input v-model="aiConfig.apiKey" type="password" show-password placeholder="sk-..." />
+                </el-form-item>
+                <el-form-item>
+                    <el-button type="primary" @click="saveAiConfig" :loading="aiSaving">保存</el-button>
+                    <el-button @click="testAiConfig" :loading="aiTesting" style="margin-left: 12px;">测试连接</el-button>
+                </el-form-item>
+            </el-form>
+        </el-tab-pane>
         <el-tab-pane label="目录" name="dir">
             <div style="padding: 65px 200px;">
                 <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
@@ -318,6 +341,8 @@ function loadCfgData(pane) {
             }) */
     } else if (pane.props.name === "dir") {
         listDirTree()
+    } else if (pane.props.name === "ai") {
+        loadAiConfig()
     }
 }
 
@@ -415,6 +440,41 @@ function delConnCfg(row) {
     }
 }
 
+
+// AI Config
+const aiConfig = ref({ provider: 'Ollama', baseUrl: '', model: '', apiKey: '' })
+const aiSaving = ref(false)
+const aiTesting = ref(false)
+
+function loadAiConfig() {
+    http.get("/ai/config/get")
+        .then((resp) => {
+            if (resp.data.data) {
+                aiConfig.value = Object.assign({ provider: 'Ollama', baseUrl: '', model: '', apiKey: '' }, resp.data.data)
+            }
+        })
+}
+
+function saveAiConfig() {
+    aiSaving.value = true
+    http.post("/ai/config/save", aiConfig.value)
+        .then(() => {
+            ElMessage.success("保存成功")
+        })
+        .finally(() => aiSaving.value = false)
+}
+
+function testAiConfig() {
+    aiTesting.value = true
+    http.post("/ai/config/test", aiConfig.value)
+        .then(() => {
+            ElMessage.success("连接成功")
+        })
+        .catch(() => {
+            // error already shown by httpProxy interceptor
+        })
+        .finally(() => aiTesting.value = false)
+}
 
 const appendTreeNode = (data) => {
     const newChild = { label: "", value: "", children: [] }

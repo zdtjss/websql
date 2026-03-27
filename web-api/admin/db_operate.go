@@ -281,20 +281,3 @@ func ListIndexes(c *gin.Context) {
 	data := dbutils.GetResultRows(dc.DriverName(), rows)
 	utils.WriteJson(c.Writer, data)
 }
-
-func SchemaOverview(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
-	connId := c.Query("connId")
-	schema := c.Query("schema")
-	dc := GetConn(connId, authorization)
-	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
-	sqlStr, ok := dialect["schemaOverview"]
-	if !ok {
-		utils.WriteJson(c.Writer, []map[string]any{})
-		return
-	}
-	rows, err := dc.Queryx(sqlStr, schema)
-	logutils.PanicErr(err)
-	data := dbutils.GetResultRows(dc.DriverName(), rows)
-	utils.WriteJson(c.Writer, data)
-}
