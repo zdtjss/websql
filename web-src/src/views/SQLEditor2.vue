@@ -358,7 +358,19 @@ function exec() {
                     width: 150,
                     minWidth: "150px",
                     headerCellRenderer: () => {
-                        return h('div', { class: "el-table-v2__header-cell-text", title: col.comment }, col.name)
+                        return h('div', { 
+                            class: "header-box",
+                            onDragenter: (e: any) => e.preventDefault(),
+                            onDragover: (e: any) => e.preventDefault()
+                        }, [
+                            h('div', { title: col.comment }, col.name),
+                            h('div', { 
+                                class: "drag-line",
+                                draggable: true,
+                                onDragstart: (e: any) => dragStart(e),
+                                onDragend: (e: any) => dragEnd(e, col.name)
+                            })
+                        ])
                     }
                 }
                 return colDef
@@ -696,6 +708,20 @@ function onInsertSql(sqlText: string) {
     editor.focus()
 }
 
+// 拖拽改变列宽相关逻辑
+let x1: number, x2: number
+const dragStart = (e: DragEvent) => {
+    x1 = e.clientX
+}
+const dragEnd = (e: DragEvent, dataKey: string) => {
+    x2 = e.clientX
+    const x = x2 - x1
+    const columnItem = columns.value.find((item: any) => item.dataKey === dataKey)
+    if (columnItem) {
+        columnItem.width = (columnItem.width || 150) + x
+    }
+}
+
 </script>
 <style>
 .cm-editor {
@@ -722,6 +748,28 @@ function onInsertSql(sqlText: string) {
 .el-table-v2__header-row,
 .el-table-v2__header-wrapper {
     height: 35px !important;
+}
+
+.header-box {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    .drag-line {
+        position: absolute;
+        top: -9px;
+        right: -8px;
+        bottom: -9px;
+        cursor: ew-resize;
+        width: 1px;
+        padding-left: 6px;
+        border-right: 1px solid transparent;
+        background: transparent;
+        z-index: 10;
+    }
+    &:hover .drag-line {
+        border-right-color: #d8d8d8;
+    }
 }
 
 .el-drawer__header {
