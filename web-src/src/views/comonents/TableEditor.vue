@@ -392,9 +392,21 @@ function loadOptions() {
     http.post("/tableOptions", getPostBody())
         .then((resp) => {
             tableOptionsData.value = resp.data.data || {}
-            editableOptions.value = Object.entries(tableOptionsData.value).map(([key, value]) => ({
+            const options = Object.entries(tableOptionsData.value).map(([key, value]) => ({
                 key, value, editing: false, _edit: value
             }))
+            // Extract CHARACTER_SET_NAME from TABLE_COLLATION
+            const collation = tableOptionsData.value['TABLE_COLLATION']
+            if (collation) {
+                const charset = collation.split('_')[0]
+                options.push({
+                    key: 'CHARACTER_SET_NAME',
+                    value: charset,
+                    editing: false,
+                    _edit: charset
+                })
+            }
+            editableOptions.value = options
         })
 }
 
@@ -437,7 +449,9 @@ function saveOption(row) {
     } else if (row.key === 'TABLE_COLLATION') {
         sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COLLATE = ${val}`
     } else if (row.key === 'CHARACTER_SET_NAME') {
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` CHARACTER SET = ${val}`
+        // Changing character set requires changing collation
+        const collation = val + '_general_ci'
+        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COLLATE = ${collation}`
     } else if (row.key === 'AUTO_INCREMENT') {
         sql = `ALTER TABLE \`${props.tableMeta.tableName}\` AUTO_INCREMENT = ${val}`
     }
