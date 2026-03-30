@@ -248,7 +248,7 @@
             <el-icon style="margin-top: 5px;position: absolute;right: 0px;cursor: pointer;z-index: 9999999;" size="16" @click="copyCreateScript">
                 <CopyDocument />
             </el-icon>
-            <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
+            <el-scrollbar style="font-size: 18px;width: 100%;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
         </el-tab-pane>

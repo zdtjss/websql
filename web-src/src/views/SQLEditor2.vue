@@ -21,6 +21,7 @@
                 <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
                 <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
                 <el-button @click="aiPanelVisible = true" style="margin-left: 12px;">AI</el-button>
+                <el-button @click="openTableManager" style="margin-left: 12px;">表管理</el-button>
                 <div style="float:right;">
                     <div style="display: inline-block;margin-right: 15px;">
                         <span>允许修改</span><span><input v-model="canModify" type="checkbox"></input></span>
@@ -156,6 +157,8 @@ const props = defineProps<{
     schema: string,
     schemaPath: string,
 }>()
+
+const emit = defineEmits(['openTableManager'])
 
 const sqlAreaRef:any = ref(null)
 
@@ -356,19 +359,49 @@ function exec() {
                     comment: col.comment,
                     dataType: col.type,
                     width: 150,
-                    minWidth: "150px",
-                    headerCellRenderer: () => {
+                    minWidth: 150,
+                    headerCellRenderer: ({ column }: { column: any }) => {
                         return h('div', { 
                             class: "header-box",
                             onDragenter: (e: any) => e.preventDefault(),
-                            onDragover: (e: any) => e.preventDefault()
+                            onMouseenter: (e: any) => {
+                                const dragLine = e.target.querySelector('.drag-line')
+                                if (dragLine) dragLine.style.opacity = '1'
+                            },
+                            onMouseleave: (e: any) => {
+                                const dragLine = e.target.querySelector('.drag-line')
+                                if (dragLine) dragLine.style.opacity = '0'
+                            }
                         }, [
-                            h('div', { title: col.comment }, col.name),
+                            h('div', { 
+                                class: "header-text",
+                                title: col.comment 
+                            }, col.name),
                             h('div', { 
                                 class: "drag-line",
                                 draggable: true,
+                                style: {
+                                    position: 'absolute',
+                                    right: '-4px',
+                                    top: 0,
+                                    bottom: 0,
+                                    width: '8px',
+                                    cursor: 'ew-resize',
+                                    backgroundColor: 'transparent',
+                                    borderRight: '1px solid #409eff',
+                                    zIndex: 999,
+                                    transform: 'translateZ(999px)',
+                                    opacity: 0,
+                                    transition: 'opacity 0.2s'
+                                },
                                 onDragstart: (e: any) => dragStart(e),
-                                onDragend: (e: any) => dragEnd(e, col.name)
+                                onDragend: (e: any) => dragEnd(e),
+                                onMouseenter: (e: any) => {
+                                    e.target.style.opacity = '1'
+                                },
+                                onMouseleave: (e: any) => {
+                                    e.target.style.opacity = '0'
+                                }
                             })
                         ])
                     }
@@ -708,18 +741,86 @@ function onInsertSql(sqlText: string) {
     editor.focus()
 }
 
+function openTableManager() {
+    emit('openTableManager', {
+        connId: props.connId,
+        schema: props.schema,
+        schemaPath: props.schemaPath
+    })
+}
+
 // 拖拽改变列宽相关逻辑
-let x1: number, x2: number
+let x1: number, currentDraggingColumn: string | null = null
+let originalWidth: number = 0
+let dragLineElement: HTMLElement | null = null
+let columnItemRef: any = null // 直接保存列对象的引用
+let lastDragTime = 0 // 节流控制
+
 const dragStart = (e: DragEvent) => {
     x1 = e.clientX
-}
-const dragEnd = (e: DragEvent, dataKey: string) => {
-    x2 = e.clientX
-    const x = x2 - x1
-    const columnItem = columns.value.find((item: any) => item.dataKey === dataKey)
-    if (columnItem) {
-        columnItem.width = (columnItem.width || 150) + x
+    lastDragTime = 0 // 重置节流计时器
+    dragLineElement = e.target as HTMLElement
+    
+    // 直接从事件目标获取列信息，避免 DOM 查询延迟
+    const headerBox = (e.target as HTMLElement).parentElement as HTMLElement
+    if (headerBox && headerBox.classList.contains('header-box')) {
+        const headerText = headerBox.querySelector('.header-text')
+        if (headerText) {
+            const colName = headerText.textContent?.trim()
+            const columnItem = columns.value.find((item: any) => item.dataKey === colName)
+            if (columnItem) {
+                currentDraggingColumn = columnItem.dataKey
+                originalWidth = columnItem.width || 150
+                columnItemRef = columnItem // 直接保存引用，避免重复查找
+                
+                // 设置拖动标识为拖动中状态
+                dragLineElement.style.opacity = '1'
+                dragLineElement.style.backgroundColor = 'rgba(64, 158, 255, 0.3)'
+            }
+        }
     }
+    
+    // 必须设置 drag effect 才能触发 dragover 事件
+    e.dataTransfer!.effectAllowed = 'move'
+    e.dataTransfer!.setData('text/plain', '')
+    
+    // 添加全局拖动监听
+    document.addEventListener('dragover', handleGlobalDragOver, { passive: false })
+    document.addEventListener('dragend', handleGlobalDragEnd)
+}
+
+const handleGlobalDragOver = (e: DragEvent) => {
+    if (!currentDraggingColumn || !columnItemRef) return
+    e.preventDefault()
+    
+    // 节流：限制更新频率（每 16ms 约 60fps）
+    const now = Date.now()
+    if (now - lastDragTime < 8) return // 限制为 125fps，平衡性能和流畅度
+    lastDragTime = now
+    
+    const deltaX = e.clientX - x1
+    const newWidth = Math.max(50, originalWidth + deltaX)
+    
+    // 直接修改引用对象的属性
+    columnItemRef.width = newWidth
+}
+
+const handleGlobalDragEnd = (e: DragEvent) => {
+    if (dragLineElement) {
+        dragLineElement.style.opacity = '0'
+        dragLineElement.style.backgroundColor = 'transparent'
+        dragLineElement = null
+    }
+    currentDraggingColumn = null
+    columnItemRef = null
+    
+    // 移除全局监听
+    document.removeEventListener('dragover', handleGlobalDragOver)
+    document.removeEventListener('dragend', handleGlobalDragEnd)
+}
+
+const dragEnd = (e: DragEvent) => {
+    // 清理工作由 handleGlobalDragEnd 处理
 }
 
 </script>
@@ -752,24 +853,64 @@ const dragEnd = (e: DragEvent, dataKey: string) => {
 
 .header-box {
     position: relative;
-    flex: 1;
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
+    box-sizing: border-box;
+    overflow: visible;
+    .header-text {
+        flex: 1;
+        max-width: calc(100% - 12px); /* 留出拖动标识空间 */
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        user-select: text;
+        box-sizing: border-box;
+        line-height: 35px;
+    }
     .drag-line {
         position: absolute;
-        top: -9px;
-        right: -8px;
-        bottom: -9px;
+        top: 0;
+        right: 0;
+        bottom: 0;
         cursor: ew-resize;
-        width: 1px;
-        padding-left: 6px;
-        border-right: 1px solid transparent;
-        background: transparent;
-        z-index: 10;
+        width: 12px;
+        border-right: 1px solid #409eff;
+        background: rgba(64, 158, 255, 0.1);
+        z-index: 100;
+        transition: opacity 0.2s;
+        flex-shrink: 0;
+        opacity: 0; /* 默认隐藏 */
+        &:hover {
+            opacity: 1;
+            background: rgba(64, 158, 255, 0.2);
+        }
     }
-    &:hover .drag-line {
-        border-right-color: #d8d8d8;
-    }
+}
+
+/* 确保表格单元格允许溢出内容显示 */
+.el-table-v2__header-cell,
+.el-table-v2__header-cell-content {
+    overflow: visible !important;
+    padding-right: 12px !important;
+}
+
+/* 确保表格头部容器允许溢出内容显示 */
+.el-table-v2__header,
+.el-table-v2__header-wrapper,
+.el-table-v2__header-row {
+    overflow: visible !important;
+}
+
+/* 为表头容器添加额外的内边距 */
+.el-table-v2 {
+    overflow: visible !important;
+}
+
+/* 确保拖动标识不被裁剪 */
+.header-box {
+    overflow: visible !important;
 }
 
 .el-drawer__header {

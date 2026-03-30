@@ -55,7 +55,7 @@
               <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
             </span>
           </template>
-          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" />
+          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" />
         </el-tab-pane>
       </el-tabs>
     </el-splitter-panel>
@@ -493,6 +493,27 @@ function openDataBrowserFromNode(node) {
   const schema = node.parent.data.label
   const tableName = node.label
   openDataBrowser({ connId, schema, tableName })
+}
+
+function openTableManagerFromChild({ connId, schema, schemaPath }) {
+  const connName = schemaPath ? schemaPath.split('/')[0] : ''
+  const node = {
+    level: 2,
+    data: {
+      label: schema,
+      type: 'schema',
+      data: {}
+    },
+    parent: {
+      level: 1,
+      data: {
+        id: connId,
+        label: connName,
+        type: 'conn'
+      }
+    }
+  }
+  openTableManager(node)
 }
 
 </script>

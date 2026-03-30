@@ -3,24 +3,35 @@
     :model-value="modelValue"
     title="AI SQL 生成"
     direction="rtl"
-    size="640px"
+    size="680px"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div style="display: flex; flex-direction: column; gap: 16px;">
       <div>
-        <div style="margin-bottom: 6px; font-size: 13px; color: #606266;">描述你的查询需求</div>
+        <div style="margin-bottom: 6px; font-size: 13px; color: #606266; display: flex; justify-content: space-between; align-items: center;">
+          <span>描述你的查询需求</span>
+          <el-button 
+            :type="isRecording ? 'danger' : 'primary'" 
+            size="small"
+            @click="toggleRecording"
+          >
+            <el-icon style="vertical-align: middle;">
+              <component :is="isRecording ? VideoPauseIcon : MicrophoneIcon" />
+            </el-icon>
+          </el-button>
+        </div>
         <el-input
           v-model="question"
           type="textarea"
-          :rows="4"
-          placeholder="描述你想查询的内容..."
+          :rows="10"
+          placeholder="描述你想查询的内容，或使用语音录入..."
           @keydown.ctrl.enter="generateSql"
         />
       </div>
 
       <div>
-        <div style="margin-bottom: 6px; font-size: 13px; color: #606266;">相关表（可选）</div>
-        <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可选）" style="width: 100%;">
+        <div style="margin-bottom: 6px; font-size: 13px; color: #606266;">相关表</div>
+        <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表" style="width: 100%;">
           <el-option v-for="table in tableList" :key="table" :label="table" :value="table" />
         </el-select>
       </div>
@@ -42,7 +53,7 @@
           <pre class="sql-pre"><code v-html="highlightedSql" /><span v-if="loading" class="cursor-blink">▌</span></pre>
         </div>
         <el-button v-if="rawContent && !loading" type="success" style="margin-top:10px;width:100%;" @click="insertToEditor">
-          插入编辑器
+          加入编辑器
         </el-button>
       </div>
     </div>
@@ -55,8 +66,13 @@ import { ElMessage } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
+import { Microphone, VideoPause } from '@element-plus/icons-vue'
 
 hljs.registerLanguage('sql', hljsSql)
+
+// 注册图标组件
+const MicrophoneIcon = Microphone
+const VideoPauseIcon = VideoPause
 
 const props = defineProps({
   connId: String,
@@ -72,6 +88,82 @@ const selectedTables = ref([])
 const rawContent = ref('')
 const thinkingText = ref('')
 const loading = ref(false)
+const isRecording = ref(false)
+const speechRecognitionLoading = ref(false)
+let speechRecognition = null
+
+function initSpeechRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SpeechRecognition) {
+    ElMessage({ message: '您的浏览器不支持语音识别功能', type: 'warning' })
+    return null
+  }
+
+  const recognition = new SpeechRecognition()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true
+  recognition.interimResults = true
+
+  recognition.onstart = () => {
+    isRecording.value = true
+  }
+
+  recognition.onresult = (event) => {
+    let interimTranscript = ''
+    let finalTranscript = ''
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript
+      } else {
+        interimTranscript += transcript
+      }
+    }
+
+    if (finalTranscript) {
+      question.value = question.value + (question.value ? ' ' : '') + finalTranscript
+    }
+  }
+
+  recognition.onerror = (event) => {
+    console.error('语音识别错误:', event.error)
+    if (event.error === 'not-allowed') {
+      ElMessage({ message: '请允许使用麦克风', type: 'error' })
+    } else if (event.error === 'no-speech') {
+      ElMessage({ message: '未检测到语音', type: 'warning' })
+    } else {
+      ElMessage({ message: `语音识别错误：${event.error}`, type: 'error' })
+    }
+    isRecording.value = false
+  }
+
+  recognition.onend = () => {
+    isRecording.value = false
+  }
+
+  return recognition
+}
+
+function toggleRecording() {
+  if (isRecording.value) {
+    if (speechRecognition) {
+      speechRecognition.stop()
+    }
+    isRecording.value = false
+  } else {
+    if (!speechRecognition) {
+      speechRecognition = initSpeechRecognition()
+      if (!speechRecognition) return
+    }
+    try {
+      speechRecognition.start()
+      ElMessage({ message: '开始语音录入，请说话...', type: 'info' })
+    } catch (e) {
+      ElMessage({ message: '无法启动语音识别', type: 'error' })
+    }
+  }
+}
 
 const highlightedSql = computed(() => {
   if (!rawContent.value) return ''
