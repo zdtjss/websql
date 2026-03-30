@@ -194,28 +194,53 @@
                 </el-table-column>
             </el-table>
         </el-tab-pane>
-        <el-tab-pane label="AI 配置" name="ai">
-            <el-form :model="aiConfig" label-width="100px" style="max-width: 500px; padding: 20px;">
-                <el-form-item label="Provider">
-                    <el-radio-group v-model="aiConfig.provider">
-                        <el-radio value="Ollama">Ollama</el-radio>
-                        <el-radio value="OpenAI">OpenAI</el-radio>
+        <el-tab-pane label="系统配置" name="system">
+            <div style="max-width: 100%; padding: 20px; overflow-y: auto; max-height: 420px;">
+                <el-divider content-position="left">AI 服务配置</el-divider>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">AI 提供商</div>
+                    <el-radio-group v-model="systemConfig.aiProvider">
+                        <el-radio value="ollama">Ollama</el-radio>
+                        <el-radio value="openai">OpenAI</el-radio>
                     </el-radio-group>
-                </el-form-item>
-                <el-form-item label="Base URL">
-                    <el-input v-model="aiConfig.baseUrl" placeholder="http://localhost:11434" />
-                </el-form-item>
-                <el-form-item label="Model">
-                    <el-input v-model="aiConfig.model" placeholder="e.g. llama3" />
-                </el-form-item>
-                <el-form-item v-if="aiConfig.provider === 'OpenAI'" label="API Key">
-                    <el-input v-model="aiConfig.apiKey" type="password" show-password placeholder="sk-..." />
-                </el-form-item>
-                <el-form-item>
-                    <el-button type="primary" @click="saveAiConfig" :loading="aiSaving">保存</el-button>
-                    <el-button @click="testAiConfig" :loading="aiTesting" style="margin-left: 12px;">测试连接</el-button>
-                </el-form-item>
-            </el-form>
+                    <el-button @click="testAiConfig" :loading="aiTesting" size="small">测试连接</el-button>
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">Base URL</div>
+                    <el-input v-model="systemConfig.aiBaseUrl" placeholder="http://localhost:11434" style="flex: 1;" />
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">Model</div>
+                    <el-input v-model="systemConfig.aiModel" placeholder="e.g. llama3" style="flex: 1;" />
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">API Key</div>
+                    <el-input v-model="systemConfig.aiApiKey" type="password" show-password placeholder="sk-..." style="flex: 1;" />
+                </div>
+
+                <el-divider content-position="left">外部用户认证</el-divider>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">认证接口 URL</div>
+                    <el-input v-model="systemConfig.outterUser" placeholder="http://localhost:8081/api/login" style="flex: 1;" />
+                    <el-button @click="testOutterUser" :loading="testingOutterUser" size="small">测试接口</el-button>
+                </div>
+                
+                <el-divider content-position="left">IP 访问控制</el-divider>
+                <div style="margin-bottom: 16px; display: flex; align-items: flex-start; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap; margin-top: 8px;">允许的 IP 列表</div>
+                    <el-input 
+                        v-model="systemConfig.allowedIP" 
+                        type="textarea"
+                        :rows="4"
+                        placeholder="请输入 IP 地址，每行一个" 
+                        style="flex: 1;"
+                    />
+                </div>
+
+                <div style="display: flex; justify-content: flex-end; padding-top: 12px;">
+                    <el-button type="primary" @click="saveAllConfig" :loading="savingAll">保存</el-button>
+                </div>
+            </div>
         </el-tab-pane>
         <el-tab-pane label="目录" name="dir">
             <div style="padding: 65px 200px;">
@@ -341,8 +366,8 @@ function loadCfgData(pane) {
             }) */
     } else if (pane.props.name === "dir") {
         listDirTree()
-    } else if (pane.props.name === "ai") {
-        loadAiConfig()
+    } else if (pane.props.name === "system") {
+        loadSystemConfig()
     }
 }
 
@@ -441,32 +466,64 @@ function delConnCfg(row) {
 }
 
 
-// AI Config
-const aiConfig = ref({ provider: 'Ollama', baseUrl: '', model: '', apiKey: '' })
-const aiSaving = ref(false)
+// System Config
+const systemConfig = ref({ 
+    aiProvider: 'ollama', 
+    aiBaseUrl: '', 
+    aiModel: '', 
+    aiApiKey: '',
+    outterUser: '', 
+    allowedIP: '127.0.0.1\n::1' 
+})
 const aiTesting = ref(false)
+const testingOutterUser = ref(false)
+const savingAll = ref(false)
 
-function loadAiConfig() {
-    http.get("/ai/config/get")
+function loadSystemConfig() {
+    http.get("/system/config/all/get")
         .then((resp) => {
-            if (resp.data.data) {
-                aiConfig.value = Object.assign({ provider: 'Ollama', baseUrl: '', model: '', apiKey: '' }, resp.data.data)
+            if (resp.data && resp.data.data) {
+                const data = resp.data.data
+                systemConfig.value.aiProvider = data.aiProvider || 'ollama'
+                systemConfig.value.aiBaseUrl = data.aiBaseUrl || ''
+                systemConfig.value.aiModel = data.aiModel || ''
+                systemConfig.value.aiApiKey = data.aiApiKey || ''
+                systemConfig.value.outterUser = data.outterUser || ''
+                
+                if (data.allowedIP && Array.isArray(data.allowedIP)) {
+                    systemConfig.value.allowedIP = data.allowedIP.join('\n')
+                }
             }
         })
 }
 
-function saveAiConfig() {
-    aiSaving.value = true
-    http.post("/ai/config/save", aiConfig.value)
+function saveAllConfig() {
+    savingAll.value = true
+    // 将 IP 文本按行分割为数组
+    const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
+    
+    http.post("/system/config/all/save", {
+        aiProvider: systemConfig.value.aiProvider,
+        aiBaseUrl: systemConfig.value.aiBaseUrl,
+        aiModel: systemConfig.value.aiModel,
+        aiApiKey: systemConfig.value.aiApiKey,
+        outterUser: systemConfig.value.outterUser,
+        allowedIP: ips
+    })
         .then(() => {
             ElMessage.success("保存成功")
         })
-        .finally(() => aiSaving.value = false)
+        .finally(() => savingAll.value = false)
 }
 
 function testAiConfig() {
     aiTesting.value = true
-    http.post("/ai/config/test", aiConfig.value)
+    http.post("/ai/config/test", {
+        provider: systemConfig.value.aiProvider,
+        baseUrl: systemConfig.value.aiBaseUrl,
+        model: systemConfig.value.aiModel,
+        apiKey: systemConfig.value.aiApiKey
+    })
         .then(() => {
             ElMessage.success("连接成功")
         })
@@ -474,6 +531,22 @@ function testAiConfig() {
             // error already shown by httpProxy interceptor
         })
         .finally(() => aiTesting.value = false)
+}
+
+function testOutterUser() {
+    testingOutterUser.value = true
+    http.post("/system/config/outterUser/test", { url: systemConfig.value.outterUser })
+        .then((resp) => {
+            if (resp.data.code === 200) {
+                ElMessage.success("测试成功：" + JSON.stringify(resp.data.data))
+            } else {
+                ElMessage.error("测试失败：" + resp.data.msg)
+            }
+        })
+        .catch(() => {
+            ElMessage.error("测试失败：接口无响应")
+        })
+        .finally(() => testingOutterUser.value = false)
 }
 
 const appendTreeNode = (data) => {

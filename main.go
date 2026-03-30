@@ -43,6 +43,9 @@ func main() {
 		config.InitDB(*initSqlFile)
 	}
 
+	// 从数据库加载系统配置（覆盖配置文件中的配置）
+	config.LoadConfigFromDB()
+
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
 	}

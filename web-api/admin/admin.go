@@ -492,3 +492,10 @@ type PowerDto struct {
 	ConnId   string `json:"connId" db:"conn_id"`
 	ConnName string `json:"connName" db:"conn_name"`
 }
+
+type AIConfig struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"baseUrl"`
+	Model    string `json:"model"`
+	ApiKey   string `json:"apiKey"`
+}

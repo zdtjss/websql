@@ -10,7 +10,7 @@ import (
 
 var (
 	Cfg *Config
-	// 管理员用户id
+	// 管理员用户 id
 	AdminId string = "825683877312860160"
 )
 
@@ -23,6 +23,42 @@ func ReadConfig() *Config {
 	err = json.Unmarshal(fileData, &config)
 	logutils.PanicErr(err)
 	return &config
+}
+
+// LoadConfigFromDB 从数据库加载配置（覆盖配置文件中的配置）
+func LoadConfigFromDB() {
+	if Mngtdb == nil {
+		return
+	}
+	
+	// 使用 admin 包中的函数加载配置（避免循环依赖）
+	// 这里我们通过查询系统配置表来加载
+	loadSystemConfigValue("system.outterUser", &Cfg.OutterUser)
+	loadSystemConfigValue("system.allowedIP", &Cfg.AllowedIP)
+	loadSystemConfigValue("ai.provider", &Cfg.AI.Provider)
+	loadSystemConfigValue("ai.baseUrl", &Cfg.AI.BaseURL)
+	loadSystemConfigValue("ai.model", &Cfg.AI.Model)
+	loadSystemConfigValue("ai.apiKey", &Cfg.AI.ApiKey)
+}
+
+func loadSystemConfigValue(key string, target interface{}) {
+	var value string
+	err := Mngtdb.Get(&value, "select config_value from t_system_config where config_key = ?", key)
+	if err != nil || value == "" {
+		return
+	}
+	
+	// 根据目标类型进行转换
+	switch t := target.(type) {
+	case *string:
+		*t = value
+	case *[]string:
+		var arr []string
+		err := json.Unmarshal([]byte(value), &arr)
+		if err == nil {
+			*t = arr
+		}
+	}
 }
 
 func ReadSql(fileName string) *string {

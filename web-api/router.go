@@ -63,6 +63,19 @@ func MainRegister(router *gin.Engine) {
 	router.GET("/listBackupData", admin.ListBackupData)
 	router.GET("/showBackupData", admin.ShowBackupData)
 
+	// 系统配置接口
+	router.GET("/system/config/list", admin.GetSystemConfig)
+	router.POST("/system/config/save", admin.SaveSystemConfigHandler)
+	router.GET("/system/config/all/get", admin.GetAllSystemConfigHandler)
+	router.POST("/system/config/all/save", admin.SaveAllSystemConfigHandler)
+	router.GET("/system/config/ai/get", admin.GetAIConfigHandler)
+	router.POST("/system/config/ai/save", admin.SaveAIConfigHandler)
+	router.GET("/system/config/outterUser/get", admin.GetOutterUserHandler)
+	router.POST("/system/config/outterUser/save", admin.SaveOutterUserHandler)
+	router.POST("/system/config/outterUser/test", admin.TestOutterUserHandler)
+	router.GET("/system/config/allowedIP/get", admin.GetAllowedIPHandler)
+	router.POST("/system/config/allowedIP/save", admin.SaveAllowedIPHandler)
+
 	router.POST("/ai/config/save", ai.HandleSaveConfig)
 	router.GET("/ai/config/get", ai.HandleGetConfig)
 	router.POST("/ai/config/test", ai.HandleTestConfig)
@@ -134,7 +147,7 @@ func hostCheck() gin.HandlerFunc {
 		}) {
 			c.Writer.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
 			c.Header("content-type", "text/html; charset=utf-8")
-			log.Println("非法IP:" + c.Request.RemoteAddr)
+			log.Println("非法 IP:" + c.Request.RemoteAddr)
 			return
 		}
 	}

@@ -64,3 +64,30 @@ create table if not exists t_history (
 	exec_sql text,
 	data json
 );
+
+CREATE TABLE IF NOT EXISTS t_ai_config (
+    id          TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    base_url    TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    api_key     TEXT,
+    updated_at  DATETIME NOT NULL
+);
+
+create table if not exists t_system_config (
+	id varchar(36) primary key,
+	config_key varchar(64) not null unique,
+	config_value text,
+	config_type varchar(32),
+	remark text,
+	create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+insert ignore into t_system_config (id, config_key, config_value, config_type, remark) values 
+('825683877400000001', 'ai.provider', 'ollama', 'ai', 'AI 服务提供商：ollama, openai 等'),
+('825683877400000002', 'ai.baseUrl', 'https://ollama.com', 'ai', 'AI 服务基础 URL'),
+('825683877400000003', 'ai.model', 'deepseek-v3.2', 'ai', 'AI 模型名称'),
+('825683877400000004', 'ai.apiKey', '41bb5b5119d6429e963994921a238d30.IdjfzCmn3goAL8VNT34XITiq', 'ai', 'AI API 密钥'),
+('825683877400000005', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
+('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）');

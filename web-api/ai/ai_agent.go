@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	admin "go-web/web-api/admin"
 )
 
 // GenerateSqlRequest is the request body for /ai/generateSql.
@@ -43,7 +45,7 @@ type StreamChunk struct {
 var httpClient = &http.Client{Timeout: 120 * time.Second}
 
 // CallAI dispatches to the appropriate AI provider based on cfg.Provider.
-func CallAI(cfg *AIConfig, messages []ChatMessage) (string, error) {
+func CallAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 	switch cfg.Provider {
 	case "ollama":
 		return callOllama(cfg, messages)
@@ -56,7 +58,7 @@ func CallAI(cfg *AIConfig, messages []ChatMessage) (string, error) {
 
 // StreamAI streams tokens from the AI provider via SSE, writing to flush-capable writer.
 // Each SSE event is: "data: <json>\n\n"
-func StreamAI(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
+func StreamAI(cfg *admin.AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
 	switch cfg.Provider {
 	case "ollama":
 		return streamOllama(cfg, messages, flush)
@@ -68,7 +70,7 @@ func StreamAI(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)) er
 }
 
 // callOllama calls the Ollama cloud /api/chat endpoint (non-streaming, OpenAI-compatible).
-func callOllama(cfg *AIConfig, messages []ChatMessage) (string, error) {
+func callOllama(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model":    cfg.Model,
 		"messages": messages,
@@ -107,7 +109,7 @@ func callOllama(cfg *AIConfig, messages []ChatMessage) (string, error) {
 }
 
 // streamOllama streams from Ollama cloud /api/chat (NDJSON format, one JSON object per line).
-func streamOllama(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
+func streamOllama(cfg *admin.AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
 	body, _ := json.Marshal(map[string]any{
 		"model":    cfg.Model,
 		"messages": messages,
@@ -160,7 +162,7 @@ func streamOllama(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)
 }
 
 // callOpenAI calls the OpenAI /v1/chat/completions endpoint (non-streaming).
-func callOpenAI(cfg *AIConfig, messages []ChatMessage) (string, error) {
+func callOpenAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 	body, _ := json.Marshal(map[string]any{"model": cfg.Model, "messages": messages})
 	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -195,7 +197,7 @@ func callOpenAI(cfg *AIConfig, messages []ChatMessage) (string, error) {
 
 // streamOpenAI streams from OpenAI-compatible /v1/chat/completions with stream:true.
 // Handles both reasoning_content (thinking) and content tokens.
-func streamOpenAI(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
+func streamOpenAI(cfg *admin.AIConfig, messages []ChatMessage, flush func(StreamChunk)) error {
 	body, _ := json.Marshal(map[string]any{
 		"model":    cfg.Model,
 		"messages": messages,
@@ -249,4 +251,50 @@ func streamOpenAI(cfg *AIConfig, messages []ChatMessage, flush func(StreamChunk)
 		}
 	}
 	return scanner.Err()
+}
+
+func BuildGenerateSqlPrompt(req GenerateSqlRequest, tableSchema string) string {
+	var sb strings.Builder
+	sb.WriteString("You are a SQL expert. Given the following database schema and user question, generate a precise SQL query.\n\n")
+	if tableSchema != "" {
+		sb.WriteString("Table Schema:\n")
+		sb.WriteString(tableSchema)
+		sb.WriteString("\n\n")
+	}
+	if len(req.TableContext) > 0 {
+		sb.WriteString("Available tables: ")
+		sb.WriteString(strings.Join(req.TableContext, ", "))
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("Database: ")
+	sb.WriteString(req.Schema)
+	sb.WriteString("\n\n")
+	sb.WriteString("Question: ")
+	sb.WriteString(req.Question)
+	sb.WriteString("\n\n")
+	sb.WriteString("Please respond with only the SQL query, without any explanation or markdown formatting.")
+	return sb.String()
+}
+
+func BuildChatPrompt(req ChatRequest) string {
+	var sb strings.Builder
+	sb.WriteString("You are a data analysis assistant. Help the user analyze data and answer questions.\n\n")
+	sb.WriteString("Database: ")
+	sb.WriteString(req.Schema)
+	sb.WriteString("\n\n")
+	sb.WriteString("Table: ")
+	sb.WriteString(req.TableName)
+	sb.WriteString("\n\n")
+	if len(req.DataSample) > 0 {
+		sb.WriteString("Sample data:\n")
+		for _, row := range req.DataSample {
+			sb.WriteString(fmt.Sprintf("%v\n", row))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("Question: ")
+	for _, msg := range req.Messages {
+		sb.WriteString(msg.Role + ": " + msg.Content + "\n")
+	}
+	return sb.String()
 }
