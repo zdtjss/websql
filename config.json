@@ -13,16 +13,5 @@
     "enable": true,
     "organization": "Nway",
     "commonName": "websql.nway.com"
-  },
-  "outterUser": "http://localhost:8081/nway-system/login/getLoginUser",
-  "allowedIP": [
-    "[::1]",
-    "127.0.0.1"
-  ],
-  "ai": {
-    "provider": "ollama",
-    "baseUrl": "https://ollama.com",
-    "model": "deepseek-v3.2",
-    "apiKey": "41bb5b5119d6429e963994921a238d30.IdjfzCmn3goAL8VNT34XITiq"
   }
 }

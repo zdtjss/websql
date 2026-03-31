@@ -32,7 +32,7 @@ func InitMngtDbConn() {
 	Mngtdb = sqlxDb
 }
 
-// 此方法没有权限管理，不建议直接使用，请请使用admin.GetConn
+// 此方法没有权限管理，不建议直接使用，请请使用 admin.GetConn
 func GetConn(param *DBParam) *sqlx.DB {
 	key := createKey(param)
 	val, ok := DBMap[key]
@@ -77,10 +77,10 @@ func makeDsn(param *DBParam) *string {
 }
 
 func RealseConn(param *DBParam) {
-	conn, ok := DBMap[createKey(param)]
+	key := createKey(param)
+	_, ok := DBMap[key]
 	if ok {
-		conn.Close()
-		delete(DBMap, createKey(param))
+		delete(DBMap, key)
 	}
 }
 

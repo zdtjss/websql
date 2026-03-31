@@ -31,6 +31,7 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/execSQL", ExecSQL)
 
 	router.POST("/saveConn", admin.SaveConn)
+	router.POST("/testDbConn", admin.TestDbConn)
 	router.GET("/delConn", admin.DelConn)
 	router.GET("/connBaseTree", admin.ConnBaseTree)
 	router.GET("/listConn2", admin.ListConn2)

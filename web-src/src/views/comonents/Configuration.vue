@@ -178,6 +178,10 @@
                         </el-icon>
                     </template>
                     <template #default="scope">
+                        <el-icon v-show="scope.row.editable" @click="testDbConn(scope.row)" :loading="scope.row.testing"
+                            title="测试连接" style="margin-right:5px;cursor: pointer;">
+                            <Connection />
+                        </el-icon>
                         <el-icon v-show="scope.row.editable" @click="saveConnCfg(scope.row); scope.row.editable = false"
                             title="保存" style="margin-right:5px;cursor: pointer;">
                             <Select />
@@ -243,28 +247,30 @@
             </div>
         </el-tab-pane>
         <el-tab-pane label="目录" name="dir">
-            <div style="padding: 65px 200px;">
-                <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
-                    <template #default="{ node, data }">
-                        <div style="width:100%;">
-                            <div style="display: inline-block;width: 100%;">
-                                <el-input v-model="data.label"></el-input>
+            <div style="display: flex; flex-direction: column; height: 460px;">
+                <div style="flex: 1; overflow-y: auto; padding: 20px;">
+                    <el-tree :data="conCfgTreeData" draggable default-expand-all :expand-on-click-node="false">
+                        <template #default="{ node, data }">
+                            <div style="width:80%;">
+                                <div style="display: inline-block;width: 100%;">
+                                    <el-input v-model="data.label"></el-input>
+                                </div>
+                                <div style="margin-left: 30px;display: inline-block;">
+                                    <a @click="appendTreeNode(data)">添加</a>
+                                    <el-popconfirm title="确定要删除?" @confirm="removeDir(node, data)" confirm-button-text="是"
+                                        cancel-button-text="否">
+                                        <template #reference>
+                                            <a style="margin-left: 8px">删除</a>
+                                        </template>
+                                    </el-popconfirm>
+                                </div>
                             </div>
-                            <div style="margin-left: 30px;display: inline-block;">
-                                <a @click="appendTreeNode(data)">添加</a>
-                                <el-popconfirm title="确定要删除?" @confirm="removeDir(node, data)" confirm-button-text="是"
-                                    cancel-button-text="否">
-                                    <template #reference>
-                                        <a style="margin-left: 8px">删除</a>
-                                    </template>
-                                </el-popconfirm>
-                            </div>
-                        </div>
-                    </template>
-                </el-tree>
-            </div>
-            <div style="float: right; margin-right: 100px;">
-                <el-button type="primary" @click="saveTree">保存</el-button>
+                        </template>
+                    </el-tree>
+                </div>
+                <div style="text-align: right; padding: 10px 20px; border-top: 1px solid #e4e7ed;">
+                    <el-button type="primary" @click="saveTree">保存</el-button>
+                </div>
             </div>
         </el-tab-pane>
     </el-tabs>
@@ -442,6 +448,24 @@ function saveConnCfg(row) {
         })
 }
 
+function testDbConn(row) {
+    row.testing = true
+    http.post("/testDbConn", row)
+        .then((resp) => {
+            if (resp.data.code === 200) {
+                ElMessage.success("数据库连接成功")
+            } else {
+                ElMessage.error("数据库连接失败：" + resp.data.msg)
+            }
+        })
+        .catch(() => {
+            ElMessage.error("数据库连接失败：无法连接到数据库")
+        })
+        .finally(() => {
+            row.testing = false
+        })
+}
+
 function listConnCfg() {
     loadingConn.value = true
     const param = new URLSearchParams()
@@ -555,7 +579,22 @@ const appendTreeNode = (data) => {
 }
 
 const removeDir = (node, data) => {
-    conCfgTreeData.value = conCfgTreeData.value.filter(item => item != data)
+    const removeNode = (list, targetNode) => {
+        const index = list.findIndex(item => item === targetNode)
+        if (index !== -1) {
+            list.splice(index, 1)
+            return true
+        }
+        for (const item of list) {
+            if (item.children && removeNode(item.children, targetNode)) {
+                return true
+            }
+        }
+        return false
+    }
+    
+    removeNode(conCfgTreeData.value, data)
+    
     if (data.id) {
         http.get("/delTreeNode", { params: { id: data.id } })
             .then((resp) => {

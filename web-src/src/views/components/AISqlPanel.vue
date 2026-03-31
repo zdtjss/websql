@@ -48,7 +48,18 @@
 
       <!-- Result block -->
       <div v-if="rawContent || loading">
-        <div style="margin-bottom: 6px; font-size: 13px; color: #606266;">生成结果</div>
+        <div style="margin-bottom: 6px; font-size: 13px; color: #606266; display: flex; justify-content: space-between; align-items: center;">
+          <span>生成结果</span>
+          <el-button 
+            v-if="rawContent && !loading" 
+            type="info" 
+            size="small" 
+            @click="copySql"
+            title="复制 SQL"
+          >
+            <el-icon><CopyDocument /></el-icon>
+          </el-button>
+        </div>
         <div class="sql-result-wrap">
           <pre class="sql-pre"><code v-html="highlightedSql" /><span v-if="loading" class="cursor-blink">▌</span></pre>
         </div>
@@ -66,13 +77,14 @@ import { ElMessage } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause } from '@element-plus/icons-vue'
+import { Microphone, VideoPause, CopyDocument } from '@element-plus/icons-vue'
 
 hljs.registerLanguage('sql', hljsSql)
 
 // 注册图标组件
 const MicrophoneIcon = Microphone
 const VideoPauseIcon = VideoPause
+const CopyDocumentIcon = CopyDocument
 
 const props = defineProps({
   connId: String,
@@ -234,6 +246,15 @@ async function generateSql() {
   } finally {
     loading.value = false
   }
+}
+
+function copySql() {
+  if (!rawContent.value) return
+  navigator.clipboard.writeText(rawContent.value.trim()).then(() => {
+    ElMessage({ message: 'SQL 已复制到剪贴板', type: 'success' })
+  }).catch(() => {
+    ElMessage({ message: '复制失败', type: 'error' })
+  })
 }
 
 function insertToEditor() {

@@ -183,7 +183,6 @@ func fetchTableSchemas(connId string, tables []string) (string, error) {
 	cfg := &cfgList[0]
 	cfg.Pwd = utils.AESDecode(cfg.Pwd)
 	conn := config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
-	defer conn.Close()
 
 	var sb strings.Builder
 	for _, table := range tables {

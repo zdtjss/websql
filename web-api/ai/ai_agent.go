@@ -42,7 +42,7 @@ type StreamChunk struct {
 	Content string `json:"content"`
 }
 
-var httpClient = &http.Client{Timeout: 120 * time.Second}
+var httpClient = &http.Client{Timeout: 30 * time.Minute}
 
 // CallAI dispatches to the appropriate AI provider based on cfg.Provider.
 func CallAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
@@ -88,24 +88,44 @@ func callOllama(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 		return "", fmt.Errorf("调用 Ollama 失败: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// 读取完整响应以便调试
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应失败：%w", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("Ollama 返回非 200 状态码 %d: %s", resp.StatusCode, string(raw))
 	}
+
+	// 尝试解析为 OpenAI 兼容格式
 	var result struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Message *struct {
+			Content string `json:"content"`
+		} `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("解析 Ollama 响应失败: %w", err)
+
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("解析 Ollama 响应失败：%w, 原始响应：%s", err, string(raw))
 	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("Ollama 返回空 choices")
+
+	// 优先使用 choices 格式（OpenAI 兼容）
+	if len(result.Choices) > 0 {
+		return result.Choices[0].Message.Content, nil
 	}
-	return result.Choices[0].Message.Content, nil
+
+	// 尝试使用 message 格式（Ollama 原生格式）
+	if result.Message != nil && result.Message.Content != "" {
+		return result.Message.Content, nil
+	}
+
+	return "", fmt.Errorf("Ollama 返回空响应，原始数据：%s", string(raw))
 }
 
 // streamOllama streams from Ollama cloud /api/chat (NDJSON format, one JSON object per line).

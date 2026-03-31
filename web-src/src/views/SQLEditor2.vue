@@ -36,9 +36,15 @@
             </el-splitter-panel>
             <el-splitter-panel size="45%">
                 <el-auto-resizer>
-                    <template #default="{ height, width }">
-                        <el-table-v2 :columns="columns" :data="result" :width="width" :height="height" :row-height="35"
-                            fixed />
+                    <template #default="{ height: autoHeight, width: autoWidth }">
+                        <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }">
+                            <el-table-v2 
+                                :columns="columns" 
+                                :data="result" 
+                                :width="totalColumnWidth" 
+                                :height="autoHeight" 
+                                :row-height="35" />
+                        </div>
                     </template>
                 </el-auto-resizer>
             </el-splitter-panel>
@@ -203,6 +209,16 @@ const tableList = computed(() => {
     } catch {
         return []
     }
+})
+
+// 计算所有列的总宽度
+const totalColumnWidth = computed(() => {
+    if (!columns.value || columns.value.length === 0) {
+        return 800
+    }
+    return columns.value.reduce((sum: number, col: any) => {
+        return sum + (col.width || 150)
+    }, 0)
 })
 
 const backupData = ref("")

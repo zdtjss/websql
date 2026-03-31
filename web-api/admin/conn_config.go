@@ -33,6 +33,22 @@ func SaveConn(c *gin.Context) {
 	utils.WriteJson(c.Writer, "")
 }
 
+func TestDbConn(c *gin.Context) {
+	CheckAdminPower(c)
+	cfg := &ConnCfg{}
+	utils.UnmarshalJson(c.Request.Body, cfg)
+
+	dbParam := convertToDBParam(cfg)
+	db := config.GetConn(dbParam)
+
+	err := db.Ping()
+	if err != nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "连接失败：" + err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 200, "msg": "连接成功"})
+}
+
 func DelConn(c *gin.Context) {
 	CheckAdminPower(c)
 	config.Mngtdb.Exec("delete from t_conn where id = ?", c.Query("id"))
