@@ -215,11 +215,25 @@
                 </div>
                 <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
                     <div style="font-weight: 500; white-space: nowrap;">Model</div>
-                    <el-input v-model="systemConfig.aiModel" placeholder="e.g. llama3" style="flex: 1;" />
+                    <el-input v-model="systemConfig.aiModel" placeholder="e.g. qwen2.5:14b" style="flex: 1;" />
                 </div>
                 <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
                     <div style="font-weight: 500; white-space: nowrap;">API Key</div>
                     <el-input v-model="systemConfig.aiApiKey" type="password" show-password placeholder="sk-..." style="flex: 1;" />
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">Temperature</div>
+                    <el-slider v-model="systemConfig.aiTemperature" :min="0" :max="2" :step="0.1" show-input style="flex: 1;" />
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">Max Tokens</div>
+                    <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :max="128000" :step="1024" placeholder="0=不限" style="width: 200px;" />
+                    <span style="font-size: 12px; color: #909399;">0 表示不限制</span>
+                </div>
+                <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <div style="font-weight: 500; white-space: nowrap;">思考模式</div>
+                    <el-switch v-model="systemConfig.aiEnableThinking" />
+                    <span style="font-size: 12px; color: #909399;">启用后模型会输出思考过程（需模型支持）</span>
                 </div>
 
                 <el-divider content-position="left">外部用户认证</el-divider>
@@ -494,8 +508,11 @@ function delConnCfg(row) {
 const systemConfig = ref({ 
     aiProvider: 'ollama', 
     aiBaseUrl: '', 
-    aiModel: '', 
+    aiModel: '',
     aiApiKey: '',
+    aiTemperature: 0.7,
+    aiMaxTokens: 0,
+    aiEnableThinking: false,
     outterUser: '', 
     allowedIP: '127.0.0.1\n::1' 
 })
@@ -512,6 +529,9 @@ function loadSystemConfig() {
                 systemConfig.value.aiBaseUrl = data.aiBaseUrl || ''
                 systemConfig.value.aiModel = data.aiModel || ''
                 systemConfig.value.aiApiKey = data.aiApiKey || ''
+                systemConfig.value.aiTemperature = parseFloat(data.aiTemperature) || 0.7
+                systemConfig.value.aiMaxTokens = parseInt(data.aiMaxTokens) || 0
+                systemConfig.value.aiEnableThinking = data.aiEnableThinking === 'true'
                 systemConfig.value.outterUser = data.outterUser || ''
                 
                 if (data.allowedIP && Array.isArray(data.allowedIP)) {
@@ -531,6 +551,9 @@ function saveAllConfig() {
         aiBaseUrl: systemConfig.value.aiBaseUrl,
         aiModel: systemConfig.value.aiModel,
         aiApiKey: systemConfig.value.aiApiKey,
+        aiTemperature: String(systemConfig.value.aiTemperature),
+        aiMaxTokens: String(systemConfig.value.aiMaxTokens),
+        aiEnableThinking: String(systemConfig.value.aiEnableThinking),
         outterUser: systemConfig.value.outterUser,
         allowedIP: ips
     })

@@ -30,7 +30,7 @@ func LoadConfigFromDB() {
 	if Mngtdb == nil {
 		return
 	}
-	
+
 	// 使用 admin 包中的函数加载配置（避免循环依赖）
 	// 这里我们通过查询系统配置表来加载
 	loadSystemConfigValue("system.outterUser", &Cfg.OutterUser)
@@ -39,6 +39,7 @@ func LoadConfigFromDB() {
 	loadSystemConfigValue("ai.baseUrl", &Cfg.AI.BaseURL)
 	loadSystemConfigValue("ai.model", &Cfg.AI.Model)
 	loadSystemConfigValue("ai.apiKey", &Cfg.AI.ApiKey)
+	// temperature, maxTokens, enableThinking 通过 GetAIConfigFromDB() 加载
 }
 
 func loadSystemConfigValue(key string, target interface{}) {
@@ -47,7 +48,7 @@ func loadSystemConfigValue(key string, target interface{}) {
 	if err != nil || value == "" {
 		return
 	}
-	
+
 	// 根据目标类型进行转换
 	switch t := target.(type) {
 	case *string:
@@ -101,9 +102,12 @@ type Config struct {
 	OutterUser string   `json:"outterUser"`
 	AllowedIP  []string `json:"allowedIP"`
 	AI         struct {
-		Provider string `json:"provider"`
-		BaseURL  string `json:"baseUrl"`
-		Model    string `json:"model"`
-		ApiKey   string `json:"apiKey"`
+		Provider       string  `json:"provider"`
+		BaseURL        string  `json:"baseUrl"`
+		Model          string  `json:"model"`
+		ApiKey         string  `json:"apiKey"`
+		Temperature    float32 `json:"temperature"`
+		MaxTokens      int     `json:"maxTokens"`
+		EnableThinking bool    `json:"enableThinking"`
 	} `json:"ai"`
 }

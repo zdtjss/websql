@@ -6,6 +6,7 @@ import (
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"go-web/web-api/ai"
+	aiagent "go-web/web-api/ai/agent"
 	"io"
 	"log"
 	"net/http"
@@ -84,6 +85,13 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/ai/generateSqlStream", ai.HandleGenerateSqlStream)
 	router.POST("/ai/chat", ai.HandleChat)
 
+	// Eino 智能体路由（新版）
+	agentHandler := aiagent.NewHandler()
+	router.POST("/ai/agent/chat", agentHandler.HandleChat)
+	router.POST("/ai/agent/chatStream", agentHandler.HandleChatStream)
+	router.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
+	router.GET("/ai/agent/sessions/delete", agentHandler.HandleDeleteSession)
+
 	router.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})
 	})
@@ -107,6 +115,7 @@ func MainRegister(router *gin.Engine) {
 
 	// 2. 注册静态文件（可选，用于明确的静态资源）
 	router.Static("/assets", "./static/assets")
+	router.Static("/exports", "./exports") // AI 导出文件下载
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
 	router.NoRoute(func(c *gin.Context) {

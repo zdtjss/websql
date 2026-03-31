@@ -494,8 +494,11 @@ type PowerDto struct {
 }
 
 type AIConfig struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"baseUrl"`
-	Model    string `json:"model"`
-	ApiKey   string `json:"apiKey"`
+	Provider       string  `json:"provider"`
+	BaseURL        string  `json:"baseUrl"`
+	Model          string  `json:"model"`
+	ApiKey         string  `json:"apiKey"`
+	Temperature    float32 `json:"temperature"`    // 生成随机性 0.0-2.0，默认 0.7
+	MaxTokens      int     `json:"maxTokens"`      // 最大生成 token 数，0 表示不限
+	EnableThinking bool    `json:"enableThinking"` // 是否启用思考模式（Ollama thinking）
 }
