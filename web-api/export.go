@@ -1,10 +1,13 @@
 package webapi
 
 import (
+	"fmt"
 	"go-web/logutils"
 	admin "go-web/web-api/admin"
 	"io"
 	"log"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -182,9 +185,63 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 		logutils.PanicErr(err)
 	}
 	if err := streamWriter.Flush(); err != nil {
-		logutils.PanicErrf("导出excel失败", err)
+		logutils.PanicErrf("导出 excel 失败", err)
 		return
 	}
 	excel.Write(out)
 	log.Println("导出完成")
+}
+
+// handleExportDownload 处理导出文件下载，下载完成后自动删除文件
+func handleExportDownload(c *gin.Context) {
+	fileName := c.Param("filename")
+	if fileName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件名不能为空"})
+		return
+	}
+
+	// 确保文件名以 .xlsx 结尾
+	if !strings.HasSuffix(fileName, ".xlsx") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件名"})
+		return
+	}
+
+	filePath := "exports/" + fileName
+
+	// 检查文件是否存在
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在"})
+		return
+	}
+
+	// 设置响应头
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+
+	// 读取并发送文件
+	file, err := os.Open(filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件失败"})
+		return
+	}
+	defer file.Close()
+
+	// 获取文件信息
+	stat, err := file.Stat()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文件信息失败"})
+		return
+	}
+	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))
+
+	// 流式传输文件内容
+	io.Copy(c.Writer, file)
+
+	// 传输完成后删除文件
+	c.Writer.Flush()
+	file.Close()
+
+	// 延迟删除文件（即使前面有错误也尝试删除）
+	os.Remove(filePath)
+	log.Printf("导出文件已删除：%s", filePath)
 }

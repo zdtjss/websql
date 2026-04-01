@@ -115,7 +115,7 @@ func MainRegister(router *gin.Engine) {
 
 	// 2. 注册静态文件（可选，用于明确的静态资源）
 	router.Static("/assets", "./static/assets")
-	router.Static("/exports", "./exports") // AI 导出文件下载
+	router.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
 	router.NoRoute(func(c *gin.Context) {

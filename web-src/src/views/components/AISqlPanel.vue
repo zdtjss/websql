@@ -3,7 +3,9 @@
     :model-value="modelValue"
     title="AI SQL 智能助手"
     direction="rtl"
-    size="720px"
+    :size="panelWidth"
+    :fullscreen="isFullscreen"
+    :close-on-press-escape="false"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div style="display: flex; flex-direction: column; height: 100%; gap: 12px;">
@@ -26,7 +28,7 @@
             <div v-if="msg.hasSql" class="bubble-content">
               <pre class="sql-pre"><code v-html="highlightSql(msg.content)" /></pre>
             </div>
-            <div v-else class="bubble-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
+            <div v-else class="bubble-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
           </div>
           <div v-else-if="msg.role === 'tool_call'" class="tool-call-block">
             <span>🔧 {{ msg.content }}</span>
@@ -42,9 +44,7 @@
         <!-- 流式输出中 -->
         <div v-if="streamingContent" class="chat-bubble assistant">
           <div class="bubble-label">AI</div>
-          <div class="bubble-content">
-            <pre class="sql-pre"><code v-html="highlightSql(streamingContent)" /><span v-if="loading" class="cursor-blink">▌</span></pre>
-          </div>
+          <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingContent)"></div>
         </div>
 
         <!-- 危险操作确认 -->
@@ -65,8 +65,11 @@
       <!-- 输入区域 -->
       <div style="border-top: 1px solid #e4e7ed; padding-top: 12px;">
         <div style="margin-bottom: 6px; font-size: 13px; color: #606266; display: flex; justify-content: space-between; align-items: center;">
-          <span>描述你的需求（SQL生成 / 数据分析 / 导出）</span>
+          <span>描述你的需求（SQL 生成 / 数据分析 / 导出）</span>
           <div style="display: flex; gap: 6px;">
+            <el-button size="small" @click="toggleFullscreen" :title="isFullscreen ? '退出全屏' : '全屏展示'">
+              <el-icon><component :is="isFullscreen ? 'ZoomOut' : 'FullScreen'" /></el-icon>
+            </el-button>
             <el-button
               :type="isRecording ? 'danger' : 'primary'"
               size="small"
@@ -92,7 +95,7 @@
           <el-input
             v-model="question"
             type="textarea"
-            :rows="3"
+            :rows="5"
             placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
             :disabled="loading"
             @keydown.ctrl.enter="sendMessage"
@@ -113,14 +116,59 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
+import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause, CopyDocument, Delete } from '@element-plus/icons-vue'
+import { Microphone, VideoPause, CopyDocument, Delete, FullScreen } from '@element-plus/icons-vue'
 
 hljs.registerLanguage('sql', hljsSql)
+
+// 获取 API 基础路径
+const apiBase = import.meta.env.VITE_API_URL || ''
+
+// 初始化 markdown-it
+const md = new MarkdownIt({
+  html: true,
+  breaks: true,
+  linkify: true,
+  typographer: false,
+})
+
+// 自定义链接渲染
+md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
+  const token = tokens[idx]
+  const hrefIndex = token.attrIndex('href')
+  let href = hrefIndex >= 0 ? token.attrs[hrefIndex][1] : ''
+  
+  // 处理 href：如果是相对路径且以 / 开头，添加 apiBase
+  if (href && href.startsWith('/') && !href.startsWith('//')) {
+    // 更新 href 属性
+    token.attrs[hrefIndex][1] = apiBase + href
+  }
+  
+  // 所有链接都添加 target="_blank"
+  token.attrPush(['target', '_blank'])
+  
+  // 外部链接额外添加 rel 属性
+  if (href.startsWith('http')) {
+    token.attrPush(['rel', 'noopener noreferrer'])
+  }
+  
+  return self.renderToken(tokens, idx, options)
+}
+
+// 自定义表格渲染，添加滚动容器
+const defaultTableRender = md.renderer.rules.table_open
+md.renderer.rules.table_open = function(tokens, idx, options, env, self) {
+  return '<div class="table-wrapper"><table>'
+}
+const defaultTableCloseRender = md.renderer.rules.table_close
+md.renderer.rules.table_close = function(tokens, idx, options, env, self) {
+  return '</table></div>'
+}
 
 const props = defineProps({
   connId: String,
@@ -136,12 +184,14 @@ const selectedTables = ref([])
 const loading = ref(false)
 const isRecording = ref(false)
 const thinkingText = ref('')
-const toolCallText = ref('')
 const streamingContent = ref('')
 const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
+const isToolCalling = ref(false) // 标记是否正在调用工具
 const msgContainer = ref(null)
+const panelWidth = ref('720px')
+const isFullscreen = ref(false)
 let speechRecognition = null
 
 const dangerConfirm = ref({ visible: false, sql: '' })
@@ -152,6 +202,38 @@ function highlightSql(text) {
     return hljs.highlight(text, { language: 'sql' }).value
   } catch {
     return text
+  }
+}
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    let processed = text
+    
+    // 预处理 1：修复 **text** 包裹链接的情况
+    // 将 **[text](url)** 转换为 [text](url)
+    processed = processed.replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, '[$1]($2)')
+    
+    // 预处理 2：将反引号包裹的文件路径转换为链接
+    // 匹配 `/path/to/file` 格式，转换为 [filename](/path/to/file)
+    processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
+      const filename = path.substring(path.lastIndexOf('/') + 1)
+      return `[${filename}](${path})`
+    })
+    
+    return md.render(processed)
+  } catch (e) {
+    console.error('Markdown parse error:', e)
+    return text
+  }
+}
+
+function toggleFullscreen() {
+  isFullscreen.value = !isFullscreen.value
+  if (isFullscreen.value) {
+    panelWidth.value = '100%'
+  } else {
+    panelWidth.value = '720px'
   }
 }
 
@@ -171,8 +253,8 @@ async function sendMessage() {
   question.value = ''
   loading.value = true
   thinkingText.value = ''
-  toolCallText.value = ''
   streamingContent.value = ''
+  isToolCalling.value = false
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -223,13 +305,25 @@ async function sendMessage() {
               thinkingText.value += chunk.content
               break
             case 'content':
-              streamingContent.value += chunk.content
+              // 如果正在调用工具，所有内容都添加到思考区域
+              if (isToolCalling.value) {
+                thinkingText.value += chunk.content
+              } else {
+                streamingContent.value += chunk.content
+              }
               break
             case 'tool_call':
-              // 保存到历史并继续
-              chatHistory.value.push({ role: 'tool_call', content: chunk.content })
-              toolCallText.value = chunk.content
-              scrollToBottom()
+              // 工具调用，标记为工具调用中，添加到思考内容
+              isToolCalling.value = true
+              thinkingText.value += `\n[调用工具] ${chunk.content}\n`
+              break
+            case 'tool_result':
+              // 工具执行结果，添加到思考内容
+              if (chunk.toolResult) {
+                thinkingText.value += `[工具结果] ${chunk.toolResult.name}: ${chunk.content || '执行完成'}\n`
+              }
+              // 工具调用结束，重置标志，让后续 content 回到结果区域
+              isToolCalling.value = false
               break
             case 'danger_confirm':
               dangerConfirm.value = { visible: true, sql: chunk.sql || chunk.content }
@@ -257,7 +351,8 @@ async function sendMessage() {
       if (isSql) lastSql.value = content
       streamingContent.value = ''
     }
-    toolCallText.value = ''
+    // 重置工具调用标志
+    isToolCalling.value = false
   } catch (e) {
     ElMessage({ message: e.message || '请求失败', type: 'error' })
   } finally {
@@ -331,9 +426,9 @@ function clearSession() {
   chatHistory.value = []
   sessionId.value = ''
   thinkingText.value = ''
-  toolCallText.value = ''
   streamingContent.value = ''
   lastSql.value = ''
+  isToolCalling.value = false
   dangerConfirm.value = { visible: false, sql: '' }
 }
 
@@ -383,6 +478,27 @@ function toggleRecording() {
     } catch { ElMessage({ message: '无法启动语音识别', type: 'error' }) }
   }
 }
+
+function handleEscKey(e) {
+  if (e.key === 'Escape' || e.keyCode === 27) {
+    if (isFullscreen.value) {
+      // 全屏状态：只退出全屏，不关闭面板
+      isFullscreen.value = false
+      panelWidth.value = '720px'
+    } else {
+      // 非全屏状态：关闭面板
+      emit('update:modelValue', false)
+    }
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handleEscKey)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleEscKey)
+})
 
 watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
 </script>
@@ -443,4 +559,180 @@ watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
 .danger-confirm { padding: 8px 0; }
 .cursor-blink { animation: blink 1s step-start infinite; font-size: 14px; }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Markdown 样式 */
+.markdown-body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #24292e;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.markdown-body h1 { font-size: 20px; }
+.markdown-body h2 { font-size: 18px; }
+.markdown-body h3 { font-size: 16px; }
+.markdown-body h4 { font-size: 14px; }
+.markdown-body h5 { font-size: 13px; }
+.markdown-body h6 { font-size: 12px; }
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 2em;
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body li {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.markdown-body li + li {
+  margin-top: 4px;
+}
+
+.markdown-body code {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 12px;
+  background-color: rgba(27, 31, 35, 0.05);
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+}
+
+.markdown-body pre {
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  background-color: #f6f8fa;
+  border-radius: 4px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  max-width: 100%;
+}
+
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+  line-height: inherit;
+  word-wrap: normal;
+  background-color: transparent;
+  border-radius: 0;
+  color: inherit;
+  white-space: pre;
+}
+
+.markdown-body blockquote {
+  padding: 0 1em;
+  color: #6a737d;
+  border-left: 0.25em solid #dfe2e5;
+  margin: 0;
+  margin-bottom: 10px;
+}
+
+/* 表格样式优化 */
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  padding: 8px 12px;
+  border: 1px solid #e1e4e8;
+  white-space: nowrap;
+}
+
+.markdown-body table th {
+  font-weight: 600;
+  background-color: #f6f8fa;
+  position: sticky;
+  top: 0;
+}
+
+.markdown-body table tr:nth-child(2n) {
+  background-color: #f6f8fa;
+}
+
+/* 宽表滚动容器 */
+.markdown-body .table-wrapper {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-body a {
+  color: #0366d6;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body a[target="_blank"]::after {
+  content: " ↗";
+  font-size: 12px;
+}
+
+.markdown-body hr {
+  height: 0.25em;
+  padding: 0;
+  margin: 16px 0;
+  background-color: #e1e4e8;
+  border: 0;
+}
+
+.markdown-body strong {
+  font-weight: 600;
+}
+
+.markdown-body em {
+  font-style: italic;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}
 </style>

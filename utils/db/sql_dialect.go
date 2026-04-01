@@ -52,7 +52,7 @@ var SQL_DIALECT = map[string]map[string]string{
 var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool) *any{
 	"mysql": func(colType *string, val *any, overSign bool) *any {
 		var v any
-		//判断是否为[]byte
+		//判断是否为 []byte
 		if b, ok := (*val).([]byte); ok {
 			strVal := string(b)
 			switch *colType {
@@ -92,13 +92,14 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 		} else if t, ok := (*val).(time.Time); ok {
 			v = t.Format(time.DateTime)
 		} else {
-			return val
+			// 其他类型直接返回值（解引用）
+			v = *val
 		}
 		return &v
 	},
 	"oracle": func(colType *string, val *any, overSign bool) *any {
 		var v any
-		//判断是否为[]byte
+		//判断是否为 []byte
 		if b, ok := (*val).([]byte); ok {
 			strVal := string(b)
 			switch *colType {
@@ -137,16 +138,18 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 		} else if t, ok := (*val).(time.Time); ok {
 			v = time.Time(t).Format(time.DateTime)
 		} else {
-			return val
+			// 其他类型直接返回值（解引用）
+			v = *val
 		}
 		return &v
 	}, "sqlite": func(colType *string, val *any, overSign bool) *any {
 		var v any
-		//判断是否为[]byte
+		//判断是否为 []byte
 		if t, ok := (*val).(time.Time); ok {
 			v = time.Time(t).Format(time.DateTime)
 		} else {
-			v = val
+			// 其他类型直接返回值（解引用）
+			v = *val
 		}
 		return &v
 	},
