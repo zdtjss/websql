@@ -27,37 +27,6 @@ type StreamChunk struct {
 	ToolResult map[string]interface{} `json:"toolResult,omitempty"`
 }
 
-// cleanMessageContent 清理消息内容，移除工具调用标记
-// eino 框架会自动处理 ToolCalls，但某些模型会在 Content 中包含原始的 <function_calls> 标签
-func cleanMessageContent(content string) string {
-	if content == "" {
-		return ""
-	}
-
-	// 移除 <function_calls>...</function_calls> 块
-	result := content
-	for {
-		start := strings.Index(result, "<function_calls>")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(result, "</function_calls>")
-		if end == -1 {
-			// 如果没有结束标签，移除从开始到末尾的所有内容
-			result = result[:start]
-			break
-		}
-		// 移除整个标签块
-		before := result[:start]
-		after := result[end+len("</function_calls>"):]
-		result = before + after
-	}
-
-	// 注意：不要使用 strings.TrimSpace，这会移除换行符和空格
-	// 只移除标签，保留原始的格式（换行、空格等）
-	return result
-}
-
 // SQLAgent SQL 智能体
 type SQLAgent struct {
 	agent    *adk.ChatModelAgent
@@ -239,17 +208,11 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 						flush(StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
 					}
 
-					// 实时输出文本内容 - 只发送增量内容
+					// 实时输出文本内容
 					if chunk.Content != "" {
 						accContent.WriteString(chunk.Content)
-						// 关键修复：只发送当前 chunk 的内容，而不是完整累积内容
-						// 因为前端会用 += 累加
-						// 注意：增量内容不经过 cleanMessageContent，因为函数标签可能被分割在多个 chunk 中
-						// cleanMessageContent 只在保存完整响应时使用
-						if chunk.Content != "" {
-							flush(StreamChunk{Type: "content", Content: chunk.Content})
-							contentEmitted = true
-						}
+						flush(StreamChunk{Type: "content", Content: chunk.Content})
+						contentEmitted = true
 					}
 
 					// ToolCalls 由 eino 框架自动处理，我们不需要在这里处理
@@ -257,10 +220,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 				// 保存完整响应
 				if contentEmitted {
-					cleanedContent := cleanMessageContent(accContent.String())
-					if cleanedContent != "" {
-						fullResponse.WriteString(cleanedContent)
-					}
+					fullResponse.WriteString(accContent.String())
 				}
 
 			} else if mo.Message != nil {
@@ -272,11 +232,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				}
 
 				if msg.Content != "" {
-					cleanedContent := cleanMessageContent(msg.Content)
-					if cleanedContent != "" {
-						flush(StreamChunk{Type: "content", Content: cleanedContent})
-						fullResponse.WriteString(cleanedContent)
-					}
+					flush(StreamChunk{Type: "content", Content: msg.Content})
+					fullResponse.WriteString(msg.Content)
 				}
 			}
 		}
@@ -446,7 +403,7 @@ func buildSystemPrompt(dbType, dbName string, tableContext []string) string {
 
 **数据准确性是最高优先级**，所有操作必须遵循以下原则：
 
-1. **零容忍错误**：查询、导出、分析等操作必须 100% 准确
+1. **零容忍错误**：查询、导出、分析等操作必须百分之百准确
 2. **验证优先**：执行任何操作前，必须先验证表结构、字段名、数据类型
 3. **安全第一**：禁止执行任何可能导致数据丢失或损坏的操作
 4. **精确匹配**：表名、字段名必须与数据库 schema 完全一致（区分大小写）
@@ -510,22 +467,8 @@ func buildSystemPrompt(dbType, dbName string, tableContext []string) string {
   3. **明确说明需要用户在页面确认后执行**
   4. **不要尝试调用 exec_sql 工具执行**
   5. **使用以下格式回复**：
-
-**推荐回复格式**：
-使用代码块包裹 SQL，并说明风险等级、操作类型、注意事项等。
-示例：
-"我理解您想要删除用户记录。这是一个高危的 DELETE 操作，为了数据安全，请您在页面确认以下 SQL：
-
-SQL:
-DELETE FROM user WHERE id = 123
-
-风险提示：
-- 操作类型：DELETE（删除数据）
-- 影响范围：1 行
-- 风险等级：高危（不可逆）
-- 请务必备份数据
-
-请点击确认执行按钮执行此 SQL。"
+     - 在 SQL 代码块前添加 [CONFIRM_REQUIRED] 标记
+     - 说明风险等级、操作类型、注意事项
 
 ### 推荐的做法
 - ✅ **使用 LIMIT** - 大表查询时限制返回行数

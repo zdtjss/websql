@@ -20,6 +20,31 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+// DangerousSQLError 危险 SQL 错误（用于通知前端弹出确认界面）
+type DangerousSQLError struct {
+	SQL string
+}
+
+func (e *DangerousSQLError) Error() string {
+	return fmt.Sprintf("DANGEROUS_SQL:%s", e.SQL)
+}
+
+// isDangerousSQL 检查 SQL 是否为危险操作
+func isDangerousSQL(sql string) bool {
+	upperSQL := strings.ToUpper(strings.TrimSpace(sql))
+	dangerousPatterns := []string{
+		"DROP ", "TRUNCATE ", "DELETE FROM",
+		"ALTER ", "CREATE ", "REPLACE ",
+		"INSERT ", "UPDATE ",
+	}
+	for _, pattern := range dangerousPatterns {
+		if strings.HasPrefix(upperSQL, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // === Tool 输入/输出结构体 ===
 
 // QueryInput 执行 SELECT 查询的输入
@@ -134,11 +159,16 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 
 		// 检查是否包含用户确认标记
 		if !strings.Contains(sql, "-- CONFIRMED:") {
-			// 没有确认标记，说明 AI 直接调用了工具，需要拒绝执行
+			// 没有确认标记，判断是否为危险 SQL
+			if isDangerousSQL(sql) {
+				// 是危险 SQL，返回特定错误，AI 接收到后会重新生成回复引导用户确认
+				return nil, &DangerousSQLError{SQL: sql}
+			}
+			// 不是危险 SQL，但也需要确认（可能是普通写操作）
 			return nil, fmt.Errorf("此操作需要用户确认，请 AI 助手生成 SQL 并告知用户在页面确认执行")
 		}
 
-		// 提取确认标记后的实际 SQL（移除确认标记行）
+		// 有确认标记，提取实际 SQL 并执行
 		lines := strings.Split(sql, "\n")
 		var actualSQLLines []string
 		for _, line := range lines {

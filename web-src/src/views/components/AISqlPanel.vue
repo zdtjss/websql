@@ -50,6 +50,18 @@
         <div v-if="loading" style="color:#909399;font-size:13px;padding:4px 0;">AI 正在处理...</div>
       </div>
 
+      <!-- 内联 SQL 确认区域 -->
+      <SQLConfirmInline
+        v-model="confirmVisible"
+        :sql="confirmSQL"
+        :operation-type="confirmOperationType"
+        :risk-level="confirmRiskLevel"
+        :description="confirmDescription"
+        :table-name="confirmTableName"
+        @confirm="handleConfirmExec"
+        @cancel="handleConfirmCancel"
+      />
+
       <!-- 输入区域 -->
       <div style="border-top: 1px solid #e4e7ed; padding-top: 12px;">
         <div style="margin-bottom: 6px; font-size: 13px; color: #606266; display: flex; justify-content: space-between; align-items: center;">
@@ -100,18 +112,6 @@
         </div>
       </div>
     </div>
-
-    <!-- SQL 确认对话框 -->
-    <SQLConfirmModal
-      v-model="confirmModalVisible"
-      :sql="confirmSQL"
-      :operation-type="confirmOperationType"
-      :risk-level="confirmRiskLevel"
-      :description="confirmDescription"
-      :table-name="confirmTableName"
-      @confirm="handleConfirmExec"
-      @cancel="handleConfirmCancel"
-    />
   </el-drawer>
 </template>
 
@@ -123,8 +123,8 @@ import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
 import { Microphone, VideoPause, CopyDocument, Delete, FullScreen } from '@element-plus/icons-vue'
-import SQLConfirmModal from '@/components/SQLConfirmModal.vue'
-import { analyzeSQL } from '@/utils/sqlRiskAssessment'
+import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
+import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
 
 hljs.registerLanguage('sql', hljsSql)
 
@@ -196,13 +196,14 @@ const isFullscreen = ref(false)
 let speechRecognition = null
 
 // SQL 确认相关
-const confirmModalVisible = ref(false)
+const confirmVisible = ref(false)
 const confirmSQL = ref('')
 const confirmOperationType = ref('SELECT')
 const confirmRiskLevel = ref('low')
 const confirmDescription = ref('')
 const confirmTableName = ref('')
 let pendingCallback = null
+let hasShownConfirm = false  // 防止重复弹出
 
 function highlightSql(text) {
   if (!text) return ''
@@ -313,25 +314,18 @@ async function sendMessage() {
               break
             case 'thinking':
               thinkingText.value += chunk.content
+              scrollToBottom()
               break
             case 'content':
               streamingContent.value += chunk.content
-              // 检测内容中是否包含危险 SQL
-              detectDangerousSQL(streamingContent.value)
-              break
-            case 'tool_call':
-              // 工具调用，添加到思考内容
-              thinkingText.value += `\n[调用工具] ${chunk.content}\n`
-              break
-            case 'tool_result':
-              // 工具执行结果，添加到思考内容
-              if (chunk.toolResult) {
-                thinkingText.value += `[工具结果] ${chunk.toolResult.name}: ${chunk.content || '执行完成'}\n`
-              }
+              scrollToBottom()
               break
             case 'danger_confirm':
-              // 显示确认对话框
-              showConfirmDialog(chunk.sql || chunk.content)
+              // 后端推送的危险 SQL 确认
+              if (!hasShownConfirm) {
+                hasShownConfirm = true
+                showConfirmDialog(chunk.sql || chunk.content)
+              }
               break
             case 'error':
               ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
@@ -354,6 +348,19 @@ async function sendMessage() {
       const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
       chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
       if (isSql) lastSql.value = content
+      
+      // 关键检测：如果内容包含 [CONFIRM_REQUIRED] 标记，立即触发确认
+      if (!hasShownConfirm && content.includes('[CONFIRM_REQUIRED]')) {
+        const sqlStatements = extractAllSQL(content)
+        for (const sql of sqlStatements) {
+          const analysis = analyzeSQL(sql)
+          if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+            showConfirmDialog(sql)
+            break
+          }
+        }
+      }
+      
       streamingContent.value = ''
     }
   } catch (e) {
@@ -364,7 +371,7 @@ async function sendMessage() {
   }
 }
 
-// 显示确认对话框
+// 显示确认区域
 function showConfirmDialog(sql) {
   // 分析 SQL
   const analysis = analyzeSQL(sql)
@@ -374,49 +381,7 @@ function showConfirmDialog(sql) {
   confirmRiskLevel.value = analysis.riskLevel
   confirmDescription.value = analysis.description
   confirmTableName.value = analysis.tableName || ''
-  confirmModalVisible.value = true
-}
-
-// 检测内容中的危险 SQL
-let hasShownConfirm = false  // 防止重复弹出
-
-function detectDangerousSQL(content) {
-  if (hasShownConfirm || !content) return
-  
-  // 尝试从内容中提取 SQL 代码块
-  const sqlBlockRegex = /```(?:sql)?\s*([\s\S]*?)```/g
-  let match
-  
-  while ((match = sqlBlockRegex.exec(content)) !== null) {
-    const sql = match[1].trim()
-    if (sql) {
-      const analysis = analyzeSQL(sql)
-      // 如果是中高风险操作，显示确认对话框
-      if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
-        hasShownConfirm = true
-        showConfirmDialog(sql)
-        break
-      }
-    }
-  }
-  
-  // 如果没有代码块，尝试直接检测行内的 SQL
-  if (!hasShownConfirm) {
-    const inlineSQLRegex = /(UPDATE|DELETE|INSERT INTO|ALTER TABLE|DROP TABLE|TRUNCATE)\s+[\s\S]*?(?=\.|$|\n\n)/gi
-    const inlineMatches = content.matchAll(inlineSQLRegex)
-    
-    for (const m of inlineMatches) {
-      const sql = m[0].trim()
-      if (sql) {
-        const analysis = analyzeSQL(sql)
-        if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
-          hasShownConfirm = true
-          showConfirmDialog(sql)
-          break
-        }
-      }
-    }
-  }
+  confirmVisible.value = true
 }
 
 // 重置检测标记
@@ -427,7 +392,7 @@ function resetDetectFlag() {
 // 处理确认执行
 async function handleConfirmExec(confirmedSql) {
   loading.value = true
-  confirmModalVisible.value = false
+  confirmVisible.value = false
   
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/chatStream'
@@ -485,7 +450,7 @@ async function handleConfirmExec(confirmedSql) {
 
 // 处理取消确认
 function handleConfirmCancel() {
-  confirmModalVisible.value = false
+  confirmVisible.value = false
   chatHistory.value.push({ role: 'assistant', content: '已取消执行危险操作。' })
   scrollToBottom()
 }
@@ -496,7 +461,7 @@ function clearSession() {
   thinkingText.value = ''
   streamingContent.value = ''
   lastSql.value = ''
-  confirmModalVisible.value = false
+  confirmVisible.value = false
   confirmSQL.value = ''
   resetDetectFlag()
 }

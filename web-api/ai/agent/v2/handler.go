@@ -5,14 +5,48 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"go-web/config"
 	"go-web/logutils"
+	"go-web/utils"
 	admin "go-web/web-api/admin"
 
 	"github.com/gin-gonic/gin"
 )
+
+// sseLineWriter 实现 io.Writer 接口，将数据缓冲直到找到换行符，然后将每一行作为 SSE 事件发布
+// 参考官方 server.go:407-437
+type sseLineWriter struct {
+	c   *gin.Context
+	buf []byte
+}
+
+// Write 实现 io.Writer 接口
+func (w *sseLineWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		idx := -1
+		for i, b := range w.buf {
+			if b == '\n' {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		line := w.buf[:idx]
+		w.buf = w.buf[idx+1:]
+		if len(line) == 0 {
+			continue
+		}
+		w.c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(line)))
+		w.c.Writer.Flush()
+	}
+	return len(p), nil
+}
 
 // Handler v2 版本的 HTTP Handler
 type Handler struct {
@@ -41,11 +75,17 @@ func NewHandler() (*Handler, error) {
 	}, nil
 }
 
-// ChatStream 流式聊天接口
+// ChatStream 流式聊天接口 - 参考官方 server.go:150-219
 func (h *Handler) ChatStream(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 如果是确认执行请求，直接执行 SQL
+	if req.Confirmed && req.PendingSQL != "" {
+		h.handleConfirmedExec(c, req)
 		return
 	}
 
@@ -72,7 +112,27 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	defer c.Writer.Flush()
 
+	// 发送 keep-alive 心跳，每 5 秒一次，防止 SSE 连接超时
+	// 参考官方 server.go:185-200
+	kaStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-ticker.C:
+				// 发送空消息作为心跳
+				c.Writer.WriteString("data: \n\n")
+				c.Writer.Flush()
+			}
+		}
+	}()
+
+	// 创建 flush 函数
 	flush := func(chunk StreamChunk) {
 		data, _ := json.Marshal(chunk)
 		c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(data)))
@@ -81,10 +141,58 @@ func (h *Handler) ChatStream(c *gin.Context) {
 
 	// 运行 Agent
 	err = agent.RunStream(ctx, req, flush)
+
+	// 停止 keep-alive
+	close(kaStop)
+
 	if err != nil {
 		logutils.PrintErr(fmt.Errorf("Agent 执行失败：%w", err))
 		flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 服务错误：%s", err.Error())})
 	}
+}
+
+// handleConfirmedExec 处理确认执行请求
+func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
+	// 获取数据库连接
+	cfgList := []admin.ConnCfg{}
+	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", req.ConnID)
+	if err != nil || len(cfgList) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库连接不存在"})
+		return
+	}
+	cfg := &cfgList[0]
+	cfg.Pwd = utils.AESDecode(cfg.Pwd)
+	conn := config.GetConn(&config.DBParam{
+		Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType,
+		User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url,
+	})
+	if conn == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库连接不存在"})
+		return
+	}
+
+	// 设置 SSE 头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+
+	flush := func(chunk StreamChunk) {
+		data, _ := json.Marshal(chunk)
+		c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(data)))
+		c.Writer.Flush()
+	}
+
+	// 执行 SQL
+	sql := strings.TrimSpace(req.PendingSQL)
+	result, err := conn.Exec(sql)
+	if err != nil {
+		flush(StreamChunk{Type: "error", Content: fmt.Sprintf("执行失败：%s", err.Error())})
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	flush(StreamChunk{Type: "content", Content: fmt.Sprintf("执行成功，影响 %d 行", affected)})
+	flush(StreamChunk{Type: "done"})
 }
 
 // Chat 非流式聊天接口（备用）

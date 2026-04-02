@@ -6,7 +6,113 @@
  * 2. 评估风险等级
  * 3. 提取表名
  * 4. 估算影响范围
+ * 5. 从文本中提取 SQL 语句
  */
+
+/**
+ * 从文本中提取所有 SQL 语句（包括代码块和内联）
+ * @param {string} text - 包含 SQL 的文本
+ * @returns {Array<string>} 提取到的 SQL 语句数组
+ */
+export function extractAllSQL(text) {
+  const sqlStatements = []
+  
+  // 1. 首先提取完整的代码块中的 SQL
+  const codeBlockRegex = /```(?:sql)?\s*([\s\S]*?)```/g
+  let match
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const sql = match[1].trim()
+    if (sql) {
+      // 分割多个语句（以分号分隔）
+      const statements = splitSQLStatements(sql)
+      sqlStatements.push(...statements)
+    }
+  }
+  
+  // 2. 如果没有代码块，尝试提取内联 SQL
+  if (sqlStatements.length === 0) {
+    const inlineSQL = extractInlineSQL(text)
+    if (inlineSQL) {
+      sqlStatements.push(inlineSQL)
+    }
+  }
+  
+  return sqlStatements.filter(sql => sql.length > 0)
+}
+
+/**
+ * 分割多个 SQL 语句
+ * @param {string} sql - 包含多个语句的 SQL
+ * @returns {Array<string>} 分割后的单个 SQL 语句
+ */
+function splitSQLStatements(sql) {
+  const statements = []
+  let current = ''
+  let inString = false
+  let stringChar = ''
+  
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i]
+    const nextChar = sql[i + 1]
+    
+    // 处理字符串转义
+    if (inString && char === '\\' && (nextChar === "'" || nextChar === '"')) {
+      current += char + nextChar
+      i++
+      continue
+    }
+    
+    // 处理字符串开始/结束
+    if ((char === "'" || char === '"') && (!inString || char === stringChar)) {
+      inString = !inString
+      stringChar = inString ? char : ''
+      current += char
+      continue
+    }
+    
+    // 处理语句结束（分号不在字符串内）
+    if (char === ';' && !inString) {
+      const trimmed = current.trim()
+      if (trimmed) {
+        statements.push(trimmed)
+      }
+      current = ''
+      continue
+    }
+    
+    current += char
+  }
+  
+  // 添加最后一个语句
+  const trimmed = current.trim()
+  if (trimmed) {
+    statements.push(trimmed)
+  }
+  
+  return statements
+}
+
+/**
+ * 从文本中提取内联 SQL
+ * @param {string} text - 文本
+ * @returns {string|null} 提取到的 SQL
+ */
+function extractInlineSQL(text) {
+  // 常见的 SQL 开头关键字
+  const sqlKeywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'ALTER', 'CREATE', 'DROP', 'TRUNCATE', 'REPLACE', 'MERGE']
+  
+  // 查找以这些关键字开头的语句
+  for (const keyword of sqlKeywords) {
+    const regex = new RegExp(`\\b${keyword}\\b[\\s\\S]*?(?=(?:\\.\\s|\\n\\n|$|\\b${sqlKeywords.join('\\b|\\b')}\\b))`, 'gi')
+    const matches = text.match(regex)
+    if (matches) {
+      // 返回最长的匹配（最可能是完整的 SQL）
+      return matches.sort((a, b) => b.length - a.length)[0].trim()
+    }
+  }
+  
+  return null
+}
 
 /**
  * 分析 SQL 语句
