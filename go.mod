@@ -44,6 +44,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.2 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/json-iterator/go v1.1.13-0.20220915233716-71ac16282d12 // indirect
@@ -53,9 +54,11 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
+	github.com/mmonterroca/docxgo/v2 v2.3.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/nguyenthenguyen/docx v0.0.0-20230621112118-9c8e795a11db // indirect
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -69,6 +72,8 @@ require (
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
+	github.com/unidoc/unioffice v1.39.0 // indirect
+	github.com/wcharczuk/go-chart/v2 v2.1.2 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/xuri/efp v0.0.1 // indirect
 	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
@@ -77,6 +82,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.25.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/image v0.25.0 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

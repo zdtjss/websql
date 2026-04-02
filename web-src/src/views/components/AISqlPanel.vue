@@ -47,18 +47,6 @@
           <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingContent)"></div>
         </div>
 
-        <!-- 危险操作确认 -->
-        <div v-if="dangerConfirm.visible" class="danger-confirm">
-          <el-alert type="warning" :closable="false" show-icon>
-            <template #title>⚠️ 检测到危险操作</template>
-            <pre class="sql-pre danger-sql"><code v-html="highlightSql(dangerConfirm.sql)" /></pre>
-            <div style="margin-top: 10px; display: flex; gap: 8px;">
-              <el-button type="danger" size="small" @click="confirmDangerExec">确认执行</el-button>
-              <el-button size="small" @click="cancelDangerExec">取消</el-button>
-            </div>
-          </el-alert>
-        </div>
-
         <div v-if="loading" style="color:#909399;font-size:13px;padding:4px 0;">AI 正在处理...</div>
       </div>
 
@@ -105,13 +93,25 @@
             <el-button type="primary" :loading="loading" :disabled="!question.trim()" @click="sendMessage" size="small">
               发送
             </el-button>
-            <el-button v-if="lastSql" type="success" size="small" @click="insertToEditor" title="将最后生成的SQL加入编辑器">
+            <el-button v-if="lastSql" type="success" size="small" @click="insertToEditor" title="将最后生成的 SQL 加入编辑器">
               加入编辑器
             </el-button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- SQL 确认对话框 -->
+    <SQLConfirmModal
+      v-model="confirmModalVisible"
+      :sql="confirmSQL"
+      :operation-type="confirmOperationType"
+      :risk-level="confirmRiskLevel"
+      :description="confirmDescription"
+      :table-name="confirmTableName"
+      @confirm="handleConfirmExec"
+      @cancel="handleConfirmCancel"
+    />
   </el-drawer>
 </template>
 
@@ -123,6 +123,8 @@ import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
 import { Microphone, VideoPause, CopyDocument, Delete, FullScreen } from '@element-plus/icons-vue'
+import SQLConfirmModal from '@/components/SQLConfirmModal.vue'
+import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 
 hljs.registerLanguage('sql', hljsSql)
 
@@ -188,13 +190,19 @@ const streamingContent = ref('')
 const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
-const isToolCalling = ref(false) // 标记是否正在调用工具
 const msgContainer = ref(null)
 const panelWidth = ref('720px')
 const isFullscreen = ref(false)
 let speechRecognition = null
 
-const dangerConfirm = ref({ visible: false, sql: '' })
+// SQL 确认相关
+const confirmModalVisible = ref(false)
+const confirmSQL = ref('')
+const confirmOperationType = ref('SELECT')
+const confirmRiskLevel = ref('low')
+const confirmDescription = ref('')
+const confirmTableName = ref('')
+let pendingCallback = null
 
 function highlightSql(text) {
   if (!text) return ''
@@ -249,12 +257,14 @@ async function sendMessage() {
   const text = question.value.trim()
   if (!text || loading.value) return
 
+  // 重置检测标记
+  resetDetectFlag()
+
   chatHistory.value.push({ role: 'user', content: text })
   question.value = ''
   loading.value = true
   thinkingText.value = ''
   streamingContent.value = ''
-  isToolCalling.value = false
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -305,16 +315,12 @@ async function sendMessage() {
               thinkingText.value += chunk.content
               break
             case 'content':
-              // 如果正在调用工具，所有内容都添加到思考区域
-              if (isToolCalling.value) {
-                thinkingText.value += chunk.content
-              } else {
-                streamingContent.value += chunk.content
-              }
+              streamingContent.value += chunk.content
+              // 检测内容中是否包含危险 SQL
+              detectDangerousSQL(streamingContent.value)
               break
             case 'tool_call':
-              // 工具调用，标记为工具调用中，添加到思考内容
-              isToolCalling.value = true
+              // 工具调用，添加到思考内容
               thinkingText.value += `\n[调用工具] ${chunk.content}\n`
               break
             case 'tool_result':
@@ -322,11 +328,10 @@ async function sendMessage() {
               if (chunk.toolResult) {
                 thinkingText.value += `[工具结果] ${chunk.toolResult.name}: ${chunk.content || '执行完成'}\n`
               }
-              // 工具调用结束，重置标志，让后续 content 回到结果区域
-              isToolCalling.value = false
               break
             case 'danger_confirm':
-              dangerConfirm.value = { visible: true, sql: chunk.sql || chunk.content }
+              // 显示确认对话框
+              showConfirmDialog(chunk.sql || chunk.content)
               break
             case 'error':
               ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
@@ -351,8 +356,6 @@ async function sendMessage() {
       if (isSql) lastSql.value = content
       streamingContent.value = ''
     }
-    // 重置工具调用标志
-    isToolCalling.value = false
   } catch (e) {
     ElMessage({ message: e.message || '请求失败', type: 'error' })
   } finally {
@@ -361,11 +364,71 @@ async function sendMessage() {
   }
 }
 
-async function confirmDangerExec() {
-  const sql = dangerConfirm.value.sql
-  dangerConfirm.value = { visible: false, sql: '' }
-  loading.value = true
+// 显示确认对话框
+function showConfirmDialog(sql) {
+  // 分析 SQL
+  const analysis = analyzeSQL(sql)
+  
+  confirmSQL.value = sql
+  confirmOperationType.value = analysis.type
+  confirmRiskLevel.value = analysis.riskLevel
+  confirmDescription.value = analysis.description
+  confirmTableName.value = analysis.tableName || ''
+  confirmModalVisible.value = true
+}
 
+// 检测内容中的危险 SQL
+let hasShownConfirm = false  // 防止重复弹出
+
+function detectDangerousSQL(content) {
+  if (hasShownConfirm || !content) return
+  
+  // 尝试从内容中提取 SQL 代码块
+  const sqlBlockRegex = /```(?:sql)?\s*([\s\S]*?)```/g
+  let match
+  
+  while ((match = sqlBlockRegex.exec(content)) !== null) {
+    const sql = match[1].trim()
+    if (sql) {
+      const analysis = analyzeSQL(sql)
+      // 如果是中高风险操作，显示确认对话框
+      if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+        hasShownConfirm = true
+        showConfirmDialog(sql)
+        break
+      }
+    }
+  }
+  
+  // 如果没有代码块，尝试直接检测行内的 SQL
+  if (!hasShownConfirm) {
+    const inlineSQLRegex = /(UPDATE|DELETE|INSERT INTO|ALTER TABLE|DROP TABLE|TRUNCATE)\s+[\s\S]*?(?=\.|$|\n\n)/gi
+    const inlineMatches = content.matchAll(inlineSQLRegex)
+    
+    for (const m of inlineMatches) {
+      const sql = m[0].trim()
+      if (sql) {
+        const analysis = analyzeSQL(sql)
+        if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+          hasShownConfirm = true
+          showConfirmDialog(sql)
+          break
+        }
+      }
+    }
+  }
+}
+
+// 重置检测标记
+function resetDetectFlag() {
+  hasShownConfirm = false
+}
+
+// 处理确认执行
+async function handleConfirmExec(confirmedSql) {
+  loading.value = true
+  confirmModalVisible.value = false
+  
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/chatStream'
   const auth = sessionStorage.getItem('authentication') || ''
@@ -378,9 +441,9 @@ async function confirmDangerExec() {
         sessionId: sessionId.value,
         connId: props.connId,
         schema: props.schema,
-        question: '执行已确认的SQL',
+        question: '执行已确认的 SQL',
         confirmed: true,
-        pendingSQL: sql,
+        pendingSQL: confirmedSql,
       }),
     })
 
@@ -399,8 +462,12 @@ async function confirmDangerExec() {
         if (!line.startsWith('data: ')) continue
         try {
           const chunk = JSON.parse(line.slice(6).trim())
-          if (chunk.type === 'content') result += chunk.content
-          if (chunk.type === 'error') ElMessage({ message: chunk.content, type: 'error' })
+          if (chunk.type === 'content') {
+            result += chunk.content
+          }
+          if (chunk.type === 'error') {
+            ElMessage({ message: chunk.content, type: 'error' })
+          }
         } catch (_) {}
       }
     }
@@ -416,8 +483,9 @@ async function confirmDangerExec() {
   }
 }
 
-function cancelDangerExec() {
-  dangerConfirm.value = { visible: false, sql: '' }
+// 处理取消确认
+function handleConfirmCancel() {
+  confirmModalVisible.value = false
   chatHistory.value.push({ role: 'assistant', content: '已取消执行危险操作。' })
   scrollToBottom()
 }
@@ -428,8 +496,9 @@ function clearSession() {
   thinkingText.value = ''
   streamingContent.value = ''
   lastSql.value = ''
-  isToolCalling.value = false
-  dangerConfirm.value = { visible: false, sql: '' }
+  confirmModalVisible.value = false
+  confirmSQL.value = ''
+  resetDetectFlag()
 }
 
 function insertToEditor() {
@@ -555,8 +624,6 @@ watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
   font-family: 'Courier New', monospace; font-size: 13px;
   line-height: 1.5; white-space: pre-wrap; word-break: break-all;
 }
-.danger-sql { max-height: 200px; overflow-y: auto; background: #fff8e6; border-radius: 4px; }
-.danger-confirm { padding: 8px 0; }
 .cursor-blink { animation: blink 1s step-start infinite; font-size: 14px; }
 @keyframes blink { 50% { opacity: 0; } }
 

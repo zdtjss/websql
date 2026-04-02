@@ -1,4 +1,7 @@
-package agent
+// Package agentv2 基于 Eino ADK 重构的 AI SQL 智能体 v2。
+// 使用 adk.ChatModelAgent 自动处理 tool calling 循环
+// 使用 callback 机制处理流式输出
+package agentv2
 
 import (
 	"context"
@@ -17,57 +20,57 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// --- Tool 输入/输出结构体（供 Eino InferTool 自动推断 JSON Schema）---
+// === Tool 输入/输出结构体 ===
 
-// QueryInput 执行 SELECT 查询的输入。
+// QueryInput 执行 SELECT 查询的输入
 type QueryInput struct {
 	SQL string `json:"sql" jsonschema:"required" jsonschema_description:"要执行的 SELECT SQL 语句"`
 }
 
-// QueryOutput SELECT 查询结果。
+// QueryOutput SELECT 查询结果
 type QueryOutput struct {
 	Columns []string                 `json:"columns"`
 	Data    []map[string]interface{} `json:"data"`
 	Count   int                      `json:"count"`
 }
 
-// ExecInput 执行写操作 SQL 的输入。
+// ExecInput 执行写操作 SQL 的输入
 type ExecInput struct {
 	SQL string `json:"sql" jsonschema:"required" jsonschema_description:"要执行的 INSERT/UPDATE/DELETE/ALTER SQL 语句"`
 }
 
-// ExecOutput 写操作结果。
+// ExecOutput 写操作结果
 type ExecOutput struct {
 	AffectedRows int64  `json:"affectedRows"`
 	Message      string `json:"message"`
 }
 
-// SchemaInput 获取表结构的输入。
+// SchemaInput 获取表结构的输入
 type SchemaInput struct {
 	Tables []string `json:"tables" jsonschema:"required" jsonschema_description:"要查询结构的表名列表"`
 }
 
-// SchemaOutput 表结构信息。
+// SchemaOutput 表结构信息
 type SchemaOutput struct {
 	Schema string `json:"schema"`
 }
 
-// ExportInput 数据导出的输入。
+// ExportInput 数据导出的输入
 type ExportInput struct {
 	SQL      string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出数据的 SELECT SQL"`
 	FileName string `json:"fileName" jsonschema_description:"导出文件名（不含扩展名）"`
 }
 
-// ExportOutput 导出结果。
+// ExportOutput 导出结果
 type ExportOutput struct {
 	Message     string `json:"message"`
 	RowCount    int    `json:"rowCount"`
 	DownloadURL string `json:"downloadUrl"`
 }
 
-// --- Tool 实现函数 ---
+// === Tool 实现函数 ===
 
-// getConn 根据 connId 获取数据库连接。
+// getConn 根据 connId 获取数据库连接
 func getConn(connId string) (*sqlx.DB, string) {
 	cfgList := []admin.ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connId)
@@ -83,7 +86,7 @@ func getConn(connId string) (*sqlx.DB, string) {
 	return conn, cfg.DbType
 }
 
-// NewQueryFunc 创建执行 SELECT 查询的 Tool 函数。
+// NewQueryFunc 创建执行 SELECT 查询的 Tool 函数
 func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 		conn, _ := getConn(connId)
@@ -119,7 +122,7 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 	}
 }
 
-// NewExecFunc 创建执行写操作 SQL 的 Tool 函数。
+// NewExecFunc 创建执行写操作 SQL 的 Tool 函数
 func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 		conn, _ := getConn(connId)
@@ -128,7 +131,28 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 		}
 
 		sql := strings.TrimSpace(input.SQL)
-		result, err := conn.Exec(sql)
+
+		// 检查是否包含用户确认标记
+		if !strings.Contains(sql, "-- CONFIRMED:") {
+			// 没有确认标记，说明 AI 直接调用了工具，需要拒绝执行
+			return nil, fmt.Errorf("此操作需要用户确认，请 AI 助手生成 SQL 并告知用户在页面确认执行")
+		}
+
+		// 提取确认标记后的实际 SQL（移除确认标记行）
+		lines := strings.Split(sql, "\n")
+		var actualSQLLines []string
+		for _, line := range lines {
+			if !strings.HasPrefix(strings.TrimSpace(line), "-- CONFIRMED:") {
+				actualSQLLines = append(actualSQLLines, line)
+			}
+		}
+		actualSQL := strings.TrimSpace(strings.Join(actualSQLLines, "\n"))
+
+		if actualSQL == "" {
+			return nil, fmt.Errorf("SQL 不能为空")
+		}
+
+		result, err := conn.Exec(actualSQL)
 		if err != nil {
 			return nil, fmt.Errorf("执行失败：%w", err)
 		}
@@ -141,10 +165,10 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 	}
 }
 
-// NewSchemaFunc 创建获取表结构的 Tool 函数（支持 MySQL/SQLite/Oracle）。
-func NewSchemaFunc(connId string, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+// NewSchemaFunc 创建获取表结构的 Tool 函数
+func NewSchemaFunc(connId string, dbType string, dbName string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
-		conn, dbType := getConn(connId)
+		conn, actualDBType := getConn(connId)
 		if conn == nil {
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
@@ -152,7 +176,7 @@ func NewSchemaFunc(connId string, dbSchema string) func(ctx context.Context, inp
 		var sb strings.Builder
 		for _, table := range input.Tables {
 			var schemaSQL string
-			switch dbType {
+			switch actualDBType {
 			case "mysql", "mariadb":
 				schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
 			case "sqlite":
@@ -166,8 +190,7 @@ func NewSchemaFunc(connId string, dbSchema string) func(ctx context.Context, inp
 			rows, err := conn.Query(schemaSQL)
 			if err != nil {
 				logutils.PrintErr(fmt.Errorf("获取表结构失败 %s: %w", table, err))
-				// 回退：尝试用 information_schema 获取列信息
-				sb.WriteString(fallbackColumnInfo(conn, dbType, dbSchema, table))
+				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbName, table))
 				continue
 			}
 			for rows.Next() {
@@ -185,7 +208,6 @@ func NewSchemaFunc(connId string, dbSchema string) func(ctx context.Context, inp
 						sb.WriteString(";\n\n")
 					}
 				default:
-					// MySQL: SHOW CREATE TABLE 返回 (tableName, createStatement)
 					var tableName, createTable string
 					if err := rows.Scan(&tableName, &createTable); err == nil {
 						sb.WriteString(createTable)
@@ -199,7 +221,7 @@ func NewSchemaFunc(connId string, dbSchema string) func(ctx context.Context, inp
 	}
 }
 
-// fallbackColumnInfo 当 DDL 获取失败时，通过 information_schema 获取列信息。
+// fallbackColumnInfo 当 DDL 获取失败时的回退方案
 func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("-- Table: %s\n", table))
@@ -230,7 +252,7 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 	return sb.String()
 }
 
-// NewExportFunc 创建数据导出的 Tool 函数，生成 Excel 文件并返回下载链接。
+// NewExportFunc 创建数据导出的 Tool 函数
 func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) (*ExportOutput, error) {
 	return func(ctx context.Context, input *ExportInput) (*ExportOutput, error) {
 		conn, _ := getConn(connId)
@@ -285,11 +307,9 @@ func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) 
 		if fileName == "" {
 			fileName = fmt.Sprintf("export_%s", time.Now().Format("20060102_150405"))
 		}
-		// 确保文件名不包含扩展名（去除可能的 .csv、.xlsx 等后缀）
 		fileName = strings.TrimSuffix(fileName, ".csv")
 		fileName = strings.TrimSuffix(fileName, ".xlsx")
 		fileName = strings.TrimSuffix(fileName, ".xls")
-		// 确保 exports 目录存在
 		os.MkdirAll("exports", 0755)
 		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
 		if err := excel.SaveAs(filePath); err != nil {
@@ -299,7 +319,7 @@ func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) 
 		downloadURL := fmt.Sprintf("/exports/%s.xlsx", fileName)
 
 		return &ExportOutput{
-			Message:     fmt.Sprintf("已导出 %d 条数据到文件 %s.xlsx", len(data), fileName),
+			Message:     fmt.Sprintf("已导出 %d 条数据，[点击下载](%s)", len(data), downloadURL),
 			RowCount:    len(data),
 			DownloadURL: downloadURL,
 		}, nil
