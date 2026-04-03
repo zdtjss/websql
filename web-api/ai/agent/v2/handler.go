@@ -50,7 +50,7 @@ func (w *sseLineWriter) Write(p []byte) (int, error) {
 
 // Handler v2 版本的 HTTP Handler
 type Handler struct {
-	agent *SQLAgent
+	sessions *SessionStore
 }
 
 // getDBInfo 获取数据库类型和名称
@@ -65,13 +65,12 @@ func getDBInfo(connID string) (string, string) {
 
 // NewHandler 创建 Handler
 func NewHandler() (*Handler, error) {
-	// 创建一个临时的 Agent 用于访问会话管理
-	// 实际的 Agent 会在每次请求时动态创建
-	agent := &SQLAgent{
-		sessions: NewSessionStore(2 * time.Hour),
+	sessions, err := NewSessionStore("./data/sessions")
+	if err != nil {
+		return nil, err
 	}
 	return &Handler{
-		agent: agent,
+		sessions: sessions,
 	}, nil
 }
 
@@ -98,11 +97,24 @@ func (h *Handler) ChatStream(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// 从 Authorization header 获取用户 ID
+	authorization := c.GetHeader("Authorization")
+	user := admin.GetUser(authorization)
+	if user == nil || user.Id == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		return
+	}
+
+	// 设置 userId：如果请求中传了 userId 则使用请求的，否则使用当前登录用户 ID
+	if req.UserID == "" {
+		req.UserID = user.Id
+	}
+
 	// 获取数据库信息
 	dbType, dbName := getDBInfo(req.ConnID)
 
-	// 创建 Agent
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbName)
+	// 创建 Agent，使用全局会话存储
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbName, h.sessions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 Agent 失败：" + err.Error()})
 		return
@@ -207,16 +219,52 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "not implemented"})
 }
 
-// HandleGetSessions 获取所有会话列表
+// HandleGetSessions 获取当前用户的会话列表
 func (h *Handler) HandleGetSessions(c *gin.Context) {
-	if h.agent == nil || h.agent.sessions == nil {
-		c.JSON(http.StatusOK, gin.H{"sessions": []interface{}{}})
+	if h.sessions == nil {
+		c.JSON(http.StatusOK, gin.H{"sessions": []SessionMeta{}})
 		return
 	}
 
-	// 获取会话列表（简化版本，返回空数组）
-	// TODO: 实现完整的会话列表功能
-	c.JSON(http.StatusOK, gin.H{"sessions": []interface{}{}})
+	// 从 Authorization header 获取用户 ID
+	authorization := c.GetHeader("Authorization")
+	user := admin.GetUser(authorization)
+	if user == nil || user.Id == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		return
+	}
+
+	// 只返回当前用户的会话
+	metas, err := h.sessions.ListByUserID(user.Id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if metas == nil {
+		metas = []SessionMeta{}
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": metas})
+}
+
+// HandleGetSession 获取指定会话的详细信息
+func (h *Handler) HandleGetSession(c *gin.Context) {
+	sessionID := c.Query("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		return
+	}
+
+	if h.sessions == nil {
+		c.JSON(http.StatusOK, gin.H{"session": nil})
+		return
+	}
+
+	detail, err := h.sessions.GetDetail(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": detail})
 }
 
 // HandleDeleteSession 删除指定会话
@@ -227,6 +275,9 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		return
 	}
 
-	// TODO: 实现删除会话功能
-	c.JSON(http.StatusOK, gin.H{"message": "会话删除功能待实现"})
+	if err := h.sessions.Delete(sessionID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
 }

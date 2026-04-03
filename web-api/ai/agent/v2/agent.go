@@ -2,9 +2,15 @@
 package agentv2
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	admin "go-web/web-api/admin"
@@ -35,59 +41,305 @@ type SQLAgent struct {
 	dbName   string
 }
 
-// SessionStore 会话存储（简化版本）
-type SessionStore struct {
-	sessions map[string]*Session
-	timeout  time.Duration
-}
-
-// Session 会话
-type Session struct {
+// SessionMeta 提供会话列表的摘要信息
+type SessionMeta struct {
 	ID        string    `json:"id"`
-	Messages  []Message `json:"messages"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Message 消息
-type Message struct {
+// SessionDetail 提供单个会话的详细信息（包含所有消息）
+type SessionDetail struct {
+	ID        string                 `json:"id"`
+	Title     string                 `json:"title"`
+	CreatedAt time.Time              `json:"createdAt"`
+	Messages  []SessionDetailMessage `json:"messages"`
+}
+
+// SessionDetailMessage 会话详细信息中的消息
+type SessionDetailMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// NewSessionStore 创建会话存储
-func NewSessionStore(timeout time.Duration) *SessionStore {
+// Session 持有单个对话的内存状态
+type Session struct {
+	ID        string
+	CreatedAt time.Time
+
+	filePath string
+	mu       sync.Mutex
+	messages []*schema.Message
+}
+
+// Append 向内存添加消息并持久化到磁盘
+func (s *Session) Append(msg *schema.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.messages = append(s.messages, msg)
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(s.filePath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = fmt.Fprintf(f, "%s\n", data)
+	return err
+}
+
+// GetMessages 返回所有消息的快照
+func (s *Session) GetMessages() []*schema.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]*schema.Message, len(s.messages))
+	copy(result, s.messages)
+	return result
+}
+
+// Title 从第一条用户消息派生显示标题
+func (s *Session) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, msg := range s.messages {
+		if msg.Role == schema.User && msg.Content != "" {
+			title := msg.Content
+			if len([]rune(title)) > 60 {
+				title = string([]rune(title)[:60]) + "..."
+			}
+			return title
+		}
+	}
+	return "New Session"
+}
+
+// GetDetail 返回会话的详细信息（包含所有消息）
+func (s *Session) GetDetail() SessionDetail {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := make([]SessionDetailMessage, 0, len(s.messages))
+	for _, msg := range s.messages {
+		msgs = append(msgs, SessionDetailMessage{
+			Role:    string(msg.Role),
+			Content: msg.Content,
+		})
+	}
+
+	return SessionDetail{
+		ID:        s.ID,
+		Title:     s.Title(),
+		CreatedAt: s.CreatedAt,
+		Messages:  msgs,
+	}
+}
+
+// SessionStore 管理以 JSONL 文件支持的持久化会话存储
+type SessionStore struct {
+	dir   string
+	mu    sync.Mutex
+	cache map[string]*Session
+}
+
+// NewSessionStore 创建一个由给定目录支持的会话存储（如果目录不存在则创建）
+func NewSessionStore(dir string) (*SessionStore, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("创建会话目录失败：%w", err)
+	}
 	return &SessionStore{
-		sessions: make(map[string]*Session),
-		timeout:  timeout,
-	}
+		dir:   dir,
+		cache: make(map[string]*Session),
+	}, nil
 }
 
-// GetOrCreate 获取或创建会话
-func (s *SessionStore) GetOrCreate(sessionID string) *Session {
-	if sess, ok := s.sessions[sessionID]; ok {
-		return sess
+// GetOrCreate 返回指定 id 的会话，如果不存在则创建
+func (s *SessionStore) GetOrCreate(id string) (*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if sess, ok := s.cache[id]; ok {
+		return sess, nil
 	}
+
+	filePath := filepath.Join(s.dir, id+".jsonl")
+
+	var (
+		sess *Session
+		err  error
+	)
+	if _, statErr := os.Stat(filePath); os.IsNotExist(statErr) {
+		sess, err = createSession(id, filePath)
+	} else {
+		sess, err = loadSession(filePath)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s.cache[id] = sess
+	return sess, nil
+}
+
+// List 返回所有已知会话的元数据
+func (s *SessionStore) List() ([]SessionMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var metas []SessionMeta
+	for _, e := range entries {
+		// 跳过目录和隐藏文件
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		// 只处理 .jsonl 后缀的文件
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".jsonl")
+		// 跳过空 ID（可能是隐藏文件残留）
+		if id == "" {
+			continue
+		}
+
+		if sess, ok := s.cache[id]; ok {
+			metas = append(metas, SessionMeta{ID: id, Title: sess.Title(), CreatedAt: sess.CreatedAt})
+			continue
+		}
+
+		sess, loadErr := loadSession(filepath.Join(s.dir, e.Name()))
+		if loadErr != nil {
+			continue
+		}
+		metas = append(metas, SessionMeta{ID: id, Title: sess.Title(), CreatedAt: sess.CreatedAt})
+	}
+	return metas, nil
+}
+
+// ListByUserID 返回指定用户的所有会话元数据
+func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
+	// 现在会话 ID 就是 userId，直接获取该用户的会话
+	sess, err := s.GetOrCreate(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 返回单个会话（每个用户只有一个会话）
+	return []SessionMeta{
+		{
+			ID:        sess.ID,
+			Title:     sess.Title(),
+			CreatedAt: sess.CreatedAt,
+		},
+	}, nil
+}
+
+// Delete 删除会话文件并从缓存中移除
+func (s *SessionStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filePath := filepath.Join(s.dir, id+".jsonl")
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	delete(s.cache, id)
+	return nil
+}
+
+// GetDetail 获取指定会话的详细信息
+func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
+	sess, err := s.GetOrCreate(id)
+	if err != nil {
+		return nil, err
+	}
+	detail := sess.GetDetail()
+	return &detail, nil
+}
+
+// sessionHeader 是每个会话文件的第一行 JSONL 行
+type sessionHeader struct {
+	Type      string    `json:"type"`
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func createSession(id, filePath string) (*Session, error) {
+	header := sessionHeader{
+		Type:      "session",
+		ID:        id,
+		CreatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(header)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filePath, append(data, '\n'), 0o644); err != nil {
+		return nil, err
+	}
+	return &Session{
+		ID:        id,
+		CreatedAt: header.CreatedAt,
+		filePath:  filePath,
+		messages:  make([]*schema.Message, 0),
+	}, nil
+}
+
+func loadSession(filePath string) (*Session, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+
+	// 第一行：头部
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("空的会话文件：%s", filePath)
+	}
+	var header sessionHeader
+	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+		return nil, fmt.Errorf("%s 中的会话头部损坏：%w", filePath, err)
+	}
+
 	sess := &Session{
-		ID:        sessionID,
-		Messages:  make([]Message, 0),
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:        header.ID,
+		CreatedAt: header.CreatedAt,
+		filePath:  filePath,
+		messages:  make([]*schema.Message, 0),
 	}
-	s.sessions[sessionID] = sess
-	return sess
-}
 
-// Append 添加消息到会话
-func (s *SessionStore) Append(sessionID string, msg Message) {
-	if sess, ok := s.sessions[sessionID]; ok {
-		sess.Messages = append(sess.Messages, msg)
-		sess.UpdatedAt = time.Now()
+	// 剩余行：消息
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var msg schema.Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue // 跳过格式错误的行
+		}
+		sess.messages = append(sess.messages, &msg)
 	}
+
+	return sess, scanner.Err()
 }
 
 // NewSQLAgent 创建 SQL 智能体
-func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbName string) (*SQLAgent, error) {
+func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbName string, sessions *SessionStore) (*SQLAgent, error) {
 	// 1. 创建 ChatModel
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
@@ -100,7 +352,10 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbNam
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
 
-	// 3. 创建 Agent
+	// 3. 创建 SQL 安全中间件
+	sqlSecurityMiddleware := &SQLSecurityMiddleware{}
+
+	// 4. 创建 Agent
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "一个专业的 SQL 助手，可以执行查询、数据导出和分析",
@@ -111,41 +366,141 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbNam
 				Tools: tools,
 			},
 		},
+		Handlers: []adk.ChatModelAgentMiddleware{
+			sqlSecurityMiddleware,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)
 	}
 
-	// 4. 设置系统提示词（通过消息传递）
-	// ChatModelAgent 的系统提示词需要通过消息传递，而不是在配置中
+	// 如果没有提供会话存储，创建一个新的
+	if sessions == nil {
+		sessions, err = NewSessionStore("./data/sessions")
+		if err != nil {
+			return nil, fmt.Errorf("创建会话存储失败：%w", err)
+		}
+	}
 
 	return &SQLAgent{
 		agent:    agent,
-		sessions: NewSessionStore(2 * time.Hour),
+		sessions: sessions,
 		dbType:   dbType,
 		dbName:   dbName,
 	}, nil
 }
 
+// 最大保留的消息轮数（用于防止上下文过长）
+const maxHistoryRounds = 20
+
+// truncateHistory 截断历史消息，防止上下文过长
+func truncateHistory(history []*schema.Message) []*schema.Message {
+	if len(history) <= maxHistoryRounds*2 {
+		return history
+	}
+	// 保留最近的 maxHistoryRounds 轮对话（每轮 2 条消息）
+	startIdx := len(history) - maxHistoryRounds*2
+	return history[startIdx:]
+}
+
+// extractLastSQLFromHistory 从历史消息中提取最近一次成功的 SQL 查询
+func extractLastSQLFromHistory(history []*schema.Message) string {
+	// 从后向前查找，找到最近的 assistant 消息中的 SQL
+	for i := len(history) - 1; i >= 0; i-- {
+		msg := history[i]
+		if msg.Role == schema.Assistant && msg.Content != "" {
+			// 尝试从消息内容中提取 SQL 代码块
+			content := msg.Content
+			// 查找 ```sql ... ``` 或 ``` ... ``` 代码块
+			startIdx := strings.LastIndex(content, "```")
+			if startIdx == -1 {
+				continue
+			}
+			// 查找结束标记
+			endIdx := strings.Index(content[startIdx+3:], "```")
+			if endIdx == -1 {
+				continue
+			}
+			endIdx = startIdx + 3 + endIdx
+
+			// 提取代码块内容
+			codeBlock := strings.TrimSpace(content[startIdx+3 : endIdx])
+			// 去除可能的语言标识（如 sql）
+			if idx := strings.Index(codeBlock, "\n"); idx != -1 {
+				firstLine := strings.TrimSpace(strings.Split(codeBlock, "\n")[0])
+				if strings.ToLower(firstLine) == "sql" {
+					codeBlock = strings.TrimSpace(codeBlock[idx+1:])
+				}
+			}
+
+			// 检查是否是 SELECT 语句
+			upperSQL := strings.ToUpper(strings.TrimSpace(codeBlock))
+			if strings.HasPrefix(upperSQL, "SELECT") ||
+				strings.HasPrefix(upperSQL, "SHOW") ||
+				strings.HasPrefix(upperSQL, "DESCRIBE") ||
+				strings.HasPrefix(upperSQL, "EXPLAIN") {
+				return codeBlock
+			}
+		}
+	}
+	return ""
+}
+
 // RunStream 流式执行 - 完全参考官方 streamer.go 和 server.go 的实现
 func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) error {
-	sess := a.sessions.GetOrCreate(req.SessionID)
+	// 使用 userId 作为会话 ID：如果传了 sessionId 则使用 sessionId，否则使用 userId
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = req.UserID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("sessionId 和 userId 都不能为空")
+	}
+
+	sess, err := a.sessions.GetOrCreate(sessionID)
+	if err != nil {
+		return err
+	}
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
-	// 保存用户消息
-	a.sessions.Append(sess.ID, Message{Role: "user", Content: req.Question})
+	// 添加当前用户消息到会话
+	userMsg := schema.UserMessage(req.Question)
+	if err := sess.Append(userMsg); err != nil {
+		return err
+	}
 
-	// 构建消息（包含系统提示词）
+	// 获取历史消息并截断防止上下文过长
+	history := sess.GetMessages()
+	truncatedHistory := truncateHistory(history)
+
+	// 关键改进：检测用户是否在请求导出操作，如果是，自动从历史中提取 SQL
+	// 这样可以避免 AI 因为上下文理解错误而编造不存在的字段
+	userQuestionLower := strings.ToLower(req.Question)
+	isExportRequest := strings.Contains(userQuestionLower, "导出") ||
+		strings.Contains(userQuestionLower, "export") ||
+		strings.Contains(userQuestionLower, "下载") ||
+		strings.Contains(userQuestionLower, "excel") ||
+		strings.Contains(userQuestionLower, "ppt") ||
+		strings.Contains(userQuestionLower, "word") ||
+		strings.Contains(userQuestionLower, "图表")
+
+	// 如果是导出请求，在系统提示词前添加特殊的上下文信息
+	var exportContextPrompt string
+	if isExportRequest {
+		lastSQL := extractLastSQLFromHistory(truncatedHistory)
+		if lastSQL != "" {
+			exportContextPrompt = fmt.Sprintf("\n\n⚠️ **用户正在请求导出操作**：系统已自动从历史对话中提取到最近的成功查询 SQL 为：\n```sql\n%s\n```\n**重要**：请直接使用此 SQL 调用导出工具，不要重新生成或修改 SQL！", lastSQL)
+		}
+	}
+
+	// 构建消息（包含系统提示词和历史对话）
 	messages := []adk.Message{
-		{
+		&schema.Message{
 			Role:    schema.System,
-			Content: buildSystemPrompt(a.dbType, a.dbName, req.TableContext),
-		},
-		{
-			Role:    schema.User,
-			Content: req.Question,
+			Content: buildSystemPrompt(a.dbType, a.dbName, req.TableContext) + exportContextPrompt,
 		},
 	}
+	messages = append(messages, truncatedHistory...)
 
 	// 运行 Agent（使用 Run 方法，它返回 AsyncIterator）
 	iter := a.agent.Run(ctx, &adk.AgentInput{
@@ -163,6 +518,19 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 		// 处理错误 - 参考官方 streamer.go:99-103
 		if event.Err != nil {
+			// 检查是否为危险 SQL 错误
+			var dangerousErr *DangerousSQLError
+			if errors.As(event.Err, &dangerousErr) {
+				// 发送危险 SQL 确认事件
+				flush(StreamChunk{
+					Type:    "danger_confirm",
+					Content: "检测到危险 SQL 操作，需要用户确认",
+					SQL:     dangerousErr.SQL,
+				})
+				// 不返回错误，让 Agent 继续生成回复
+				continue
+			}
+			// 其他错误正常返回
 			flush(StreamChunk{Type: "error", Content: event.Err.Error()})
 			return event.Err
 		}
@@ -246,7 +614,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 	// 保存 assistant 消息
 	if fullResponse.Len() > 0 {
-		a.sessions.Append(sess.ID, Message{Role: "assistant", Content: fullResponse.String()})
+		assistantMsg := schema.AssistantMessage(fullResponse.String(), nil)
+		if err := sess.Append(assistantMsg); err != nil {
+			return err
+		}
 	}
 
 	flush(StreamChunk{Type: "done"})
@@ -470,6 +841,13 @@ func buildSystemPrompt(dbType, dbName string, tableContext []string) string {
      - 在 SQL 代码块前添加 [CONFIRM_REQUIRED] 标记
      - 说明风险等级、操作类型、注意事项
 
+### 🔒 自动危险 SQL 检测机制
+系统已内置自动危险 SQL 检测中间件，当 AI 尝试调用 exec_sql 工具时：
+- **自动拦截**：所有写操作（INSERT/UPDATE/DELETE/DROP/TRUNCATE/ALTER/CREATE）都会被自动拦截
+- **前端确认**：拦截后会立即触发前端的确认对话框，展示 SQL 内容和风险等级
+- **用户确认后执行**：只有用户在页面点击"确认执行"后，SQL 才会真正执行
+- **AI 无需手动标记**：AI 不需要再添加 [CONFIRM_REQUIRED] 标记，系统会自动处理
+
 ### 推荐的做法
 - ✅ **使用 LIMIT** - 大表查询时限制返回行数
 - ✅ **添加注释** - 复杂 SQL 添加注释说明逻辑
@@ -538,12 +916,59 @@ func buildSystemPrompt(dbType, dbName string, tableContext []string) string {
 4. **用户沟通** - 需求不明确时主动询问
 5. **性能意识** - 考虑查询对数据库的影响
 
-请根据用户的需求，选择合适的工具来完成任务。始终将**数据准确性**放在第一位！`, dbInfo, tableContextInfo)
+## 多轮对话与上下文理解
+
+重要：你拥有完整的对话历史记忆，能够理解上下文！
+
+### 导出操作的处理方式
+当用户提出以下类型的请求时，必须从历史对话中获取上一次的 SQL：
+- "导出为 Excel"
+- "导出为图表"
+- "生成 PPT"
+- "生成 Word 报告"
+- "把刚才的查询结果导出"
+- "以上一次查询的数据导出"
+
+正确处理流程：
+1. 识别意图：用户要导出/可视化数据，而不是重新查询
+2. 查找历史：从对话历史中找到最近一次成功执行的 SQL 查询
+3. 复用 SQL：直接使用该 SQL，不要重新生成或执行查询
+4. 调用导出工具：
+   - 导出 Excel：调用 export_excel，传入历史 SQL
+   - 导出带图表的 Excel：调用 export_excel_with_chart，传入历史 SQL + 图表参数
+   - 导出 PPT：调用 export_ppt，传入历史 SQL
+   - 导出 Word：调用 export_analysis_docx，传入历史 SQL
+   - 导出分析图表：调用 export_analysis_image，传入历史 SQL
+5. 明确告知用户："我将基于刚才的查询结果为您导出..."
+
+示例对话：
+用户：查询 2025 年的订单数据
+AI：[执行 SQL: SELECT * FROM orders WHERE year=2025] 已查询到 1500 条记录
+用户：导出为 Excel
+AI：好的，我将基于刚才的查询结果（SELECT * FROM orders WHERE year=2025）为您导出 Excel 文件...
+   [调用 export_excel，sql="SELECT * FROM orders WHERE year=2025"]
+   导出成功！共 1500 行数据，下载地址：...
+
+绝对禁止：
+- 用户说"导出"时，重新执行 SQL 查询
+- 忽略历史对话，当作新查询处理
+- 要求用户重新提供 SQL
+
+### 上下文关联词理解
+以下表达都指的是上一次查询：
+- "刚才的查询"
+- "上面的数据"
+- "这个结果"
+- "这些数据"
+- "查询结果"
+
+请根据用户的需求，选择合适的工具来完成任务。始终将数据准确性放在第一位！`, dbInfo, tableContextInfo)
 }
 
-// ChatRequest 聊天请求（与旧代码兼容）
+// ChatRequest 聊天请求
 type ChatRequest struct {
-	SessionID    string   `json:"sessionId"`
+	SessionID    string   `json:"sessionId"` // 可选，如果不传则使用 userId 作为会话 ID
+	UserID       string   `json:"userId"`    // 用户 ID，用于标识会话
 	ConnID       string   `json:"connId"`
 	Schema       string   `json:"schema"`
 	Question     string   `json:"question"`

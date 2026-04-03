@@ -6,6 +6,7 @@ package agentv2
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -156,6 +157,8 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 		}
 
 		sql := strings.TrimSpace(input.SQL)
+
+		log.Printf("Tool Exec SQL: %s\n", sql)
 
 		// 检查是否包含用户确认标记
 		if !strings.Contains(sql, "-- CONFIRMED:") {

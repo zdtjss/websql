@@ -1,28 +1,15 @@
 <template>
   <div class="sql-confirm-inline" v-if="visible">
-    <el-alert
-      :title="`操作类型：${getOperationDescription(operationType)}`"
-      :type="riskLevel === 'high' ? 'error' : riskLevel === 'medium' ? 'warning' : 'info'"
-      :closable="false"
-      show-icon
-    >
+    <el-alert :title="`操作类型：${getOperationDescription(operationType)}`"
+      :type="riskLevel === 'high' ? 'error' : riskLevel === 'medium' ? 'warning' : 'info'" :closable="false" show-icon>
       <template #default>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <div v-if="description" style="margin-bottom: 4px;">{{ description }}</div>
-          <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-            <span>
-              风险等级：
-              <el-tag :type="riskLevel === 'high' ? 'danger' : riskLevel === 'medium' ? 'warning' : 'success'" size="small">
-                {{ riskLevel.toUpperCase() }}
-              </el-tag>
-            </span>
+        <div style="display: flex; flex-direction: column; gap: 0px;">
+          <div style="display: flex; gap: 1px; flex-wrap: wrap;">
             <span v-if="tableName">
-              表名：
-              <el-tag type="info" size="small">{{ tableName }}</el-tag>
+              表名：<el-tag type="info" size="small">{{ tableName }}</el-tag>
             </span>
             <span v-if="affectedRows !== undefined">
-              预计影响：
-              <strong>{{ affectedRows }}</strong> 行
+              预计影响：<strong>{{ affectedRows }}</strong> 行
             </span>
           </div>
         </div>
@@ -31,34 +18,26 @@
 
     <!-- SQL 语句显示 -->
     <div style="margin-top: 12px;">
-      <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">SQL 语句：</div>
-      <div
-        style="
+      <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">SQL ：</div>
+      <div style="
           background-color: #f5f7fa;
           padding: 12px;
-          border-radius: 4px;
+          border-radius: 5px;
           font-family: 'Courier New', monospace;
           font-size: 13px;
           max-height: 200px;
           overflow: auto;
           border: 1px solid #d9d9d9;
-        "
-      >
+        ">
         <pre v-html="formatSQL(sql)" style="margin: 0; white-space: pre-wrap; word-break: break-all;"></pre>
       </div>
     </div>
-
     <!-- 风险提示 -->
-    <el-alert
-      v-if="riskLevel === 'high'"
-      title="高危操作警告"
-      type="error"
-      :closable="false"
-      show-icon
-      style="margin-top: 12px;"
-    >
+    <el-alert v-if="riskLevel === 'high'" title="高危操作警告" type="error" :closable="false" show-icon
+      style="margin-top: 12px;">
       <template #default>
-        <ul style="margin: 0; padding-left: 20px;">
+        <div v-if="description" style="margin-bottom: 1px;">{{ description }}</div>
+        <ul v-else style="margin: 0; padding-left: 20px;">
           <li>此操作可能导致数据丢失且不可恢复</li>
           <li>请确保已备份重要数据</li>
           <li>请仔细检查 SQL 语句和 WHERE 条件</li>
@@ -67,29 +46,20 @@
       </template>
     </el-alert>
 
-    <el-alert
-      v-if="riskLevel === 'medium'"
-      title="操作提醒"
-      type="warning"
-      :closable="false"
-      show-icon
-      style="margin-top: 12px;"
-    >
+    <el-alert v-if="riskLevel === 'medium'" title="操作提醒" type="warning" :closable="false" show-icon
+      style="margin-top: 12px;">
       <template #default>
-        此操作会修改数据，请确保了解操作的影响范围
+        <div v-if="description" style="margin-bottom: 1px;">{{ description }}</div>
+        <div v-else>
+          此操作会修改数据，请确保了解操作的影响范围
+        </div>
       </template>
     </el-alert>
-
     <!-- 操作按钮 -->
-    <div style="display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end;">
+    <div style="display: flex; gap: 1px; margin-top: 3px; justify-content: flex-end;">
       <el-button size="small" @click="handleCancel">取消</el-button>
-      <el-button
-        size="small"
-        type="primary"
-        :danger="riskLevel === 'high'"
-        @click="handleConfirm"
-        :loading="confirmLoading"
-      >
+      <el-button size="small" type="primary" :danger="riskLevel === 'high'" @click="handleConfirm"
+        :loading="confirmLoading">
         {{ riskLevel === 'high' ? '确认执行（高危）' : '确认执行' }}
       </el-button>
     </div>
@@ -142,7 +112,7 @@ const getOperationDescription = (type) => {
 // 格式化 SQL（简单的高亮）
 const formatSQL = (sqlText) => {
   if (!sqlText) return ''
-  
+
   // 关键字高亮
   const keywords = [
     'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'INTO',
@@ -150,7 +120,7 @@ const formatSQL = (sqlText) => {
     'ON', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
     'AS', 'AND', 'OR', 'NOT', 'IN', 'BETWEEN', 'LIKE', 'IS NULL'
   ]
-  
+
   let formatted = sqlText
   keywords.forEach(keyword => {
     const regex = new RegExp(`\\b${keyword}\\b`, 'gi')
@@ -159,13 +129,13 @@ const formatSQL = (sqlText) => {
       `<span style="color: #d73a49; font-weight: bold;">${keyword}</span>`
     )
   })
-  
+
   // 字符串高亮（单引号包裹的内容）
   formatted = formatted.replace(
     /'[^']*'/g,
     '<span style="color: #032f62;">$&</span>'
   )
-  
+
   return formatted
 }
 
@@ -177,10 +147,10 @@ const handleConfirm = async () => {
     const userName = getCurrentUser()
     const timestamp = new Date().toISOString()
     const confirmedSql = `${props.sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
-    
+
     // 调用父组件的确认回调
     await emit('confirm', confirmedSql)
-    
+
     ElMessage.success('操作成功')
   } catch (error) {
     ElMessage.error(`操作失败：${error.message}`)

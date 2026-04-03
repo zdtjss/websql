@@ -93,7 +93,8 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/ai/agent/chat", agentHandler.Chat)
 	router.POST("/ai/agent/chatStream", agentHandler.ChatStream)
 	router.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
-	router.GET("/ai/agent/sessions/delete", agentHandler.HandleDeleteSession)
+	router.GET("/ai/agent/session", agentHandler.HandleGetSession)
+	router.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 
 	router.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})
