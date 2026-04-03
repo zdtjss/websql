@@ -1,160 +1,267 @@
 <template>
-  <el-splitter style="height: calc(100vh - 16px);">
-    <el-splitter-panel :collapsible="true" size="15%">
-      <div style="text-align: right;margin-right: 10px;">
-        <el-icon v-show="currentUser.isAdmin || !isRemote" color="#409EFC" @click="cfgDialogVisible = true"
-          style="cursor: pointer;margin-left: 8px;" title="配置">
-          <Tools />
-        </el-icon>
-        <div v-if="showLoginBtn" style="display: inline-block;">
-          <el-icon v-show="!loginSucc && isRemote" color="#409EFC" @click="toLogin"
-            style="cursor: pointer;margin-left: 8px;" title="登录">
-            <User />
-          </el-icon>
-          <el-icon v-show="loginSucc && isRemote && client.isAvailable()" color="#409EFC" @click="register"
-            style="cursor: pointer;margin-left: 8px;" title="注册指纹/面容">
-            <svg t="1712659928093" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"
-              p-id="7116" width="200" height="200">
-              <path
-                d="M218.763636 509.672727a346.763636 297.890909 90 1 0 595.781819 0 346.763636 297.890909 90 1 0-595.781819 0Z"
-                fill="#EAF3FF" p-id="7117"></path>
-              <path
-                d="M991.418182 539.927273c-13.963636 0-23.272727-9.309091-23.272727-23.272728 0-146.618182-72.145455-281.6-195.49091-365.381818-11.636364-6.981818-13.963636-20.945455-6.981818-32.581818 6.981818-11.636364 20.945455-13.963636 32.581818-6.981818 134.981818 90.763636 214.109091 242.036364 214.109091 402.618182 2.327273 16.290909-6.981818 25.6-20.945454 25.6zM200.145455 228.072727c83.781818-95.418182 204.8-148.945455 330.472727-148.945454 58.181818 0 116.363636 11.636364 169.890909 34.909091 11.636364 4.654545 25.6 0 30.254545-11.636364 4.654545-11.636364 0-25.6-11.636363-30.254545-60.509091-25.6-123.345455-37.236364-188.509091-37.236364-139.636364 0-272.290909 60.509091-365.381818 165.236364-9.309091 9.309091-6.981818 23.272727 2.327272 32.581818 4.654545 4.654545 9.309091 4.654545 16.290909 4.654545 4.654545-2.327273 11.636364-4.654545 16.29091-9.309091zM90.763636 516.654545c0-72.145455 18.618182-144.290909 53.527273-209.454545 6.981818-11.636364 2.327273-25.6-9.309091-32.581818-11.636364-6.981818-25.6-2.327273-32.581818 9.309091-39.563636 69.818182-58.181818 151.272727-58.181818 230.4 0 13.963636 9.309091 23.272727 23.272727 23.272727s23.272727-6.981818 23.272727-20.945455z m125.672728-79.127272c37.236364-144.290909 165.236364-242.036364 314.181818-242.036364 146.618182 0 274.618182 100.072727 311.854545 242.036364 2.327273 11.636364 16.290909 20.945455 27.927273 16.290909 11.636364-2.327273 20.945455-16.290909 16.290909-27.927273-41.890909-162.909091-190.836364-274.618182-358.4-274.618182-169.890909 0-316.509091 114.036364-358.4 279.272728-2.327273 11.636364 4.654545 25.6 16.290909 27.927272h4.654546c11.636364-4.654545 23.272727-11.636364 25.6-20.945454z m567.854545 79.127272c0-58.181818-20.945455-114.036364-55.854545-160.581818-6.981818-9.309091-23.272727-11.636364-32.581819-2.327272-9.309091 6.981818-11.636364 23.272727-2.327272 32.581818 30.254545 37.236364 46.545455 83.781818 46.545454 130.327272 0 13.963636 9.309091 23.272727 23.272728 23.272728s20.945455-9.309091 20.945454-23.272728z m-463.127273 0c0-114.036364 93.090909-207.127273 207.127273-207.127272 37.236364 0 72.145455 9.309091 104.727273 27.927272 11.636364 6.981818 25.6 2.327273 32.581818-9.30909 6.981818-11.636364 2.327273-25.6-9.309091-32.581819-39.563636-23.272727-83.781818-34.909091-128-34.909091-139.636364 0-253.672727 114.036364-253.672727 253.672728 0 13.963636 9.309091 23.272727 23.272727 23.272727s23.272727-6.981818 23.272727-20.945455z m346.763637 0c0-76.8-62.836364-139.636364-139.636364-139.636363s-139.636364 62.836364-139.636364 139.636363c0 13.963636 9.309091 23.272727 23.272728 23.272728s23.272727-9.309091 23.272727-23.272728c0-51.2 41.890909-93.090909 93.090909-93.090909s93.090909 41.890909 93.090909 93.090909c0 13.963636 9.309091 23.272727 23.272727 23.272728s23.272727-9.309091 23.272728-23.272728zM83.781818 549.236364c4.654545-13.963636 6.981818-27.927273 6.981818-44.218182 0-13.963636-9.309091-23.272727-23.272727-23.272727s-23.272727 9.309091-23.272727 23.272727c0 9.309091-2.327273 18.618182-4.654546 27.927273-4.654545 11.636364 2.327273 25.6 13.963637 30.254545h6.981818c9.309091 2.327273 18.618182-4.654545 23.272727-13.963636z m719.127273 372.363636c62.836364-130.327273 95.418182-269.963636 95.418182-416.581818 0-13.963636-9.309091-23.272727-23.272728-23.272727s-23.272727 9.309091-23.272727 23.272727c0 139.636364-30.254545 272.290909-90.763636 395.636363-4.654545 11.636364 0 25.6 11.636363 30.254546 2.327273 2.327273 6.981818 2.327273 9.309091 2.327273 9.309091 2.327273 16.290909-2.327273 20.945455-11.636364z m-176.872727 69.818182c102.4-141.963636 155.927273-309.527273 155.927272-486.4 0-13.963636-9.309091-23.272727-23.272727-23.272727s-23.272727 9.309091-23.272727 23.272727c0 165.236364-51.2 323.490909-148.945455 458.472727-6.981818 9.309091-4.654545 25.6 4.654546 32.581818 4.654545 2.327273 9.309091 4.654545 13.963636 4.654546 9.309091 0 16.290909-2.327273 20.945455-9.309091z m-151.272728 4.654545c102.4-109.381818 167.563636-246.690909 188.509091-395.636363 2.327273-11.636364-6.981818-23.272727-20.945454-25.6-11.636364-2.327273-23.272727 6.981818-25.6 20.945454-18.618182 139.636364-79.127273 267.636364-174.545455 370.036364-9.309091 9.309091-9.309091 23.272727 0 32.581818 4.654545 4.654545 9.309091 6.981818 16.290909 6.981818 4.654545-2.327273 11.636364-4.654545 16.290909-9.309091z m-128-37.236363c130.327273-114.036364 207.127273-279.272727 207.127273-453.818182 0-13.963636-9.309091-23.272727-23.272727-23.272727s-23.272727 9.309091-23.272727 23.272727c0 160.581818-69.818182 311.854545-190.836364 418.909091-9.309091 9.309091-11.636364 23.272727-2.327273 32.581818 4.654545 4.654545 11.636364 6.981818 18.618182 6.981818 2.327273 2.327273 9.309091 0 13.963636-4.654545z m-104.727272-65.163637c72.145455-53.527273 125.672727-125.672727 160.581818-207.127272 4.654545-11.636364 0-25.6-11.636364-30.254546-11.636364-4.654545-25.6 0-30.254545 13.963636-30.254545 74.472727-79.127273 139.636364-144.290909 186.181819-9.309091 6.981818-11.636364 23.272727-4.654546 32.581818 4.654545 6.981818 11.636364 9.309091 18.618182 9.309091 2.327273 0 6.981818 0 11.636364-4.654546z m186.181818-293.236363c6.981818-32.581818 9.309091-62.836364 9.309091-95.418182 0-13.963636-9.309091-23.272727-23.272728-23.272727s-23.272727 9.309091-23.272727 23.272727c0 30.254545-2.327273 58.181818-9.309091 86.109091-2.327273 11.636364 4.654545 25.6 18.618182 27.927272h4.654546c9.309091 2.327273 20.945455-6.981818 23.272727-18.618181z m-267.636364 209.454545c79.127273-53.527273 132.654545-134.981818 151.272727-228.072727 2.327273-11.636364-4.654545-25.6-18.618181-27.927273-11.636364-2.327273-25.6 4.654545-27.927273 18.618182-16.290909 81.454545-65.163636 151.272727-132.654546 197.818182-11.636364 6.981818-13.963636 20.945455-6.981818 32.581818 6.981818 6.981818 13.963636 11.636364 23.272728 11.636364 4.654545 0 9.309091-2.327273 11.636363-4.654546z m-53.527273-102.4c62.836364-48.872727 100.072727-121.018182 100.072728-202.472727 0-13.963636-9.309091-23.272727-23.272728-23.272727s-23.272727 9.309091-23.272727 23.272727c0 65.163636-30.254545 125.672727-81.454545 165.236363-9.309091 6.981818-11.636364 23.272727-4.654546 32.581819 4.654545 6.981818 11.636364 9.309091 18.618182 9.309091 4.654545 0 9.309091-2.327273 13.963636-4.654546z"
-                fill="#2D85FF" p-id="7118"></path>
-            </svg>
-          </el-icon>
-          <el-icon v-show="loginSucc" color="#409EFC" @click="logout" style="cursor: pointer;margin-left: 8px;"
-            title="退出">
-            <SwitchButton />
-          </el-icon>
+  <div>
+
+    <div class="ai-sql-panel-container">
+      <div class="container">
+        <!-- 会话历史消息 -->
+        <div ref="msgContainer" class="chat-messages">
+          <!-- 思考过程（历史中的，可折叠） -->
+          <div v-for="(msg, idx) in chatHistory" :key="'h' + idx">
+            <div v-if="msg.role === 'thinking'" class="thinking-block">
+              <div class="thinking-label" style="cursor:pointer;" @click="msg.collapsed = !msg.collapsed">
+                💭 思考过程 <span style="font-size:11px;">{{ msg.collapsed ? '▶ 展开' : '▼ 折叠' }}</span>
+              </div>
+              <pre v-show="!msg.collapsed" class="thinking-content">{{ msg.content }}</pre>
+            </div>
+            <div v-else-if="msg.role === 'user'" :class="['chat-bubble', 'user']">
+              <div class="bubble-label">你</div>
+              <div class="bubble-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
+            </div>
+            <div v-else-if="msg.role === 'assistant'" :class="['chat-bubble', 'assistant']">
+              <div class="bubble-label">AI</div>
+              <div v-if="msg.hasSql" class="bubble-content">
+                <pre class="sql-pre"><code v-html="highlightSql(msg.content)" /></pre>
+              </div>
+              <div v-else class="bubble-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+            </div>
+            <div v-else-if="msg.role === 'tool_call'" class="tool-call-block">
+              <span>🔧 {{ msg.content }}</span>
+            </div>
+          </div>
+
+          <!-- 实时思考过程（流式中） -->
+          <div v-if="thinkingText && loading" class="thinking-block">
+            <div class="thinking-label">💭 思考中...</div>
+            <pre class="thinking-content">{{ thinkingText }}</pre>
+          </div>
+
+          <!-- 流式输出中 -->
+          <div v-if="streamingContent" class="chat-bubble assistant">
+            <div class="bubble-label">AI</div>
+            <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingContent)"></div>
+          </div>
+
+          <div v-if="loading" style="color:#909399;font-size:13px;padding:4px 0;">AI 正在处理...</div>
+        </div>
+
+        <!-- 内联 SQL 确认区域 -->
+        <SQLConfirmInline v-model="confirmVisible" :sql="confirmSQL" :operation-type="confirmOperationType"
+          :risk-level="confirmRiskLevel" :description="confirmDescription" :table-name="confirmTableName"
+          @confirm="handleConfirmExec" @cancel="handleConfirmCancel" />
+
+        <!-- 输入区域 -->
+        <div class="input-area">
+          <div class="input-label">
+            <span>描述你的需求（数据查询 / 数据分析 / SQL 生成 / 数据导出）</span>
+            <div style="display: flex; gap: 0px;">
+              <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible"
+                @show="loadSessionList()">
+                <div style="max-height: 400px; overflow-y: auto;">
+                  <el-empty v-if="sessionList.length === 0 && !loadingSessions" description="暂无历史会话" />
+                  <el-skeleton v-if="loadingSessions" :rows="4" animated />
+                  <div v-else style="display: flex; flex-direction: column; gap: 8px;">
+                    <div v-for="sess in sessionList" :key="sess.id" class="session-item">
+                      <div class="session-content" @click="handleClickSession(sess.id)">
+                        <div class="session-title">{{ sess.title }}</div>
+                        <div class="session-time">
+                          <el-icon>
+                            <Clock />
+                          </el-icon>
+                          {{ formatDate(sess.createdAt) }}
+                        </div>
+                      </div>
+                      <div class="session-actions">
+                        <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
+                          <el-icon>
+                            <Delete />
+                          </el-icon>
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <template #reference>
+                  <el-button class="toolbar-btn" size="small" title="历史会话">
+                    <el-icon>
+                      <Document />
+                    </el-icon>
+                  </el-button>
+                </template>
+              </el-popover>
+              <el-button class="toolbar-btn" :type="isRecording ? 'danger' : 'primary'" size="small"
+                @click="toggleRecording">
+                <el-icon style="vertical-align: middle;">
+                  <component :is="isRecording ? VideoPause : Microphone" />
+                </el-icon>
+              </el-button>
+              <el-button class="toolbar-btn" size="small" @click="clearSession" title="清空会话">
+                <el-icon>
+                  <Delete />
+                </el-icon>
+              </el-button>
+            </div>
+          </div>
+          <div class="table-selector-container">
+            <label class="table-selector-label">相关表</label>
+            <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
+              <el-option v-for="table in tableList" :key="table" :label="table" :value="table" />
+            </el-select>
+          </div>
+
+          <div class="input-action-row">
+            <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
+              :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
+            <div class="action-buttons">
+              <el-button type="primary" :loading="loading" :disabled="!question.trim()" @click="sendMessage"
+                class="send-btn" size="default">
+                <el-icon>
+                  <Promotion />
+                </el-icon>
+              </el-button>
+              <el-button v-if="lastSql" type="success" @click="insertToEditor" title="将最后生成的 SQL 加入编辑器"
+                class="insert-btn" size="default">
+                <el-icon>
+                  <DocumentAdd />
+                </el-icon>
+              </el-button>
+            </div>
+          </div>
         </div>
       </div>
-      <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
-        :props="{ isLeaf: 'isLeaf' }">
-        <template #default="{ node, data }">
-          <div class="table-node-wrapper">
-            <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
-            <i v-if="data.type === 'schema'" class="icon-table-manager icon icon16" title="表管理"
-              @click.stop="openTableManager(node)"></i>
-            <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息"
-              @click.stop="viewTableInfo(node)"></i>
-            <i v-if="data.type === 'table'" class="icon-browse-data icon icon16" title="浏览数据"
-              @click.stop="openDataBrowserFromNode(node)"></i>
-            <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息"
-              @click.stop="viewViewInfo(node)"></i>
-          </div>
+    </div>
+    <div class="login-button-container">
+      <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
+        <el-icon>
+          <User />
+        </el-icon>
+      </el-button>
+      <el-button v-else circle size="small" @click="logout" title="退出登录">
+        <el-icon>
+          <SwitchButton />
+        </el-icon>
+      </el-button>
+      <!-- 登录对话框 -->
+      <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
+        @opened="loginName.focus()">
+        <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
+          <el-form-item label="用户名" prop="name">
+            <el-input ref="loginName" v-model="loginForm.name" />
+          </el-form-item>
+          <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
+            <el-input v-model="loginForm.password" type="password" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <span class="dialog-footer">
+            <el-button type="primary" @click="login" :loading="logining">登录</el-button>
+            <el-button @click="loginDialogVisible = false">关闭</el-button>
+          </span>
         </template>
-      </el-tree>
-    </el-splitter-panel>
-    <el-splitter-panel>
-      <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="demo-tabs" closable
-        @tab-remove="removeTab">
-        <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId">
-          <template #label>
-            <span>
-              <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
-            </span>
-          </template>
-          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" />
-        </el-tab-pane>
-      </el-tabs>
-    </el-splitter-panel>
-  </el-splitter>
-
-  <!-- 配置管理对话框 -->
-  <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
-    style="height:650px;">
-    <Configuration :isRemote="isRemote" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-        <el-button @click="cfgDialogVisible = false">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
-
-  <!-- 表管理对话框 -->
-  <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
-    @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
-    style="height:650px;">
-    <TableEditor :tableMeta="tableMeta" @tableDrop="tableMgntDialogVisible = false; tableMeta = {}" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-        <el-button @click="tableMgntDialogVisible = false; tableMeta = {}">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
-
-  <!-- 视图查看对话框 -->
-  <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false; tableMeta = {}"
-    :draggable="true" destroy-on-close width="1000px" style="height:650px;">
-    <ViewDialog :tableMeta="tableMeta" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-        <el-button @click="viewDialogVisible = false; tableMeta = {}">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
-
-  <!-- 登录对话框 -->
-  <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
-    @opened="loginName.focus()">
-    <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
-      <el-form-item label="用户名" prop="name">
-        <el-input ref="loginName" v-model="loginForm.name" />
-      </el-form-item>
-      <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
-        <el-input v-model="loginForm.password" type="password" />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <span class="dialog-footer">
-        <el-button type="primary" @click="login" :loading="logining">登录</el-button>
-        <el-button @click="loginDialogVisible = false">关闭</el-button>
-      </span>
-    </template>
-  </el-dialog>
+      </el-dialog>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { ref, reactive, shallowRef, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import SQLEditor2 from './views/SQLEditor2.vue'
-import Configuration from './views/comonents/Configuration.vue'
-import TableEditor from './views/comonents/TableEditor.vue'
-import ViewDialog from './views/comonents/ViewDialog.vue'
-import TableManager from './views/TableManager.vue'
-import DataBrowser from './views/DataBrowser.vue'
-import http from './js/utils/httpProxy.js'
-import { dbSchemaProxy } from '@/stores/sql'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import hljs from 'highlight.js/lib/core'
+import hljsSql from 'highlight.js/lib/languages/sql'
+import MarkdownIt from 'markdown-it'
+import 'highlight.js/styles/stackoverflow-light.css'
+import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton } from '@element-plus/icons-vue'
+import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
+import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
+import http from '@/js/utils/httpProxy.js'
+
+hljs.registerLanguage('sql', hljsSql)
+
+// 获取 API 基础路径
+const apiBase = import.meta.env.VITE_API_URL || ''
+
+// 初始化 markdown-it
+const md = new MarkdownIt({
+  html: true,
+  breaks: true,
+  linkify: true,
+  typographer: false,
+})
+
+// 自定义链接渲染
+md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+  const token = tokens[idx]
+  const hrefIndex = token.attrIndex('href')
+
+  if (hrefIndex >= 0) {
+    let href = token.attrs[hrefIndex][1]
+
+    // 处理相对路径：如果以 / 开头且不是 // 开头，添加 apiBase
+    if (href && href.startsWith('/') && !href.startsWith('//')) {
+      // 更新 href 属性
+      token.attrs[hrefIndex][1] = apiBase + href
+    }
+
+    // 所有链接都添加 target="_blank"
+    const targetIndex = token.attrIndex('target')
+    if (targetIndex < 0) {
+      token.attrPush(['target', '_blank'])
+    } else {
+      token.attrs[targetIndex][1] = '_blank'
+    }
+
+    // 外部链接额外添加 rel 属性
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      token.attrPush(['rel', 'noopener noreferrer'])
+    }
+  }
+
+  // 使用默认的 renderToken 方法渲染 token
+  return self.renderToken(tokens, idx, options)
+}
+
+// 自定义表格渲染，添加滚动容器
+const defaultTableRender = md.renderer.rules.table_open
+md.renderer.rules.table_open = function (tokens, idx, options, env, self) {
+  return '<div class="table-wrapper"><table>'
+}
+const defaultTableCloseRender = md.renderer.rules.table_close
+md.renderer.rules.table_close = function (tokens, idx, options, env, self) {
+  return '</table></div>'
+}
+
+const props = defineProps({})
+
+const emit = defineEmits([])
+
+const question = ref('')
+const selectedTables = ref([])
+const loading = ref(false)
+const isRecording = ref(false)
+const thinkingText = ref('')
+const streamingContent = ref('')
+const chatHistory = ref([])
+const sessionId = ref('')
+const lastSql = ref('')
+const msgContainer = ref(null)
+let speechRecognition = null
+
+const isRemote = ref(null)
 
 const showLoginBtn = ref(true)
-
-const sqlEditor = shallowRef(SQLEditor2)
-const tableManagerComp = shallowRef(TableManager)
-const dataBrowserComp = shallowRef(DataBrowser)
-
-const editableTabsValue = ref('')
-const editableTabs = ref([])
-
-const connTree = ref()
-const treeData = ref([])
-
-const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
+const loginForm = ref({ name: "", password: "" })
+const loginName = ref()
+const loginFormRef = ref()
 const currentUser = ref({
   id: "",
   name: "",
   isAdmin: false
 })
-const loginName = ref()
-const loginFormRef = ref()
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
-
+const logining = ref(false)
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
 
-const isRemote = ref(null)
-
-const logining = ref(false)
 const loginRules = reactive({
   name: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
@@ -164,152 +271,355 @@ const loginRules = reactive({
   ],
 })
 
-const cfgDialogVisible = ref(false)
+// 数据库连接配置 - 需要根据实际情况设置
+const connId = ref('')
+const schema = ref('')
+const tableList = ref([])
 
-const tableMgntDialogVisible = ref(false)
-const viewDialogVisible = ref(false)
-const tableMeta = ref({})
-const tableMgntTitle = ref("")
+// 历史会话相关
+const sessionHistoryVisible = ref(false)
+const sessionList = ref([])
+const loadingSessions = ref(false)
 
-onMounted(() => {
-  getSysModel()
-  const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
-  storedTabs.forEach(tab => {
-    if (tab.tabId && tab.tabId.startsWith('tablemgr-')) {
-      tab.component = tableManagerComp
-    } else if (tab.tabId && tab.tabId.startsWith('databrowser-')) {
-      tab.component = dataBrowserComp
-    } else {
-      tab.component = sqlEditor
+// 用于记录已经渲染过的链接，避免重复处理
+const processedLinks = new Set()
+
+// SQL 确认相关
+const confirmVisible = ref(false)
+const confirmSQL = ref('')
+const confirmOperationType = ref('SELECT')
+const confirmRiskLevel = ref('low')
+const confirmDescription = ref('')
+const confirmTableName = ref('')
+let pendingCallback = null
+let hasShownConfirm = false  // 防止重复弹出
+
+function highlightSql(text) {
+  if (!text) return ''
+  try {
+    return hljs.highlight(text, { language: 'sql' }).value
+  } catch {
+    return text
+  }
+}
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    let processed = text
+
+    // 预处理 1：修复 **text** 包裹链接的情况
+    // 将 **[text](url)** 转换为 [text](url)
+    processed = processed.replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, '[$1]($2)')
+
+    // 预处理 2：将反引号包裹的文件路径转换为链接
+    // 匹配 `/path/to/file` 格式，转换为 [filename](/path/to/file)
+    processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
+      const filename = path.substring(path.lastIndexOf('/') + 1)
+      return `[${filename}](${path})`
+    })
+
+    // 预处理 3：将 markdown 链接 [text](url) 转换为 HTML <a> 标签
+    // 优化：支持流式输出场景，即使链接被拆分也能正确处理
+    // 匹配规则：只要是 [text] 后面跟着 ( 开头的内容，就尝试转换为链接
+    processed = processed.replace(/\[([^\]]+)\]\(([^)]*)\)/g, (match, linkText, url) => {
+      // 如果 URL 不完整（没有闭合括号或没有文件扩展名），先保留原样
+      if (!url || url.length === 0) {
+        return match // 流式输出中，URL 还没完全接收，保持原样
+      }
+
+      // 处理相对路径：添加 apiBase
+      let fullUrl = url
+      if (url.startsWith('/') && !url.startsWith('//')) {
+        fullUrl = apiBase + url
+      }
+
+      return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>`
+    })
+
+    return md.render(processed)
+  } catch (e) {
+    console.error('Markdown parse error:', e)
+    return text
+  }
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (msgContainer.value) {
+      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
   })
-  editableTabs.value.push(...storedTabs)
-  editableTabsValue.value = localStorage.getItem("editableTabsValue") || ""
-
-  const authorization = new URLSearchParams(window.location.search).get('authorization')
-  showLoginBtn.value = !authorization
-})
-
-const addTab = (node) => {
-  if (node.data.type !== "schema") {
-    return
-  }
-  const tabId = Date.now().toString(36)
-  const conn = findConn(node)
-  editableTabs.value.push({
-    tabId: tabId,
-    title: node.data.label,
-    connId: conn.id,
-    connName: conn.label,
-    schema: node.data.label,
-    component: sqlEditor,
-  })
-  editableTabsValue.value = tabId
-  restoreTab()
 }
-const removeTab = (targetName) => {
-  const tabs = editableTabs.value
-  let activeName = editableTabsValue.value
-  if (activeName === targetName) {
-    tabs.forEach((tab, index) => {
-      if (tab.tabId === targetName) {
-        const nextTab = tabs[index + 1] || tabs[index - 1]
-        if (nextTab) {
-          activeName = nextTab.tabId
+
+async function sendMessage() {
+  const text = question.value.trim()
+  if (!text || loading.value) return
+
+  // 重置检测标记
+  resetDetectFlag()
+
+  chatHistory.value.push({ role: 'user', content: text })
+  question.value = ''
+  loading.value = true
+  thinkingText.value = ''
+  streamingContent.value = ''
+  scrollToBottom()
+
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: text,
+        tableContext: selectedTables.value,
+      }),
+    })
+
+    if (!resp.ok) {
+      ElMessage({ message: `请求失败: ${resp.status}`, type: 'error' })
+      return
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+
+      const lines = buf.split('\n')
+      buf = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (!data) continue
+        try {
+          const chunk = JSON.parse(data)
+          switch (chunk.type) {
+            case 'session':
+              sessionId.value = chunk.content
+              break
+            case 'thinking':
+              thinkingText.value += chunk.content
+              scrollToBottom()
+              break
+            case 'content':
+              streamingContent.value += chunk.content
+              scrollToBottom()
+              break
+            case 'danger_confirm':
+              // 后端推送的危险 SQL 确认
+              console.log('收到 danger_confirm 事件:', chunk)
+              if (!hasShownConfirm) {
+                hasShownConfirm = true
+                const sqlToConfirm = chunk.sql || chunk.content
+                console.log('准备显示确认对话框，SQL:', sqlToConfirm)
+                showConfirmDialog(sqlToConfirm)
+              }
+              break
+            case 'error':
+              ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
+              break
+            case 'done':
+              break
+          }
+        } catch (_) { }
+      }
+      scrollToBottom()
+    }
+
+    // 流结束，将思考过程和内容加入历史
+    if (thinkingText.value) {
+      chatHistory.value.push({ role: 'thinking', content: thinkingText.value, collapsed: true })
+      thinkingText.value = ''
+    }
+    if (streamingContent.value) {
+      const content = streamingContent.value
+      const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
+      chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
+      if (isSql) lastSql.value = content
+
+      // 关键检测：如果内容包含 [CONFIRM_REQUIRED] 标记，立即触发确认
+      if (!hasShownConfirm && content.includes('[CONFIRM_REQUIRED]')) {
+        const sqlStatements = extractAllSQL(content)
+        for (const sql of sqlStatements) {
+          const analysis = analyzeSQL(sql)
+          if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+            showConfirmDialog(sql)
+            break
+          }
         }
       }
-    })
-  }
-  editableTabsValue.value = activeName
-  editableTabs.value = tabs.filter((tab) => tab.tabId !== targetName)
-  restoreTab()
-}
 
-function restoreTab() {
-  const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
-  waitStoredTabs.forEach(tab => tab.component = null)
-  localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
-  localStorage.setItem("editableTabsValue", editableTabsValue.value)
-  if (editableTabs.value.length == 0) {
-    // 清空可能带来负面清理
-    localStorage.clear()
-    dbSchemaProxy.cleanCache()
-  }
-}
-
-function loadTree(node, resolve) {
-
-  if ((Object.keys(node.data).length === 0 && !loginSucc.value && isRemote.value) || node.data.type === 'table' || node.data.type === 'view') {
-    resolve([])
-    return
-  }
-  const conn = findConn(node)
-  http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
-    .then((resp) => {
-      if (node.data.type === "schema") {
-        dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
-        addTab(node)
-      }
-      if (resp.data.data) {
-        resolve(resp.data.data.map(e => {
-          if (e.type === "table" || e.type === "view") {
-            return Object.assign({ isLeaf: true }, e)
-          }
-          return e
-        }))
-      }
-      node.loaded = false
-    })
-    .catch((error) => {
-      console.log(error);
-      node.loading = false
-    });
-}
-
-function findConn(node) {
-  let conn = ""
-  if (node.level === 0) {
-    return conn
-  } else if (node.data.type === "conn") {
-    conn = node.data
-  } else {
-    conn = findConn(node.parent)
-  }
-  return conn
-}
-
-async function register() {
-
-  if (!client.isAvailable()) {
-    ElMessage({
-      showClose: true,
-      message: '您的设备不支持生物识别',
-      type: 'error',
-    })
-    return;
-  }
-
-  let registration = await client.register({
-    challenge: server.randomChallenge(),
-    user: { id: currentUser.value.id, name: currentUser.value.name }
-  })
-
-  const parsed = parsers.parseRegistration(registration)
-  console.log(JSON.stringify(parsed))
-
-  window.localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
-
-  const params = new URLSearchParams();
-  params.append("bioKey", parsed.credential.id);
-  http.post("/saveUserBio", params).then((resp) => {
-    if (resp.data.code == 200) {
-      ElMessage("注册成功")
-    } else {
-      ElMessage(data.msg)
+      streamingContent.value = ''
     }
-  }).catch((error) => {
-    ElMessage(error)
-  });
+  } catch (e) {
+    ElMessage({ message: e.message || '请求失败', type: 'error' })
+  } finally {
+    loading.value = false
+    scrollToBottom()
+  }
+}
+
+// 显示确认区域
+function showConfirmDialog(sql) {
+  // 分析 SQL
+  const analysis = analyzeSQL(sql)
+
+  confirmSQL.value = sql
+  confirmOperationType.value = analysis.type
+  confirmRiskLevel.value = analysis.riskLevel
+  confirmDescription.value = analysis.description
+  confirmTableName.value = analysis.tableName || ''
+  confirmVisible.value = true
+}
+
+// 重置检测标记
+function resetDetectFlag() {
+  hasShownConfirm = false
+}
+
+// 处理确认执行
+async function handleConfirmExec(confirmedSql) {
+  loading.value = true
+  confirmVisible.value = false
+
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: '执行已确认的 SQL',
+        confirmed: true,
+        pendingSQL: confirmedSql,
+      }),
+    })
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let result = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const chunk = JSON.parse(line.slice(6).trim())
+          if (chunk.type === 'content') {
+            result += chunk.content
+          }
+          if (chunk.type === 'error') {
+            ElMessage({ message: chunk.content, type: 'error' })
+          }
+        } catch (_) { }
+      }
+    }
+
+    if (result) {
+      chatHistory.value.push({ role: 'assistant', content: result })
+    }
+  } catch (e) {
+    ElMessage({ message: e.message || '执行失败', type: 'error' })
+  } finally {
+    loading.value = false
+    scrollToBottom()
+  }
+}
+
+// 处理取消确认
+function handleConfirmCancel() {
+  confirmVisible.value = false
+  chatHistory.value.push({ role: 'assistant', content: '已取消执行危险操作。' })
+  scrollToBottom()
+}
+
+function clearSession() {
+  chatHistory.value = []
+  sessionId.value = ''
+  thinkingText.value = ''
+  streamingContent.value = ''
+  lastSql.value = ''
+  confirmVisible.value = false
+  confirmSQL.value = ''
+  processedLinks.clear()
+  resetDetectFlag()
+}
+
+function insertToEditor() {
+  if (!lastSql.value) return
+  // emit('insertSql', lastSql.value.trim())
+  // emit('update:modelValue', false)
+  console.log('SQL 待插入:', lastSql.value.trim())
+}
+
+// --- 语音识别 ---
+function initSpeechRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SR) {
+    ElMessage({ message: '浏览器不支持语音识别', type: 'warning' })
+    return null
+  }
+  const recognition = new SR()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true
+  recognition.interimResults = true
+  recognition.onstart = () => { isRecording.value = true }
+  recognition.onresult = (event) => {
+    let finalTranscript = ''
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript
+    }
+    if (finalTranscript) question.value += (question.value ? ' ' : '') + finalTranscript
+  }
+  recognition.onerror = (event) => {
+    if (event.error === 'not-allowed') ElMessage({ message: '请允许使用麦克风', type: 'error' })
+    isRecording.value = false
+  }
+  recognition.onend = () => { isRecording.value = false }
+  return recognition
+}
+
+function toggleRecording() {
+  if (isRecording.value) {
+    speechRecognition?.stop()
+    isRecording.value = false
+  } else {
+    if (!speechRecognition) speechRecognition = initSpeechRecognition()
+    if (!speechRecognition) return
+    try {
+      speechRecognition.start()
+      ElMessage({ message: '开始语音录入...', type: 'info' })
+    } catch { ElMessage({ message: '无法启动语音识别', type: 'error' }) }
+  }
+}
+
+function handleEscKey(e) {
+  if (e.key === 'Escape' || e.keyCode === 27) {
+    // ESC 键关闭面板的逻辑已移除
+  }
 }
 
 function toLogin() {
@@ -364,7 +674,6 @@ function login() {
       }).then((resp) => {
         currentUser.value = resp.data.data
         sessionStorage.setItem("authentication", resp.headers.get("authentication"))
-        refreshTree()
         loginForm.value = {}
         logining.value = false
         loginSucc.value = true
@@ -393,7 +702,6 @@ async function loginBio() {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.headers.get("authentication"))
-      refreshTree()
       loginForm.value = {}
       logining.value = false
       loginSucc.value = true
@@ -411,7 +719,6 @@ async function loginBio() {
 function logout() {
   http.post("/logout")
     .then((resp) => {
-      refreshTree()
       currentUser.value = {}
       loginSucc.value = false
       ElMessage(resp.data.data)
@@ -428,206 +735,1077 @@ function getSysModel() {
   })
 }
 
-function refreshTree() {
-  http.get("/showTree", { params: { connId: "", key: "", type: "dir", level: 0 } })
-    .then((resp) => {
-      treeData.value = resp.data.data
+// --- 历史会话管理 ---
+function formatDate(isoString) {
+  if (!isoString) {
+    return '未知时间'
+  }
+
+  const date = new Date(isoString)
+  if (isNaN(date.getTime())) {
+    return '未知时间'
+  }
+
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+}
+
+async function loadSessionList() {
+  loadingSessions.value = true
+  sessionList.value = []
+
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/sessions'
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'Authorization': auth }
+    })
+
+    if (!resp.ok) {
+      throw new Error(`请求失败：${resp.status}`)
+    }
+
+    const data = await resp.json()
+    const sessions = data.sessions || []
+    // 按时间倒序排列（最新的在最上面）
+    sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    sessionList.value = sessions
+  } catch (e) {
+    ElMessage({ message: e.message || '加载历史会话失败', type: 'error' })
+  } finally {
+    loadingSessions.value = false
+  }
+}
+
+function confirmDeleteSession(id) {
+  ElMessageBox.confirm(
+    '确定要删除这个会话吗？删除后无法恢复！',
+    '删除确认',
+    {
+      confirmButtonText: '确定删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    }
+  )
+    .then(async () => {
+      await deleteSession(id)
+    })
+    .catch(() => {
+      // 用户取消
     })
 }
 
-// 查看表信息处理函数
-function viewTableInfo(node) {
-  tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
-  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
-  tableMgntDialogVisible.value = true
-}
+async function deleteSession(id) {
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/session/delete?sessionId=' + encodeURIComponent(id)
+  const auth = sessionStorage.getItem('authentication') || ''
 
-function viewViewInfo(node) {
-  tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
-  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
-  viewDialogVisible.value = true
-}
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'Authorization': auth }
+    })
 
-function openTableManager(node) {
-  const conn = findConn(node)
-  const tabId = 'tablemgr-' + conn.id + '-' + node.data.label
-  const existing = editableTabs.value.find(t => t.tabId === tabId)
-  if (existing) {
-    editableTabsValue.value = tabId
-    return
-  }
-  editableTabs.value.push({
-    tabId: tabId,
-    title: '🗂 表管理 - ' + node.data.label,
-    connId: conn.id,
-    connName: conn.label,
-    schema: node.data.label,
-    dbType: node.data.data?.dbType || dbSchemaProxy.getDbType(node.data.label) || '',
-    component: tableManagerComp,
-  })
-  editableTabsValue.value = tabId
-  restoreTab()
-}
-
-function openDataBrowser({ connId, schema, tableName }) {
-  const tabId = 'databrowser-' + connId + '-' + schema + '-' + tableName
-  const existing = editableTabs.value.find(t => t.tabId === tabId)
-  if (existing) {
-    editableTabsValue.value = tabId
-    return
-  }
-  editableTabs.value.push({
-    tabId: tabId,
-    title: '📋 ' + tableName,
-    connId: connId,
-    schema: schema,
-    tableName: tableName,
-    component: dataBrowserComp,
-  })
-  editableTabsValue.value = tabId
-  restoreTab()
-}
-
-function openDataBrowserFromNode(node) {
-  const connId = node.parent.parent.data.id
-  const schema = node.parent.data.label
-  const tableName = node.label
-  openDataBrowser({ connId, schema, tableName })
-}
-
-function openTableManagerFromChild({ connId, schema, schemaPath }) {
-  const connName = schemaPath ? schemaPath.split('/')[0] : ''
-  const node = {
-    level: 2,
-    data: {
-      label: schema,
-      type: 'schema',
-      data: {}
-    },
-    parent: {
-      level: 1,
-      data: {
-        id: connId,
-        label: connName,
-        type: 'conn'
-      }
+    if (!resp.ok) {
+      throw new Error(`请求失败：${resp.status}`)
     }
+
+    ElMessage({ message: '会话已删除', type: 'success' })
+    await loadSessionList() // 刷新列表
+  } catch (e) {
+    ElMessage({ message: e.message || '删除会话失败', type: 'error' })
   }
-  openTableManager(node)
 }
 
+function handleClickSession(id) {
+  // 先关闭 popover，然后加载会话
+  sessionHistoryVisible.value = false
+  // 延迟一点时间加载会话，让 popover 先关闭
+  setTimeout(() => {
+    loadSession(id)
+  }, 100)
+}
+
+// 登录相关方法
+async function handleLogin() {
+  if (!loginForm.value.username || !loginForm.value.password) {
+    ElMessage({ message: '请输入用户名和密码', type: 'warning' })
+    return
+  }
+
+  loginLoading.value = true
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/auth/login'
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(loginForm.value)
+    })
+
+    if (!resp.ok) {
+      throw new Error(`登录失败：${resp.status}`)
+    }
+
+    const data = await resp.json()
+    if (data.token) {
+      sessionStorage.setItem('authentication', data.token)
+      userInfo.value = data.user
+      isLoggedIn.value = true
+      loginDialogVisible.value = false
+      ElMessage({ message: '登录成功', type: 'success' })
+      loginForm.value = { username: '', password: '' }
+    } else {
+      throw new Error('未获取到 token')
+    }
+  } catch (e) {
+    ElMessage({ message: e.message || '登录失败', type: 'error' })
+  } finally {
+    loginLoading.value = false
+  }
+}
+
+function handleLogout() {
+  sessionStorage.removeItem('authentication')
+  isLoggedIn.value = false
+  userInfo.value = null
+  ElMessage({ message: '已退出登录', type: 'info' })
+}
+
+async function loadSession(id) {
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/session?sessionId=' + encodeURIComponent(id)
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { 'Authorization': auth }
+    })
+
+    if (!resp.ok) {
+      throw new Error(`请求失败：${resp.status}`)
+    }
+
+    const data = await resp.json()
+    if (data.session) {
+      // 清空当前会话
+      clearSession()
+
+      // 加载历史消息
+      sessionId.value = data.session.id
+      for (const msg of data.session.messages) {
+        const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(msg.content.trim())
+        chatHistory.value.push({
+          role: msg.role,
+          content: msg.content,
+          hasSql: isSql,
+          collapsed: true
+        })
+        if (isSql) lastSql.value = msg.content
+      }
+
+      ElMessage({ message: '已加载历史会话', type: 'success' })
+      scrollToBottom()
+    }
+  } catch (e) {
+    ElMessage({ message: e.message || '加载会话失败', type: 'error' })
+  }
+}
+
+onMounted(() => {
+  getSysModel()
+  document.addEventListener('keydown', handleEscKey)
+  // 检查登录状态
+  const authorization = new URLSearchParams(window.location.search).get('authorization')
+  showLoginBtn.value = !authorization
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleEscKey)
+})
 </script>
 
 <style scoped>
-.layout-container-demo {
-  /* width: calc(100vw * 0.98); */
-  height: calc(100vh);
+/* ========== 外层容器 - 填满整个视口 ========== */
+.ai-sql-panel-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-right: 15%;
+  padding-left: 15%;
 }
 
-.layout-container-demo .el-header {
-  position: relative;
-  color: var(--el-text-color-primary);
+/* 登录按钮容器 - 固定在左下角 */
+.login-button-container {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  opacity: 0.6;
+  transition: opacity 0.3s ease;
 }
 
-.layout-container-demo .el-aside {
-  color: var(--el-text-color-primary);
+.login-button-container:hover {
+  opacity: 1;
 }
 
-.layout-container-demo .el-menu {
-  border-right: none;
-}
-
-.layout-container-demo .el-main {
+/* ========== 主容器 - 专业蓝灰渐变 ========== */
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 0;
   padding: 0;
+  border-radius: 0;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
 }
 
-.table-node-wrapper {
+/* ========== 聊天消息容器 ========== */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 5px;
+  min-height: 0;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* 自定义滚动条 - 蓝灰色 */
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 3px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #546e7a 0%, #37474f 100%);
+  border-radius: 3px;
+  transition: background 0.3s ease;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #607d8b 0%, #455a64 100%);
+}
+
+/* ========== 聊天气泡 ========== */
+.chat-bubble {
+  max-width: 85%;
+  border-radius: 16px;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.6;
   position: relative;
-  display: inline-block;
-  padding-right: 64px;
+  animation: slideIn 0.3s ease-out;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s ease;
 }
 
-.icon-view-table {
-  background-image: url("@/assets/icon/view_info.svg");
-  background-size: 16px 16px;
-  background-repeat: no-repeat;
-  background-position: center;
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -20px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
+.chat-bubble:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
-.table-node-wrapper:hover .icon-view-table {
-  opacity: 1;
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
+/* 用户消息气泡 - 浅蓝渐变 */
+.chat-bubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #64b5f6 0%, #42a5f5 100%);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 4px 12px rgba(100, 181, 246, 0.25);
+}
 
-.icon-table-manager {
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -40px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-  font-style: normal;
+.chat-bubble.user .bubble-label {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* AI 消息气泡 - 冷白色 */
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: linear-gradient(135deg, #ffffff 0%, #f5f5f5 100%);
+  color: #212121;
+  border-bottom-left-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.chat-bubble.assistant .bubble-label {
+  color: #546e7a;
+}
+
+/* ========== 标签样式 ========== */
+.bubble-label {
   font-size: 12px;
-  line-height: 16px;
-  text-align: center;
-}
-.icon-table-manager::after {
-  content: '🗂';
-}
-.table-node-wrapper:hover .icon-table-manager {
-  opacity: 1;
-}
-.icon-table-manager:hover {
-  opacity: 0.8 !important;
-}
-.icon-view-table:hover {
-  opacity: 0.8 !important;
+  font-weight: 600;
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
 }
 
-.icon-view-table:hover {
+.bubble-content {
+  word-break: break-word;
+}
+
+/* ========== 思考过程块 - 冷色调 ========== */
+.thinking-block {
+  border: 1px solid rgba(84, 110, 122, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(236, 239, 241, 0.6) 0%, rgba(224, 228, 230, 0.4) 100%);
+  padding: 12px;
+  margin: 8px 0;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(84, 110, 122, 0.1);
+  transition: all 0.3s ease;
+}
+
+.thinking-block:hover {
+  box-shadow: 0 4px 12px rgba(84, 110, 122, 0.15);
+  transform: translateX(4px);
+}
+
+.thinking-label {
+  font-size: 13px;
+  color: #37474f;
+  margin-bottom: 8px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: color 0.3s ease;
+}
+
+.thinking-label:hover {
+  color: #546e7a;
+}
+
+.thinking-content {
+  font-size: 13px;
+  color: #455a64;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  /* border-left: 3px solid #546e7a; */
+  font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.5;
+}
+
+.thinking-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.thinking-content::-webkit-scrollbar-thumb {
+  background: #78909c;
+  border-radius: 2px;
+}
+
+/* ========== 工具调用块 - 青绿色 ========== */
+.tool-call-block {
+  font-size: 13px;
+  color: #00796b;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(224, 242, 241, 0.9) 0%, rgba(178, 223, 219, 0.7) 100%);
+  border-radius: 10px;
+  border: 1px solid rgba(0, 121, 107, 0.2);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 8px rgba(0, 121, 107, 0.1);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* ========== SQL 代码块 - 深空灰 ========== */
+.sql-pre {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
+  color: #cfd8dc;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.sql-pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+.sql-pre::-webkit-scrollbar-thumb {
+  background: #546e7a;
+  border-radius: 3px;
+}
+
+.cursor-blink {
+  animation: blink 1s step-start infinite;
+  font-size: 14px;
+  color: #4fc3f7;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ========== Markdown 样式 ========== */
+.markdown-body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #2d3748;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin-top: 20px;
+  margin-bottom: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #1a202c;
+}
+
+.markdown-body h1 {
+  font-size: 24px;
+  border-bottom: 2px solid #e2e8f0;
+  padding-bottom: 6px;
+}
+
+.markdown-body h2 {
+  font-size: 20px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 4px;
+}
+
+.markdown-body h3 {
+  font-size: 18px;
+}
+
+.markdown-body h4 {
+  font-size: 16px;
+}
+
+.markdown-body h5 {
+  font-size: 14px;
+}
+
+.markdown-body h6 {
+  font-size: 13px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 2em;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+}
+
+.markdown-body ul ul {
+  list-style-type: circle;
+}
+
+.markdown-body ul ul ul {
+  list-style-type: square;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body li {
+  margin-top: 6px;
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+
+.markdown-body li+li {
+  margin-top: 6px;
+}
+
+.markdown-body code {
+  padding: 3px 8px;
+  margin: 0;
+  font-size: 13px;
+  background: linear-gradient(135deg, #eceff1 0%, #cfd8dc 100%);
+  border-radius: 6px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  color: #c62828;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.markdown-body pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
+  border-radius: 10px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  max-width: 100%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+  line-height: inherit;
+  word-wrap: normal;
+  background-color: transparent;
+  border-radius: 0;
+  color: #cfd8dc;
+  white-space: pre;
+}
+
+.markdown-body blockquote {
+  padding: 12px 16px;
+  color: #546e7a;
+  border-left: 4px solid #546e7a;
+  margin: 12px 0;
+  background: rgba(84, 110, 122, 0.05);
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+
+/* 表格样式优化 */
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.markdown-body table th {
+  font-weight: 700;
+  background: linear-gradient(180deg, #eceff1 0%, #cfd8dc 100%);
+  color: #263238;
+  position: sticky;
+  top: 0;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+.markdown-body table tr:nth-child(2n) {
+  background-color: #f5f5f5;
+}
+
+.markdown-body table tr:hover {
+  background-color: #eceff1;
+}
+
+/* 宽表滚动容器 */
+.markdown-body .table-wrapper {
+  overflow-x: auto;
+  margin: 12px 0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.markdown-body a {
+  color: #1976d2;
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-bottom: 1px solid transparent;
+}
+
+.markdown-body a:hover {
+  color: #1565c0;
+  text-decoration: underline;
+  border-bottom-color: #1565c0;
+}
+
+.markdown-body a[target="_blank"]::after {
+  content: " ↗";
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+.markdown-body hr {
+  height: 2px;
+  padding: 0;
+  margin: 20px 0;
+  background: linear-gradient(90deg, #e2e8f0 0%, #cbd5e0 50%, #e2e8f0 100%);
+  border: 0;
+}
+
+.markdown-body strong {
+  font-weight: 700;
+  color: #1a202c;
+}
+
+.markdown-body em {
+  font-style: italic;
+  color: #4a5568;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  margin: 8px 0;
+}
+
+/* ========== 历史会话项样式 ========== */
+.session-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.session-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: linear-gradient(180deg, #546e7a 0%, #78909c 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.session-item:hover {
+  border-color: #90a4ae;
+  background: linear-gradient(135deg, #f5f5f5 0%, #eceff1 100%);
+}
+
+.session-item:hover::before {
   opacity: 0.8;
 }
 
-.icon-browse-data {
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -40px;
-  top: 50%;
-  transform: translateY(-50%);
+.session-content {
+  flex: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-  font-style: normal;
-  font-size: 12px;
-  line-height: 16px;
-  text-align: center;
+  min-width: 0;
+  padding-right: 8px;
 }
-.icon-browse-data::after {
-  content: '📋';
-}
-.table-node-wrapper:hover .icon-browse-data {
-  opacity: 1;
-}
-.icon-browse-data:hover {
-  opacity: 0.8 !important;
-}
-</style>
 
-<style lang="less" scoped>
-.el-tree-node {
-  overflow-x: auto;
+.session-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2d3748;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.3s ease;
+}
+
+.session-item:hover .session-title {
+  color: #37474f;
+}
+
+.session-time {
+  font-size: 12px;
+  color: #718096;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+
+.session-time .el-icon {
+  font-size: 12px;
+}
+
+.session-actions {
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateX(-8px);
+}
+
+.session-item:hover .session-actions {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ========== 输入区域美化 ========== */
+.input-area {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.8);
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.input-label {
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #4a5568;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+}
+
+.input-label span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-label span::before {
+  content: '💡';
+  font-size: 14px;
+}
+
+/* 按钮组美化 */
+.el-button-group {
+  display: flex;
+  gap: 6px;
+}
+
+/* 工具栏按钮美化 */
+.toolbar-btn {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.toolbar-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(84, 110, 122, 0.2);
+}
+
+/* 输入框美化 */
+:deep(.el-textarea__inner) {
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  transition: all 0.3s ease;
+  font-size: 14px;
+}
+
+:deep(.el-textarea__inner:hover) {
+  border-color: #bdbdbd;
+  box-shadow: 0 0 0 3px rgba(189, 189, 189, 0.08);
+}
+
+:deep(.el-textarea__inner:focus) {
+  border-color: #90a4ae;
+  box-shadow: 0 0 0 3px rgba(144, 164, 174, 0.12);
+}
+
+/* 选择器美化 */
+:deep(.el-select) {
+  width: 100%;
+}
+
+:deep(.el-select .el-input__inner) {
+  border-radius: 10px;
+}
+
+:deep(.el-select-dropdown__item.selected) {
+  background: linear-gradient(90deg, rgba(66, 153, 225, 0.1) 0%, transparent 100%);
+  color: #4299e1;
+  font-weight: 600;
+}
+
+/* 空状态美化 */
+:deep(.el-empty) {
+  padding: 20px 0;
+}
+
+:deep(.el-empty__description) {
+  color: #718096;
+  font-size: 13px;
+}
+
+/* 骨架屏美化 */
+:deep(.el-skeleton) {
+  border-radius: 8px;
+}
+
+:deep(.el-skeleton__item) {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* 滚动条全局美化 - 蓝灰色 */
+:deep(.el-drawer__body) {
+  scrollbar-width: thin;
+  scrollbar-color: #78909c rgba(84, 110, 122, 0.05);
+}
+
+/* Popover 美化 */
+:deep(.el-popover) {
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* 消息气泡中的链接 */
+.chat-bubble a {
+  color: inherit;
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.chat-bubble.user a {
+  color: #ffffff;
+  text-decoration-color: rgba(255, 255, 255, 0.6);
+}
+
+.chat-bubble.user a:hover {
+  color: #e2e8f0;
+  text-decoration-color: #ffffff;
+}
+
+/* ========== 输入区域布局 ========== */
+.input-action-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.question-input {
+  flex: 1;
+}
+
+.question-input :deep(.el-textarea__inner) {
+  border-radius: 12px;
+  border: 1.5px solid #e0e0e0;
+  transition: all 0.3s ease;
+  font-size: 14px;
+  line-height: 1.6;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(10px);
+}
+
+.question-input :deep(.el-textarea__inner:hover) {
+  border-color: #bdbdbd;
+  box-shadow: 0 0 0 3px rgba(189, 189, 189, 0.08);
+}
+
+.question-input :deep(.el-textarea__inner:focus) {
+  border-color: #90a4ae;
+  box-shadow: 0 0 0 3px rgba(144, 164, 174, 0.12);
+}
+
+.action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 50px;
+}
+
+/* 发送按钮 - 使用默认 primary 颜色 */
+.send-btn {
+  padding: 8px 20px;
+  min-width: 38px;
+  min-height: 30px;
+  border-radius: 8px;
+}
+
+.send-btn .el-icon {
+  margin-right: 0;
+}
+
+/* 加入编辑器按钮美化 - 柔和青绿 */
+.insert-btn {
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 13px;
+  padding: 8px 12px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1.5px solid #26a69a;
+  background: linear-gradient(135deg, #4db6ac 0%, #26a69a 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(77, 182, 172, 0.2);
+  min-width: 38px;
+  min-height: 38px;
+}
+
+.insert-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(77, 182, 172, 0.3);
+  background: linear-gradient(135deg, #26a69a 0%, #00897b 100%);
+  border-color: #00897b;
+}
+
+.insert-btn .el-icon {
+  margin-right: 4px;
+  font-size: 16px;
+}
+
+/* 相关表选择器容器 */
+.table-selector-container {
+  margin-bottom: 12px;
+}
+
+.table-selector-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #4a5568;
+  font-weight: 600;
+}
+
+.table-selector-label::before {
+  content: '📊';
+  margin-right: 6px;
+}
+
+.table-selector {
+  width: 100%;
+}
+
+.table-selector :deep(.el-input__inner) {
+  border-radius: 10px;
+  border: 1.5px solid #e0e0e0;
+  transition: all 0.3s ease;
+  min-height: 40px;
+}
+
+.table-selector :deep(.el-input__inner:hover) {
+  border-color: #bdbdbd;
+  box-shadow: 0 0 0 3px rgba(189, 189, 189, 0.08);
+}
+
+.table-selector :deep(.el-input__inner:focus) {
+  border-color: #90a4ae;
+  box-shadow: 0 0 0 3px rgba(144, 164, 174, 0.12);
+}
+
+.table-selector :deep(.el-tag) {
+  border-radius: 6px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border-color: #64b5f6;
+  color: #0d47a1;
+  font-weight: 500;
+}
+
+.table-selector :deep(.el-select__tags) {
+  padding: 4px 8px;
+}
+
+/* 下拉选项美化 */
+.table-selector :deep(.el-select-dropdown__item) {
+  transition: all 0.2s ease;
+}
+
+.table-selector :deep(.el-select-dropdown__item:hover) {
+  background: linear-gradient(90deg, rgba(25, 118, 210, 0.05) 0%, rgba(25, 118, 210, 0.15) 100%);
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.table-selector :deep(.el-select-dropdown__item.selected) {
+  background: linear-gradient(90deg, rgba(25, 118, 210, 0.1) 0%, rgba(25, 118, 210, 0.2) 100%);
+  color: #1565c0;
+  font-weight: 700;
 }
 </style>

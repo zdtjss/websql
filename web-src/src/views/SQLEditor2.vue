@@ -121,13 +121,17 @@
             </div>
         </template>
     </el-dialog>
-    <AISqlPanel
-        v-model="aiPanelVisible"
-        :connId="props.connId"
-        :schema="props.schema"
-        :tableList="tableList"
-        @insertSql="onInsertSql"
-    />
+    <el-drawer v-model="aiPanelVisible" title="AI 智能助手" direction="rtl" :size="aiPanelWidth"
+        :close-on-press-escape="false" body-class="ai-sql-drawer-body" :class="{ 'fullscreen-drawer': aiPanelFullscreen }">
+        <AISqlPanel
+            v-model="aiPanelVisible"
+            :connId="props.connId"
+            :schema="props.schema"
+            :tableList="tableList"
+            @insertSql="onInsertSql"
+            @update:fullscreen="aiPanelFullscreen = $event"
+        />
+    </el-drawer>
 </template>
 
 <script lang="ts" setup>
@@ -202,6 +206,14 @@ const onDataSaving = ref(false)
 const canModify = ref(false)
 
 const aiPanelVisible = ref(false)
+
+const aiPanelWidth = ref('720px')
+const aiPanelFullscreen = ref(false)
+
+// 监听全屏状态变化，更新面板宽度
+watch(aiPanelFullscreen, (isFull) => {
+    aiPanelWidth.value = isFull ? '100%' : '720px'
+})
 
 const tableList = computed(() => {
     try {
@@ -931,6 +943,25 @@ const dragEnd = (e: DragEvent) => {
 
 .el-drawer__header {
     margin-bottom: -20px
+}
+
+/* AI SQL Drawer 的 body 样式 */
+.ai-sql-drawer-body {
+    padding: 0 !important;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 全屏模式下的 drawer 样式 */
+.ai-sql-drawer-body.fullscreen-drawer .el-drawer__header {
+    padding-left: calc(10% + 20px) !important;
+    padding-right: calc(10% + 20px) !important;
+}
+
+.ai-sql-drawer-body.fullscreen-drawer .el-drawer__body {
+    padding-left: 10%;
+    padding-right: 10%;
 }
 
 .el-button {

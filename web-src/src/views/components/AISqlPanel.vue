@@ -1,7 +1,5 @@
 <template>
-  <el-drawer :model-value="modelValue" title="AI 智能助手" direction="rtl" :size="panelWidth" :fullscreen="isFullscreen"
-    :close-on-press-escape="false" @update:model-value="emit('update:modelValue', $event)"
-    body-class="ai-sql-drawer-body" :class="isFullscreen ? 'fullscreen-drawer' : ''">
+  <div class="ai-sql-panel-container">
     <div class="container">
       <!-- 会话历史消息 -->
       <div ref="msgContainer" class="chat-messages">
@@ -134,7 +132,7 @@
         </div>
       </div>
     </div>
-  </el-drawer>
+  </div>
 </template>
 
 <script setup>
@@ -210,7 +208,7 @@ const props = defineProps({
   modelValue: Boolean,
 })
 
-const emit = defineEmits(['update:modelValue', 'insertSql'])
+const emit = defineEmits(['update:modelValue', 'insertSql', 'update:fullscreen'])
 
 const question = ref('')
 const selectedTables = ref([])
@@ -222,7 +220,6 @@ const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
 const msgContainer = ref(null)
-const panelWidth = ref('720px')
 const isFullscreen = ref(false)
 let speechRecognition = null
 
@@ -296,11 +293,8 @@ function renderMarkdown(text) {
 
 function toggleFullscreen() {
   isFullscreen.value = !isFullscreen.value
-  if (isFullscreen.value) {
-    panelWidth.value = '100%'
-  } else {
-    panelWidth.value = '720px'
-  }
+  // 通知父组件更新全屏状态
+  emit('update:fullscreen', isFullscreen.value)
 }
 
 function scrollToBottom() {
@@ -579,9 +573,10 @@ function handleEscKey(e) {
     if (isFullscreen.value) {
       // 全屏状态：只退出全屏，不关闭面板
       isFullscreen.value = false
-      panelWidth.value = '720px'
+      // 通知父组件退出全屏
+      emit('update:fullscreen', false)
     } else {
-      // 非全屏状态：关闭面板
+      // 非全屏状态：通知父组件关闭面板
       emit('update:modelValue', false)
     }
   }
@@ -739,27 +734,21 @@ onUnmounted(() => {
 watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
 </script>
 
-<style>
-/* 全屏模式下的 drawer 样式 - 使用全局样式，因为 Drawer 是 teleport 到 body 的 */
-.fullscreen-drawer.el-drawer .el-drawer__header {
-  padding-left: calc(10% + 20px) !important;
-  padding-right: calc(10% + 20px) !important;
-}
-
-.fullscreen-drawer.el-drawer .el-drawer__body {
-  padding-left: 10%;
-  padding-right: 10%;
-}
-</style>
-
 <style scoped>
+/* ========== 外层容器 - 填满 drawer ========== */
+.ai-sql-panel-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 /* ========== 主容器 - 专业蓝灰渐变 ========== */
 .container {
   display: flex;
   flex-direction: column;
   height: 100%;
   gap: 16px;
-  padding: 0px 5px 5px 5px;
+  padding-bottom: 5px;
   border-radius: 5px;
   background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
 }
@@ -771,10 +760,10 @@ watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 8px 4px;
+  padding: 0px 5px 8px 5px;
   min-height: 0;
   background: rgba(255, 255, 255, 0.9);
-  border-radius: 12px;
+  border-radius: 0px 0px 12px 12px;
   box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
