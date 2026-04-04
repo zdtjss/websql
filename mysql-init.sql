@@ -5,7 +5,9 @@ create table if not exists t_conn (
 	name varchar(64),
 	user varchar(64),
 	pwd varchar(256),
-	url varchar(512)
+	url varchar(512),
+	db_schema varchar(128),
+	db_version varchar(64)
 );
 
 create table if not exists t_power (

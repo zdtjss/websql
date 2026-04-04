@@ -17,18 +17,24 @@ func SaveConn(c *gin.Context) {
 	CheckAdminPower(c)
 	cfg := &ConnCfg{}
 	utils.UnmarshalJson(c.Request.Body, cfg)
+
+	dbParam := convertToDBParam(cfg)
+	db := config.GetConn(dbParam)
+
+	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
+
 	if cfg.Id == "" {
-		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url) values (?, ?, ?, ?, ?, ?, ?)")
-		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url)
+		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url, db_schema, db_version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, dbSchema, dbVersion)
 	} else {
 		if cfg.Pwd == "" {
-			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ? where id = ?")
-			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, cfg.Id)
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
+			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, dbSchema, dbVersion, cfg.Id)
 		} else {
-			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ? where id = ?")
-			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, cfg.Id)
+			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
+			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, dbSchema, dbVersion, cfg.Id)
 		}
-		config.RealseConn(convertToDBParam(cfg))
+		config.RealseConn(dbParam)
 	}
 	utils.WriteJson(c.Writer, "")
 }
@@ -46,13 +52,54 @@ func TestDbConn(c *gin.Context) {
 		c.JSON(200, gin.H{"code": 500, "msg": "连接失败：" + err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"code": 200, "msg": "连接成功"})
+
+	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
+
+	c.JSON(200, gin.H{
+		"code":      200,
+		"msg":       "连接成功",
+		"dbSchema":  dbSchema,
+		"dbVersion": dbVersion,
+	})
 }
 
 func DelConn(c *gin.Context) {
 	CheckAdminPower(c)
 	config.Mngtdb.Exec("delete from t_conn where id = ?", c.Query("id"))
 	utils.WriteJson(c.Writer, "")
+}
+
+func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
+	var versionSQL string
+	var schemaSQL string
+
+	switch dbType {
+	case "mysql", "mariadb":
+		versionSQL = "SELECT VERSION()"
+		schemaSQL = "SELECT DATABASE()"
+	case "oracle":
+		versionSQL = "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1"
+		schemaSQL = "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"
+	case "sqlite":
+		versionSQL = "SELECT SQLITE_VERSION()"
+		schemaSQL = "SELECT 'main'"
+	default:
+		versionSQL = "SELECT VERSION()"
+		schemaSQL = "SELECT DATABASE()"
+	}
+
+	version := ""
+	schema := ""
+
+	if err := db.Get(&version, versionSQL); err != nil {
+		version = ""
+	}
+
+	if err := db.Get(&schema, schemaSQL); err != nil {
+		schema = ""
+	}
+
+	return schema, version
 }
 
 func ShowTree(c *gin.Context) {
@@ -171,6 +218,47 @@ func ListConnBase(c *gin.Context) {
 	utils.WriteJson(c.Writer, cfgList)
 }
 
+func ListUserConn(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	userPower := GetUserPower(authorization)
+
+	type UserConnDTO struct {
+		ConnId   string  `json:"connId" db:"id"`
+		Name     string  `json:"name" db:"name"`
+		DbSchema *string `json:"dbSchema" db:"db_schema"`
+	}
+
+	dtoList := []UserConnDTO{}
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select id, name, db_schema from t_conn where 1 = 1 ")
+	appendPmsn(&sql, "id", &param, userPower)
+
+	err := config.Mngtdb.Select(&dtoList, sql.String(), param...)
+	logutils.PanicErr(err)
+
+	utils.WriteJson(c.Writer, dtoList)
+}
+
+func ListTableNames(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	connId := c.Query("connId")
+	schema := c.Query("schema")
+
+	if connId == "" {
+		utils.WriteJson(c.Writer, []string{})
+		return
+	}
+
+	tables := queryTableInfo(connId, schema, authorization)
+	tableNames := make([]string, len(tables))
+	for i, table := range tables {
+		tableNames[i] = table.Name
+	}
+
+	utils.WriteJson(c.Writer, tableNames)
+}
+
 func listConnBase() map[string][]*ConnCfgBase {
 	cfgList := []*ConnCfgBase{}
 	err := config.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
@@ -217,7 +305,15 @@ func GetConn(id string, authorization string) *sqlx.DB {
 }
 
 func convertToDBParam(cfg *ConnCfg) *config.DBParam {
-	return &config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url}
+	dbSchema := ""
+	if cfg.DbSchema != nil {
+		dbSchema = *cfg.DbSchema
+	}
+	dbVersion := ""
+	if cfg.DbVersion != nil {
+		dbVersion = *cfg.DbVersion
+	}
+	return &config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url, DbSchema: dbSchema, DbVersion: dbVersion}
 }
 
 type ConnCfg struct {
@@ -229,6 +325,8 @@ type ConnCfg struct {
 	User       string  `json:"user"`
 	Pwd        string  `json:"pwd"`
 	Url        string  `json:"url"`
+	DbSchema   *string `json:"dbSchema" db:"db_schema"`
+	DbVersion  *string `json:"dbVersion" db:"db_version"`
 }
 
 type ConnCfgBase struct {

@@ -6,7 +6,9 @@ CREATE TABLE IF NOT EXISTS t_conn (
 	name TEXT,
 	user TEXT,
 	pwd TEXT,
-	url TEXT
+	url TEXT,
+	db_schema TEXT,
+	db_version TEXT
 );
 		
 CREATE TABLE IF NOT EXISTS t_power (

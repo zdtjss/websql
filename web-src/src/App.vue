@@ -101,11 +101,19 @@
               </el-button>
             </div>
           </div>
-          <div class="table-selector-container">
-            <label class="table-selector-label">相关表</label>
-            <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
-              <el-option v-for="table in tableList" :key="table" :label="table" :value="table" />
-            </el-select>
+          <div class="table-selector-row">
+            <div class="table-selector-container" v-if="connList.length > 1">
+              <label class="table-selector-label">数据库</label>
+              <el-select v-model="connId" filterable placeholder="选择数据库" class="table-selector" @change="handleConnChange">
+                <el-option v-for="conn in connList" :key="conn.connId" :label="conn.name" :value="conn.connId" />
+              </el-select>
+            </div>
+            <div class="table-selector-container" :class="{ 'full-width': connList.length <= 1 }">
+              <label class="table-selector-label">相关表</label>
+              <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
+                <el-option v-for="table in tableList" :key="table" :label="table" :value="table" />
+              </el-select>
+            </div>
           </div>
 
           <div class="input-action-row">
@@ -275,6 +283,55 @@ const loginRules = reactive({
 const connId = ref('')
 const schema = ref('')
 const tableList = ref([])
+const connList = ref([])
+
+async function loadConnList() {
+  try {
+    const resp = await http.get('/listUserConn')
+    connList.value = resp.data.data || []
+    // 如果有连接且当前未选择，自动选择第一个
+    if (connList.value.length > 0 && !connId.value) {
+      connId.value = connList.value[0].connId
+      schema.value = connList.value[0].dbSchema
+      handleConnChange()
+    }
+  } catch (e) {
+    console.error('加载连接列表失败:', e)
+  }
+}
+
+async function loadTableList(connId, schema) {
+  try {
+    if (!connId) {
+      tableList.value = []
+      return
+    }
+    const resp = await http.get('/listTableNames', {
+      params: { connId, schema: schema || '' }
+    })
+    const newTableList = resp.data.data || []
+    
+    // 保留已选择的表中在新表列表中仍然存在的部分
+    if (selectedTables.value.length > 0) {
+      selectedTables.value = selectedTables.value.filter(table => newTableList.includes(table))
+    }
+    
+    tableList.value = newTableList
+  } catch (e) {
+    console.error('加载表列表失败:', e)
+    tableList.value = []
+  }
+}
+
+function handleConnChange() {
+  // 当连接改变时，更新 schema 信息
+  const selectedConn = connList.value.find(c => c.connId === connId.value)
+  if (selectedConn) {
+    schema.value = selectedConn.dbSchema || ''
+  }
+  // 加载表列表（会自动过滤保留已选择的表）
+  loadTableList(connId.value, schema.value)
+}
 
 // 历史会话相关
 const sessionHistoryVisible = ref(false)
@@ -645,7 +702,7 @@ function loginByToken(token) {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.data.data["authentication"])
-      refreshTree()
+      loadConnList()
       loginForm.value = {}
       logining.value = false
       loginSucc.value = true
@@ -678,6 +735,7 @@ function login() {
         logining.value = false
         loginSucc.value = true
         loginDialogVisible.value = false
+        loadConnList()
         ElMessage("登陆成功")
       }).finally(() => logining.value = false)
     }
@@ -706,6 +764,7 @@ async function loginBio() {
       logining.value = false
       loginSucc.value = true
       loginDialogVisible.value = false
+      loadConnList()
       ElMessage("登陆成功")
     } else {
       ElMessage(data.msg)
@@ -924,6 +983,7 @@ async function loadSession(id) {
 }
 
 onMounted(() => {
+  loadConnList()
   getSysModel()
   document.addEventListener('keydown', handleEscKey)
   // 检查登录状态
@@ -943,8 +1003,15 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding-right: 15%;
-  padding-left: 15%;
+}
+
+/* 内容容器 - 添加左右留白 */
+.container {
+  width: 70%;
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 登录按钮容器 - 固定在左下角 */
@@ -983,6 +1050,7 @@ onUnmounted(() => {
   min-height: 0;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.06);
+  overflow-x: hidden;
 }
 
 /* 自定义滚动条 - 蓝灰色 */
@@ -1528,6 +1596,7 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(10px);
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+  box-sizing: border-box;
 }
 
 .input-label {
@@ -1669,6 +1738,7 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   margin-top: 12px;
+  flex-shrink: 0;
 }
 
 .question-input {
@@ -1742,8 +1812,24 @@ onUnmounted(() => {
 }
 
 /* 相关表选择器容器 */
-.table-selector-container {
+.table-selector-row {
+  display: flex;
+  gap: 16px;
   margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.table-selector-row .table-selector-container:first-child {
+  flex: 0 0 20%;
+}
+
+.table-selector-row .table-selector-container:last-child {
+  flex: 0 0 80%;
+}
+
+/* 当只有一个数据库时，相关表占满整行 */
+.table-selector-row .table-selector-container.full-width {
+  flex: 0 0 100%;
 }
 
 .table-selector-label {
@@ -1752,6 +1838,10 @@ onUnmounted(() => {
   font-size: 13px;
   color: #4a5568;
   font-weight: 600;
+}
+
+.table-selector {
+  width: 100%;
 }
 
 .table-selector-label::before {

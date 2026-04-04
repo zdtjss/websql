@@ -89,10 +89,12 @@ func createKey(param *DBParam) string {
 }
 
 type DBParam struct {
-	Id     string `json:"id"`
-	Name   string `json:"name"`
-	User   string `json:"user"`
-	Pwd    string `json:"pwd"`
-	Url    string `json:"url"`
-	DbType string `json:"dbType"`
+	Id         string `json:"id"`
+	Name       string `json:"name"`
+	User       string `json:"user"`
+	Pwd        string `json:"pwd"`
+	Url        string `json:"url"`
+	DbType     string `json:"dbType"`
+	DbSchema   string `json:"dbSchema"`
+	DbVersion  string `json:"dbVersion"`
 }

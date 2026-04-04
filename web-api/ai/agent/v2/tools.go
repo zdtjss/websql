@@ -199,7 +199,7 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 }
 
 // NewSchemaFunc 创建获取表结构的 Tool 函数
-func NewSchemaFunc(connId string, dbType string, dbName string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+func NewSchemaFunc(connId string, dbType string, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 		conn, actualDBType := getConn(connId)
 		if conn == nil {
@@ -223,7 +223,7 @@ func NewSchemaFunc(connId string, dbType string, dbName string) func(ctx context
 			rows, err := conn.Query(schemaSQL)
 			if err != nil {
 				logutils.PrintErr(fmt.Errorf("获取表结构失败 %s: %w", table, err))
-				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbName, table))
+				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbSchema, table))
 				continue
 			}
 			for rows.Next() {

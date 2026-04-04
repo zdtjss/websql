@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"go-web/logutils"
@@ -121,10 +122,37 @@ func ListTableFat(c *gin.Context) {
 func queryTableInfo(key string, schema, authorization string) []*Table {
 	tables := make([]*Table, 0)
 	dc := GetConn(key, authorization)
-	stmt, err := dc.Prepare(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"])
+
+	// 根据 schema 是否为空决定查询语句
+	var querySQL string
+	if schema != "" {
+		querySQL = dbutils.SQL_DIALECT[dc.DriverName()]["listTable"]
+	} else {
+		// 不使用 schema 过滤的查询
+		switch dc.DriverName() {
+		case "mysql", "mariadb":
+			querySQL = "SELECT table_name, table_type, table_comment FROM information_schema.tables WHERE table_schema = DATABASE()"
+		case "oracle":
+			querySQL = "SELECT table_name, 'TABLE', NULL FROM user_tables"
+		case "sqlite":
+			querySQL = "SELECT name, 'table', NULL FROM sqlite_master WHERE type='table'"
+		default:
+			querySQL = dbutils.SQL_DIALECT[dc.DriverName()]["listTable"]
+		}
+	}
+
+	stmt, err := dc.Prepare(querySQL)
 	logutils.PanicErr(err)
-	rs, err2 := stmt.Query(schema)
+
+	var rs *sql.Rows
+	var err2 error
+	if schema != "" {
+		rs, err2 = stmt.Query(schema)
+	} else {
+		rs, err2 = stmt.Query()
+	}
 	logutils.PanicErr(err2)
+
 	var tableName, tableType, tableComment string
 	for rs.Next() {
 		*&tableComment = ""

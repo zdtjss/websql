@@ -53,14 +53,25 @@ type Handler struct {
 	sessions *SessionStore
 }
 
-// getDBInfo 获取数据库类型和名称
-func getDBInfo(connID string) (string, string) {
+// getDBInfo 获取数据库信息
+func getDBInfo(connID string) (string, string, string) {
 	cfgList := []admin.ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connID)
 	if err != nil || len(cfgList) == 0 {
-		return "", ""
+		return "", "", ""
 	}
-	return cfgList[0].DbType, cfgList[0].Name
+	
+	dbSchema := ""
+	if cfgList[0].DbSchema != nil {
+		dbSchema = *cfgList[0].DbSchema
+	}
+	
+	dbVersion := ""
+	if cfgList[0].DbVersion != nil {
+		dbVersion = *cfgList[0].DbVersion
+	}
+	
+	return cfgList[0].DbType, dbSchema, dbVersion
 }
 
 // NewHandler 创建 Handler
@@ -111,10 +122,10 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	// 获取数据库信息
-	dbType, dbName := getDBInfo(req.ConnID)
+	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
 
 	// 创建 Agent，使用全局会话存储
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbName, h.sessions)
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 Agent 失败：" + err.Error()})
 		return

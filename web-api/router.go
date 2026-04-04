@@ -36,6 +36,8 @@ func MainRegister(router *gin.Engine) {
 	router.GET("/delConn", admin.DelConn)
 	router.GET("/connBaseTree", admin.ConnBaseTree)
 	router.GET("/listConn2", admin.ListConn2)
+	router.GET("/listUserConn", admin.ListUserConn)
+	router.GET("/listTableNames", admin.ListTableNames)
 	router.GET("/showTree", admin.ShowTree)
 
 	router.POST("/listTableColumns", admin.ListTableColumns)

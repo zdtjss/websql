@@ -35,10 +35,11 @@ type StreamChunk struct {
 
 // SQLAgent SQL 智能体
 type SQLAgent struct {
-	agent    *adk.ChatModelAgent
-	sessions *SessionStore
-	dbType   string
-	dbName   string
+	agent      *adk.ChatModelAgent
+	sessions   *SessionStore
+	dbType     string
+	dbSchema   string
+	dbVersion  string
 }
 
 // SessionMeta 提供会话列表的摘要信息
@@ -339,7 +340,7 @@ func loadSession(filePath string) (*Session, error) {
 }
 
 // NewSQLAgent 创建 SQL 智能体
-func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbName string, sessions *SessionStore) (*SQLAgent, error) {
+func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore) (*SQLAgent, error) {
 	// 1. 创建 ChatModel
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
@@ -347,7 +348,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbNam
 	}
 
 	// 2. 创建工具
-	tools, err := buildTools(ctx, connID, dbType, dbName)
+	tools, err := buildTools(ctx, connID, dbType, dbSchema)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
@@ -359,7 +360,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbNam
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "一个专业的 SQL 助手，可以执行查询、数据导出和分析",
-		Instruction: buildSystemPrompt(dbType, dbName, nil),
+		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -383,10 +384,11 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbNam
 	}
 
 	return &SQLAgent{
-		agent:    agent,
-		sessions: sessions,
-		dbType:   dbType,
-		dbName:   dbName,
+		agent:     agent,
+		sessions:  sessions,
+		dbType:    dbType,
+		dbSchema:  dbSchema,
+		dbVersion: dbVersion,
 	}, nil
 }
 
@@ -497,7 +499,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	messages := []adk.Message{
 		&schema.Message{
 			Role:    schema.System,
-			Content: buildSystemPrompt(a.dbType, a.dbName, req.TableContext) + exportContextPrompt,
+			Content: buildSystemPrompt(a.dbType, a.dbSchema, a.dbVersion, req.TableContext) + exportContextPrompt,
 		},
 	}
 	messages = append(messages, truncatedHistory...)
@@ -660,7 +662,7 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 // buildTools 创建工具列表
-func buildTools(ctx context.Context, connID, dbType, dbName string) ([]tool.BaseTool, error) {
+func buildTools(ctx context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
 	// 1. 查询工具
 	queryTool, err := utils.InferTool(
 		"query_data",
@@ -685,7 +687,7 @@ func buildTools(ctx context.Context, connID, dbType, dbName string) ([]tool.Base
 	schemaTool, err := utils.InferTool(
 		"get_table_schema",
 		"获取指定表的建表语句和结构信息",
-		NewSchemaFunc(connID, dbType, dbName),
+		NewSchemaFunc(connID, dbType, dbSchema),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("创建 get_table_schema 工具失败：%w", err)
@@ -755,8 +757,8 @@ func buildTools(ctx context.Context, connID, dbType, dbName string) ([]tool.Base
 }
 
 // buildSystemPrompt 构建系统提示词
-func buildSystemPrompt(dbType, dbName string, tableContext []string) string {
-	dbInfo := fmt.Sprintf("当前数据库类型：%s，数据库名：%s", dbType, dbName)
+func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string) string {
+	dbInfo := fmt.Sprintf("当前数据库类型：%s，数据库版本：%s，当前 Schema：%s", dbType, dbVersion, dbSchema)
 
 	// 构建表上下文信息
 	var tableContextInfo string
