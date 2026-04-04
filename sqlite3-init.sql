@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS t_conn (
 CREATE TABLE IF NOT EXISTS t_power (
 	id TEXT PRIMARY KEY,
 	role_id TEXT,
-	conn_id TEXT
+	conn_id TEXT,
+	schema_name TEXT,
+	table_name TEXT,
+	column_name TEXT,
+	power_level TEXT
 );
 
 CREATE TABLE IF NOT EXISTS t_role (

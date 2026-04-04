@@ -1,5 +1,7 @@
 <template>
   <div>
+    <router-view v-if="['/system-management', '/role-permission'].includes($route.path)" />
+    <div v-else>
 
     <div class="ai-sql-panel-container">
       <div class="container">
@@ -138,16 +140,28 @@
       </div>
     </div>
     <div class="login-button-container">
-      <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
-        <el-icon>
-          <User />
-        </el-icon>
-      </el-button>
-      <el-button v-else circle size="small" @click="logout" title="退出登录">
-        <el-icon>
-          <SwitchButton />
-        </el-icon>
-      </el-button>
+      <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+        <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openRolePermission" title="角色权限管理">
+          <el-icon>
+            <Lock />
+          </el-icon>
+        </el-button>
+        <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
+          <el-icon>
+            <Setting />
+          </el-icon>
+        </el-button>
+        <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
+          <el-icon>
+            <User />
+          </el-icon>
+        </el-button>
+        <el-button v-else circle size="small" @click="logout" title="退出登录">
+          <el-icon>
+            <SwitchButton />
+          </el-icon>
+        </el-button>
+      </div>
       <!-- 登录对话框 -->
       <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
         @opened="loginName.focus()">
@@ -167,6 +181,7 @@
         </template>
       </el-dialog>
     </div>
+    </div>
   </div>
 </template>
 
@@ -178,10 +193,11 @@ import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton } from '@element-plus/icons-vue'
+import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting } from '@element-plus/icons-vue'
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
 import http from '@/js/utils/httpProxy.js'
+import { useRouter } from 'vue-router'
 
 hljs.registerLanguage('sql', hljsSql)
 
@@ -269,6 +285,8 @@ const currentUser = ref({
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 const logining = ref(false)
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
+
+const router = useRouter()
 
 const loginRules = reactive({
   name: [
@@ -785,6 +803,14 @@ function logout() {
     })
 }
 
+function openSystemManagement() {
+  router.push('/system-management')
+}
+
+function openRolePermission() {
+  router.push('/role-permission')
+}
+
 function getSysModel() {
   http.get("/sysMode").then((resp) => {
     isRemote.value = resp.data.data.isRemote
@@ -1026,6 +1052,11 @@ onUnmounted(() => {
 
 .login-button-container:hover {
   opacity: 1;
+}
+
+/* 覆盖 Element Plus 的默认按钮间距，确保垂直布局不受影响 */
+.login-button-container .el-button + .el-button {
+  margin-left: 0 !important;
 }
 
 /* ========== 主容器 - 专业蓝灰渐变 ========== */

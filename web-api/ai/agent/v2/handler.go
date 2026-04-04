@@ -124,8 +124,15 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	// 获取数据库信息
 	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
 
+	// Build permission scope
+	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
+	if scope.IsRemote && !scope.HasAnyAccess() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
+		return
+	}
+
 	// 创建 Agent，使用全局会话存储
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions)
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 Agent 失败：" + err.Error()})
 		return
@@ -192,6 +199,34 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 	if conn == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库连接不存在"})
 		return
+	}
+
+	// 权限检查
+	authorization := c.GetHeader("Authorization")
+	user := admin.GetUser(authorization)
+	if user == nil || user.Id == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		return
+	}
+
+	_, dbSchema, _ := getDBInfo(req.ConnID)
+	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
+	if scope.IsRemote {
+		tables := extractTablesFromSQL(req.PendingSQL)
+		for _, table := range tables {
+			if !scope.IsTableAllowed(table) {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Cache-Control", "no-cache")
+				c.Header("Connection", "keep-alive")
+				flush := func(chunk StreamChunk) {
+					data, _ := json.Marshal(chunk)
+					c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(data)))
+					c.Writer.Flush()
+				}
+				flush(StreamChunk{Type: "error", Content: fmt.Sprintf("无权访问表：%s", table)})
+				return
+			}
+		}
 	}
 
 	// 设置 SSE 头

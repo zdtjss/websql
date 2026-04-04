@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
-	"golang.org/x/exp/slices"
 )
 
 func SaveConn(c *gin.Context) {
@@ -294,8 +293,13 @@ func getNextType(curType string) string {
 
 func GetConn(id string, authorization string) *sqlx.DB {
 	userPower := GetUserPower(authorization)
-	if config.Cfg.IsRemote && !slices.Contains(userPower.Power, id) {
-		logutils.PanicErr(errors.New("无权访问"))
+	if config.Cfg.IsRemote {
+		param := &PowerCheckParam{
+			ConnId: id,
+		}
+		if !checkPower(userPower, param) {
+			logutils.PanicErr(errors.New("无权访问"))
+		}
 	}
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)

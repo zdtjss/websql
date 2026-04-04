@@ -57,6 +57,7 @@ func MainRegister(router *gin.Engine) {
 	router.GET("/roleList", admin.RoleList)
 	router.GET("/roleBaseList", admin.RoleBaseList)
 	router.GET("/findUserByRole", admin.FindUserByRole)
+	router.GET("/permissionTree", admin.GetPermissionTree)
 
 	router.GET("/findUser", admin.FindUser)
 	router.POST("/saveUser", admin.SaveUser)

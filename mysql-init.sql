@@ -13,7 +13,11 @@ create table if not exists t_conn (
 create table if not exists t_power (
 	id varchar(36) primary key,
 	role_id varchar(36),
-	conn_id varchar(36)
+	conn_id varchar(36),
+	schema_name varchar(128),
+	table_name varchar(128),
+	column_name varchar(128),
+	power_level varchar(32)
 );
 
 create table if not exists t_role (

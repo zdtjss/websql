@@ -40,6 +40,7 @@ type SQLAgent struct {
 	dbType     string
 	dbSchema   string
 	dbVersion  string
+	scope      *PermissionScope
 }
 
 // SessionMeta 提供会话列表的摘要信息
@@ -340,7 +341,7 @@ func loadSession(filePath string) (*Session, error) {
 }
 
 // NewSQLAgent 创建 SQL 智能体
-func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore) (*SQLAgent, error) {
+func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore, scope *PermissionScope) (*SQLAgent, error) {
 	// 1. 创建 ChatModel
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
@@ -353,14 +354,15 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
 
-	// 3. 创建 SQL 安全中间件
+	// 3. 创建中间件
+	permMiddleware := &PermissionMiddleware{Scope: scope}
 	sqlSecurityMiddleware := &SQLSecurityMiddleware{}
 
 	// 4. 创建 Agent
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "一个专业的 SQL 助手，可以执行查询、数据导出和分析",
-		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil),
+		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil, scope),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -368,6 +370,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			},
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
+			permMiddleware,
 			sqlSecurityMiddleware,
 		},
 	})
@@ -389,6 +392,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		dbType:    dbType,
 		dbSchema:  dbSchema,
 		dbVersion: dbVersion,
+		scope:     scope,
 	}, nil
 }
 
@@ -499,7 +503,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	messages := []adk.Message{
 		&schema.Message{
 			Role:    schema.System,
-			Content: buildSystemPrompt(a.dbType, a.dbSchema, a.dbVersion, req.TableContext) + exportContextPrompt,
+			Content: buildSystemPrompt(a.dbType, a.dbSchema, a.dbVersion, req.TableContext, a.scope) + exportContextPrompt,
 		},
 	}
 	messages = append(messages, truncatedHistory...)
@@ -757,7 +761,7 @@ func buildTools(ctx context.Context, connID, dbType, dbSchema string) ([]tool.Ba
 }
 
 // buildSystemPrompt 构建系统提示词
-func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string) string {
+func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope) string {
 	dbInfo := fmt.Sprintf("当前数据库类型：%s，数据库版本：%s，当前 Schema：%s", dbType, dbVersion, dbSchema)
 
 	// 构建表上下文信息
@@ -768,9 +772,11 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 		tableContextInfo = "\n\n📋 **用户未指定数据表**：\n1. 你可以使用 `get_table_schema` 工具查询整库表信息\n2. **在回复中要明确告知用户**数据来源表名\n3. 例如：'我已从表 xxx 中查询到...'"
 	}
 
+	permissionDesc := scope.DescribeForPrompt()
+	
 	return fmt.Sprintf(`你是一个专业的 SQL 助手，专门帮助用户查询和分析数据库。
 
-%s%s
+%s%s%s
 
 ## 🎯 核心原则（准确性优先）
 
@@ -964,7 +970,7 @@ AI：好的，我将基于刚才的查询结果（SELECT * FROM orders WHERE yea
 - "这些数据"
 - "查询结果"
 
-请根据用户的需求，选择合适的工具来完成任务。始终将数据准确性放在第一位！`, dbInfo, tableContextInfo)
+请根据用户的需求，选择合适的工具来完成任务。始终将数据准确性放在第一位！`, dbInfo, tableContextInfo, permissionDesc)
 }
 
 // ChatRequest 聊天请求

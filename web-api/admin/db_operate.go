@@ -28,9 +28,22 @@ func listSchema(key string, authorization string) []*Tree {
 	return tree
 }
 
+func checkSchemaAccess(connId, schemaName, authorization string) {
+	userPower := GetUserPower(authorization)
+	param := &PowerCheckParam{
+		ConnId:     connId,
+		SchemaName: schemaName,
+	}
+	if !checkPower(userPower, param) {
+		logutils.PanicErr(errors.New("无权访问此 Schema"))
+	}
+}
+
 func listTable(key string, schema, authorization string) []*Tree {
 	tableName, tableType, tableComment := "", "", ""
 	dc := GetConn(key, authorization)
+
+	checkSchemaAccess(key, schema, authorization)
 
 	tableName, columnName, columnComment := "", "", ""
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
@@ -79,6 +92,18 @@ func listTable(key string, schema, authorization string) []*Tree {
 	return tree
 }
 
+func checkTableAccess(connId, schemaName, tableName, authorization string) {
+	userPower := GetUserPower(authorization)
+	param := &PowerCheckParam{
+		ConnId:     connId,
+		SchemaName: schemaName,
+		TableName:  tableName,
+	}
+	if !checkPower(userPower, param) {
+		logutils.PanicErr(errors.New("无权访问此表"))
+	}
+}
+
 func listColumns(key string, table, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
@@ -90,6 +115,19 @@ func listColumns(key string, table, authorization string) []*Tree {
 		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
 	return tree
+}
+
+func checkColumnAccess(connId, schemaName, tableName, columnName, authorization string) {
+	userPower := GetUserPower(authorization)
+	param := &PowerCheckParam{
+		ConnId:     connId,
+		SchemaName: schemaName,
+		TableName:  tableName,
+		ColumnName: columnName,
+	}
+	if !checkPower(userPower, param) {
+		logutils.PanicErr(errors.New("无权访问此字段"))
+	}
 }
 
 func listAllColumns(key string, schema, authorization string) []*Tree {

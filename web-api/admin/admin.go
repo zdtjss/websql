@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
@@ -24,27 +25,151 @@ func SaveRole(c *gin.Context) {
 	CheckAdminPower(c)
 	role := &RoleSave{}
 	utils.UnmarshalJson(c.Request.Body, role)
+
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
+
+	// 1. 保存或更新角色基本信息
 	if role.Id == "" {
 		role.Id = utils.RandomStr()
-		stmt, _ := tx.Prepare("insert into t_role (id, name) values (?, ?)")
-		tx.Stmt(stmt).Exec(role.Id, role.Name)
+		_, err := tx.Exec("insert into t_role (id, name) values (?, ?)", role.Id, role.Name)
+		logutils.PanicErrf("保存角色失败", err)
 	} else {
-		stmt, _ := tx.Prepare("update t_role set name = ? where id = ?")
-		tx.Stmt(stmt).Exec(role.Name, role.Id)
-		tx.Exec("delete from t_power where role_id = ?", role.Id)
+		_, err := tx.Exec("update t_role set name = ? where id = ?", role.Name, role.Id)
+		logutils.PanicErrf("更新角色失败", err)
 	}
-	if len(role.ConnIdList) > 0 {
-		stmt, _ := tx.Prepare("insert into t_power (id, role_id, conn_id) values (?, ?, ?)")
-		for _, connId := range role.ConnIdList {
-			time.Sleep(10 * time.Millisecond)
-			tx.Stmt(stmt).Exec(utils.RandomStr(), role.Id, connId)
-		}
+
+	// 2. 增量更新权限
+	if len(role.AddPowers) > 0 {
+		insertPowers(tx, role.Id, role.AddPowers)
 	}
+	if len(role.DelPowers) > 0 {
+		deletePowers(tx, role.Id, role.DelPowers)
+	}
+
 	err := tx.Commit()
 	logutils.PanicErrf("保存角色失败", err)
-	utils.WriteJson(c.Writer, "")
+	utils.WriteJson(c.Writer, "保存成功")
+}
+
+// insertPowers 批量插入权限（使用批量 SQL）
+func insertPowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
+	if len(powers) == 0 {
+		return
+	}
+
+	// 构建批量插入 SQL：VALUES (...), (...), (...)
+	values := make([]string, 0, len(powers))
+	args := make([]interface{}, 0, len(powers)*7)
+
+	for _, power := range powers {
+		id := utils.RandomStr()
+		values = append(values, "(?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			id,
+			roleId,
+			power.ConnId,
+			ptrToString(power.SchemaName),
+			ptrToString(power.TableName),
+			ptrToString(power.ColumnName),
+			power.Level,
+		)
+	}
+
+	sql := "insert into t_power (id, role_id, conn_id, schema_name, table_name, column_name, power_level) values " + strings.Join(values, ", ")
+	_, err := tx.Exec(sql, args...)
+	logutils.PanicErr(err)
+}
+
+// deletePowers 批量删除权限（按层级优化）
+func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
+	if len(powers) == 0 {
+		return
+	}
+
+	// 按层级和连接分组，最大化批量效果
+	type powerKey struct {
+		level  string
+		connId string
+		schema string
+		table  string
+	}
+
+	// 连接级权限批量删除
+	connIds := make([]interface{}, 0)
+	for _, p := range powers {
+		if p.Level == "conn" {
+			connIds = append(connIds, p.ConnId)
+		}
+	}
+	if len(connIds) > 0 {
+		placeholders := make([]string, len(connIds))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		sql := fmt.Sprintf("delete from t_power where role_id = ? and conn_id in (%s) and power_level = 'conn'", strings.Join(placeholders, ","))
+		args := append([]interface{}{roleId}, connIds...)
+		_, err := tx.Exec(sql, args...)
+		logutils.PanicErr(err)
+	}
+
+	// Schema 级权限批量删除
+	schemaPowers := make(map[string][]string) // connId -> [schema1, schema2, ...]
+	for _, p := range powers {
+		if p.Level == "schema" && p.SchemaName != nil {
+			key := p.ConnId
+			schemaPowers[key] = append(schemaPowers[key], *p.SchemaName)
+		}
+	}
+	for connId, schemas := range schemaPowers {
+		if len(schemas) == 1 {
+			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'schema'",
+				roleId, connId, schemas[0], "schema")
+		} else {
+			placeholders := make([]string, len(schemas))
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			sql := fmt.Sprintf("delete from t_power where role_id = ? and conn_id = ? and schema_name in (%s) and power_level = 'schema'", strings.Join(placeholders, ","))
+			args := append([]interface{}{roleId, connId}, schemasToInterfaces(schemas)...)
+			args = append(args, "schema")
+			_, err := tx.Exec(sql, args...)
+			logutils.PanicErr(err)
+		}
+	}
+
+	// 表级权限批量删除（逐条处理，因为需要精确匹配）
+	for _, p := range powers {
+		if p.Level == "table" && p.TableName != nil {
+			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'table'",
+				roleId, p.ConnId, ptrToString(p.SchemaName), *p.TableName, "table")
+		}
+	}
+
+	// 字段级权限批量删除（逐条处理，因为需要精确匹配）
+	for _, p := range powers {
+		if p.Level == "column" && p.ColumnName != nil {
+			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and column_name = ? and power_level = 'column'",
+				roleId, p.ConnId, ptrToString(p.SchemaName), ptrToString(p.TableName), *p.ColumnName, "column")
+		}
+	}
+}
+
+// schemasToInterfaces 将字符串切片转为 interface 切片
+func schemasToInterfaces(schemas []string) []interface{} {
+	result := make([]interface{}, len(schemas))
+	for i, v := range schemas {
+		result[i] = v
+	}
+	return result
+}
+
+// ptrToString 将字符串指针转为字符串
+func ptrToString(s *string) interface{} {
+	if s == nil {
+		return nil
+	}
+	return *s
 }
 
 func DelRole(c *gin.Context) {
@@ -67,6 +192,14 @@ func DelRole(c *gin.Context) {
 	utils.WriteJson(c.Writer, "")
 }
 
+// nullIfEmpty 空字符串转 nil
+func nullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func RoleList(c *gin.Context) {
 	roleList := []*Role{}
 	err := config.Mngtdb.Select(&roleList, "select * from t_role")
@@ -76,7 +209,7 @@ func RoleList(c *gin.Context) {
 	for idx, role := range roleList {
 		roleIdList[idx] = role.Id
 	}
-	rolePowerMap := findConnByRole(roleIdList)
+	rolePowerMap := findPowerDetails(roleIdList)
 	for _, role := range roleList {
 		role.PowerList = rolePowerMap[role.Id]
 	}
@@ -370,6 +503,94 @@ func findUserPower(userId string) []string {
 	return resIds
 }
 
+func findUserPowerDetails(userId string) []*PowerDetail {
+	powerList := []*PowerDetail{}
+	sql := `
+		select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name 
+		from t_power p 
+		left join t_user_role ur on ur.role_id = p.role_id 
+		left join t_conn c on p.conn_id = c.id
+		where ur.user_id = ?
+		order by p.power_level, p.schema_name, p.table_name, p.column_name
+	`
+	err := config.Mngtdb.Select(&powerList, sql, userId)
+	logutils.PrintErr(err)
+	return powerList
+}
+
+// FindUserPowerDetails 导出权限查询接口（供 AI agent 使用）
+func FindUserPowerDetails(userId string) []*PowerDetail {
+	return findUserPowerDetails(userId)
+}
+
+func checkPower(userPower *UserPower, param *PowerCheckParam) bool {
+	if !config.Cfg.IsRemote {
+		return true
+	}
+
+	powerDetails := findUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		return false
+	}
+
+	hasConnLevel := false
+	hasSchemaLevel := false
+	hasTableLevel := false
+
+	// 第一遍：检查是否有上级权限
+	for _, power := range powerDetails {
+		if power.ConnId != param.ConnId {
+			continue
+		}
+
+		switch power.Level {
+		case "conn":
+			hasConnLevel = true
+		case "schema":
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName {
+				hasSchemaLevel = true
+			}
+		case "table":
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName &&
+				power.TableName != nil && *power.TableName == param.TableName {
+				hasTableLevel = true
+			}
+		}
+	}
+
+	// 如果有 conn 级权限，直接通过
+	if hasConnLevel {
+		return true
+	}
+
+	// 如果有 schema 级权限，检查是否匹配
+	if hasSchemaLevel {
+		return true
+	}
+
+	// 如果有 table 级权限，默认包含所有字段
+	if hasTableLevel {
+		return true
+	}
+
+	// 第二遍：检查 column 级权限（只有明确授权了字段才通过）
+	for _, power := range powerDetails {
+		if power.ConnId != param.ConnId {
+			continue
+		}
+
+		if power.Level == "column" {
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName &&
+				power.TableName != nil && *power.TableName == param.TableName &&
+				power.ColumnName != nil && *power.ColumnName == param.ColumnName {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func appendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
 	// 非远程模式下不做权限管理
 	if !config.Cfg.IsRemote {
@@ -418,6 +639,33 @@ func findConnByRole(roleIdList []any) map[string][]*PowerDto {
 	return rolePowerMap
 }
 
+func findPowerDetails(roleIdList []any) map[string][]*PowerDetail {
+	roleCount := len(roleIdList)
+	if roleCount == 0 {
+		return map[string][]*PowerDetail{}
+	}
+	var (
+		sqlBuf = bytes.Buffer{}
+	)
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name from t_conn c left join t_power p on c.id = p.conn_id where ")
+	sqlBuf.WriteString("role_id in ( ")
+	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
+	sqlBuf.WriteString(") order by p.power_level, p.schema_name, p.table_name, p.column_name")
+	powerList := []*PowerDetail{}
+	err := config.Mngtdb.Select(&powerList, sqlBuf.String(), roleIdList...)
+	logutils.PanicErr(err)
+	rolePowerMap := make(map[string][]*PowerDetail, len(powerList))
+	for _, power := range powerList {
+		v, ok := rolePowerMap[power.RoleId]
+		if !ok {
+			v = []*PowerDetail{}
+		}
+		v = append(v, power)
+		rolePowerMap[power.RoleId] = v
+	}
+	return rolePowerMap
+}
+
 func findUserRole(userIdList []any) map[string][]*UserRole {
 	userCount := len(userIdList)
 	if userCount == 0 {
@@ -445,6 +693,398 @@ func findUserRole(userIdList []any) map[string][]*UserRole {
 	return roleUserMap
 }
 
+func GetPermissionTree(c *gin.Context) {
+	// 非远程模式下不做权限检查，或者是管理员直接通过
+	if config.Cfg.IsRemote {
+		authorization := c.GetHeader("Authorization")
+		user := GetUser(authorization)
+		if user == nil || user.Id != config.AdminId {
+			logutils.PanicErr(errors.New("无权访问"))
+		}
+	}
+
+	connId := c.Query("connId")
+	schemaName := c.Query("schema")
+	tableName := c.Query("table")
+	level := c.Query("level")
+	roleId := c.Query("roleId")
+	authorization := c.GetHeader("Authorization")
+
+	if level == "" {
+		level = "conn"
+	}
+
+	// 初始化 data 为空数组而不是 nil，避免返回 null
+	data := []*PermissionNode{}
+
+	switch level {
+	case "conn":
+		data = getConnTree(roleId)
+	case "schema":
+		if connId == "" {
+			utils.WriteJson(c.Writer, data)
+			return
+		}
+		data = getSchemaTree(connId, authorization, roleId)
+	case "table":
+		if connId == "" || schemaName == "" {
+			utils.WriteJson(c.Writer, data)
+			return
+		}
+		data = getTableTree(connId, schemaName, authorization, roleId)
+	case "column":
+		if connId == "" || schemaName == "" || tableName == "" {
+			utils.WriteJson(c.Writer, data)
+			return
+		}
+		data = getColumnTree(connId, schemaName, tableName, authorization, roleId)
+	}
+
+	// 确保不会返回 null
+	if data == nil {
+		data = []*PermissionNode{}
+	}
+
+	utils.WriteJson(c.Writer, data)
+}
+
+func getConnTree(roleId string) []*PermissionNode {
+	connList := []*ConnCfg{}
+	err := config.Mngtdb.Select(&connList, "select * from t_conn order by parent_id, name")
+	logutils.PanicErr(err)
+
+	// 如果提供了 roleId，获取该角色的权限
+	var roleConnIds map[string]bool
+	if roleId != "" {
+		roleConnIds = getRoleConnPermissions(roleId)
+	}
+
+	connMap := make(map[string][]*ConnCfg)
+	for _, conn := range connList {
+		parentId := conn.ParentId
+		if parentId == "" {
+			parentId = "root"
+		}
+		connMap[parentId] = append(connMap[parentId], conn)
+	}
+
+	var buildTree func(parentId string) []*PermissionNode
+	buildTree = func(parentId string) []*PermissionNode {
+		children := connMap[parentId]
+		if len(children) == 0 {
+			return []*PermissionNode{}
+		}
+
+		nodes := make([]*PermissionNode, len(children))
+		for i, conn := range children {
+			checked := false
+			if roleId != "" && roleConnIds[conn.Id] {
+				checked = true
+			}
+
+			nodes[i] = &PermissionNode{
+				Id:       conn.Id,
+				Label:    conn.Name,
+				Type:     "conn",
+				Level:    "conn",
+				ParentId: conn.ParentId,
+				Checked:  checked,
+				Data: map[string]any{
+					"connId": conn.Id,
+				},
+			}
+			subChildren := connMap[conn.Id]
+			if len(subChildren) > 0 {
+				nodes[i].Children = buildTree(conn.Id)
+			}
+		}
+		return nodes
+	}
+
+	return buildTree("root")
+}
+
+// getRoleConnPermissions 获取角色在连接级别的权限
+func getRoleConnPermissions(roleId string) map[string]bool {
+	connIds := make(map[string]bool)
+	powerList := []*PowerDetail{}
+	err := config.Mngtdb.Select(&powerList, "select conn_id from t_power where role_id = ? and power_level = 'conn'", roleId)
+	logutils.PrintErr(err)
+	for _, power := range powerList {
+		connIds[power.ConnId] = true
+	}
+	return connIds
+}
+
+func getSchemaTree(connId, authorization string, roleId string) []*PermissionNode {
+	dc := getConnNoCheck(connId)
+	if dc == nil {
+		return []*PermissionNode{}
+	}
+
+	// 获取角色的 schema 级权限
+	var roleSchemaMap map[string]bool
+	if roleId != "" {
+		roleSchemaMap = getRoleSchemaPermissions(roleId, connId)
+	}
+
+	schemaName := ""
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listSchema"])
+	if err != nil {
+		logutils.PrintErr(err)
+		return []*PermissionNode{}
+	}
+	defer row.Close()
+
+	nodes := make([]*PermissionNode, 0)
+	for row.Next() {
+		row.Scan(&schemaName)
+		checked := false
+		if roleId != "" && roleSchemaMap[schemaName] {
+			checked = true
+		}
+
+		nodes = append(nodes, &PermissionNode{
+			Id:       connId + "::" + schemaName,
+			Label:    schemaName,
+			Type:     "schema",
+			Level:    "schema",
+			ParentId: connId,
+			Checked:  checked,
+			Data: map[string]any{
+				"connId":     connId,
+				"schema":     schemaName,
+				"schemaName": schemaName,
+			},
+		})
+	}
+
+	return nodes
+}
+
+// getRoleSchemaPermissions 获取角色在 schema 级别的权限
+func getRoleSchemaPermissions(roleId, connId string) map[string]bool {
+	schemas := make(map[string]bool)
+	powerList := []*PowerDetail{}
+	err := config.Mngtdb.Select(&powerList, "select schema_name from t_power where role_id = ? and conn_id = ? and power_level = 'schema'", roleId, connId)
+	logutils.PrintErr(err)
+	for _, power := range powerList {
+		if power.SchemaName != nil {
+			schemas[*power.SchemaName] = true
+		}
+	}
+	return schemas
+}
+
+func getTableTree(connId, schema, authorization string, roleId string) []*PermissionNode {
+	dc := getConnNoCheck(connId)
+	if dc == nil {
+		return []*PermissionNode{}
+	}
+
+	// 如果 schema 包含 ::，说明是完整路径格式，需要提取纯 schema 名称
+	schemaName := schema
+	if strings.Contains(schema, "::") {
+		parts := strings.Split(schema, "::")
+		if len(parts) >= 2 {
+			schemaName = parts[1]
+		}
+	}
+
+	// 获取角色的 table 级权限
+	var roleTableMap map[string]bool
+	if roleId != "" {
+		roleTableMap = getRoleTablePermissions(roleId, connId, schemaName)
+	}
+
+	tableName, tableType, tableComment := "", "", ""
+
+	tableName, columnName, columnComment := "", "", ""
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schemaName)
+	if err != nil {
+		logutils.PrintErr(err)
+		return []*PermissionNode{}
+	}
+	defer row.Close()
+
+	tableColumns := make([]map[string]string, 0)
+	for row.Next() {
+		*&columnComment = ""
+		row.Scan(&tableName, &columnName, &columnComment)
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": columnComment})
+	}
+
+	grouped := make(map[string][]map[string]string)
+	for _, col := range tableColumns {
+		tableName := col["tableName"]
+		if grouped[tableName] == nil {
+			grouped[tableName] = make([]map[string]string, 0)
+		}
+		grouped[tableName] = append(grouped[tableName], col)
+	}
+
+	row, err = dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schemaName)
+	if err != nil {
+		logutils.PrintErr(err)
+		return []*PermissionNode{}
+	}
+	defer row.Close()
+
+	nodes := make([]*PermissionNode, 0)
+	for row.Next() {
+		row.Scan(&tableName, &tableType, &tableComment)
+		nodeType := "table"
+		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
+			switch tableType {
+			case "VIEW":
+				nodeType = "view"
+			case "BASE TABLE":
+				nodeType = "table"
+			}
+		} else if dc.DriverName() == "oracle" {
+			nodeType = strings.ToLower(tableType)
+		}
+
+		checked := false
+		if roleId != "" && roleTableMap[tableName] {
+			checked = true
+		}
+
+		nodes = append(nodes, &PermissionNode{
+			Id:       connId + "::" + schemaName + "::" + tableName,
+			Label:    tableName,
+			Type:     nodeType,
+			Level:    "table",
+			ParentId: connId + "::" + schemaName,
+			Checked:  checked,
+			Data: map[string]any{
+				"connId":     connId,
+				"schema":     schemaName,
+				"schemaName": schemaName,
+				"table":      tableName,
+				"tableName":  tableName,
+				"comment":    tableComment,
+			},
+		})
+	}
+
+	return nodes
+}
+
+// getRoleTablePermissions 获取角色在 table 级别的权限
+func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool {
+	tables := make(map[string]bool)
+	powerList := []*PowerDetail{}
+	err := config.Mngtdb.Select(&powerList, "select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'table'", roleId, connId, schemaName)
+	logutils.PrintErr(err)
+	for _, power := range powerList {
+		if power.TableName != nil {
+			tables[*power.TableName] = true
+		}
+	}
+	return tables
+}
+
+func getColumnTree(connId, schema, table, authorization string, roleId string) []*PermissionNode {
+	dc := getConnNoCheck(connId)
+	if dc == nil {
+		return []*PermissionNode{}
+	}
+
+	// 如果 schema 或 table 包含 ::，需要提取纯名称
+	schemaName := schema
+	if strings.Contains(schema, "::") {
+		parts := strings.Split(schema, "::")
+		if len(parts) >= 2 {
+			schemaName = parts[1]
+		}
+	}
+
+	tableName := table
+	if strings.Contains(table, "::") {
+		parts := strings.Split(table, "::")
+		if len(parts) >= 3 {
+			tableName = parts[2]
+		}
+	}
+
+	// 获取角色的 column 级权限
+	var roleColumnMap map[string]map[string]bool
+	if roleId != "" {
+		roleColumnMap = getRoleColumnPermissions(roleId, connId, schemaName, tableName)
+	}
+
+	columnName, columnComment := "", ""
+	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listColumns"], tableName)
+	if err != nil {
+		logutils.PrintErr(err)
+		return []*PermissionNode{}
+	}
+	defer row.Close()
+
+	nodes := make([]*PermissionNode, 0)
+	for row.Next() {
+		row.Scan(&columnName, &columnComment)
+		checked := false
+		if roleId != "" && roleColumnMap != nil && roleColumnMap[tableName][columnName] {
+			checked = true
+		}
+
+		nodes = append(nodes, &PermissionNode{
+			Id:       connId + "::" + schemaName + "::" + tableName + "::" + columnName,
+			Label:    columnName,
+			Type:     "column",
+			Level:    "column",
+			ParentId: connId + "::" + schemaName + "::" + tableName,
+			Checked:  checked,
+			Data: map[string]any{
+				"connId":     connId,
+				"schema":     schemaName,
+				"schemaName": schemaName,
+				"table":      tableName,
+				"tableName":  tableName,
+				"column":     columnName,
+				"columnName": columnName,
+				"comment":    columnComment,
+			},
+		})
+	}
+
+	return nodes
+}
+
+// getRoleColumnPermissions 获取角色在 column 级别的权限
+func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[string]map[string]bool {
+	columns := make(map[string]map[string]bool)
+	columns[tableName] = make(map[string]bool)
+	powerList := []*PowerDetail{}
+	err := config.Mngtdb.Select(&powerList, "select column_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'column'", roleId, connId, schemaName, tableName)
+	logutils.PrintErr(err)
+	for _, power := range powerList {
+		if power.ColumnName != nil {
+			columns[tableName][*power.ColumnName] = true
+		}
+	}
+	return columns
+}
+
+// getConnNoCheck 获取数据库连接（不进行权限检查，仅用于权限树加载）
+func getConnNoCheck(connId string) *sqlx.DB {
+	if connId == "" {
+		return nil
+	}
+
+	cfgList := []ConnCfg{}
+	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connId)
+	if err != nil || len(cfgList) == 0 {
+		logutils.PrintErr(err)
+		return nil
+	}
+
+	cfgList[0].Pwd = utils.AESDecode(cfgList[0].Pwd)
+	return config.GetConn(convertToDBParam(&cfgList[0]))
+}
+
 type User struct {
 	Id        string    `json:"id"`
 	RoleId    []*string `json:"roleId"`
@@ -460,10 +1100,17 @@ type UserPower struct {
 	Power  []string
 }
 
+type PowerCheckParam struct {
+	ConnId     string
+	SchemaName string
+	TableName  string
+	ColumnName string
+}
+
 type Role struct {
-	Id        string      `json:"id"`
-	Name      string      `json:"name"`
-	PowerList []*PowerDto `json:"powerList"`
+	Id        string         `json:"id"`
+	Name      string         `json:"name"`
+	PowerList []*PowerDetail `json:"powerList"`
 }
 
 type UserRole struct {
@@ -474,10 +1121,10 @@ type UserRole struct {
 }
 
 type RoleSave struct {
-	Id         string    `json:"id"`
-	Name       string    `json:"name"`
-	ConnIdList []*string `json:"connIdList"`
-	UserIdList []*string `json:"userIdList"`
+	Id        string         `json:"id"`
+	Name      string         `json:"name"`
+	AddPowers []*PowerDetail `json:"addPowers"` // 新增的权限
+	DelPowers []*PowerDetail `json:"delPowers"` // 删除的权限
 }
 
 type Power struct {
@@ -491,6 +1138,28 @@ type PowerDto struct {
 	RoleId   string `json:"roleId" db:"role_id"`
 	ConnId   string `json:"connId" db:"conn_id"`
 	ConnName string `json:"connName" db:"conn_name"`
+}
+
+type PowerDetail struct {
+	Id         string  `json:"id"`
+	RoleId     string  `json:"roleId" db:"role_id"`
+	ConnId     string  `json:"connId" db:"conn_id"`
+	ConnName   string  `json:"connName" db:"conn_name"`
+	SchemaName *string `json:"schemaName,omitempty" db:"schema_name"`
+	TableName  *string `json:"tableName,omitempty" db:"table_name"`
+	ColumnName *string `json:"columnName,omitempty" db:"column_name"`
+	Level      string  `json:"level" db:"power_level"`
+}
+
+type PermissionNode struct {
+	Id       string            `json:"id"`
+	Label    string            `json:"label"`
+	Type     string            `json:"type"`
+	Level    string            `json:"level"`
+	ParentId string            `json:"parentId,omitempty"`
+	Checked  bool              `json:"checked,omitempty"`
+	Data     map[string]any    `json:"data,omitempty"`
+	Children []*PermissionNode `json:"children"`
 }
 
 type AIConfig struct {
