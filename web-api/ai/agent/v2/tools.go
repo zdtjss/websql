@@ -115,8 +115,11 @@ func getConn(connId string) (*sqlx.DB, string) {
 // NewQueryFunc 创建执行 SELECT 查询的 Tool 函数
 func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+		log.Printf("[Tool:query_data] 开始执行 - connId=%s, sql=%s\n", connId, input.SQL)
+		
 		conn, _ := getConn(connId)
 		if conn == nil {
+			log.Printf("[Tool:query_data] 错误 - 数据库连接不存在 connId=%s\n", connId)
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 
@@ -125,21 +128,26 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 			!strings.HasPrefix(strings.ToUpper(sql), "SHOW") &&
 			!strings.HasPrefix(strings.ToUpper(sql), "DESCRIBE") &&
 			!strings.HasPrefix(strings.ToUpper(sql), "EXPLAIN") {
+			log.Printf("[Tool:query_data] 错误 - 不支持的 SQL 类型 sql=%s\n", sql)
 			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN 语句")
 		}
 
+		log.Printf("[Tool:query_data] 开始执行查询 - sql=%s\n", sql)
 		rows, err := conn.Queryx(sql)
 		if err != nil {
+			log.Printf("[Tool:query_data] 查询失败 - sql=%s, err=%v\n", sql, err)
 			return nil, fmt.Errorf("查询失败：%w", err)
 		}
 		defer rows.Close()
 
 		cols, err := rows.Columns()
 		if err != nil {
+			log.Printf("[Tool:query_data] 获取列信息失败 - err=%v\n", err)
 			return nil, fmt.Errorf("获取列信息失败：%w", err)
 		}
 
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
+		log.Printf("[Tool:query_data] 查询成功 - columns=%d, rows=%d\n", len(cols), len(data))
 		return &QueryOutput{
 			Columns: cols,
 			Data:    data,
@@ -151,23 +159,27 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 // NewExecFunc 创建执行写操作 SQL 的 Tool 函数
 func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+		log.Printf("[Tool:exec_sql] 开始执行 - connId=%s, sql=%s\n", connId, input.SQL)
+		
 		conn, _ := getConn(connId)
 		if conn == nil {
+			log.Printf("[Tool:exec_sql] 错误 - 数据库连接不存在 connId=%s\n", connId)
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 
 		sql := strings.TrimSpace(input.SQL)
-
-		log.Printf("Tool Exec SQL: %s\n", sql)
+		log.Printf("[Tool:exec_sql] SQL 类型检测 - sql=%s\n", sql)
 
 		// 检查是否包含用户确认标记
 		if !strings.Contains(sql, "-- CONFIRMED:") {
 			// 没有确认标记，判断是否为危险 SQL
 			if isDangerousSQL(sql) {
+				log.Printf("[Tool:exec_sql] 检测到危险 SQL，已拦截 - sql=%s\n", sql)
 				// 是危险 SQL，返回特定错误，AI 接收到后会重新生成回复引导用户确认
 				return nil, &DangerousSQLError{SQL: sql}
 			}
 			// 不是危险 SQL，但也需要确认（可能是普通写操作）
+			log.Printf("[Tool:exec_sql] 非危险 SQL 但需要用户确认 - sql=%s\n", sql)
 			return nil, fmt.Errorf("此操作需要用户确认，请 AI 助手生成 SQL 并告知用户在页面确认执行")
 		}
 
@@ -182,15 +194,19 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 		actualSQL := strings.TrimSpace(strings.Join(actualSQLLines, "\n"))
 
 		if actualSQL == "" {
+			log.Printf("[Tool:exec_sql] 错误 - 提取后的 SQL 为空\n")
 			return nil, fmt.Errorf("SQL 不能为空")
 		}
 
+		log.Printf("[Tool:exec_sql] 开始执行实际 SQL - sql=%s\n", actualSQL)
 		result, err := conn.Exec(actualSQL)
 		if err != nil {
+			log.Printf("[Tool:exec_sql] 执行失败 - sql=%s, err=%v\n", actualSQL, err)
 			return nil, fmt.Errorf("执行失败：%w", err)
 		}
 
 		affected, _ := result.RowsAffected()
+		log.Printf("[Tool:exec_sql] 执行成功 - affectedRows=%d\n", affected)
 		return &ExecOutput{
 			AffectedRows: affected,
 			Message:      fmt.Sprintf("执行成功，影响 %d 行", affected),
@@ -201,13 +217,17 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 // NewSchemaFunc 创建获取表结构的 Tool 函数
 func NewSchemaFunc(connId string, dbType string, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+		log.Printf("[Tool:get_table_schema] 开始执行 - connId=%s, tables=%v\n", connId, input.Tables)
+		
 		conn, actualDBType := getConn(connId)
 		if conn == nil {
+			log.Printf("[Tool:get_table_schema] 错误 - 数据库连接不存在 connId=%s\n", connId)
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 
 		var sb strings.Builder
 		for _, table := range input.Tables {
+			log.Printf("[Tool:get_table_schema] 获取表结构 - table=%s\n", table)
 			var schemaSQL string
 			switch actualDBType {
 			case "mysql", "mariadb":
@@ -222,6 +242,7 @@ func NewSchemaFunc(connId string, dbType string, dbSchema string) func(ctx conte
 
 			rows, err := conn.Query(schemaSQL)
 			if err != nil {
+				log.Printf("[Tool:get_table_schema] 获取表 %s 结构失败 - err=%v\n", table, err)
 				logutils.PrintErr(fmt.Errorf("获取表结构失败 %s: %w", table, err))
 				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbSchema, table))
 				continue
@@ -249,7 +270,9 @@ func NewSchemaFunc(connId string, dbType string, dbSchema string) func(ctx conte
 				}
 			}
 			rows.Close()
+			log.Printf("[Tool:get_table_schema] 表 %s 结构获取完成\n", table)
 		}
+		log.Printf("[Tool:get_table_schema] 所有表结构获取完成 - total_tables=%d\n", len(input.Tables))
 		return &SchemaOutput{Schema: sb.String()}, nil
 	}
 }
@@ -288,29 +311,38 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 // NewExportFunc 创建数据导出的 Tool 函数
 func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) (*ExportOutput, error) {
 	return func(ctx context.Context, input *ExportInput) (*ExportOutput, error) {
+		log.Printf("[Tool:export_excel] 开始执行 - connId=%s, fileName=%s\n", connId, input.FileName)
+		log.Printf("[Tool:export_excel] SQL - %s\n", input.SQL)
+		
 		conn, _ := getConn(connId)
 		if conn == nil {
+			log.Printf("[Tool:export_excel] 错误 - 数据库连接不存在 connId=%s\n", connId)
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 
 		sql := strings.TrimSpace(input.SQL)
+		log.Printf("[Tool:export_excel] 开始执行导出查询\n")
 		rows, err := conn.Queryx(sql)
 		if err != nil {
+			log.Printf("[Tool:export_excel] 导出查询失败 - sql=%s, err=%v\n", sql, err)
 			return nil, fmt.Errorf("导出查询失败：%w", err)
 		}
 		defer rows.Close()
 
 		cols, err := rows.Columns()
 		if err != nil {
+			log.Printf("[Tool:export_excel] 获取列信息失败 - err=%v\n", err)
 			return nil, fmt.Errorf("获取列信息失败：%w", err)
 		}
 
 		// 创建 Excel 文件
+		log.Printf("[Tool:export_excel] 开始创建 Excel 文件 - columns=%d\n", len(cols))
 		excel := excelize.NewFile()
 		defer excel.Close()
 
 		sw, err := excel.NewStreamWriter("Sheet1")
 		if err != nil {
+			log.Printf("[Tool:export_excel] 创建 Excel 写入器失败 - err=%v\n", err)
 			return nil, fmt.Errorf("创建 Excel 写入器失败：%w", err)
 		}
 
@@ -323,6 +355,7 @@ func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) 
 
 		// 写数据
 		data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
+		log.Printf("[Tool:export_excel] 开始写入数据 - rows=%d\n", len(data))
 		for rowIdx, row := range data {
 			rowData := make([]interface{}, len(cols))
 			for colIdx, col := range cols {
@@ -345,11 +378,14 @@ func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) 
 		fileName = strings.TrimSuffix(fileName, ".xls")
 		os.MkdirAll("exports", 0755)
 		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
+		log.Printf("[Tool:export_excel] 开始保存文件 - filePath=%s\n", filePath)
 		if err := excel.SaveAs(filePath); err != nil {
+			log.Printf("[Tool:export_excel] 保存 Excel 文件失败 - err=%v\n", err)
 			return nil, fmt.Errorf("保存 Excel 文件失败：%w", err)
 		}
 
 		downloadURL := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		log.Printf("[Tool:export_excel] 导出成功 - rowCount=%d, downloadURL=%s\n", len(data), downloadURL)
 
 		return &ExportOutput{
 			Message:     fmt.Sprintf("已导出 %d 条数据，[点击下载](%s)", len(data), downloadURL),

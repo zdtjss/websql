@@ -1171,3 +1171,34 @@ type AIConfig struct {
 	MaxTokens      int     `json:"maxTokens"`      // 最大生成 token 数，0 表示不限
 	EnableThinking bool    `json:"enableThinking"` // 是否启用思考模式（Ollama thinking）
 }
+
+// UserPermissions 获取用户权限列表接口
+func UserPermissions(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	user := GetUser(authorization)
+	if user == nil {
+		utils.WriteJson(c.Writer, []string{})
+		return
+	}
+
+	// 获取用户的所有权限详情
+	powerList := findUserPowerDetails(user.Id)
+	
+	// 将权限转换为字符串格式：connId::schema::table::column
+	permissionKeys := make([]string, 0)
+	for _, power := range powerList {
+		key := power.ConnId
+		if power.SchemaName != nil && *power.SchemaName != "" {
+			key += "::" + *power.SchemaName
+		}
+		if power.TableName != nil && *power.TableName != "" {
+			key += "::" + *power.TableName
+		}
+		if power.ColumnName != nil && *power.ColumnName != "" {
+			key += "::" + *power.ColumnName
+		}
+		permissionKeys = append(permissionKeys, key)
+	}
+
+	utils.WriteJson(c.Writer, permissionKeys)
+}

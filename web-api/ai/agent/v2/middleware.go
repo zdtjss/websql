@@ -4,6 +4,7 @@ package agentv2
 import (
 	"context"
 	"encoding/json"
+	"log"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -31,14 +32,19 @@ func (m *SQLSecurityMiddleware) WrapInvokableToolCall(
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 		// 只拦截 exec_sql 工具
 		if tCtx.Name == "exec_sql" {
+			log.Printf("[SQLSecurityMiddleware] 拦截到 exec_sql 工具调用\n")
+			
 			// 解析输入参数
 			var input ExecInput
 			if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
+				log.Printf("[SQLSecurityMiddleware] 解析参数失败 - err=%v\n", err)
 				return "", err
 			}
+			log.Printf("[SQLSecurityMiddleware] SQL 内容 - sql=%s\n", input.SQL)
 
 			// 检测危险 SQL
 			if isDangerousSQL(input.SQL) {
+				log.Printf("[SQLSecurityMiddleware] 检测到危险 SQL - sql=%s\n", input.SQL)
 				// 将危险 SQL 信息存储到 context 中
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				// 返回特定错误，这个错误会被 event.Err 捕获
@@ -49,11 +55,13 @@ func (m *SQLSecurityMiddleware) WrapInvokableToolCall(
 
 			// 非危险 SQL 但也需要确认（如普通 INSERT/UPDATE）
 			if needsConfirmation(input.SQL) {
+				log.Printf("[SQLSecurityMiddleware] 非危险 SQL 但需要确认 - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return "", &DangerousSQLError{
 					SQL: input.SQL,
 				}
 			}
+			log.Printf("[SQLSecurityMiddleware] SQL 检查通过，允许执行\n")
 		}
 
 		// 调用原始工具
@@ -71,14 +79,19 @@ func (m *SQLSecurityMiddleware) WrapStreamableToolCall(
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		// 只拦截 exec_sql 工具
 		if tCtx.Name == "exec_sql" {
+			log.Printf("[SQLSecurityMiddleware:Stream] 拦截到 exec_sql 流式工具调用\n")
+			
 			// 解析输入参数
 			var input ExecInput
 			if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
+				log.Printf("[SQLSecurityMiddleware:Stream] 解析参数失败 - err=%v\n", err)
 				return nil, err
 			}
+			log.Printf("[SQLSecurityMiddleware:Stream] SQL 内容 - sql=%s\n", input.SQL)
 
 			// 检测危险 SQL
 			if isDangerousSQL(input.SQL) {
+				log.Printf("[SQLSecurityMiddleware:Stream] 检测到危险 SQL - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return nil, &DangerousSQLError{
 					SQL: input.SQL,
@@ -87,11 +100,13 @@ func (m *SQLSecurityMiddleware) WrapStreamableToolCall(
 
 			// 非危险 SQL 但也需要确认
 			if needsConfirmation(input.SQL) {
+				log.Printf("[SQLSecurityMiddleware:Stream] 非危险 SQL 但需要确认 - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return nil, &DangerousSQLError{
 					SQL: input.SQL,
 				}
 			}
+			log.Printf("[SQLSecurityMiddleware:Stream] SQL 检查通过，允许执行\n")
 		}
 
 		// 调用原始工具

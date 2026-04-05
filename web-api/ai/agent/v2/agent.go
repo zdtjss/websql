@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,12 +36,12 @@ type StreamChunk struct {
 
 // SQLAgent SQL 智能体
 type SQLAgent struct {
-	agent      *adk.ChatModelAgent
-	sessions   *SessionStore
-	dbType     string
-	dbSchema   string
-	dbVersion  string
-	scope      *PermissionScope
+	agent     *adk.ChatModelAgent
+	sessions  *SessionStore
+	dbType    string
+	dbSchema  string
+	dbVersion string
+	scope     *PermissionScope
 }
 
 // SessionMeta 提供会话列表的摘要信息
@@ -454,30 +455,39 @@ func extractLastSQLFromHistory(history []*schema.Message) string {
 
 // RunStream 流式执行 - 完全参考官方 streamer.go 和 server.go 的实现
 func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) error {
+	// 日志：Agent 开始执行
+	log.Printf("[Agent] 开始执行 - sessionID=%s, userID=%s, connID=%s, question=%s\n", req.SessionID, req.UserID, req.ConnID, req.Question)
+
 	// 使用 userId 作为会话 ID：如果传了 sessionId 则使用 sessionId，否则使用 userId
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = req.UserID
 	}
 	if sessionID == "" {
+		log.Printf("[Agent] 错误 - sessionId 和 userId 都为空\n")
 		return fmt.Errorf("sessionId 和 userId 都不能为空")
 	}
 
 	sess, err := a.sessions.GetOrCreate(sessionID)
 	if err != nil {
+		log.Printf("[Agent] 获取会话失败 - sessionID=%s, err=%v\n", sessionID, err)
 		return err
 	}
+	log.Printf("[Agent] 会话已加载 - sessionID=%s, title=%s\n", sessionID, sess.Title())
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
 	// 添加当前用户消息到会话
 	userMsg := schema.UserMessage(req.Question)
 	if err := sess.Append(userMsg); err != nil {
+		log.Printf("[Agent] 保存用户消息失败 - err=%v\n", err)
 		return err
 	}
+	log.Printf("[Agent] 用户消息已保存 - sessionID=%s\n", sessionID)
 
 	// 获取历史消息并截断防止上下文过长
 	history := sess.GetMessages()
 	truncatedHistory := truncateHistory(history)
+	log.Printf("[Agent] 历史消息 - total=%d, truncated=%d\n", len(history), len(truncatedHistory))
 
 	// 关键改进：检测用户是否在请求导出操作，如果是，自动从历史中提取 SQL
 	// 这样可以避免 AI 因为上下文理解错误而编造不存在的字段
@@ -496,6 +506,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		lastSQL := extractLastSQLFromHistory(truncatedHistory)
 		if lastSQL != "" {
 			exportContextPrompt = fmt.Sprintf("\n\n⚠️ **用户正在请求导出操作**：系统已自动从历史对话中提取到最近的成功查询 SQL 为：\n```sql\n%s\n```\n**重要**：请直接使用此 SQL 调用导出工具，不要重新生成或修改 SQL！", lastSQL)
+			log.Printf("[Agent] 检测到导出请求，已提取历史 SQL - sql=%s\n", lastSQL)
 		}
 	}
 
@@ -507,8 +518,24 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		},
 	}
 	messages = append(messages, truncatedHistory...)
+	if len(messages) > 0 {
+		log.Printf("[Agent] 消息构建完成 - history_count=%d\n", len(truncatedHistory))
+	}
+
+	// 关键改进：在运行 Agent 前，先检查用户是否有任何权限
+	// 如果用户没有任何权限，直接返回友好的提示
+	if !a.scope.HasAnyAccess() {
+		log.Printf("[Agent] 用户无任何权限 - userID=%s\n", req.UserID)
+		flush(StreamChunk{
+			Type:    "error",
+			Content: "您好！看起来您暂时还没有可访问的数据表权限呢~\n\n建议您联系管理员为您开通相关权限，开通后就可以愉快地使用数据查询功能啦！😊",
+		})
+		return nil
+	}
+	log.Printf("[Agent] 权限检查通过 - userID=%s\n", req.UserID)
 
 	// 运行 Agent（使用 Run 方法，它返回 AsyncIterator）
+	log.Printf("[Agent] 开始调用 Agent.Run - enable_streaming=true\n")
 	iter := a.agent.Run(ctx, &adk.AgentInput{
 		Messages:        messages,
 		EnableStreaming: true,
@@ -519,6 +546,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	for {
 		event, ok := iter.Next()
 		if !ok {
+			log.Printf("[Agent] 事件迭代器结束\n")
 			break
 		}
 
@@ -527,6 +555,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			// 检查是否为危险 SQL 错误
 			var dangerousErr *DangerousSQLError
 			if errors.As(event.Err, &dangerousErr) {
+				log.Printf("[Agent] 检测到危险 SQL - sql=%s\n", dangerousErr.SQL)
 				// 发送危险 SQL 确认事件
 				flush(StreamChunk{
 					Type:    "danger_confirm",
@@ -537,6 +566,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				continue
 			}
 			// 其他错误正常返回
+			log.Printf("[Agent] 事件错误 - err=%v\n", event.Err)
 			flush(StreamChunk{Type: "error", Content: event.Err.Error()})
 			return event.Err
 		}
@@ -547,6 +577,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 		if !hasOutput {
 			if hasExit {
+				log.Printf("[Agent] 事件退出 - action=%+v\n", event.Action)
 				break
 			}
 			continue // 关键！没有输出但也没有退出，继续下一个事件
@@ -562,6 +593,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		case schema.Tool:
 			// Tool 消息 - 我们可以选择是否展示给用户
 			// 这里我们不展示工具结果给用户，保持简洁
+			log.Printf("[Agent] 收到 Tool 消息 - 已跳过\n")
 			continue
 
 		default:
@@ -579,6 +611,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 					// 处理 reasoning content
 					if chunk.ReasoningContent != "" {
+						log.Printf("[Agent] 思考中 - content_length=%d\n", len(chunk.ReasoningContent))
 						flush(StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
 					}
 
@@ -595,6 +628,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				// 保存完整响应
 				if contentEmitted {
 					fullResponse.WriteString(accContent.String())
+					log.Printf("[Agent] 流式响应完成 - content_length=%d\n", accContent.Len())
 				}
 
 			} else if mo.Message != nil {
@@ -602,18 +636,21 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				msg := mo.Message
 
 				if msg.ReasoningContent != "" {
+					log.Printf("[Agent] 思考内容 - content_length=%d\n", len(msg.ReasoningContent))
 					flush(StreamChunk{Type: "thinking", Content: msg.ReasoningContent})
 				}
 
 				if msg.Content != "" {
 					flush(StreamChunk{Type: "content", Content: msg.Content})
 					fullResponse.WriteString(msg.Content)
+					log.Printf("[Agent] 非流式响应完成 - content_length=%d\n", len(msg.Content))
 				}
 			}
 		}
 
 		// 关键：处理完输出后检查 hasExit - 参考官方 streamer.go:276-279
 		if hasExit {
+			log.Printf("[Agent] 事件退出标志 - hasOutput=true\n")
 			break
 		}
 	}
@@ -622,10 +659,13 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	if fullResponse.Len() > 0 {
 		assistantMsg := schema.AssistantMessage(fullResponse.String(), nil)
 		if err := sess.Append(assistantMsg); err != nil {
+			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
 			return err
 		}
+		log.Printf("[Agent] 助手消息已保存 - sessionID=%s, content_length=%d\n", sessionID, fullResponse.Len())
 	}
 
+	log.Printf("[Agent] 执行完成 - sessionID=%s, response_length=%d\n", sessionID, fullResponse.Len())
 	flush(StreamChunk{Type: "done"})
 	return nil
 }
@@ -769,11 +809,11 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 	if len(tableContext) > 0 {
 		tableContextInfo = fmt.Sprintf("\n\n📋 **用户指定的数据表**：%s\n**重要约束**：\n1. 用户已经明确指定了要查询的数据表，**只能使用这些表**，绝对不允许查询其他表！\n2. 请在回复中**明确告知用户**数据来源表名\n3. 如果用户的问题无法仅用这些表回答，请说明需要哪些额外的表", strings.Join(tableContext, ", "))
 	} else {
-		tableContextInfo = "\n\n📋 **用户未指定数据表**：\n1. 你可以使用 `get_table_schema` 工具查询整库表信息\n2. **在回复中要明确告知用户**数据来源表名\n3. 例如：'我已从表 xxx 中查询到...'"
+		tableContextInfo = "\n\n📋 **用户未指定数据表**：\n1. 你可以使用 `get_table_schema` 工具查询**已授权表**的结构信息\n2. **在回复中要明确告知用户**数据来源表名\n3. 例如：'我已从表 xxx 中查询到...'"
 	}
 
 	permissionDesc := scope.DescribeForPrompt()
-	
+
 	return fmt.Sprintf(`你是一个专业的 SQL 助手，专门帮助用户查询和分析数据库。
 
 %s%s%s

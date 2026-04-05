@@ -129,7 +129,7 @@
             <div class="action-buttons">
               <el-button type="primary" @click="savePermissions" :loading="saving">
                 <el-icon><Check /></el-icon>
-                保存权限配置
+                保存
               </el-button>
               <el-button @click="cancelEdit">
                 <el-icon><Close /></el-icon>

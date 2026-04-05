@@ -4,6 +4,7 @@ package agentv2
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -87,14 +88,18 @@ func NewHandler() (*Handler, error) {
 
 // ChatStream 流式聊天接口 - 参考官方 server.go:150-219
 func (h *Handler) ChatStream(c *gin.Context) {
+	log.Printf("[Handler:ChatStream] 收到请求\n")
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[Handler:ChatStream] 参数解析失败 - err=%v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	log.Printf("[Handler:ChatStream] 请求参数 - userID=%s, sessionID=%s, connID=%s, question=%s\n", req.UserID, req.SessionID, req.ConnID, req.Question)
 
 	// 如果是确认执行请求，直接执行 SQL
 	if req.Confirmed && req.PendingSQL != "" {
+		log.Printf("[Handler:ChatStream] 确认执行请求 - pendingSQL=%s\n", req.PendingSQL)
 		h.handleConfirmedExec(c, req)
 		return
 	}
@@ -102,9 +107,11 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	// 获取配置
 	cfg := admin.GetAIConfigFromDB()
 	if cfg == nil {
+		log.Printf("[Handler:ChatStream] AI 配置未设置\n")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "未配置 AI 服务，请先在系统配置中设置 AI 参数"})
 		return
 	}
+	log.Printf("[Handler:ChatStream] AI 配置已加载 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
 	ctx := c.Request.Context()
 
@@ -112,31 +119,40 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	user := admin.GetUser(authorization)
 	if user == nil || user.Id == "" {
+		log.Printf("[Handler:ChatStream] 用户认证失败\n")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
+	log.Printf("[Handler:ChatStream] 用户认证成功 - userID=%s, loginName=%s\n", user.Id, user.LoginName)
 
 	// 设置 userId：如果请求中传了 userId 则使用请求的，否则使用当前登录用户 ID
 	if req.UserID == "" {
 		req.UserID = user.Id
+		log.Printf("[Handler:ChatStream] 使用当前用户 ID 作为 userID - userID=%s\n", req.UserID)
 	}
 
 	// 获取数据库信息
 	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
+	log.Printf("[Handler:ChatStream] 数据库信息 - connID=%s, dbType=%s, dbSchema=%s, dbVersion=%s\n", req.ConnID, dbType, dbSchema, dbVersion)
 
 	// Build permission scope
 	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
 	if scope.IsRemote && !scope.HasAnyAccess() {
+		log.Printf("[Handler:ChatStream] 用户无权限访问 - userID=%s, connID=%s\n", user.Id, req.ConnID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
 		return
 	}
+	log.Printf("[Handler:ChatStream] 权限检查通过 - hasAnyAccess=%v\n", scope.HasAnyAccess())
 
 	// 创建 Agent，使用全局会话存储
+	log.Printf("[Handler:ChatStream] 开始创建 Agent\n")
 	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
 	if err != nil {
+		log.Printf("[Handler:ChatStream] 创建 Agent 失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 Agent 失败：" + err.Error()})
 		return
 	}
+	log.Printf("[Handler:ChatStream] Agent 创建成功\n")
 
 	// 设置 SSE 头
 	c.Header("Content-Type", "text/event-stream")
@@ -170,14 +186,18 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	// 运行 Agent
+	log.Printf("[Handler:ChatStream] 开始运行 Agent\n")
 	err = agent.RunStream(ctx, req, flush)
 
 	// 停止 keep-alive
 	close(kaStop)
 
 	if err != nil {
+		log.Printf("[Handler:ChatStream] Agent 执行失败 - err=%v\n", err)
 		logutils.PrintErr(fmt.Errorf("Agent 执行失败：%w", err))
 		flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 服务错误：%s", err.Error())})
+	} else {
+		log.Printf("[Handler:ChatStream] Agent 执行完成\n")
 	}
 }
 
