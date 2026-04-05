@@ -140,28 +140,23 @@
       </div>
     </div>
     <div class="login-button-container">
-      <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-        <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openRolePermission" title="角色权限管理">
-          <el-icon>
-            <Lock />
-          </el-icon>
-        </el-button>
-        <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
-          <el-icon>
-            <Setting />
-          </el-icon>
-        </el-button>
-        <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
-          <el-icon>
-            <User />
-          </el-icon>
-        </el-button>
-        <el-button v-else circle size="small" @click="logout" title="退出登录">
-          <el-icon>
-            <SwitchButton />
-          </el-icon>
-        </el-button>
-      </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+          <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
+            <el-icon>
+              <Setting />
+            </el-icon>
+          </el-button>
+          <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
+            <el-icon>
+              <User />
+            </el-icon>
+          </el-button>
+          <el-button v-else circle size="small" @click="logout" title="退出登录">
+            <el-icon>
+              <SwitchButton />
+            </el-icon>
+          </el-button>
+        </div>
       <!-- 登录对话框 -->
       <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
         @opened="loginName.focus()">
@@ -804,11 +799,10 @@ function logout() {
 }
 
 function openSystemManagement() {
+  console.log('[App.vue] 打开系统管理页面，当前 currentUser:', currentUser.value)
+  // 将 currentUser 存储到 sessionStorage
+  sessionStorage.setItem('systemManagement_user', JSON.stringify(currentUser.value))
   router.push('/system-management')
-}
-
-function openRolePermission() {
-  router.push('/role-permission')
 }
 
 function getSysModel() {

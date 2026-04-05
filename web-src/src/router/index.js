@@ -11,12 +11,6 @@ const routes = [
     name: 'SystemManagement',
     component: () => import('@/views/SystemManagement.vue'),
     meta: { title: '系统管理' }
-  },
-  {
-    path: '/role-permission',
-    name: 'RolePermission',
-    component: () => import('@/views/RolePermission.vue'),
-    meta: { title: '角色权限管理' }
   }
 ]
 
