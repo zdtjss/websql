@@ -118,13 +118,13 @@
 <script setup>
 import { ref, reactive, shallowRef, onMounted } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import SQLEditor2 from './views/SQLEditor2.vue'
-import Configuration from './views/comonents/Configuration.vue'
-import TableEditor from './views/comonents/TableEditor.vue'
-import ViewDialog from './views/comonents/ViewDialog.vue'
-import TableManager from './views/TableManager.vue'
-import DataBrowser from './views/DataBrowser.vue'
-import http from './js/utils/httpProxy.js'
+import SQLEditor2 from './SQLEditor2.vue'
+import Configuration from './comonents/Configuration.vue'
+import TableEditor from './comonents/TableEditor.vue'
+import ViewDialog from './comonents/ViewDialog.vue'
+import TableManager from './TableManager.vue'
+import DataBrowser from './DataBrowser.vue'
+import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 
 const showLoginBtn = ref(true)

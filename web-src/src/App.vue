@@ -1,6 +1,6 @@
 <template>
   <div>
-    <router-view v-if="['/system-management', '/role-permission'].includes($route.path)" />
+    <router-view v-if="['/system-management', '/role-permission', '/classical'].includes($route.path)" />
     <div v-else>
 
     <div class="ai-sql-panel-container">
@@ -134,6 +134,12 @@
                   <DocumentAdd />
                 </el-icon>
               </el-button>
+              <router-link to="/classical" class="switch-view-link" title="经典视图">
+                <el-icon>
+                  <Switch />
+                </el-icon>
+                <span>经典视图</span>
+              </router-link>
             </div>
           </div>
         </div>
@@ -188,7 +194,7 @@ import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting } from '@element-plus/icons-vue'
+import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting, Grid } from '@element-plus/icons-vue'
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
 import http from '@/js/utils/httpProxy.js'
@@ -265,18 +271,14 @@ const lastSql = ref('')
 const msgContainer = ref(null)
 let speechRecognition = null
 
-const isRemote = ref(null)
+const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
 
 const showLoginBtn = ref(true)
 const loginDialogVisible = ref(false)
 const loginForm = ref({ name: "", password: "" })
 const loginName = ref()
 const loginFormRef = ref()
-const currentUser = ref({
-  id: "",
-  name: "",
-  isAdmin: false
-})
+const currentUser = ref(sessionStorage.getItem("currentUser") ? JSON.parse(sessionStorage.getItem("currentUser")) : { id: "", name: "", isAdmin: false })
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 const logining = ref(false)
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
@@ -715,6 +717,7 @@ function loginByToken(token) {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.data.data["authentication"])
+      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
       loadConnList()
       loginForm.value = {}
       logining.value = false
@@ -744,6 +747,7 @@ function login() {
       }).then((resp) => {
         currentUser.value = resp.data.data
         sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+        sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
         loginForm.value = {}
         logining.value = false
         loginSucc.value = true
@@ -757,7 +761,7 @@ function login() {
 
 async function loginBio() {
 
-  const credential = window.localStorage.getItem(bioLocalStorageKey)
+   const credential = window.localStorage.getItem(bioLocalStorageKey)
   // 第一个参数指定值，可以简化用户选择的操作
   let authentication = await client.authenticate({
     allowCredentials: credential == null ? [] : [JSON.parse(credential)],
@@ -773,6 +777,7 @@ async function loginBio() {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("authentication", resp.headers.get("authentication"))
+      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
       loginForm.value = {}
       logining.value = false
       loginSucc.value = true
@@ -795,6 +800,8 @@ function logout() {
       loginSucc.value = false
       ElMessage(resp.data.data)
       sessionStorage.removeItem("authentication")
+      sessionStorage.removeItem("currentUser")
+      sessionStorage.removeItem("isRemote")
     })
 }
 
@@ -808,6 +815,7 @@ function openSystemManagement() {
 function getSysModel() {
   http.get("/sysMode").then((resp) => {
     isRemote.value = resp.data.data.isRemote
+    sessionStorage.setItem("isRemote", isRemote.value.toString())
     if (!loginSucc.value && isRemote.value) {
       toLogin()
     }
@@ -1834,6 +1842,33 @@ onUnmounted(() => {
 .insert-btn .el-icon {
   margin-right: 4px;
   font-size: 16px;
+}
+
+/* 切换视图链接 - 无下划线超链接样式 */
+.switch-view-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #409eff;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.switch-view-link:hover {
+  color: #66b1ff;
+  background-color: rgba(64, 158, 255, 0.05);
+}
+
+.switch-view-link .el-icon {
+  font-size: 16px;
+}
+
+.switch-view-link span {
+  font-weight: 500;
 }
 
 /* 相关表选择器容器 */

@@ -1,7 +1,9 @@
 <template>
   <div class="system-config">
     <el-divider content-position="left">
-      <el-icon><Monitor /></el-icon>
+      <el-icon>
+        <Monitor />
+      </el-icon>
       AI 服务配置
     </el-divider>
     <el-form label-width="120px" :model="systemConfig">
@@ -32,14 +34,18 @@
       </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="testAiConfig" :loading="aiTesting">
-          <el-icon><Connection /></el-icon>
+          <el-icon>
+            <Connection />
+          </el-icon>
           测试 AI 配置
         </el-button>
       </el-form-item>
     </el-form>
 
     <el-divider content-position="left">
-      <el-icon><Link /></el-icon>
+      <el-icon>
+        <Link />
+      </el-icon>
       外部用户认证
     </el-divider>
     <el-form label-width="120px" :model="systemConfig">
@@ -54,17 +60,14 @@
     </el-form>
 
     <el-divider content-position="left">
-      <el-icon><Lock /></el-icon>
+      <el-icon>
+        <Lock />
+      </el-icon>
       IP 访问控制
     </el-divider>
     <el-form label-width="120px" :model="systemConfig">
       <el-form-item label="允许的 IP 列表">
-        <el-input 
-          v-model="systemConfig.allowedIP" 
-          type="textarea"
-          :rows="4"
-          placeholder="请输入 IP 地址，每行一个" 
-        />
+        <el-input v-model="systemConfig.allowedIP" type="textarea" :rows="4" placeholder="请输入 IP 地址，每行一个" />
         <div style="font-size: 12px; color: #909399; margin-top: 4px;">
           💡 每行一个 IP 地址，例如：127.0.0.1 或 192.168.1.100
         </div>
@@ -72,17 +75,14 @@
     </el-form>
 
     <el-divider content-position="left">
-      <el-icon><User /></el-icon>
+      <el-icon>
+        <User />
+      </el-icon>
       生物识别配置
     </el-divider>
     <div class="bio-section">
-      <el-alert
-        title="生物识别登录"
-        type="info"
-        :closable="false"
-        style="margin-bottom: 16px;"
-      >
-        <p>💡 使用指纹或面容识别快速登录系统，仅在当前设备支持生物识别时可用</p>
+      <el-alert title="生物识别登录" type="info" :closable="false">
+        <div>💡 使用指纹或面容识别快速登录系统，仅在当前设备支持生物识别时可用</div>
       </el-alert>
       <el-form label-width="120px">
         <el-form-item label="设备支持">
@@ -96,22 +96,17 @@
           </el-tag>
         </el-form-item>
         <el-form-item>
-          <el-button 
-            type="primary" 
-            @click="registerBio" 
-            :disabled="!bioSupported || bioRegistering"
-            :loading="bioRegistering"
-          >
-            <el-icon><User /></el-icon>
+          <el-button type="primary" @click="registerBio" :disabled="!bioSupported || bioRegistering"
+            :loading="bioRegistering">
+            <el-icon>
+              <User />
+            </el-icon>
             {{ bioRegistered ? '重新注册' : '注册生物识别' }}
           </el-button>
-          <el-button 
-            v-if="bioRegistered"
-            type="danger" 
-            @click="removeBio"
-            :loading="bioRemoving"
-          >
-            <el-icon><Delete /></el-icon>
+          <el-button v-if="bioRegistered" type="danger" @click="removeBio" :loading="bioRemoving">
+            <el-icon>
+              <Delete />
+            </el-icon>
             删除生物识别
           </el-button>
         </el-form-item>
@@ -120,7 +115,9 @@
 
     <div class="config-actions">
       <el-button type="primary" @click="saveAllConfig" :loading="savingAll" size="large">
-        <el-icon><Check /></el-icon>
+        <el-icon>
+          <Check />
+        </el-icon>
         保存所有配置
       </el-button>
     </div>
@@ -144,16 +141,16 @@ const bioRegistered = ref(false)
 const bioRegistering = ref(false)
 const bioRemoving = ref(false)
 
-const systemConfig = ref({ 
-  aiProvider: 'ollama', 
-  aiBaseUrl: '', 
+const systemConfig = ref({
+  aiProvider: 'ollama',
+  aiBaseUrl: '',
   aiModel: '',
   aiApiKey: '',
   aiTemperature: 0.7,
   aiMaxTokens: 0,
   aiEnableThinking: false,
-  outterUser: '', 
-  allowedIP: '127.0.0.1\n::1' 
+  outterUser: '',
+  allowedIP: '127.0.0.1\n::1'
 })
 
 const aiTesting = ref(false)
@@ -172,7 +169,7 @@ const loadSystemConfig = () => {
       systemConfig.value.aiMaxTokens = parseInt(data.aiMaxTokens) || 0
       systemConfig.value.aiEnableThinking = data.aiEnableThinking === 'true'
       systemConfig.value.outterUser = data.outterUser || ''
-      
+
       if (data.allowedIP && Array.isArray(data.allowedIP)) {
         systemConfig.value.allowedIP = data.allowedIP.join('\n')
       }
@@ -183,7 +180,7 @@ const loadSystemConfig = () => {
 const saveAllConfig = () => {
   savingAll.value = true
   const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
-  
+
   http.post("/system/config/all/save", {
     aiProvider: systemConfig.value.aiProvider,
     aiBaseUrl: systemConfig.value.aiBaseUrl,
@@ -246,7 +243,7 @@ const checkBioRegistered = () => {
 const registerBio = async () => {
   console.log('[SystemConfig.vue] 点击注册生物识别按钮')
   console.log('[SystemConfig.vue] 当前 currentUser:', currentUser.value)
-  
+
   if (!bioSupported.value) {
     ElMessage({
       showClose: true,
@@ -263,28 +260,30 @@ const registerBio = async () => {
   }
 
   bioRegistering.value = true
-  try {
-    let registration = await client.register({
-      challenge: server.randomChallenge(),
-      user: { id: currentUser.value.id, name: currentUser.value.name }
-    })
+  let registration = await client.register({
+    challenge: server.randomChallenge(),
+    user: { id: currentUser.value.id, name: currentUser.value.name }
+  })
 
-    const parsed = parsers.parseRegistration(registration)
-    console.log(JSON.stringify(parsed))
+  const parsed = parsers.parseRegistration(registration)
+  console.log(JSON.stringify(parsed))
 
-    localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
+  localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
-    const params = new URLSearchParams();
-    params.append("bioKey", parsed.credential.id);
-    await http.post("/saveUserBio", params)
-    
-    ElMessage.success("注册成功")
-    checkBioRegistered()
-  } catch (error) {
+  const params = new URLSearchParams();
+  params.append("bioKey", parsed.credential.id);
+  http.post("/saveUserBio", params).then((resp) => {
+    if (resp.data.code == 200) {
+      ElMessage("注册成功")
+      checkBioRegistered()
+    } else {
+      ElMessage(data.msg)
+    }
+  }).catch((error) => {
     ElMessage.error(error.message || "注册失败")
-  } finally {
+  }).finally(() => {
     bioRegistering.value = false
-  }
+  })
 }
 
 const removeBio = () => {

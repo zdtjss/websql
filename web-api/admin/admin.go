@@ -269,7 +269,7 @@ func SaveUser(c *gin.Context) {
 
 func SaveUserBio(c *gin.Context) {
 	CheckAdminPower(c)
-	bioKey := c.Query("bioKey")
+	bioKey := c.PostForm("bioKey")
 	authorization := c.GetHeader("Authorization")
 	user := GetUser(authorization)
 	stmt, _ := config.Mngtdb.Prepare("update t_user set bio = ? where id = ?")
@@ -1183,7 +1183,7 @@ func UserPermissions(c *gin.Context) {
 
 	// 获取用户的所有权限详情
 	powerList := findUserPowerDetails(user.Id)
-	
+
 	// 将权限转换为字符串格式：connId::schema::table::column
 	permissionKeys := make([]string, 0)
 	for _, power := range powerList {
