@@ -12,6 +12,7 @@
             clearable 
             value-key="id" 
             placeholder="请选择" 
+            style="width: 180px"
           />
         </el-form-item>
         <el-form-item>
@@ -115,7 +116,7 @@
 </template>
 
 <script setup>
-import { ref, defineEmits } from 'vue'
+import { ref } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage } from 'element-plus'
 

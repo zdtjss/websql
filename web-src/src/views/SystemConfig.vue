@@ -125,7 +125,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, defineEmits, inject } from 'vue'
+import { ref, onMounted, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import http from '@/js/utils/httpProxy'
 import { ElMessage } from 'element-plus'

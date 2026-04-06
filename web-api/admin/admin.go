@@ -749,8 +749,14 @@ func GetPermissionTree(c *gin.Context) {
 }
 
 func getConnTree(roleId string) []*PermissionNode {
-	connList := []*ConnCfg{}
-	err := config.Mngtdb.Select(&connList, "select * from t_conn order by parent_id, name")
+	// 通过左连接 t_tree 表获取目录名称
+	type ConnWithDir struct {
+		ConnCfg
+		ParentName *string `db:"parent_name"`
+	}
+
+	connList := []*ConnWithDir{}
+	err := config.Mngtdb.Select(&connList, "select c.*, t.label as parent_name from t_conn c left join t_tree t on c.parent_id = t.id order by t.label, c.name")
 	logutils.PanicErr(err)
 
 	// 如果提供了 roleId，获取该角色的权限
@@ -759,49 +765,36 @@ func getConnTree(roleId string) []*PermissionNode {
 		roleConnIds = getRoleConnPermissions(roleId)
 	}
 
-	connMap := make(map[string][]*ConnCfg)
-	for _, conn := range connList {
-		parentId := conn.ParentId
-		if parentId == "" {
-			parentId = "root"
+	// 直接返回所有连接作为扁平列表，不按树形结构组织
+	nodes := make([]*PermissionNode, len(connList))
+	for i, conn := range connList {
+		checked := false
+		if roleId != "" && roleConnIds[conn.Id] {
+			checked = true
 		}
-		connMap[parentId] = append(connMap[parentId], conn)
+
+		// 构建标签：连接名 + 目录名（如果有）
+		label := conn.Name
+		if conn.ParentName != nil && *conn.ParentName != "" {
+			label = fmt.Sprintf("%s (%s)", conn.Name, *conn.ParentName)
+		}
+
+		nodes[i] = &PermissionNode{
+			Id:       conn.Id,
+			Label:    label,
+			Type:     "conn",
+			Level:    "conn",
+			ParentId: conn.ParentId,
+			Checked:  checked,
+			Data: map[string]any{
+				"connId":     conn.Id,
+				"parentName": conn.ParentName,
+			},
+			Children: []*PermissionNode{},
+		}
 	}
 
-	var buildTree func(parentId string) []*PermissionNode
-	buildTree = func(parentId string) []*PermissionNode {
-		children := connMap[parentId]
-		if len(children) == 0 {
-			return []*PermissionNode{}
-		}
-
-		nodes := make([]*PermissionNode, len(children))
-		for i, conn := range children {
-			checked := false
-			if roleId != "" && roleConnIds[conn.Id] {
-				checked = true
-			}
-
-			nodes[i] = &PermissionNode{
-				Id:       conn.Id,
-				Label:    conn.Name,
-				Type:     "conn",
-				Level:    "conn",
-				ParentId: conn.ParentId,
-				Checked:  checked,
-				Data: map[string]any{
-					"connId": conn.Id,
-				},
-			}
-			subChildren := connMap[conn.Id]
-			if len(subChildren) > 0 {
-				nodes[i].Children = buildTree(conn.Id)
-			}
-		}
-		return nodes
-	}
-
-	return buildTree("root")
+	return nodes
 }
 
 // getRoleConnPermissions 获取角色在连接级别的权限

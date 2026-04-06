@@ -88,41 +88,43 @@
             </div>
 
             <!-- 权限树 -->
-            <div class="permission-tree-container">
+            <div class="permission-tree-wrapper">
               <el-alert
                 v-if="currentLevel === 'conn'"
                 title="提示"
                 type="info"
                 :closable="false"
-                style="margin-bottom: 12px;"
+                style="margin-bottom: 12px; flex-shrink: 0;"
               >
                 <el-icon><InfoFilled /></el-icon>
                 点击节点可进入下一级，勾选复选框授予权限
               </el-alert>
               
-              <el-tree
-                ref="permissionTree"
-                :data="permissionTreeData"
-                :props="treeProps"
-                node-key="id"
-                show-checkbox
-                :default-expand-all="false"
-                @check-change="handleCheckChange"
-                @node-click="handleNodeClick"
-              >
-                <template #default="{ node, data }">
-                  <span class="tree-node">
-                    <el-icon v-if="data.level === 'conn'"><Connection /></el-icon>
-                    <el-icon v-else-if="data.level === 'schema'"><Folder /></el-icon>
-                    <el-icon v-else-if="data.level === 'table'"><Grid /></el-icon>
-                    <el-icon v-else-if="data.level === 'column'"><Document /></el-icon>
-                    <span class="node-label">{{ node.label }}</span>
-                    <span v-if="data.data?.comment" class="node-comment">
-                      {{ data.data.comment }}
+              <div class="permission-tree-container">
+                <el-tree
+                  ref="permissionTree"
+                  :data="permissionTreeData"
+                  :props="treeProps"
+                  node-key="id"
+                  show-checkbox
+                  :default-expand-all="false"
+                  @check-change="handleCheckChange"
+                  @node-click="handleNodeClick"
+                >
+                  <template #default="{ node, data }">
+                    <span class="tree-node">
+                      <el-icon v-if="data.level === 'conn'"><Connection /></el-icon>
+                      <el-icon v-else-if="data.level === 'schema'"><Folder /></el-icon>
+                      <el-icon v-else-if="data.level === 'table'"><Grid /></el-icon>
+                      <el-icon v-else-if="data.level === 'column'"><Document /></el-icon>
+                      <span class="node-label">{{ node.label }}</span>
+                      <span v-if="data.data?.comment" class="node-comment">
+                        {{ data.data.comment }}
+                      </span>
                     </span>
-                  </span>
-                </template>
-              </el-tree>
+                  </template>
+                </el-tree>
+              </div>
             </div>
 
             <!-- 操作按钮 -->
@@ -569,6 +571,7 @@ function cancelEdit() {
   flex-direction: column;
   padding: 20px;
   overflow: hidden;
+  height: 100%;
 }
 
 .level-nav {
@@ -577,20 +580,37 @@ function cancelEdit() {
   margin-bottom: 16px;
   padding-bottom: 16px;
   border-bottom: 1px solid #e4e7ed;
+  flex-shrink: 0;
+}
+
+.permission-tree-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin-bottom: 16px;
+  min-height: 0;
 }
 
 .permission-tree-container {
   flex: 1;
   overflow-y: auto;
-  margin-bottom: 20px;
+  overflow-x: auto;
 }
 
 .action-buttons {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-  padding-top: 16px;
+  padding: 16px 20px;
   border-top: 1px solid #e4e7ed;
+  flex-shrink: 0;
+  background: #fff;
+  position: fixed;
+  bottom: 0;
+  right: 20px;
+  z-index: 100;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .tree-node {
