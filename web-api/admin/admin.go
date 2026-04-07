@@ -774,9 +774,13 @@ func getConnTree(roleId string) []*PermissionNode {
 		}
 
 		// 构建标签：连接名 + 目录名（如果有）
-		label := conn.Name
+		name := ""
+		if conn.Name != nil {
+			name = *conn.Name
+		}
+		label := name
 		if conn.ParentName != nil && *conn.ParentName != "" {
-			label = fmt.Sprintf("%s (%s)", conn.Name, *conn.ParentName)
+			label = fmt.Sprintf("%s (%s)", name, *conn.ParentName)
 		}
 
 		nodes[i] = &PermissionNode{
@@ -1074,8 +1078,30 @@ func getConnNoCheck(connId string) *sqlx.DB {
 		return nil
 	}
 
-	cfgList[0].Pwd = utils.AESDecode(cfgList[0].Pwd)
-	return config.GetConn(convertToDBParam(&cfgList[0]))
+	// 解码密码
+	pwd := ""
+	if cfgList[0].Pwd != nil {
+		pwd = utils.AESDecode(*cfgList[0].Pwd)
+	}
+
+	// 处理可能为 nil 的字段
+	name := ""
+	if cfgList[0].Name != nil {
+		name = *cfgList[0].Name
+	}
+	user := ""
+	if cfgList[0].User != nil {
+		user = *cfgList[0].User
+	}
+	url := ""
+	if cfgList[0].Url != nil {
+		url = *cfgList[0].Url
+	}
+
+	return config.GetConn(&config.DBParam{
+		Id: cfgList[0].Id, Name: name, DbType: cfgList[0].DbType,
+		User: user, Pwd: pwd, Url: url,
+	})
 }
 
 type User struct {
@@ -1127,17 +1153,17 @@ type Power struct {
 }
 
 type PowerDto struct {
-	Id       string `json:"id"`
-	RoleId   string `json:"roleId" db:"role_id"`
-	ConnId   string `json:"connId" db:"conn_id"`
-	ConnName string `json:"connName" db:"conn_name"`
+	Id       string  `json:"id"`
+	RoleId   string  `json:"roleId" db:"role_id"`
+	ConnId   string  `json:"connId" db:"conn_id"`
+	ConnName *string `json:"connName" db:"conn_name"`
 }
 
 type PowerDetail struct {
 	Id         string  `json:"id"`
 	RoleId     string  `json:"roleId" db:"role_id"`
 	ConnId     string  `json:"connId" db:"conn_id"`
-	ConnName   string  `json:"connName" db:"conn_name"`
+	ConnName   *string `json:"connName" db:"conn_name"`
 	SchemaName *string `json:"schemaName,omitempty" db:"schema_name"`
 	TableName  *string `json:"tableName,omitempty" db:"table_name"`
 	ColumnName *string `json:"columnName,omitempty" db:"column_name"`

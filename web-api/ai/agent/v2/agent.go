@@ -164,7 +164,7 @@ func NewSessionStore(dir string) (*SessionStore, error) {
 }
 
 // GetOrCreate 返回指定 id 的会话，如果不存在则创建
-func (s *SessionStore) GetOrCreate(id string) (*Session, error) {
+func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -179,7 +179,7 @@ func (s *SessionStore) GetOrCreate(id string) (*Session, error) {
 		err  error
 	)
 	if _, statErr := os.Stat(filePath); os.IsNotExist(statErr) {
-		sess, err = createSession(id, filePath)
+		sess, err = createSession(id, userID, filePath)
 	} else {
 		sess, err = loadSession(filePath)
 	}
@@ -233,20 +233,23 @@ func (s *SessionStore) List() ([]SessionMeta, error) {
 
 // ListByUserID 返回指定用户的所有会话元数据
 func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
-	// 现在会话 ID 就是 userId，直接获取该用户的会话
-	sess, err := s.GetOrCreate(userID)
+	// 从数据库查询用户的所有会话
+	sessionsDB, err := ListSessionsByUserID(userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 返回单个会话（每个用户只有一个会话）
-	return []SessionMeta{
-		{
-			ID:        sess.ID,
-			Title:     sess.Title(),
-			CreatedAt: sess.CreatedAt,
-		},
-	}, nil
+	// 转换为 SessionMeta
+	metas := make([]SessionMeta, 0, len(sessionsDB))
+	for _, sessDB := range sessionsDB {
+		metas = append(metas, SessionMeta{
+			ID:        sessDB.ID,
+			Title:     sessDB.Title,
+			CreatedAt: sessDB.CreatedAt,
+		})
+	}
+
+	return metas, nil
 }
 
 // Delete 删除会话文件并从缓存中移除
@@ -264,7 +267,17 @@ func (s *SessionStore) Delete(id string) error {
 
 // GetDetail 获取指定会话的详细信息
 func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
-	sess, err := s.GetOrCreate(id)
+	// 先从数据库获取会话信息，检查是否存在
+	sessDB, err := GetSessionByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if sessDB == nil {
+		return nil, fmt.Errorf("会话不存在：%s", id)
+	}
+
+	// 从文件加载会话详情
+	sess, err := s.GetOrCreate(id, sessDB.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -276,13 +289,15 @@ func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 type sessionHeader struct {
 	Type      string    `json:"type"`
 	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func createSession(id, filePath string) (*Session, error) {
+func createSession(id, userID, filePath string) (*Session, error) {
 	header := sessionHeader{
 		Type:      "session",
 		ID:        id,
+		UserID:    userID,
 		CreatedAt: time.Now().UTC(),
 	}
 	data, err := json.Marshal(header)
@@ -292,6 +307,14 @@ func createSession(id, filePath string) (*Session, error) {
 	if err := os.WriteFile(filePath, append(data, '\n'), 0o644); err != nil {
 		return nil, err
 	}
+
+	// 同时在数据库中创建会话记录
+	err = CreateSessionInDB(id, userID, "", filePath)
+	if err != nil {
+		log.Printf("[createSession] 创建数据库记录失败 - id=%s, err=%v\n", id, err)
+		// 数据库创建失败不影响文件创建，继续返回 session
+	}
+
 	return &Session{
 		ID:        id,
 		CreatedAt: header.CreatedAt,
@@ -458,17 +481,21 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	// 日志：Agent 开始执行
 	log.Printf("[Agent] 开始执行 - sessionID=%s, userID=%s, connID=%s, question=%s\n", req.SessionID, req.UserID, req.ConnID, req.Question)
 
-	// 使用 userId 作为会话 ID：如果传了 sessionId 则使用 sessionId，否则使用 userId
+	// 会话 ID 管理逻辑：
+	// 1. 如果传了 sessionId，使用指定的 sessionId（继续历史对话）
+	// 2. 如果没传 sessionId，生成新的 sessionId（新建对话）
 	sessionID := req.SessionID
 	if sessionID == "" {
-		sessionID = req.UserID
+		// 生成新的会话 ID（使用时间戳 + 随机数）
+		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+		log.Printf("[Agent] 新建会话 - sessionID=%s, userID=%s\n", sessionID, req.UserID)
 	}
-	if sessionID == "" {
-		log.Printf("[Agent] 错误 - sessionId 和 userId 都为空\n")
-		return fmt.Errorf("sessionId 和 userId 都不能为空")
+	if req.UserID == "" {
+		log.Printf("[Agent] 错误 - userId 为空\n")
+		return fmt.Errorf("userId 不能为空")
 	}
 
-	sess, err := a.sessions.GetOrCreate(sessionID)
+	sess, err := a.sessions.GetOrCreate(sessionID, req.UserID)
 	if err != nil {
 		log.Printf("[Agent] 获取会话失败 - sessionID=%s, err=%v\n", sessionID, err)
 		return err
@@ -629,21 +656,6 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				if contentEmitted {
 					fullResponse.WriteString(accContent.String())
 					log.Printf("[Agent] 流式响应完成 - content_length=%d\n", accContent.Len())
-				}
-
-			} else if mo.Message != nil {
-				// 非流式模式 - 参考官方 streamer.go:253-270
-				msg := mo.Message
-
-				if msg.ReasoningContent != "" {
-					log.Printf("[Agent] 思考内容 - content_length=%d\n", len(msg.ReasoningContent))
-					flush(StreamChunk{Type: "thinking", Content: msg.ReasoningContent})
-				}
-
-				if msg.Content != "" {
-					flush(StreamChunk{Type: "content", Content: msg.Content})
-					fullResponse.WriteString(msg.Content)
-					log.Printf("[Agent] 非流式响应完成 - content_length=%d\n", len(msg.Content))
 				}
 			}
 		}
@@ -877,24 +889,28 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 ### AI 的职责边界
 - ✅ **查询操作（SELECT）**：AI 可以直接执行
 - ✅ **只读操作（SHOW/DESCRIBE/EXPLAIN）**：AI 可以直接执行
-- ✅ **生成写操作 SQL**：AI **可以生成** DELETE/UPDATE/INSERT SQL **用于展示给用户**
-- ❌ **执行写操作**：AI **不能调用 exec_sql 执行**写操作
-- ❌ **DDL 操作**：AI **只能生成 SQL**，**不能执行**
+- ✅ **生成写操作 SQL**：AI **可以生成** DELETE/UPDATE/INSERT SQL
+- ⚠️ **执行写操作**：当用户要求执行写操作时，AI **必须调用 exec_sql 工具**
+  - 系统会自动拦截并提示用户确认
+  - 用户确认后，SQL 才会真正执行
+  - **不要**因为害怕被拦截而不调用工具
+- ⚠️ **DDL 操作**：AI **只能生成 SQL**，**不能执行**
 - ⚠️ **重要**：当用户要求执行写操作时，AI 应该：
   1. 生成正确的 SQL
-  2. 告知用户该操作的风险
-  3. **明确说明需要用户在页面确认后执行**
-  4. **不要尝试调用 exec_sql 工具执行**
-  5. **使用以下格式回复**：
-     - 在 SQL 代码块前添加 [CONFIRM_REQUIRED] 标记
-     - 说明风险等级、操作类型、注意事项
+  2. **调用 exec_sql 工具**（系统会自动拦截并提示用户确认）
+  3. 告知用户该操作的风险
+  4. 说明需要用户在页面确认后执行
+  5. 示例回复：
+     我已生成以下 SQL：
+     UPDATE user SET status = 'inactive'
+     此操作需要您确认。请点击页面上的"确认执行"按钮来执行此 SQL。
 
 ### 🔒 自动危险 SQL 检测机制
 系统已内置自动危险 SQL 检测中间件，当 AI 尝试调用 exec_sql 工具时：
 - **自动拦截**：所有写操作（INSERT/UPDATE/DELETE/DROP/TRUNCATE/ALTER/CREATE）都会被自动拦截
 - **前端确认**：拦截后会立即触发前端的确认对话框，展示 SQL 内容和风险等级
 - **用户确认后执行**：只有用户在页面点击"确认执行"后，SQL 才会真正执行
-- **AI 无需手动标记**：AI 不需要再添加 [CONFIRM_REQUIRED] 标记，系统会自动处理
+- **AI 必须调用工具**：当生成写操作 SQL 时，AI 应该调用 exec_sql 工具，让系统自动处理确认流程
 
 ### 推荐的做法
 - ✅ **使用 LIMIT** - 大表查询时限制返回行数
@@ -917,12 +933,12 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 - **验证**：**必须**经过用户确认
 - **风险**：高风险操作，谨慎使用
 - **示例**：UPDATE user SET status = 'inactive' WHERE id = 123
-- **AI 权限**：❌ **AI 不应该执行此工具**
+- **AI 权限**：⚠️ **AI 应该调用此工具**
 - **重要说明**：
-  - 当用户要求执行写操作时，AI 应该**生成 SQL 并告知用户风险**
-  - **建议用户在页面手动执行**，而不是让 AI 调用 exec_sql
-  - 只有在**用户明确要求 AI 执行**且**经过二次确认**后，才能调用此工具
-  - 对于**DROP/TRUNCATE**等高危操作，**绝对不能执行**，只能生成 SQL
+  - 当用户要求执行写操作时，AI **必须调用 exec_sql 工具**
+  - 系统会自动拦截并提示用户确认
+  - 用户点击"确认执行"后，SQL 才会真正执行
+  - 对于**DROP/TRUNCATE**等高危操作，AI 也应该调用此工具，让系统拦截并提示用户
 
 ### get_table_schema（获取表结构）
 - **用途**：获取表的 DDL 和字段信息

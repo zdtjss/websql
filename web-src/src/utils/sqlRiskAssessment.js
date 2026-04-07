@@ -120,31 +120,60 @@ function extractInlineSQL(text) {
  * @returns {Object} 分析结果
  */
 export function analyzeSQL(sql) {
-  const upperSQL = sql.toUpperCase().trim()
+  if (!sql) {
+    return {
+      type: 'UNKNOWN',
+      riskLevel: 'low',
+      tableName: undefined,
+      hasWhereClause: false,
+      description: 'SQL 语句为空',
+      warnings: []
+    }
+  }
+  
+  // 移除前导的注释和空白字符，提取实际 SQL
+  let cleanSQL = sql.trim()
+  
+  // 如果 SQL 包含换行符，尝试找到第一个非空行
+  const lines = cleanSQL.split('\n')
+  for (const line of lines) {
+    const trimmed = line.trim()
+    // 跳过注释行
+    if (trimmed.startsWith('--') || trimmed.startsWith('/*') || trimmed.startsWith('#')) {
+      continue
+    }
+    if (trimmed) {
+      cleanSQL = trimmed
+      break
+    }
+  }
+  
+  const upperSQL = cleanSQL.toUpperCase()
   const warnings = []
   
-  // 判断 SQL 类型
+  // 判断 SQL 类型 - 使用正则表达式匹配第一个关键字
   let type = 'UNKNOWN'
-  if (upperSQL.startsWith('SELECT') || 
-      upperSQL.startsWith('SHOW') || 
-      upperSQL.startsWith('DESCRIBE') || 
-      upperSQL.startsWith('EXPLAIN')) {
-    type = 'SELECT'
-  } else if (upperSQL.startsWith('INSERT')) {
-    type = 'INSERT'
-  } else if (upperSQL.startsWith('UPDATE')) {
-    type = 'UPDATE'
-  } else if (upperSQL.startsWith('DELETE')) {
-    type = 'DELETE'
-  } else if (upperSQL.match(/^(CREATE|ALTER|DROP|TRUNCATE)/)) {
-    type = 'DDL'
+  const typeMatch = upperSQL.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|SHOW|DESCRIBE|EXPLAIN)\b/i)
+  if (typeMatch) {
+    const keyword = typeMatch[1]
+    if (keyword === 'SELECT' || keyword === 'SHOW' || keyword === 'DESCRIBE' || keyword === 'EXPLAIN') {
+      type = 'SELECT'
+    } else if (keyword === 'INSERT') {
+      type = 'INSERT'
+    } else if (keyword === 'UPDATE') {
+      type = 'UPDATE'
+    } else if (keyword === 'DELETE') {
+      type = 'DELETE'
+    } else if (['CREATE', 'ALTER', 'DROP', 'TRUNCATE'].includes(keyword)) {
+      type = 'DDL'
+    }
   }
   
   // 提取表名（简单实现）
-  const tableName = extractTableName(sql)
+  const tableName = extractTableName(cleanSQL)
   
   // 检查是否有 WHERE 条件
-  const hasWhereClause = upperSQL.includes('WHERE')
+  const hasWhereClause = /\bWHERE\b/i.test(cleanSQL)
   
   // 评估风险等级
   let riskLevel = 'low'
@@ -181,7 +210,16 @@ export function analyzeSQL(sql) {
       break
       
     default:
-      riskLevel = 'low'
+      // 对于未知类型，尝试从内容判断风险
+      if (/\b(DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(cleanSQL)) {
+        riskLevel = 'high'
+        warnings.push('⚠️ 检测到高危操作关键字')
+      } else if (/\b(UPDATE|INSERT|ALTER)\b/i.test(cleanSQL)) {
+        riskLevel = 'medium'
+        warnings.push('⚠️ 检测到数据修改操作')
+      } else {
+        riskLevel = 'low'
+      }
   }
   
   return {

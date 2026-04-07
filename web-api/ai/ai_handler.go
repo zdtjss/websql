@@ -181,8 +181,26 @@ func fetchTableSchemas(connId string, tables []string) (string, error) {
 	}
 
 	cfg := &cfgList[0]
-	cfg.Pwd = utils.AESDecode(cfg.Pwd)
-	conn := config.GetConn(&config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url})
+
+	// 处理可能为 nil 的字段
+	name := ""
+	if cfg.Name != nil {
+		name = *cfg.Name
+	}
+	user := ""
+	if cfg.User != nil {
+		user = *cfg.User
+	}
+	pwd := ""
+	if cfg.Pwd != nil {
+		pwd = utils.AESDecode(*cfg.Pwd)
+	}
+	url := ""
+	if cfg.Url != nil {
+		url = *cfg.Url
+	}
+
+	conn := config.GetConn(&config.DBParam{Id: cfg.Id, Name: name, DbType: cfg.DbType, User: user, Pwd: pwd, Url: url})
 
 	var sb strings.Builder
 	for _, table := range tables {

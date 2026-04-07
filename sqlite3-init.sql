@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS t_ai_config (
 );
 
 
-create table if not exists t_system_config (
+CREATE TABLE IF NOT EXISTS t_system_config (
 	id varchar(36) primary key,
 	config_key varchar(64) not null unique,
 	config_value text,
@@ -89,6 +89,15 @@ create table if not exists t_system_config (
 	remark text,
 	create_time datetime default current_timestamp,
 	update_time datetime default current_timestamp
+);
+
+CREATE TABLE IF NOT EXISTS t_ai_session (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
+	title TEXT,
+	file_path TEXT,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000001', 'ai.provider', 'ollama', 'ai', 'AI 服务提供商：ollama, openai 等');

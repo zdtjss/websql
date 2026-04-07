@@ -64,25 +64,30 @@
                 <el-empty v-if="sessionList.length === 0 && !loadingSessions" description="暂无历史会话" />
                 <el-skeleton v-if="loadingSessions" :rows="4" animated />
                 <div v-else style="display: flex; flex-direction: column; gap: 8px;">
-                  <div v-for="sess in sessionList" :key="sess.id" class="session-item">
-                    <div class="session-content" @click="handleClickSession(sess.id)">
-                      <div class="session-title">{{ sess.title }}</div>
-                      <div class="session-time">
-                        <el-icon>
-                          <Clock />
-                        </el-icon>
-                        {{ formatDate(sess.createdAt) }}
+                    <div v-for="sess in sessionList" :key="sess.id" class="session-item">
+                      <div class="session-content" @click="handleClickSession(sess.id)">
+                        <div class="session-title">{{ sess.title }}</div>
+                        <div class="session-time">
+                          <el-icon>
+                            <Clock />
+                          </el-icon>
+                          {{ formatDate(sess.createdAt) }}
+                        </div>
+                      </div>
+                      <div class="session-actions">
+                        <el-button type="success" size="small" text @click.stop="handleNewSession(sess.id)" title="在此会话基础上新建对话">
+                          <el-icon>
+                            <DocumentAdd />
+                          </el-icon>
+                        </el-button>
+                        <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
+                          <el-icon>
+                            <Delete />
+                          </el-icon>
+                        </el-button>
                       </div>
                     </div>
-                    <div class="session-actions">
-                      <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
-                        <el-icon>
-                          <Delete />
-                        </el-icon>
-                      </el-button>
-                    </div>
                   </div>
-                </div>
               </div>
               <template #reference>
                 <el-button class="toolbar-btn" size="small" title="历史会话">
@@ -101,6 +106,11 @@
             <el-button class="toolbar-btn" size="small" @click="clearSession" title="清空会话">
               <el-icon>
                 <Delete />
+              </el-icon>
+            </el-button>
+            <el-button class="toolbar-btn" size="small" @click="createNewSession" title="新建会话">
+              <el-icon>
+                <DocumentAdd />
               </el-icon>
             </el-button>
           </div>
@@ -374,12 +384,9 @@ async function sendMessage() {
             case 'danger_confirm':
               // 后端推送的危险 SQL 确认
               console.log('收到 danger_confirm 事件:', chunk)
-              if (!hasShownConfirm) {
-                hasShownConfirm = true
-                const sqlToConfirm = chunk.sql || chunk.content
-                console.log('准备显示确认对话框，SQL:', sqlToConfirm)
-                showConfirmDialog(sqlToConfirm)
-              }
+              const sqlToConfirm = chunk.sql || chunk.content
+              console.log('准备显示确认对话框，SQL:', sqlToConfirm)
+              showConfirmDialog(sqlToConfirm)
               break
             case 'error':
               ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
@@ -402,13 +409,37 @@ async function sendMessage() {
       const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
       chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
       if (isSql) lastSql.value = content
+      
+      console.log('AI 回复内容:', content.substring(0, 200))
+      console.log('是否包含 SQL:', isSql)
 
       // 关键检测：如果内容包含 [CONFIRM_REQUIRED] 标记，立即触发确认
-      if (!hasShownConfirm && content.includes('[CONFIRM_REQUIRED]')) {
+      if (content.includes('[CONFIRM_REQUIRED]')) {
+        console.log('检测到 [CONFIRM_REQUIRED] 标记')
         const sqlStatements = extractAllSQL(content)
+        console.log('提取到的 SQL 语句:', sqlStatements)
         for (const sql of sqlStatements) {
           const analysis = analyzeSQL(sql)
+          console.log('SQL 分析结果:', analysis)
           if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+            showConfirmDialog(sql)
+            break
+          }
+        }
+      }
+      
+      // 新增：即使没有 [CONFIRM_REQUIRED] 标记，也检测是否需要确认
+      // 这样可以处理 AI 忘记添加标记的情况
+      if (!content.includes('[CONFIRM_REQUIRED]')) {
+        console.log('没有 [CONFIRM_REQUIRED] 标记，开始自动检测')
+        const sqlStatements = extractAllSQL(content)
+        console.log('提取到的 SQL 语句:', sqlStatements)
+        for (const sql of sqlStatements) {
+          const analysis = analyzeSQL(sql)
+          console.log('SQL 分析结果 - 风险等级:', analysis.riskLevel, 'SQL:', sql.substring(0, 100))
+          // 如果是写操作（medium 或 high 风险），自动显示确认对话框
+          if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
+            console.log('自动检测到写操作 SQL，显示确认对话框:', sql)
             showConfirmDialog(sql)
             break
           }
@@ -427,6 +458,12 @@ async function sendMessage() {
 
 // 显示确认区域
 function showConfirmDialog(sql) {
+  // 防止重复弹出
+  if (confirmVisible.value) {
+    console.log('确认对话框已显示，跳过')
+    return
+  }
+  
   // 分析 SQL
   const analysis = analyzeSQL(sql)
 
@@ -436,6 +473,7 @@ function showConfirmDialog(sql) {
   confirmDescription.value = analysis.description
   confirmTableName.value = analysis.tableName || ''
   confirmVisible.value = true
+  console.log('显示确认对话框，SQL:', sql)
 }
 
 // 重置检测标记
@@ -447,6 +485,19 @@ function resetDetectFlag() {
 async function handleConfirmExec(confirmedSql) {
   loading.value = true
   confirmVisible.value = false
+
+  // 提取实际 SQL（去掉确认标记）
+  const actualSQL = confirmedSQL.split('\n\n-- CONFIRMED:')[0].trim()
+  
+  // 在聊天历史中添加用户确认执行的记录
+  chatHistory.value.push({
+    role: 'assistant',
+    content: `✅ **用户确认执行以下 SQL**：\n\`\`\`sql\n${actualSQL}\n\`\`\``,
+    hasSql: false,
+    isExecuted: true,
+    executionStatus: 'pending'
+  })
+  scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/chatStream'
@@ -491,10 +542,21 @@ async function handleConfirmExec(confirmedSql) {
       }
     }
 
-    if (result) {
-      chatHistory.value.push({ role: 'assistant', content: result })
+    // 更新最后一条消息的状态为执行成功
+    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+    if (lastMsg && lastMsg.isExecuted) {
+      lastMsg.executionStatus = 'success'
+      lastMsg.content = `✅ **用户确认执行以下 SQL**：\n\`\`\`sql\n${actualSQL}\n\`\`\`\n\n**执行结果**：${result || '执行成功'}`
     }
+    
+    ElMessage({ message: 'SQL 执行成功', type: 'success' })
   } catch (e) {
+    // 更新最后一条消息的状态为执行失败
+    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+    if (lastMsg && lastMsg.isExecuted) {
+      lastMsg.executionStatus = 'failed'
+      lastMsg.content = `✅ **用户确认执行以下 SQL**：\n\`\`\`sql\n${actualSQL}\n\`\`\`\n\n**执行结果**：❌ 执行失败 - ${e.message}`
+    }
     ElMessage({ message: e.message || '执行失败', type: 'error' })
   } finally {
     loading.value = false
@@ -505,7 +567,17 @@ async function handleConfirmExec(confirmedSql) {
 // 处理取消确认
 function handleConfirmCancel() {
   confirmVisible.value = false
-  chatHistory.value.push({ role: 'assistant', content: '已取消执行危险操作。' })
+  
+  // 在聊天历史中添加用户取消执行的记录
+  chatHistory.value.push({
+    role: 'assistant',
+    content: `❌ **用户取消执行以下 SQL**：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`\n\n**取消原因**：用户选择不执行此操作。`,
+    hasSql: false,
+    isExecuted: false,
+    executionStatus: 'cancelled'
+  })
+  
+  ElMessage({ message: '已取消执行', type: 'info' })
   scrollToBottom()
 }
 
@@ -519,6 +591,22 @@ function clearSession() {
   confirmSQL.value = ''
   processedLinks.clear()
   resetDetectFlag()
+  // 清空会话后，下次发送消息会自动创建新会话
+  ElMessage({ message: '已清空会话，下次提问将开始新对话', type: 'success' })
+}
+
+function createNewSession() {
+  // 清空当前会话，开始新的对话
+  chatHistory.value = []
+  sessionId.value = ''
+  thinkingText.value = ''
+  streamingContent.value = ''
+  lastSql.value = ''
+  confirmVisible.value = false
+  confirmSQL.value = ''
+  processedLinks.clear()
+  resetDetectFlag()
+  ElMessage({ message: '已新建会话，可以开始新的对话了', type: 'success' })
 }
 
 function insertToEditor() {
@@ -673,6 +761,15 @@ async function deleteSession(id) {
   }
 }
 
+function handleNewSession(id) {
+  // 先关闭 popover
+  sessionHistoryVisible.value = false
+  // 延迟一点时间加载会话，让 popover 先关闭
+  setTimeout(() => {
+    loadSession(id)
+  }, 100)
+}
+
 function handleClickSession(id) {
   // 先关闭 popover，然后加载会话
   sessionHistoryVisible.value = false
@@ -699,8 +796,16 @@ async function loadSession(id) {
 
     const data = await resp.json()
     if (data.session) {
-      // 清空当前会话
-      clearSession()
+      // 清空当前会话（不显示提示消息）
+      chatHistory.value = []
+      sessionId.value = ''
+      thinkingText.value = ''
+      streamingContent.value = ''
+      lastSql.value = ''
+      confirmVisible.value = false
+      confirmSQL.value = ''
+      processedLinks.clear()
+      resetDetectFlag()
 
       // 加载历史消息
       sessionId.value = data.session.id
@@ -715,7 +820,7 @@ async function loadSession(id) {
         if (isSql) lastSql.value = msg.content
       }
 
-      ElMessage({ message: '已加载历史会话', type: 'success' })
+      ElMessage({ message: '已加载历史会话，您可以继续追问', type: 'success' })
       scrollToBottom()
     }
   } catch (e) {
@@ -1292,14 +1397,9 @@ watch(() => props.modelValue, (v) => { if (v) scrollToBottom() })
   margin-left: 8px;
   display: flex;
   align-items: center;
-  opacity: 0;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  transform: translateX(-8px);
-}
-
-.session-item:hover .session-actions {
+  gap: 4px;
   opacity: 1;
-  transform: translateX(0);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ========== 输入区域美化 ========== */

@@ -73,6 +73,11 @@
                         </div>
                       </div>
                       <div class="session-actions">
+                        <el-button type="success" size="small" text @click.stop="handleNewSession(sess.id)" title="在此会话基础上新建对话">
+                          <el-icon>
+                            <DocumentAdd />
+                          </el-icon>
+                        </el-button>
                         <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
                           <el-icon>
                             <Delete />
@@ -913,6 +918,15 @@ async function deleteSession(id) {
   }
 }
 
+function handleNewSession(id) {
+  // 关闭 popover
+  sessionHistoryVisible.value = false
+  // 延迟一点时间，让 popover 先关闭
+  setTimeout(() => {
+    loadSession(id)
+  }, 100)
+}
+
 function handleClickSession(id) {
   // 先关闭 popover，然后加载会话
   sessionHistoryVisible.value = false
@@ -1611,13 +1625,9 @@ onUnmounted(() => {
   margin-left: 8px;
   display: flex;
   align-items: center;
-  opacity: 0;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  transform: translateX(-8px);
-}
-
-.session-item:hover .session-actions {
+  gap: 4px;
   opacity: 1;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   transform: translateX(0);
 }
 

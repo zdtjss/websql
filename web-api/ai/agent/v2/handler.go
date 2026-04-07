@@ -61,17 +61,17 @@ func getDBInfo(connID string) (string, string, string) {
 	if err != nil || len(cfgList) == 0 {
 		return "", "", ""
 	}
-	
+
 	dbSchema := ""
 	if cfgList[0].DbSchema != nil {
 		dbSchema = *cfgList[0].DbSchema
 	}
-	
+
 	dbVersion := ""
 	if cfgList[0].DbVersion != nil {
 		dbVersion = *cfgList[0].DbVersion
 	}
-	
+
 	return cfgList[0].DbType, dbSchema, dbVersion
 }
 
@@ -211,10 +211,30 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 		return
 	}
 	cfg := &cfgList[0]
-	cfg.Pwd = utils.AESDecode(cfg.Pwd)
+
+	// 解码密码
+	pwd := ""
+	if cfg.Pwd != nil {
+		pwd = utils.AESDecode(*cfg.Pwd)
+	}
+
+	// 处理可能为 nil 的字段
+	name := ""
+	if cfg.Name != nil {
+		name = *cfg.Name
+	}
+	cfgUser := ""
+	if cfg.User != nil {
+		cfgUser = *cfg.User
+	}
+	url := ""
+	if cfg.Url != nil {
+		url = *cfg.Url
+	}
+
 	conn := config.GetConn(&config.DBParam{
-		Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType,
-		User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url,
+		Id: cfg.Id, Name: name, DbType: cfg.DbType,
+		User: cfgUser, Pwd: pwd, Url: url,
 	})
 	if conn == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库连接不存在"})
@@ -273,18 +293,6 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 	flush(StreamChunk{Type: "done"})
 }
 
-// Chat 非流式聊天接口（备用）
-func (h *Handler) Chat(c *gin.Context) {
-	var req ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// TODO: 实现非流式版本
-	c.JSON(http.StatusOK, gin.H{"message": "not implemented"})
-}
-
 // HandleGetSessions 获取当前用户的会话列表
 func (h *Handler) HandleGetSessions(c *gin.Context) {
 	if h.sessions == nil {
@@ -296,19 +304,24 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	user := admin.GetUser(authorization)
 	if user == nil || user.Id == "" {
+		log.Printf("[Handler:HandleGetSessions] 用户认证失败\n")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
+	log.Printf("[Handler:HandleGetSessions] 用户认证成功 - userID=%s, loginName=%s\n", user.Id, user.LoginName)
 
-	// 只返回当前用户的会话
+	// 权限验证：确保用户只能访问自己的会话
+	log.Printf("[Handler:HandleGetSessions] 开始获取用户会话列表 - userID=%s\n", user.Id)
 	metas, err := h.sessions.ListByUserID(user.Id)
 	if err != nil {
+		log.Printf("[Handler:HandleGetSessions] 获取会话列表失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if metas == nil {
 		metas = []SessionMeta{}
 	}
+	log.Printf("[Handler:HandleGetSessions] 获取会话列表成功 - count=%d\n", len(metas))
 	c.JSON(http.StatusOK, gin.H{"sessions": metas})
 }
 
@@ -320,8 +333,31 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		return
 	}
 
+	// 从 Authorization header 获取用户 ID
+	authorization := c.GetHeader("Authorization")
+	user := admin.GetUser(authorization)
+	if user == nil || user.Id == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		return
+	}
+
 	if h.sessions == nil {
 		c.JSON(http.StatusOK, gin.H{"session": nil})
+		return
+	}
+
+	// 权限验证：确保用户只能访问自己的会话
+	sessDB, err := GetSessionByID(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if sessDB == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+		return
+	}
+	if sessDB.UserID != user.Id {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问此会话"})
 		return
 	}
 
@@ -338,6 +374,29 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		return
+	}
+
+	// 从 Authorization header 获取用户 ID
+	authorization := c.GetHeader("Authorization")
+	user := admin.GetUser(authorization)
+	if user == nil || user.Id == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		return
+	}
+
+	// 权限验证：确保用户只能删除自己的会话
+	sessDB, err := GetSessionByID(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if sessDB == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+		return
+	}
+	if sessDB.UserID != user.Id {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权删除此会话"})
 		return
 	}
 

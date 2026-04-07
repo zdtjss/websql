@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -49,7 +50,7 @@ func (m *SQLSecurityMiddleware) WrapInvokableToolCall(
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				// 返回特定错误，这个错误会被 event.Err 捕获
 				return "", &DangerousSQLError{
-					SQL: input.SQL,
+					SQL: strings.TrimSpace(input.SQL),
 				}
 			}
 
@@ -58,7 +59,7 @@ func (m *SQLSecurityMiddleware) WrapInvokableToolCall(
 				log.Printf("[SQLSecurityMiddleware] 非危险 SQL 但需要确认 - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return "", &DangerousSQLError{
-					SQL: input.SQL,
+					SQL: strings.TrimSpace(input.SQL),
 				}
 			}
 			log.Printf("[SQLSecurityMiddleware] SQL 检查通过，允许执行\n")
@@ -94,7 +95,7 @@ func (m *SQLSecurityMiddleware) WrapStreamableToolCall(
 				log.Printf("[SQLSecurityMiddleware:Stream] 检测到危险 SQL - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return nil, &DangerousSQLError{
-					SQL: input.SQL,
+					SQL: strings.TrimSpace(input.SQL),
 				}
 			}
 
@@ -103,7 +104,7 @@ func (m *SQLSecurityMiddleware) WrapStreamableToolCall(
 				log.Printf("[SQLSecurityMiddleware:Stream] 非危险 SQL 但需要确认 - sql=%s\n", input.SQL)
 				ctx = context.WithValue(ctx, dangerousSQLKey, input.SQL)
 				return nil, &DangerousSQLError{
-					SQL: input.SQL,
+					SQL: strings.TrimSpace(input.SQL),
 				}
 			}
 			log.Printf("[SQLSecurityMiddleware:Stream] SQL 检查通过，允许执行\n")

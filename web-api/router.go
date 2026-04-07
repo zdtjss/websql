@@ -89,12 +89,11 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/ai/generateSqlStream", ai.HandleGenerateSqlStream)
 	router.POST("/ai/chat", ai.HandleChat)
 
-	// Eino 智能体路由（新版 v2）
+	// Eino 智能体路由（新版 v2，仅流式）
 	agentHandler, err := aiagentv2.NewHandler()
 	if err != nil {
 		log.Fatalf("创建 AI Agent Handler 失败：%v", err)
 	}
-	router.POST("/ai/agent/chat", agentHandler.Chat)
 	router.POST("/ai/agent/chatStream", agentHandler.ChatStream)
 	router.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 	router.GET("/ai/agent/session", agentHandler.HandleGetSession)

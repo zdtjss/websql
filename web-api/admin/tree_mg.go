@@ -90,7 +90,11 @@ func ConnBaseTree(c *gin.Context) {
 	err = config.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = '' or parent_id is null)")
 	logutils.PanicErr(err)
 	for _, conn := range firstLevelConns {
-		firstLevel = append(firstLevel, &Tree{Label: conn.Name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
+		name := ""
+		if conn.Name != nil {
+			name = *conn.Name
+		}
+		firstLevel = append(firstLevel, &Tree{Label: name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
 	}
 	utils.WriteJson(c.Writer, firstLevel)
 }
@@ -100,7 +104,11 @@ func findChild(curNode *Tree, nodes []*Tree, connMap map[string][]*ConnCfgBase) 
 	conns, ok := connMap[curNode.Id]
 	if ok {
 		for _, conn := range conns {
-			childConn = append(childConn, &Tree{Label: conn.Name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
+			name := ""
+			if conn.Name != nil {
+				name = *conn.Name
+			}
+			childConn = append(childConn, &Tree{Label: name, Parent: conn.ParentId, Id: conn.Id, Type: TREE_NODE_TYPE_CONN})
 		}
 	}
 	curNode.Children = append(curNode.Children, childConn...)

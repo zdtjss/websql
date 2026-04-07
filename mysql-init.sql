@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS t_ai_config (
     updated_at  DATETIME NOT NULL
 );
 
-create table if not exists t_system_config (
+CREATE TABLE IF NOT EXISTS t_system_config (
 	id varchar(36) primary key,
 	config_key varchar(64) not null unique,
 	config_value text,
@@ -88,6 +88,16 @@ create table if not exists t_system_config (
 	remark text,
 	create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS t_ai_session (
+	id varchar(36) primary key,
+	user_id varchar(36) not null,
+	title varchar(256),
+	file_path varchar(512),
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+	INDEX idx_user_id (user_id)
 );
 
 insert ignore into t_system_config (id, config_key, config_value, config_type, remark) values 

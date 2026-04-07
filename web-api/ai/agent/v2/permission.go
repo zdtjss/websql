@@ -56,7 +56,7 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 	powerList := admin.FindUserPowerDetails(userId)
 
 	// 调试日志
-	fmt.Printf("[PermissionDebug] userId=%s, connId=%s, schemaName=%s, powerCount=%d\n", userId, connId, schemaName, len(powerList))
+	log.Printf("[PermissionDebug] userId=%s, connId=%s, schemaName=%s, powerCount=%d\n", userId, connId, schemaName, len(powerList))
 
 	// 收集各级权限
 	hasConnPermission := false
@@ -83,7 +83,7 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 			columnName = *power.ColumnName
 		}
 
-		fmt.Printf("[PermissionDebug] power: level=%s, schema=%s, table=%s, column=%s\n",
+		log.Printf("[PermissionDebug] power: level=%s, schema=%s, table=%s, column=%s\n",
 			power.Level, schemaName, tableName, columnName)
 
 		switch power.Level {
@@ -119,27 +119,27 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 	}
 
 	// 调试日志 - 权限收集结果
-	fmt.Printf("[PermissionDebug] hasConnPermission=%v, hasSchemaPermission=%v, hasAnySchemaConfig=%v, hasAnyTableConfig=%v\n",
+	log.Printf("[PermissionDebug] hasConnPermission=%v, hasSchemaPermission=%v, hasAnySchemaConfig=%v, hasAnyTableConfig=%v\n",
 		hasConnPermission, hasSchemaPermission, hasAnySchemaConfig, hasAnyTableConfig)
-	fmt.Printf("[PermissionDebug] AllowedTables=%v, AllowedColumns=%v\n", scope.AllowedTables, scope.AllowedColumns)
+	log.Printf("[PermissionDebug] AllowedTables=%v, AllowedColumns=%v\n", scope.AllowedTables, scope.AllowedColumns)
 
 	// 第二遍：应用向下继承规则
 	// 1. 如果有 conn 权限且 conn 下没有配置 schema，则有所有权限
 	if hasConnPermission && !hasAnySchemaConfig {
 		scope.HasFullConnAccess = true
-		fmt.Printf("[PermissionDebug] Setting HasFullConnAccess=true\n")
+		log.Printf("[PermissionDebug] Setting HasFullConnAccess=true\n")
 		return scope
 	}
 
 	// 2. 如果有 schema 权限且 schema 下没有配置 table，则有该 schema 下所有表权限
 	if hasSchemaPermission && !hasAnyTableConfig {
 		scope.HasFullSchemaAccess = true
-		fmt.Printf("[PermissionDebug] Setting HasFullSchemaAccess=true\n")
+		log.Printf("[PermissionDebug] Setting HasFullSchemaAccess=true\n")
 		return scope
 	}
 
 	// 调试日志 - 最终结果
-	fmt.Printf("[PermissionDebug] Final: HasFullConnAccess=%v, HasFullSchemaAccess=%v\n",
+	log.Printf("[PermissionDebug] Final: HasFullConnAccess=%v, HasFullSchemaAccess=%v\n",
 		scope.HasFullConnAccess, scope.HasFullSchemaAccess)
 
 	// 3. 如果有 table 权限且 table 下没有配置 column，则有该表所有列权限（已在上一步收集）

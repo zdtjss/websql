@@ -104,10 +104,30 @@ func getConn(connId string) (*sqlx.DB, string) {
 		return nil, ""
 	}
 	cfg := &cfgList[0]
-	cfg.Pwd = utils.AESDecode(cfg.Pwd)
+
+	// 解码密码
+	pwd := ""
+	if cfg.Pwd != nil {
+		pwd = utils.AESDecode(*cfg.Pwd)
+	}
+
+	// 处理可能为 nil 的字段
+	name := ""
+	if cfg.Name != nil {
+		name = *cfg.Name
+	}
+	user := ""
+	if cfg.User != nil {
+		user = *cfg.User
+	}
+	url := ""
+	if cfg.Url != nil {
+		url = *cfg.Url
+	}
+
 	conn := config.GetConn(&config.DBParam{
-		Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType,
-		User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url,
+		Id: cfg.Id, Name: name, DbType: cfg.DbType,
+		User: user, Pwd: pwd, Url: url,
 	})
 	return conn, cfg.DbType
 }
@@ -116,7 +136,7 @@ func getConn(connId string) (*sqlx.DB, string) {
 func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 		log.Printf("[Tool:query_data] 开始执行 - connId=%s, sql=%s\n", connId, input.SQL)
-		
+
 		conn, _ := getConn(connId)
 		if conn == nil {
 			log.Printf("[Tool:query_data] 错误 - 数据库连接不存在 connId=%s\n", connId)
@@ -160,7 +180,7 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 		log.Printf("[Tool:exec_sql] 开始执行 - connId=%s, sql=%s\n", connId, input.SQL)
-		
+
 		conn, _ := getConn(connId)
 		if conn == nil {
 			log.Printf("[Tool:exec_sql] 错误 - 数据库连接不存在 connId=%s\n", connId)
@@ -176,7 +196,7 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 			if isDangerousSQL(sql) {
 				log.Printf("[Tool:exec_sql] 检测到危险 SQL，已拦截 - sql=%s\n", sql)
 				// 是危险 SQL，返回特定错误，AI 接收到后会重新生成回复引导用户确认
-				return nil, &DangerousSQLError{SQL: sql}
+				return nil, &DangerousSQLError{SQL: strings.TrimSpace(sql)}
 			}
 			// 不是危险 SQL，但也需要确认（可能是普通写操作）
 			log.Printf("[Tool:exec_sql] 非危险 SQL 但需要用户确认 - sql=%s\n", sql)
@@ -218,7 +238,7 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 func NewSchemaFunc(connId string, dbType string, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 		log.Printf("[Tool:get_table_schema] 开始执行 - connId=%s, tables=%v\n", connId, input.Tables)
-		
+
 		conn, actualDBType := getConn(connId)
 		if conn == nil {
 			log.Printf("[Tool:get_table_schema] 错误 - 数据库连接不存在 connId=%s\n", connId)
@@ -313,7 +333,7 @@ func NewExportFunc(connId string) func(ctx context.Context, input *ExportInput) 
 	return func(ctx context.Context, input *ExportInput) (*ExportOutput, error) {
 		log.Printf("[Tool:export_excel] 开始执行 - connId=%s, fileName=%s\n", connId, input.FileName)
 		log.Printf("[Tool:export_excel] SQL - %s\n", input.SQL)
-		
+
 		conn, _ := getConn(connId)
 		if conn == nil {
 			log.Printf("[Tool:export_excel] 错误 - 数据库连接不存在 connId=%s\n", connId)

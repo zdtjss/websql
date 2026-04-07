@@ -1,6 +1,6 @@
 <template>
   <div class="sql-confirm-inline" v-if="visible">
-    <el-alert :title="`操作类型：${getOperationDescription(operationType)}`"
+    <!-- <el-alert :title="`操作类型：${getOperationDescription(operationType)}`"
       :type="riskLevel === 'high' ? 'error' : riskLevel === 'medium' ? 'warning' : 'info'" :closable="false" show-icon>
       <template #default>
         <div style="display: flex; flex-direction: column; gap: 0px;">
@@ -14,7 +14,7 @@
           </div>
         </div>
       </template>
-    </el-alert>
+    </el-alert> -->
 
     <!-- SQL 语句显示 -->
     <div style="margin-top: 12px;">

@@ -25,14 +25,19 @@ func SaveConn(c *gin.Context) {
 
 	if cfg.Id == "" {
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url, db_schema, db_version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, dbSchema, dbVersion)
+		pwdEncoded := ""
+		if cfg.Pwd != nil {
+			pwdEncoded = utils.AESEncode(*cfg.Pwd)
+		}
+		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
 	} else {
-		if cfg.Pwd == "" {
+		if cfg.Pwd == nil || *cfg.Pwd == "" {
 			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
 			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, dbSchema, dbVersion, cfg.Id)
 		} else {
 			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
-			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, utils.AESEncode(cfg.Pwd), cfg.Url, dbSchema, dbVersion, cfg.Id)
+			pwdEncoded := utils.AESEncode(*cfg.Pwd)
+			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
 		}
 		config.RealseConn(dbParam)
 	}
@@ -174,7 +179,11 @@ func listConn(parentId string, userPower *UserPower) []*Tree {
 	logutils.PanicErr(err)
 	tree := make([]*Tree, len(cfgList))
 	for i, cfg := range cfgList {
-		tree[i] = &Tree{Label: cfg.Name, Id: cfg.Id, Type: TREE_NODE_TYPE_CONN}
+		label := ""
+		if cfg.Name != nil {
+			label = *cfg.Name
+		}
+		tree[i] = &Tree{Label: label, Id: cfg.Id, Type: TREE_NODE_TYPE_CONN}
 	}
 	return tree
 }
@@ -206,7 +215,7 @@ func ListConn2(c *gin.Context) {
 	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
 	for idx := range cfgList {
-		cfgList[idx].Pwd = ""
+		cfgList[idx].Pwd = nil
 	}
 	utils.WriteJson(c.Writer, cfgList)
 }
@@ -492,7 +501,14 @@ func GetConn(id string, authorization string) *sqlx.DB {
 	cfgList := []ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
 	logutils.PanicErr(err)
-	cfgList[0].Pwd = utils.AESDecode(cfgList[0].Pwd)
+
+	// 解码密码
+	pwd := ""
+	if cfgList[0].Pwd != nil {
+		pwd = utils.AESDecode(*cfgList[0].Pwd)
+	}
+	cfgList[0].Pwd = &pwd
+
 	return config.GetConn(convertToDBParam(&cfgList[0]))
 }
 
@@ -505,7 +521,23 @@ func convertToDBParam(cfg *ConnCfg) *config.DBParam {
 	if cfg.DbVersion != nil {
 		dbVersion = *cfg.DbVersion
 	}
-	return &config.DBParam{Id: cfg.Id, Name: cfg.Name, DbType: cfg.DbType, User: cfg.User, Pwd: cfg.Pwd, Url: cfg.Url, DbSchema: dbSchema, DbVersion: dbVersion}
+	name := ""
+	if cfg.Name != nil {
+		name = *cfg.Name
+	}
+	user := ""
+	if cfg.User != nil {
+		user = *cfg.User
+	}
+	pwd := ""
+	if cfg.Pwd != nil {
+		pwd = *cfg.Pwd
+	}
+	url := ""
+	if cfg.Url != nil {
+		url = *cfg.Url
+	}
+	return &config.DBParam{Id: cfg.Id, Name: name, DbType: cfg.DbType, User: user, Pwd: pwd, Url: url, DbSchema: dbSchema, DbVersion: dbVersion}
 }
 
 type ConnCfg struct {
@@ -513,18 +545,18 @@ type ConnCfg struct {
 	DbType     string  `json:"dbType" db:"db_type"`
 	ParentId   string  `json:"parentId" db:"parent_id"`
 	ParentName *string `json:"parentName" db:"parent_name"`
-	Name       string  `json:"name"`
-	User       string  `json:"user"`
-	Pwd        string  `json:"pwd"`
-	Url        string  `json:"url"`
+	Name       *string `json:"name"`
+	User       *string `json:"user"`
+	Pwd        *string `json:"pwd"`
+	Url        *string `json:"url"`
 	DbSchema   *string `json:"dbSchema" db:"db_schema"`
 	DbVersion  *string `json:"dbVersion" db:"db_version"`
 }
 
 type ConnCfgBase struct {
-	Id       string `json:"id"`
-	Name     string `json:"name"`
-	ParentId string `json:"parentId" db:"parent_id"`
+	Id       string  `json:"id"`
+	Name     *string `json:"name"`
+	ParentId string  `json:"parentId" db:"parent_id"`
 }
 
 type Tree struct {
