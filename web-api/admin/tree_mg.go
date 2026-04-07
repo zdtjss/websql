@@ -33,7 +33,7 @@ func findByParent(parentId string, userPower *UserPower) []*Tree {
 		param = append(param, parentId)
 		sql.WriteString(" parent = ?")
 	}
-	appendPmsn(&sql, "id", &param, userPower)
+	// 注意：不对目录做 appendPmsn 过滤，目录 ID 不在 Power 列表中
 	treeList := []*DirTree{}
 	err := config.Mngtdb.Select(&treeList, sql.String(), param...)
 	logutils.PanicErr(err)
@@ -42,6 +42,80 @@ func findByParent(parentId string, userPower *UserPower) []*Tree {
 		tree[i] = &Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: TREE_NODE_TYPE_DIR}
 	}
 	return tree
+}
+
+// findByParentWithPermission 查询目录节点，只返回包含用户有权限链接的目录。
+// 权限逻辑参考 ListUserConn：通过 appendPmsn 过滤 t_conn.id IN (userPower.Power)。
+// 目录 ID 不在权限列表中，所以先查所有目录，再检查每个目录下是否有授权链接。
+func findByParentWithPermission(parentId string, userPower *UserPower) []*Tree {
+	// 非远程模式不做权限过滤
+	if !config.Cfg.IsRemote {
+		return findByParent(parentId, userPower)
+	}
+
+	// 1. 查出当前层级的所有目录
+	allDirs := findByParent(parentId, userPower)
+	if len(allDirs) == 0 {
+		return allDirs
+	}
+
+	// 2. 用户无权限则返回空
+	if userPower == nil || len(userPower.Power) == 0 {
+		return []*Tree{}
+	}
+
+	// 3. 查出用户有权限的所有链接的 parent_id
+	connParam := []any{}
+	connSQL := bytes.Buffer{}
+	connSQL.WriteString("select id, parent_id from t_conn where 1 = 1 ")
+	appendPmsn(&connSQL, "id", &connParam, userPower)
+
+	type connParent struct {
+		Id       string `db:"id"`
+		ParentId string `db:"parent_id"`
+	}
+	connList := []connParent{}
+	err := config.Mngtdb.Select(&connList, connSQL.String(), connParam...)
+	logutils.PanicErr(err)
+
+	// 4. 构建「有授权链接的目录 ID」集合
+	dirsWithConn := make(map[string]bool)
+	for _, conn := range connList {
+		if conn.ParentId != "" {
+			dirsWithConn[conn.ParentId] = true
+		}
+	}
+
+	// 5. 向上传播：子目录有授权链接 → 父目录也应显示
+	allTreeNodes := []*DirTree{}
+	config.Mngtdb.Select(&allTreeNodes, "select * from t_tree")
+	parentMap := make(map[string]string) // id → parent
+	for _, node := range allTreeNodes {
+		parentMap[node.Id] = node.Parent
+	}
+	toPropagate := make([]string, 0, len(dirsWithConn))
+	for dirId := range dirsWithConn {
+		toPropagate = append(toPropagate, dirId)
+	}
+	for len(toPropagate) > 0 {
+		var next []string
+		for _, dirId := range toPropagate {
+			if pid, ok := parentMap[dirId]; ok && pid != "" && !dirsWithConn[pid] {
+				dirsWithConn[pid] = true
+				next = append(next, pid)
+			}
+		}
+		toPropagate = next
+	}
+
+	// 6. 过滤：只保留有授权链接（直接或间接）的目录
+	filtered := make([]*Tree, 0, len(allDirs))
+	for _, dir := range allDirs {
+		if dirsWithConn[dir.Id] {
+			filtered = append(filtered, dir)
+		}
+	}
+	return filtered
 }
 
 func ListDirTree(c *gin.Context) {

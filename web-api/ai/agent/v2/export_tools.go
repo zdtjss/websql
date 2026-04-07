@@ -1,106 +1,181 @@
-// Package agentv2 基于 Eino ADK 重构的 AI SQL 智能体 v2 - 导出工具集合
+// Package agentv2 — 数据导出工具集合
+//
+// 设计思路：
+//   - Excel: 使用 excelize/v2，支持数据表 + 内嵌图表
+//   - Word:  直接生成 Office Open XML（DOCX = ZIP of XML），模板填充
+//   - Chart: 使用 go-chart/v2 渲染 PNG 图片
+//   - PPT:   直接生成 Office Open XML（PPTX = ZIP of XML），模板填充
+//
+// 所有导出工具共享 queryForExport 获取数据。
 package agentv2
 
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	dbutils "go-web/utils/db"
 
-	docx "github.com/mmonterroca/docxgo/v2"
+	"github.com/jmoiron/sqlx"
 	"github.com/xuri/excelize/v2"
 )
 
-// === 导出工具输入/输出结构体 ===
+// ──────────────────────────────────────────────
+// 导出工具 Input/Output 结构体
+// ──────────────────────────────────────────────
 
-// ExportExcelInput 导出 Excel 表格的输入
 type ExportExcelInput struct {
-	SQL      string `json:"sql"`
-	FileName string `json:"fileName"`
+	SQL      string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
 }
 
-// ExportExcelOutput 导出结果
 type ExportExcelOutput struct {
 	Message     string `json:"message"`
 	RowCount    int    `json:"rowCount"`
 	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"` // "excel"
+	FileType    string `json:"fileType"`
 }
 
-// ExportExcelWithChartInput 导出带图表的 Excel 的输入
 type ExportExcelWithChartInput struct {
-	SQL        string `json:"sql"`
-	FileName   string `json:"fileName"`
-	ChartType  string `json:"chartType"` // line, bar, pie, scatter
-	XAxisField string `json:"xAxisField"`
-	YAxisField string `json:"yAxisField"`
-	ChartTitle string `json:"chartTitle"`
+	SQL        string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName   string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
+	ChartType  string `json:"chartType" jsonschema_description:"图表类型: line, bar, pie, scatter"`
+	XAxisField string `json:"xAxisField" jsonschema:"required" jsonschema_description:"X 轴字段名"`
+	YAxisField string `json:"yAxisField" jsonschema:"required" jsonschema_description:"Y 轴字段名"`
+	ChartTitle string `json:"chartTitle" jsonschema_description:"图表标题"`
 }
 
-// ExportExcelWithChartOutput 导出结果
 type ExportExcelWithChartOutput struct {
 	Message     string `json:"message"`
 	RowCount    int    `json:"rowCount"`
 	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"` // "excel_with_chart"
+	FileType    string `json:"fileType"`
 }
 
-// ExportPPTInput 导出 PPT 的输入
 type ExportPPTInput struct {
-	SQL       string `json:"sql"`
-	FileName  string `json:"fileName"`
-	Title     string `json:"title"`
-	SlideType string `json:"slideType"` // summary, table, chart
+	SQL       string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName  string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
+	Title     string `json:"title" jsonschema_description:"PPT 标题"`
+	SlideType string `json:"slideType" jsonschema_description:"幻灯片类型: summary, table, chart"`
 }
 
-// ExportPPTOutput 导出结果
 type ExportPPTOutput struct {
 	Message     string `json:"message"`
 	SlideCount  int    `json:"slideCount"`
 	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"` // "ppt"
+	FileType    string `json:"fileType"`
 }
 
-// ExportAnalysisImageInput 导出分析图表的输入
 type ExportAnalysisImageInput struct {
-	SQL        string `json:"sql"`
-	FileName   string `json:"fileName"`
-	ChartType  string `json:"chartType"` // line, bar, pie, scatter, heatmap
-	XAxisField string `json:"xAxisField"`
-	YAxisField string `json:"yAxisField"`
-	Title      string `json:"title"`
+	SQL        string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName   string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
+	ChartType  string `json:"chartType" jsonschema_description:"图表类型: line, bar, pie"`
+	XAxisField string `json:"xAxisField" jsonschema:"required" jsonschema_description:"X 轴字段名"`
+	YAxisField string `json:"yAxisField" jsonschema:"required" jsonschema_description:"Y 轴字段名"`
+	Title      string `json:"title" jsonschema_description:"图表标题"`
 }
 
-// ExportAnalysisImageOutput 导出结果
 type ExportAnalysisImageOutput struct {
 	Message     string `json:"message"`
 	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"` // "image"
-	Format      string `json:"format"`   // "png" or "jpg"
+	FileType    string `json:"fileType"`
+	Format      string `json:"format"`
 }
 
-// ExportAnalysisDocxInput 导出 Word 分析报告的输入
 type ExportAnalysisDocxInput struct {
-	SQL          string   `json:"sql"`
-	FileName     string   `json:"fileName"`
-	Title        string   `json:"title"`
-	Sections     []string `json:"sections"`
-	IncludeChart bool     `json:"includeChart"`
+	SQL          string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName     string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
+	Title        string `json:"title" jsonschema_description:"报告标题"`
+	IncludeChart bool   `json:"includeChart" jsonschema_description:"是否包含图表"`
 }
 
-// ExportAnalysisDocxOutput 导出结果
 type ExportAnalysisDocxOutput struct {
 	Message     string `json:"message"`
 	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"` // "docx"
+	FileType    string `json:"fileType"`
 }
 
-// === 导出工具实现函数 ===
+// ──────────────────────────────────────────────
+// 公共：查询数据 + 文件名处理
+// ──────────────────────────────────────────────
 
-// NewExportExcelFunc 创建导出 Excel 表格的工具函数
+// queryResult 查询结果
+type queryResult struct {
+	Columns []string
+	Data    []map[string]any
+}
+
+// queryForExport 执行 SQL 并返回列名 + 数据
+func queryForExport(conn *sqlx.DB, sql string) (*queryResult, error) {
+	sql = strings.TrimSpace(sql)
+	if sql == "" {
+		return nil, fmt.Errorf("SQL 不能为空")
+	}
+	if !strings.HasPrefix(strings.ToUpper(sql), "SELECT") {
+		return nil, fmt.Errorf("导出仅支持 SELECT 查询")
+	}
+
+	rows, err := conn.Queryx(sql)
+	if err != nil {
+		return nil, fmt.Errorf("查询失败：%w", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("获取列信息失败：%w", err)
+	}
+
+	data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
+	return &queryResult{Columns: cols, Data: data}, nil
+}
+
+// sanitizeFileName 清理文件名，去除常见扩展名
+func sanitizeFileName(name, defaultPrefix string) string {
+	if name == "" {
+		return fmt.Sprintf("%s_%s", defaultPrefix, time.Now().Format("20060102_150405"))
+	}
+	for _, ext := range []string{".xlsx", ".xls", ".csv", ".docx", ".pptx", ".png", ".jpg"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// ensureExportsDir 确保 exports 目录存在
+func ensureExportsDir() {
+	os.MkdirAll("exports", 0755)
+}
+
+// colIndex 查找列名在列列表中的索引
+func colIndex(cols []string, name string) int {
+	for i, c := range cols {
+		if c == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// colLetter 将 0-based 列索引转为 Excel 列字母 (0→A, 1→B, ..., 25→Z, 26→AA)
+func colLetter(idx int) string {
+	result := ""
+	for {
+		result = string(rune('A'+idx%26)) + result
+		idx = idx/26 - 1
+		if idx < 0 {
+			break
+		}
+	}
+	return result
+}
+
+// ──────────────────────────────────────────────
+// Excel 导出（纯数据）
+// ──────────────────────────────────────────────
+
 func NewExportExcelFunc(connID string) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
 	return func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
 		conn, _ := getConn(connID)
@@ -108,87 +183,39 @@ func NewExportExcelFunc(connID string) func(ctx context.Context, input *ExportEx
 			return nil, fmt.Errorf("数据库连接不存在")
 		}
 
-		sql := strings.TrimSpace(input.SQL)
-
-		// 导出工具只验证是否为空
-		if sql == "" {
-			return nil, fmt.Errorf("SQL 不能为空")
-		}
-
-		// 不限制 SQL 类型，因为导出可能需要复杂的查询
-		// 但建议以 SELECT 开头
-		if !strings.HasPrefix(strings.ToUpper(sql), "SELECT") {
-			return nil, fmt.Errorf("导出功能仅支持 SELECT 查询语句")
-		}
-
-		rows, err := conn.Queryx(sql)
+		qr, err := queryForExport(conn, input.SQL)
 		if err != nil {
-			return nil, fmt.Errorf("导出查询失败：%w", err)
-		}
-		defer rows.Close()
-
-		cols, err := rows.Columns()
-		if err != nil {
-			return nil, fmt.Errorf("获取列信息失败：%w", err)
+			return nil, err
 		}
 
-		// 创建 Excel 文件
-		excel := excelize.NewFile()
-		defer excel.Close()
+		f := excelize.NewFile()
+		defer f.Close()
 
-		sw, err := excel.NewStreamWriter("Sheet1")
-		if err != nil {
-			return nil, fmt.Errorf("创建 Excel 写入器失败：%w", err)
-		}
+		writeExcelSheet(f, "Sheet1", qr)
 
-		// 写表头
-		header := make([]interface{}, len(cols))
-		for i, colName := range cols {
-			header[i] = colName
-		}
-		sw.SetRow("A1", header)
-
-		// 写数据
-		data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
-		for rowIdx, row := range data {
-			rowData := make([]interface{}, len(cols))
-			for colIdx, col := range cols {
-				if v, ok := row[col]; ok {
-					rowData[colIdx] = v
-				}
-			}
-			cell := fmt.Sprintf("A%d", rowIdx+2)
-			sw.SetRow(cell, rowData)
-		}
-		sw.Flush()
-
-		// 生成文件名并保存
-		fileName := input.FileName
-		if fileName == "" {
-			fileName = fmt.Sprintf("export_%s", time.Now().Format("20060102_150405"))
-		}
-		fileName = strings.TrimSuffix(fileName, ".csv")
-		fileName = strings.TrimSuffix(fileName, ".xlsx")
-		fileName = strings.TrimSuffix(fileName, ".xls")
-
-		os.MkdirAll("exports", 0755)
+		fileName := sanitizeFileName(input.FileName, "export")
+		ensureExportsDir()
 		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
-		if err := excel.SaveAs(filePath); err != nil {
-			return nil, fmt.Errorf("保存 Excel 文件失败：%w", err)
+		if err := f.SaveAs(filePath); err != nil {
+			return nil, fmt.Errorf("保存 Excel 失败：%w", err)
 		}
 
-		downloadURL := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		log.Printf("[Tool:export_excel] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
 
 		return &ExportExcelOutput{
-			Message:     fmt.Sprintf("已导出 %d 条数据到 Excel 文件，[点击下载](%s)", len(data), downloadURL),
-			RowCount:    len(data),
-			DownloadURL: downloadURL,
+			Message:     fmt.Sprintf("已导出 %d 条数据，[点击下载](%s)", len(qr.Data), url),
+			RowCount:    len(qr.Data),
+			DownloadURL: url,
 			FileType:    "excel",
 		}, nil
 	}
 }
 
-// NewExportExcelWithChartFunc 创建导出带图表的 Excel 的工具函数
+// ──────────────────────────────────────────────
+// Excel + 图表导出
+// ──────────────────────────────────────────────
+
 func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
 	return func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
 		conn, _ := getConn(connID)
@@ -196,118 +223,89 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 			return nil, fmt.Errorf("数据库连接不存在")
 		}
 
-		sql := strings.TrimSpace(input.SQL)
-		rows, err := conn.Queryx(sql)
+		qr, err := queryForExport(conn, input.SQL)
 		if err != nil {
-			return nil, fmt.Errorf("导出查询失败：%w", err)
-		}
-		defer rows.Close()
-
-		cols, err := rows.Columns()
-		if err != nil {
-			return nil, fmt.Errorf("获取列信息失败：%w", err)
+			return nil, err
 		}
 
-		// 创建 Excel 文件
-		excel := excelize.NewFile()
-		defer excel.Close()
+		f := excelize.NewFile()
+		defer f.Close()
 
-		sw, err := excel.NewStreamWriter("Sheet1")
-		if err != nil {
-			return nil, fmt.Errorf("创建 Excel 写入器失败：%w", err)
-		}
+		// 写数据到 Sheet1
+		writeExcelSheet(f, "Sheet1", qr)
 
-		// 写表头
-		header := make([]interface{}, len(cols))
-		for i, colName := range cols {
-			header[i] = colName
-		}
-		sw.SetRow("A1", header)
-
-		// 写数据
-		data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
-		for rowIdx, row := range data {
-			rowData := make([]interface{}, len(cols))
-			for colIdx, col := range cols {
-				if v, ok := row[col]; ok {
-					rowData[colIdx] = v
+		// 查找 X/Y 轴列索引
+		xIdx := colIndex(qr.Columns, input.XAxisField)
+		yIdx := colIndex(qr.Columns, input.YAxisField)
+		if xIdx == -1 || yIdx == -1 {
+			// 如果找不到精确匹配，尝试模糊匹配
+			for i, c := range qr.Columns {
+				cl := strings.ToLower(c)
+				if xIdx == -1 && strings.Contains(cl, strings.ToLower(input.XAxisField)) {
+					xIdx = i
+				}
+				if yIdx == -1 && strings.Contains(cl, strings.ToLower(input.YAxisField)) {
+					yIdx = i
 				}
 			}
-			cell := fmt.Sprintf("A%d", rowIdx+2)
-			sw.SetRow(cell, rowData)
 		}
-		sw.Flush()
-
-		// 添加图表（简化版）
-		chartType := input.ChartType
-		if chartType == "" {
-			chartType = "line"
+		if xIdx == -1 || yIdx == -1 {
+			return nil, fmt.Errorf("未找到 X 轴字段 '%s' 或 Y 轴字段 '%s'，可用列：%s",
+				input.XAxisField, input.YAxisField, strings.Join(qr.Columns, ", "))
 		}
 
-		// 查找 X 轴和 Y 轴字段的索引
-		xIndex := -1
-		yIndex := -1
-		for i, col := range cols {
-			if col == input.XAxisField {
-				xIndex = i
-			}
-			if col == input.YAxisField {
-				yIndex = i
-			}
+		rowCount := len(qr.Data)
+		xCol := colLetter(xIdx)
+		yCol := colLetter(yIdx)
+
+		chartTitle := input.ChartTitle
+		if chartTitle == "" {
+			chartTitle = fmt.Sprintf("%s vs %s", input.XAxisField, input.YAxisField)
 		}
 
-		if xIndex == -1 || yIndex == -1 {
-			return nil, fmt.Errorf("未找到指定的 X 轴或 Y 轴字段")
-		}
-
-		// 创建图表（使用 excelize 内置图表功能）
 		chart := &excelize.Chart{
-			Type: getChartType(chartType),
+			Type: getChartType(input.ChartType),
 			Series: []excelize.ChartSeries{
 				{
-					Name:       "Sheet1!$B$1",
-					Categories: "Sheet1!$" + string(rune('A'+xIndex)) + "$2:$" + string(rune('A'+xIndex)) + fmt.Sprintf("$%d", len(data)+1),
-					Values:     "Sheet1!$" + string(rune('A'+yIndex)) + "$2:$" + string(rune('A'+yIndex)) + fmt.Sprintf("$%d", len(data)+1),
+					Name:       fmt.Sprintf("Sheet1!$%s$1", yCol),
+					Categories: fmt.Sprintf("Sheet1!$%s$2:$%s$%d", xCol, xCol, rowCount+1),
+					Values:     fmt.Sprintf("Sheet1!$%s$2:$%s$%d", yCol, yCol, rowCount+1),
 				},
 			},
-			Title: []excelize.RichTextRun{
-				{Text: input.ChartTitle},
+			Title: []excelize.RichTextRun{{Text: chartTitle}},
+			PlotArea: excelize.ChartPlotArea{
+				ShowVal: true,
 			},
 		}
 
-		// 在第二个 sheet 中创建图表
-		excel.NewSheet("Chart")
-		if err := excel.AddChart("Chart", "A1", chart); err != nil {
-			return nil, fmt.Errorf("添加图表失败：%w", err)
+		// 图表放在数据右侧
+		chartCell := fmt.Sprintf("%s1", colLetter(len(qr.Columns)+1))
+		if err := f.AddChart("Sheet1", chartCell, chart); err != nil {
+			log.Printf("[Tool:export_excel_chart] 添加图表失败 - err=%v\n", err)
+			// 图表失败不影响数据导出
 		}
 
-		// 生成文件名并保存
-		fileName := input.FileName
-		if fileName == "" {
-			fileName = fmt.Sprintf("chart_%s", time.Now().Format("20060102_150405"))
-		}
-		fileName = strings.TrimSuffix(fileName, ".xlsx")
-
-		os.MkdirAll("exports", 0755)
+		fileName := sanitizeFileName(input.FileName, "chart")
+		ensureExportsDir()
 		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
-		if err := excel.SaveAs(filePath); err != nil {
-			return nil, fmt.Errorf("保存 Excel 文件失败：%w", err)
+		if err := f.SaveAs(filePath); err != nil {
+			return nil, fmt.Errorf("保存 Excel 失败：%w", err)
 		}
 
-		downloadURL := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, url=%s\n", rowCount, url)
 
 		return &ExportExcelWithChartOutput{
-			Message:     fmt.Sprintf("已生成带图表的 Excel 文件（%d 条数据），[点击下载](%s)", len(data), downloadURL),
-			RowCount:    len(data),
-			DownloadURL: downloadURL,
+			Message:     fmt.Sprintf("已生成带 %s 图表的 Excel（%d 条数据），[点击下载](%s)", input.ChartType, rowCount, url),
+			RowCount:    rowCount,
+			DownloadURL: url,
 			FileType:    "excel_with_chart",
 		}, nil
 	}
 }
 
-// getChartType 将字符串转换为 excelize 图表类型
-func getChartType(chartType string) excelize.ChartType {
-	switch chartType {
+func getChartType(t string) excelize.ChartType {
+	switch strings.ToLower(t) {
 	case "bar":
 		return excelize.Col
 	case "pie":
@@ -319,21 +317,10 @@ func getChartType(chartType string) excelize.ChartType {
 	}
 }
 
-// NewExportPPTFunc 创建导出 PPT 的工具函数
-// TODO: 需要安装 OfficeForge 并创建模板文件
-func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
-	return func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
-		// 暂时返回提示信息
-		return &ExportPPTOutput{
-			Message:     "PPT 生成功能待实现（需要使用 OfficeForge 库并创建模板文件）",
-			SlideCount:  0,
-			DownloadURL: "",
-			FileType:    "ppt",
-		}, nil
-	}
-}
+// ──────────────────────────────────────────────
+// 分析图表导出（PNG）— 使用 go-chart
+// ──────────────────────────────────────────────
 
-// NewExportAnalysisImageFunc 创建导出分析图表的工具函数
 func NewExportAnalysisImageFunc(connID string) func(ctx context.Context, input *ExportAnalysisImageInput) (*ExportAnalysisImageOutput, error) {
 	return func(ctx context.Context, input *ExportAnalysisImageInput) (*ExportAnalysisImageOutput, error) {
 		conn, _ := getConn(connID)
@@ -341,33 +328,46 @@ func NewExportAnalysisImageFunc(connID string) func(ctx context.Context, input *
 			return nil, fmt.Errorf("数据库连接不存在")
 		}
 
-		sql := strings.TrimSpace(input.SQL)
-		rows, err := conn.Queryx(sql)
+		qr, err := queryForExport(conn, input.SQL)
 		if err != nil {
-			return nil, fmt.Errorf("导出查询失败：%w", err)
+			return nil, err
 		}
-		defer rows.Close()
 
-		data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
-		_ = data
-
-		// TODO: 实现图表生成逻辑（需要深入研究 go-chart API）
-		fileName := input.FileName
-		if fileName == "" {
-			fileName = fmt.Sprintf("chart_%s", time.Now().Format("20060102_150405"))
+		xIdx := colIndex(qr.Columns, input.XAxisField)
+		yIdx := colIndex(qr.Columns, input.YAxisField)
+		if xIdx == -1 || yIdx == -1 {
+			return nil, fmt.Errorf("未找到 X 轴字段 '%s' 或 Y 轴字段 '%s'", input.XAxisField, input.YAxisField)
 		}
-		fileName = strings.TrimSuffix(fileName, ".png")
+
+		fileName := sanitizeFileName(input.FileName, "chart")
+		ensureExportsDir()
+		filePath := fmt.Sprintf("exports/%s.png", fileName)
+
+		title := input.Title
+		if title == "" {
+			title = fmt.Sprintf("%s vs %s", input.XAxisField, input.YAxisField)
+		}
+
+		if err := renderChartPNG(qr, xIdx, yIdx, title, input.ChartType, filePath); err != nil {
+			return nil, fmt.Errorf("生成图表失败：%w", err)
+		}
+
+		url := fmt.Sprintf("/exports/%s.png", fileName)
+		log.Printf("[Tool:export_image] 成功 - url=%s\n", url)
 
 		return &ExportAnalysisImageOutput{
-			Message:     "图表生成功能开发中（框架已完成，待实现具体生成逻辑）",
-			DownloadURL: "",
+			Message:     fmt.Sprintf("已生成分析图表，[点击下载](%s)", url),
+			DownloadURL: url,
 			FileType:    "image",
 			Format:      "png",
 		}, nil
 	}
 }
 
-// NewExportAnalysisDocxFunc 创建导出 Word 报告的工具函数
+// ──────────────────────────────────────────────
+// Word 报告导出（DOCX = ZIP of XML）
+// ──────────────────────────────────────────────
+
 func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
 	return func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
 		conn, _ := getConn(connID)
@@ -375,121 +375,115 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 			return nil, fmt.Errorf("数据库连接不存在")
 		}
 
-		sql := strings.TrimSpace(input.SQL)
-		rows, err := conn.Queryx(sql)
+		qr, err := queryForExport(conn, input.SQL)
 		if err != nil {
-			return nil, fmt.Errorf("查询失败：%w", err)
-		}
-		defer rows.Close()
-
-		cols, err := rows.Columns()
-		if err != nil {
-			return nil, fmt.Errorf("获取列信息失败：%w", err)
+			return nil, err
 		}
 
-		data := dbutils.GetResultRowsForExport(conn.DriverName(), rows)
-
-		// 使用 docx 创建 Word 文档
-		builder := docx.NewDocumentBuilder(
-			docx.WithTitle(input.Title),
-			docx.WithDefaultFont("Arial"),
-			docx.WithDefaultFontSize(22), // 11pt
-		)
-
-		// 添加标题
-		builder.AddParagraph().
-			Text(input.Title).
-			Bold().
-			FontSize(32). // 16pt
-			Alignment(docx.AlignmentCenter).
-			End()
-
-		// 添加空行
-		builder.AddParagraph().Text("").End()
-
-		// 添加生成时间
-		builder.AddParagraph().
-			Text(fmt.Sprintf("生成时间：%s", time.Now().Format("2006-01-02 15:04:05"))).
-			FontSize(18). // 9pt
-			Italic().
-			End()
-
-		// 添加空行
-		builder.AddParagraph().Text("").End()
-
-		// 添加数据表格
-		if len(data) > 0 {
-			builder.AddParagraph().
-				Text("数据明细").
-				Bold().
-				FontSize(24). // 12pt
-				End()
-
-			builder.AddParagraph().Text("").End()
-
-			// 创建表格（数据 + 表头）
-			table := builder.AddTable(len(data)+1, len(cols))
-
-			// 填充表头
-			headerRow := table.Row(0)
-			for colIdx, colName := range cols {
-				cell := headerRow.Cell(colIdx)
-				cell.Text(colName).Bold().End()
-			}
-
-			// 填充数据
-			for rowIdx, row := range data {
-				tableRow := table.Row(rowIdx + 1)
-				for colIdx, col := range cols {
-					cell := tableRow.Cell(colIdx)
-					if v, ok := row[col]; ok {
-						cell.Text(fmt.Sprintf("%v", v)).End()
-					} else {
-						cell.Text("").End()
-					}
-				}
-			}
-
-			// 添加空行
-			builder.AddParagraph().Text("").End()
+		title := input.Title
+		if title == "" {
+			title = "数据分析报告"
 		}
 
-		// 添加统计信息
-		builder.AddParagraph().
-			Text("统计信息").
-			Bold().
-			FontSize(24).
-			End()
-
-		builder.AddParagraph().Text("").End()
-		builder.AddParagraph().Text(fmt.Sprintf("总记录数：%d", len(data))).End()
-		builder.AddParagraph().Text(fmt.Sprintf("列数：%d", len(cols))).End()
-
-		// 构建文档
-		doc, err := builder.Build()
-		if err != nil {
-			return nil, fmt.Errorf("构建 Word 文档失败：%w", err)
-		}
-
-		// 生成文件名并保存
-		fileName := input.FileName
-		if fileName == "" {
-			fileName = fmt.Sprintf("report_%s", time.Now().Format("20060102_150405"))
-		}
-		fileName = strings.TrimSuffix(fileName, ".docx")
-
-		os.MkdirAll("exports", 0755)
+		fileName := sanitizeFileName(input.FileName, "report")
+		ensureExportsDir()
 		filePath := fmt.Sprintf("exports/%s.docx", fileName)
-		if err := doc.SaveAs(filePath); err != nil {
-			return nil, fmt.Errorf("保存 Word 文件失败：%w", err)
+
+		// 如果需要图表，先生成 PNG
+		var chartImagePath string
+		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
+			chartImagePath = fmt.Sprintf("exports/%s_chart.png", fileName)
+			// 默认用前两列作为 X/Y
+			_ = renderChartPNG(qr, 0, 1, title, "bar", chartImagePath)
 		}
 
-		downloadURL := fmt.Sprintf("/exports/%s.docx", fileName)
+		if err := generateDocx(qr, title, chartImagePath, filePath); err != nil {
+			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
+		}
+
+		// 清理临时图表文件
+		if chartImagePath != "" {
+			os.Remove(chartImagePath)
+		}
+
+		url := fmt.Sprintf("/exports/%s.docx", fileName)
+		log.Printf("[Tool:export_docx] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
 
 		return &ExportAnalysisDocxOutput{
-			Message:     fmt.Sprintf("已生成 Word 报告（%d 条数据），[点击下载](%s)", len(data), downloadURL),
-			DownloadURL: downloadURL,
+			Message:     fmt.Sprintf("已生成 Word 报告（%d 条数据），[点击下载](%s)", len(qr.Data), url),
+			DownloadURL: url,
 			FileType:    "docx",
 		}, nil
 	}
+}
+
+// ──────────────────────────────────────────────
+// PPT 导出（PPTX = ZIP of XML）
+// ──────────────────────────────────────────────
+
+func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
+	return func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
+		conn, _ := getConn(connID)
+		if conn == nil {
+			return nil, fmt.Errorf("数据库连接不存在")
+		}
+
+		qr, err := queryForExport(conn, input.SQL)
+		if err != nil {
+			return nil, err
+		}
+
+		title := input.Title
+		if title == "" {
+			title = "数据报告"
+		}
+
+		fileName := sanitizeFileName(input.FileName, "slides")
+		ensureExportsDir()
+		filePath := fmt.Sprintf("exports/%s.pptx", fileName)
+
+		slideCount, err := generatePptx(qr, title, filePath)
+		if err != nil {
+			return nil, fmt.Errorf("生成 PPT 失败：%w", err)
+		}
+
+		url := fmt.Sprintf("/exports/%s.pptx", fileName)
+		log.Printf("[Tool:export_ppt] 成功 - slides=%d, url=%s\n", slideCount, url)
+
+		return &ExportPPTOutput{
+			Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
+			SlideCount:  slideCount,
+			DownloadURL: url,
+			FileType:    "ppt",
+		}, nil
+	}
+}
+
+// ──────────────────────────────────────────────
+// Excel 写入辅助
+// ──────────────────────────────────────────────
+
+// writeExcelSheet 将查询结果写入指定 sheet
+func writeExcelSheet(f *excelize.File, sheet string, qr *queryResult) {
+	sw, err := f.NewStreamWriter(sheet)
+	if err != nil {
+		return
+	}
+
+	header := make([]any, len(qr.Columns))
+	for i, c := range qr.Columns {
+		header[i] = c
+	}
+	sw.SetRow("A1", header)
+
+	for rowIdx, row := range qr.Data {
+		rowData := make([]any, len(qr.Columns))
+		for colIdx, col := range qr.Columns {
+			if v, ok := row[col]; ok {
+				rowData[colIdx] = v
+			}
+		}
+		sw.SetRow(fmt.Sprintf("A%d", rowIdx+2), rowData)
+	}
+	sw.Flush()
 }

@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS t_ai_session (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- SQL 审计日志表（记录危险 SQL 的执行）
+CREATE TABLE IF NOT EXISTS t_sql_audit (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
+	user_name TEXT,
+	conn_id TEXT NOT NULL,
+	session_id TEXT,
+	sql_text TEXT NOT NULL,
+	sql_type TEXT,
+	risk_level TEXT,
+	status TEXT NOT NULL DEFAULT 'confirmed',
+	affected_rows INTEGER DEFAULT 0,
+	exec_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+	confirm_time DATETIME,
+	error_msg TEXT
+);
+
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000001', 'ai.provider', 'ollama', 'ai', 'AI 服务提供商：ollama, openai 等');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000002', 'ai.baseUrl', 'https://ollama.com', 'ai', 'AI 服务基础 URL');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000003', 'ai.model', 'deepseek-v3.2', 'ai', 'AI 模型名称');

@@ -121,7 +121,9 @@ func ShowTree(c *gin.Context) {
 	switch nextType {
 	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
-			data = findByParent(key, userPower)
+			// 第一层级：目录 + 顶层链接
+			// 目录需要特殊处理：只显示包含用户有权限链接的目录
+			data = findByParentWithPermission(key, userPower)
 			if len(data) == 0 || data[0] == nil {
 				data = listConn(key, userPower)
 			}
@@ -235,13 +237,14 @@ func ListUserConn(c *gin.Context) {
 		ConnId   string  `json:"connId" db:"id"`
 		Name     string  `json:"name" db:"name"`
 		DbSchema *string `json:"dbSchema" db:"db_schema"`
+		DirName  *string `json:"dirName" db:"dir_name"`
 	}
 
 	dtoList := []UserConnDTO{}
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select id, name, db_schema from t_conn where 1 = 1 ")
-	appendPmsn(&sql, "id", &param, userPower)
+	sql.WriteString("select c.id, c.name, c.db_schema, t.label as dir_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 order by t.label,c.name ")
+	appendPmsn(&sql, "c.id", &param, userPower)
 
 	err := config.Mngtdb.Select(&dtoList, sql.String(), param...)
 	logutils.PanicErr(err)
@@ -255,7 +258,7 @@ func ListTableNames(c *gin.Context) {
 	schema := c.Query("schema")
 
 	if connId == "" {
-		utils.WriteJson(c.Writer, []string{})
+		utils.WriteJson(c.Writer, []any{})
 		return
 	}
 
@@ -266,19 +269,19 @@ func ListTableNames(c *gin.Context) {
 	tables := queryTableInfo(connId, schema, authorization)
 
 	// 根据用户权限过滤表
-	log.Printf("ListTableNames: connId=%s, schema=%s, userPower=%v, tables count=%d",
-		connId, schema, userPower, len(tables))
-
 	filteredTables := filterTablesByPermission(tables, connId, schema, userPower)
 
-	log.Printf("ListTableNames: filteredTables count=%d", len(filteredTables))
-
-	tableNames := make([]string, len(filteredTables))
+	// 返回包含表名和注释的对象列表
+	type TableNameDTO struct {
+		Name    string `json:"name"`
+		Comment string `json:"comment"`
+	}
+	result := make([]TableNameDTO, len(filteredTables))
 	for i, table := range filteredTables {
-		tableNames[i] = table.Name
+		result[i] = TableNameDTO{Name: table.Name, Comment: table.Comment}
 	}
 
-	utils.WriteJson(c.Writer, tableNames)
+	utils.WriteJson(c.Writer, result)
 }
 
 // filterTablesByPermission 根据用户权限过滤表列表

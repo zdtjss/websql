@@ -85,11 +85,8 @@ func MainRegister(router *gin.Engine) {
 	router.POST("/ai/config/save", ai.HandleSaveConfig)
 	router.GET("/ai/config/get", ai.HandleGetConfig)
 	router.POST("/ai/config/test", ai.HandleTestConfig)
-	router.POST("/ai/generateSql", ai.HandleGenerateSql)
-	router.POST("/ai/generateSqlStream", ai.HandleGenerateSqlStream)
-	router.POST("/ai/chat", ai.HandleChat)
 
-	// Eino 智能体路由（新版 v2，仅流式）
+	// Eino 智能体路由（v2）
 	agentHandler, err := aiagentv2.NewHandler()
 	if err != nil {
 		log.Fatalf("创建 AI Agent Handler 失败：%v", err)
@@ -98,6 +95,7 @@ func MainRegister(router *gin.Engine) {
 	router.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 	router.GET("/ai/agent/session", agentHandler.HandleGetSession)
 	router.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
+	router.GET("/ai/agent/audit/logs", agentHandler.HandleGetSQLAuditLogs)
 
 	router.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})

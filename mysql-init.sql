@@ -100,6 +100,25 @@ CREATE TABLE IF NOT EXISTS t_ai_session (
 	INDEX idx_user_id (user_id)
 );
 
+-- SQL 审计日志表（记录危险 SQL 的执行）
+CREATE TABLE IF NOT EXISTS t_sql_audit (
+	id varchar(36) primary key,
+	user_id varchar(36) not null,
+	user_name varchar(64),
+	conn_id varchar(36) not null,
+	session_id varchar(128),
+	sql_text text not null,
+	sql_type varchar(32),
+	risk_level varchar(16),
+	status varchar(32) not null default 'confirmed',
+	affected_rows int default 0,
+	exec_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	confirm_time TIMESTAMP NULL,
+	error_msg text,
+	INDEX idx_user_id (user_id),
+	INDEX idx_exec_time (exec_time)
+);
+
 insert ignore into t_system_config (id, config_key, config_value, config_type, remark) values 
 ('825683877400000001', 'ai.provider', 'ollama', 'ai', 'AI 服务提供商：ollama, openai 等'),
 ('825683877400000002', 'ai.baseUrl', 'https://ollama.com', 'ai', 'AI 服务基础 URL'),

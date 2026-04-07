@@ -112,13 +112,17 @@
             <div class="table-selector-container" v-if="connList.length > 1">
               <label class="table-selector-label">数据库</label>
               <el-select v-model="connId" filterable placeholder="选择数据库" class="table-selector" @change="handleConnChange">
-                <el-option v-for="conn in connList" :key="conn.connId" :label="conn.name" :value="conn.connId" />
+                <el-option v-for="conn in connList" :key="conn.connId"
+                  :label="conn.dirName ? conn.name + '  /  ' + conn.dirName : conn.name"
+                  :value="conn.connId" />
               </el-select>
             </div>
             <div class="table-selector-container" :class="{ 'full-width': connList.length <= 1 }">
               <label class="table-selector-label">相关表</label>
               <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
-                <el-option v-for="table in tableList" :key="table" :label="table" :value="table" />
+                <el-option v-for="table in tableList" :key="table.name"
+                  :label="table.comment ? table.name + '（' + table.comment + '）' : table.name"
+                  :value="table.name" />
               </el-select>
             </div>
           </div>
@@ -333,10 +337,12 @@ async function loadTableList(connId, schema) {
     
     // 保留已选择的表中在新表列表中仍然存在的部分
     if (selectedTables.value.length > 0) {
-      selectedTables.value = selectedTables.value.filter(table => newTableList.includes(table))
+      const newNames = newTableList.map(t => typeof t === 'string' ? t : t.name)
+      selectedTables.value = selectedTables.value.filter(name => newNames.includes(name))
     }
     
-    tableList.value = newTableList
+    // 兼容：如果后端返回字符串数组则转为对象
+    tableList.value = newTableList.map(t => typeof t === 'string' ? { name: t, comment: '' } : t)
   } catch (e) {
     console.error('加载表列表失败:', e)
     tableList.value = []

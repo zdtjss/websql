@@ -37,6 +37,11 @@
         <el-tab-pane label="目录管理" name="dir" lazy>
           <DirManagement />
         </el-tab-pane>
+
+        <!-- SQL 审计日志 -->
+        <el-tab-pane label="SQL 审计" name="audit" lazy>
+          <SQLAuditLog />
+        </el-tab-pane>
       </el-tabs>
     </div>
   </div>
@@ -50,6 +55,7 @@ import UserManagement from './UserManagement.vue'
 import ConnManagement from './ConnManagement.vue'
 import DirManagement from './DirManagement.vue'
 import SystemConfig from './SystemConfig.vue'
+import SQLAuditLog from './SQLAuditLog.vue'
 
 const router = useRouter()
 const activeTab = ref('system')

@@ -200,9 +200,26 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
-	// 确保文件名以 .xlsx 结尾
-	if !strings.HasSuffix(fileName, ".xlsx") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件名"})
+	// 支持的文件类型
+	contentTypes := map[string]string{
+		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		".png":  "image/png",
+		".jpg":  "image/jpeg",
+	}
+
+	ext := ""
+	ct := ""
+	for e, t := range contentTypes {
+		if strings.HasSuffix(fileName, e) {
+			ext = e
+			ct = t
+			break
+		}
+	}
+	if ext == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的文件类型"})
 		return
 	}
 
@@ -215,7 +232,7 @@ func handleExportDownload(c *gin.Context) {
 	}
 
 	// 设置响应头
-	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Type", ct)
 	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
 
 	// 读取并发送文件
@@ -226,7 +243,6 @@ func handleExportDownload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// 获取文件信息
 	stat, err := file.Stat()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文件信息失败"})
@@ -234,14 +250,11 @@ func handleExportDownload(c *gin.Context) {
 	}
 	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))
 
-	// 流式传输文件内容
 	io.Copy(c.Writer, file)
-
-	// 传输完成后删除文件
 	c.Writer.Flush()
 	file.Close()
 
-	// 延迟删除文件（即使前面有错误也尝试删除）
+	// 下载后删除
 	os.Remove(filePath)
 	log.Printf("导出文件已删除：%s", filePath)
 }
