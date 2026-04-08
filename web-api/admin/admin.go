@@ -765,27 +765,83 @@ func getConnTree(roleId string) []*PermissionNode {
 		roleConnIds = getRoleConnPermissions(roleId)
 	}
 
-	// 直接返回所有连接作为扁平列表，不按树形结构组织
-	nodes := make([]*PermissionNode, len(connList))
-	for i, conn := range connList {
+	// 按目录分组组织连接
+	dirMap := make(map[string][]*ConnWithDir)
+	var noParentConns []*ConnWithDir
+	
+	for _, conn := range connList {
+		if conn.ParentName != nil && *conn.ParentName != "" {
+			if dirMap[*conn.ParentName] == nil {
+				dirMap[*conn.ParentName] = make([]*ConnWithDir, 0)
+			}
+			dirMap[*conn.ParentName] = append(dirMap[*conn.ParentName], conn)
+		} else {
+			noParentConns = append(noParentConns, conn)
+		}
+	}
+
+	// 构建目录节点及其子连接
+	nodes := make([]*PermissionNode, 0)
+	
+	// 先添加有目录的连接（目录作为父节点，连接作为子节点）
+	for dirName, conns := range dirMap {
+		dirNode := &PermissionNode{
+			Id:       fmt.Sprintf("dir::%s", dirName),
+			Label:    dirName,
+			Type:     "dir",
+			Level:    "dir",
+			ParentId: "",
+			Checked:  false,
+			Data: map[string]any{
+				"type": "dir",
+			},
+			Children: make([]*PermissionNode, 0),
+		}
+		
+		for _, conn := range conns {
+			checked := false
+			if roleId != "" && roleConnIds[conn.Id] {
+				checked = true
+			}
+			
+			name := ""
+			if conn.Name != nil {
+				name = *conn.Name
+			}
+			
+			dirNode.Children = append(dirNode.Children, &PermissionNode{
+				Id:       conn.Id,
+				Label:    name,
+				Type:     "conn",
+				Level:    "conn",
+				ParentId: dirNode.Id,
+				Checked:  checked,
+				Data: map[string]any{
+					"connId":     conn.Id,
+					"parentName": conn.ParentName,
+				},
+				Children: nil, // 使用 nil 而不是空数组，避免前端误判为有子节点
+			})
+		}
+		
+		nodes = append(nodes, dirNode)
+	}
+	
+	// 添加没有目录的连接
+	for _, conn := range noParentConns {
 		checked := false
 		if roleId != "" && roleConnIds[conn.Id] {
 			checked = true
 		}
-
-		// 构建标签：连接名 + 目录名（如果有）
+		
 		name := ""
 		if conn.Name != nil {
 			name = *conn.Name
 		}
-		label := name
-		if conn.ParentName != nil && *conn.ParentName != "" {
-			label = fmt.Sprintf("%s (%s)", name, *conn.ParentName)
-		}
-
-		nodes[i] = &PermissionNode{
+		
+		nodes = append(nodes, &PermissionNode{
 			Id:       conn.Id,
-			Label:    label,
+			Label:    name,
 			Type:     "conn",
 			Level:    "conn",
 			ParentId: conn.ParentId,
@@ -794,8 +850,8 @@ func getConnTree(roleId string) []*PermissionNode {
 				"connId":     conn.Id,
 				"parentName": conn.ParentName,
 			},
-			Children: []*PermissionNode{},
-		}
+			Children: nil, // 使用 nil 而不是空数组，避免前端误判为有子节点
+		})
 	}
 
 	return nodes

@@ -1,15 +1,5 @@
 <template>
   <div class="system-management-page">
-    <!-- 顶部导航栏 -->
-    <div class="page-header">
-      <div class="header-left">
-        <el-button @click="goBack" icon="ArrowLeft" circle>
-          <el-icon><ArrowLeft /></el-icon>
-        </el-button>
-        <h1 class="page-title">系统管理</h1>
-      </div>
-    </div>
-
     <!-- 主内容区 -->
     <div class="page-content">
       <el-tabs v-model="activeTab" type="border-card" class="system-tabs">
@@ -59,10 +49,6 @@ import SQLAuditLog from './SQLAuditLog.vue'
 
 const router = useRouter()
 const activeTab = ref('system')
-
-function goBack() {
-  router.push('/')
-}
 
 // 当前用户信息 - 从 sessionStorage 读取（App.vue 存储的）
 // 在 setup 阶段立即读取，确保在子组件初始化前就有值

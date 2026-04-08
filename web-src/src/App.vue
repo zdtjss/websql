@@ -111,11 +111,17 @@
           <div class="table-selector-row">
             <div class="table-selector-container" v-if="connList.length > 1">
               <label class="table-selector-label">数据库</label>
-              <el-select v-model="connId" filterable placeholder="选择数据库" class="table-selector" @change="handleConnChange">
-                <el-option v-for="conn in connList" :key="conn.connId"
-                  :label="conn.dirName ? conn.name + '  /  ' + conn.dirName : conn.name"
-                  :value="conn.connId" />
-              </el-select>
+              <el-tree-select
+                v-model="connId"
+                :data="processedConnList"
+                :props="{ label: 'label', value: 'value', children: 'children', disabled: 'isDir' }"
+                placeholder="选择数据库"
+                class="table-selector"
+                @change="handleConnChange"
+                filterable
+                check-strictly
+                :check-on-click-node="false"
+              />
             </div>
             <div class="table-selector-container" :class="{ 'full-width': connList.length <= 1 }">
               <label class="table-selector-label">相关表</label>
@@ -196,7 +202,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
@@ -309,15 +315,92 @@ const schema = ref('')
 const tableList = ref([])
 const connList = ref([])
 
+// 递归查找第一个可选的连接节点
+function findFirstSelectableConn(nodes) {
+  for (const node of nodes) {
+    if (!node.isDir) {
+      return node
+    }
+    if (node.children && node.children.length > 0) {
+      const found = findFirstSelectableConn(node.children)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// 根据 connId 递归查找连接节点
+function findConnById(nodes, id) {
+  for (const node of nodes) {
+    if (!node.isDir && node.value === id) {
+      return node
+    }
+    if (node.children && node.children.length > 0) {
+      const found = findConnById(node.children, id)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// 递归查找节点的父目录名称
+function findParentDirName(nodes, connId) {
+  for (const node of nodes) {
+    if (node.isDir) {
+      // 检查该目录下是否有目标连接
+      const foundChild = node.children?.find(child => !child.isDir && child.value === connId)
+      if (foundChild) {
+        return node.label
+      }
+      // 递归检查子目录
+      if (node.children) {
+        const found = findParentDirName(node.children, connId)
+        if (found) return found
+      }
+    }
+  }
+  return null
+}
+
+// 递归处理树节点，为选中的连接添加目录名
+function processTreeNodes(nodes) {
+  return nodes.map(node => {
+    const newNode = { ...node }
+    if (node.isDir) {
+      // 目录节点，递归处理子节点
+      if (node.children) {
+        newNode.children = processTreeNodes(node.children)
+      }
+    } else {
+      // 连接节点，如果被选中则添加目录名
+      if (node.value === connId.value) {
+        const parentDirName = findParentDirName(connList.value, node.value)
+        if (parentDirName) {
+          newNode.label = node.label + '（' + parentDirName + '）'
+        }
+      }
+    }
+    return newNode
+  })
+}
+
+// 计算属性：处理后的连接列表（选中的连接显示目录名）
+const processedConnList = computed(() => {
+  return processTreeNodes(connList.value)
+})
+
 async function loadConnList() {
   try {
     const resp = await http.get('/listUserConn')
     connList.value = resp.data.data || []
     // 如果有连接且当前未选择，自动选择第一个
     if (connList.value.length > 0 && !connId.value) {
-      connId.value = connList.value[0].connId
-      schema.value = connList.value[0].dbSchema
-      handleConnChange()
+      const firstConn = findFirstSelectableConn(connList.value)
+      if (firstConn) {
+        connId.value = firstConn.value
+        schema.value = firstConn.dbSchema || ''
+        handleConnChange()
+      }
     }
   } catch (e) {
     console.error('加载连接列表失败:', e)
@@ -351,7 +434,7 @@ async function loadTableList(connId, schema) {
 
 function handleConnChange() {
   // 当连接改变时，更新 schema 信息
-  const selectedConn = connList.value.find(c => c.connId === connId.value)
+  const selectedConn = findConnById(connList.value, connId.value)
   if (selectedConn) {
     schema.value = selectedConn.dbSchema || ''
   }

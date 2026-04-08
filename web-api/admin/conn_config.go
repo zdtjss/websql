@@ -243,9 +243,10 @@ func ListUserConn(c *gin.Context) {
 	dtoList := []UserConnDTO{}
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select c.id, c.name, c.db_schema, t.label as dir_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 order by t.label,c.name ")
+	sql.WriteString("select c.id, c.name, c.db_schema, t.label as dir_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
 	appendPmsn(&sql, "c.id", &param, userPower)
 
+	sql.WriteString(" order by t.label,c.name ")
 	err := config.Mngtdb.Select(&dtoList, sql.String(), param...)
 	logutils.PanicErr(err)
 
@@ -480,6 +481,61 @@ func getNextType(curType string) string {
 	case TREE_NODE_TYPE_DIR:
 		t = TREE_NODE_TYPE_DIR
 	case TREE_NODE_TYPE_CONN:
+		t = TREE_NODE_TYPE_SCHEMA
+	case TREE_NODE_TYPE_SCHEMA:
+		t = TREE_NODE_TYPE_TABLE
+	case TREE_NODE_TYPE_TABLE:
+		t = TREE_NODE_TYPE_COLUMN
+	case TREE_NODE_TYPE_ALLCOLUMN:
+		t = TREE_NODE_TYPE_ALLCOLUMN
+	}
+	return t
+}
+
+func GetConn(id string, authorization string) *sqlx.DB {
+	userPower := GetUserPower(authorization)
+	if config.Cfg.IsRemote {
+		param := &PowerCheckParam{
+			ConnId: id,
+		}
+		if !checkPower(userPower, param) {
+			logutils.PanicErr(errors.New("无权访问"))
+		}
+	}
+	cfgList := []ConnCfg{}
+	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
+	logutils.PanicErr(err)
+
+	// 解码密码
+	pwd := ""
+	if cfgList[0].Pwd != nil {
+		pwd = utils.AESDecode(*cfgList[0].Pwd)
+	}
+	cfgList[0].Pwd = &pwd
+
+	return config.GetConn(convertToDBParam(&cfgList[0]))
+}
+
+func convertToDBParam(cfg *ConnCfg) *config.DBParam {
+	dbSchema := ""
+	if cfg.DbSchema != nil {
+		dbSchema = *cfg.DbSchema
+	}
+	dbVersion := ""
+	if cfg.DbVersion != nil {
+		dbVersion = *cfg.DbVersion
+	}
+	name := ""
+	if cfg.Name != nil {
+		name = *cfg.Name
+	}
+	user := ""
+	if cfg.User != nil {
+		user = *cfg.User
+	}
+	pwd := ""
+	if cfg.Pwd != nil {
+		pwd = *cfg.PwdTYPE_CONN:
 		t = TREE_NODE_TYPE_SCHEMA
 	case TREE_NODE_TYPE_SCHEMA:
 		t = TREE_NODE_TYPE_TABLE

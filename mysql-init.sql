@@ -71,15 +71,6 @@ create table if not exists t_history (
 	data json
 );
 
-CREATE TABLE IF NOT EXISTS t_ai_config (
-    id          TEXT PRIMARY KEY,
-    provider    TEXT NOT NULL,
-    base_url    TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    api_key     TEXT,
-    updated_at  DATETIME NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS t_system_config (
 	id varchar(36) primary key,
 	config_key varchar(64) not null unique,

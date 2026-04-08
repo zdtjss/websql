@@ -181,7 +181,7 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 	// 记录成功的审计日志
 	InsertSQLAudit(auditID, user.Id, userName, req.ConnID, req.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
 
-	flush(StreamChunk{Type: "content", Content: fmt.Sprintf("✅ 执行成功，影响 %d 行\n\n此操作已记入 SQL 审计日志。", affected)})
+	flush(StreamChunk{Type: "content", Content: fmt.Sprintf("✅ 执行成功，影响 %d 行\n\n%s", affected, sql)})
 	flush(StreamChunk{Type: "done"})
 }
 
