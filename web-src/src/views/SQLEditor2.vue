@@ -20,7 +20,6 @@
                 </el-dropdown>
                 <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
                 <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
-                <el-button @click="aiPanelVisible = true" style="margin-left: 12px;">AI</el-button>
                 <el-button @click="openTableManager" style="margin-left: 12px;">表管理</el-button>
                 <div style="float:right;">
                     <div style="display: inline-block;margin-right: 15px;">
@@ -121,17 +120,6 @@
             </div>
         </template>
     </el-dialog>
-    <el-drawer v-model="aiPanelVisible" title="AI 智能助手" direction="rtl" :size="aiPanelWidth"
-        :close-on-press-escape="false" body-class="ai-sql-drawer-body" :class="{ 'fullscreen-drawer': aiPanelFullscreen }">
-        <AISqlPanel
-            v-model="aiPanelVisible"
-            :connId="props.connId"
-            :schema="props.schema"
-            :tableList="tableList"
-            @insertSql="onInsertSql"
-            @update:fullscreen="aiPanelFullscreen = $event"
-        />
-    </el-drawer>
 </template>
 
 <script lang="ts" setup>
@@ -149,7 +137,6 @@ import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
-import AISqlPanel from './components/AISqlPanel.vue'
 
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -204,16 +191,6 @@ const dataDetailsDialogVisible = ref(false)
 const onDataSaving = ref(false)
 
 const canModify = ref(false)
-
-const aiPanelVisible = ref(false)
-
-const aiPanelWidth = ref('720px')
-const aiPanelFullscreen = ref(false)
-
-// 监听全屏状态变化，更新面板宽度
-watch(aiPanelFullscreen, (isFull) => {
-    aiPanelWidth.value = isFull ? '100%' : '720px'
-})
 
 const tableList = computed(() => {
     try {
@@ -758,17 +735,6 @@ function fmtVal(val: any) {
     return val
 }
 
-function onInsertSql(sqlText: string) {
-    const editor = editorView.value as EditorView
-    if (!editor) return
-    const cursor = editor.state.selection.main.head
-    editor.dispatch({
-        changes: { from: cursor, insert: sqlText },
-        selection: { anchor: cursor + sqlText.length }
-    })
-    editor.focus()
-}
-
 function openTableManager() {
     emit('openTableManager', {
         connId: props.connId,
@@ -943,25 +909,6 @@ const dragEnd = (e: DragEvent) => {
 
 .el-drawer__header {
     margin-bottom: -20px
-}
-
-/* AI SQL Drawer 的 body 样式 */
-.ai-sql-drawer-body {
-    padding: 0 !important;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-}
-
-/* 全屏模式下的 drawer 样式 */
-.ai-sql-drawer-body.fullscreen-drawer .el-drawer__header {
-    padding-left: calc(10% + 20px) !important;
-    padding-right: calc(10% + 20px) !important;
-}
-
-.ai-sql-drawer-body.fullscreen-drawer .el-drawer__body {
-    padding-left: 10%;
-    padding-right: 10%;
 }
 
 .el-button {

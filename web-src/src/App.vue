@@ -51,12 +51,55 @@
           :risk-level="confirmRiskLevel" :description="confirmDescription" :table-name="confirmTableName"
           @confirm="handleConfirmExec" @cancel="handleConfirmCancel" />
 
+        <!-- 多条 SQL 批量确认区域 -->
+        <div v-if="pendingSQLList.length > 0" class="multi-sql-confirm">
+          <div style="font-weight:600;margin-bottom:8px;font-size:14px;">
+            检测到 {{ pendingSQLList.length }} 条需要确认的 SQL：
+          </div>
+          <div v-for="(item, idx) in pendingSQLList" :key="idx" class="sql-confirm-item">
+            <div class="sql-confirm-header">
+              <el-tag :type="item.riskLevel === 'high' ? 'danger' : 'warning'" size="small">
+                {{ item.riskLevel === 'high' ? '高危' : '中危' }} - {{ item.type }}
+              </el-tag>
+              <span v-if="item.tableName" style="font-size:12px;color:#909399;">表：{{ item.tableName }}</span>
+            </div>
+            <pre class="sql-preview-code">{{ item.sql }}</pre>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+            <el-button size="small" @click="handleCancelAllSQL">全部取消</el-button>
+            <el-button size="small" type="danger" @click="handleConfirmAllSQL">
+              确认执行全部 ({{ pendingSQLList.length }} 条)
+            </el-button>
+          </div>
+        </div>
+
+        <!-- 重试确认区域 -->
+        <div v-if="showRetryConfirm" class="retry-confirm-block">
+          <div style="color:#e6a23c;font-weight:600;margin-bottom:8px;">⚠️ 工具调用多次失败</div>
+          <div style="font-size:13px;color:#606266;margin-bottom:12px;">{{ retryMessage }}</div>
+          <div style="display:flex;gap:8px;">
+            <el-button size="small" type="primary" @click="handleRetryContinue">继续尝试</el-button>
+            <el-button size="small" @click="showRetryConfirm = false">放弃</el-button>
+          </div>
+        </div>
+
         <!-- 输入区域 -->
         <div class="input-area">
           <div class="input-label">
-            <span>描述你的需求（数据查询 / 数据分析 / SQL 生成 / 数据导出）</span>
+            <span>描述你的需求（数据查询 / 数据分析 / SQL 生成 / 数据导出 / 数据导入）</span>
             <div style="display: flex; gap: 0px;">
-              <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible"
+              <!-- 已上传的 Excel 文件信息 -->
+            <div v-if="uploadedExcel" class="uploaded-file-info" style="margin-left: 12px;">
+              <span>{{ uploadedExcel.name }} ({{ uploadedExcel.rows }} 行, {{ uploadedExcel.columns.length }} 列)</span>
+              <el-button size="small" text type="danger" @click="clearUploadedExcel">✕</el-button>
+            </div>
+               <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" style="margin-left: 12px;" accept=".xlsx,.xls"
+                :on-change="handleExcelUpload">
+                <el-button class="toolbar-btn" size="small" title="上传 Excel 导入数据">
+                  <el-icon><Upload /></el-icon>
+                </el-button>
+              </el-upload>
+              <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible" 
                 @show="loadSessionList()">
                 <div style="max-height: 400px; overflow-y: auto;">
                   <el-empty v-if="sessionList.length === 0 && !loadingSessions" description="暂无历史会话" />
@@ -64,7 +107,7 @@
                   <div v-else style="display: flex; flex-direction: column; gap: 8px;">
                     <div v-for="sess in sessionList" :key="sess.id" class="session-item">
                       <div class="session-content" @click="handleClickSession(sess.id)">
-                        <div class="session-title">{{ sess.title }}</div>
+                        <div class="session-title">{{ sess.title || '未命名会话' }}</div>
                         <div class="session-time">
                           <el-icon>
                             <Clock />
@@ -73,22 +116,17 @@
                         </div>
                       </div>
                       <div class="session-actions">
-                        <el-button type="success" size="small" text @click.stop="handleNewSession(sess.id)" title="在此会话基础上新建对话">
-                          <el-icon>
-                            <DocumentAdd />
-                          </el-icon>
-                        </el-button>
                         <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
                           <el-icon>
                             <Delete />
-                          </el-icon>
+                          </el-icon>  
                         </el-button>
                       </div>
                     </div>
                   </div>
                 </div>
                 <template #reference>
-                  <el-button class="toolbar-btn" size="small" title="历史会话">
+                  <el-button class="toolbar-btn" size="small" title="历史会话" style="margin-left: 12px;">
                     <el-icon>
                       <Document />
                     </el-icon>
@@ -101,7 +139,7 @@
                   <component :is="isRecording ? VideoPause : Microphone" />
                 </el-icon>
               </el-button>
-              <el-button class="toolbar-btn" size="small" @click="clearSession" title="清空会话">
+              <el-button class="toolbar-btn" size="small" @click="clearSession" title="清空并新建会话">
                 <el-icon>
                   <Delete />
                 </el-icon>
@@ -134,10 +172,12 @@
           </div>
 
           <div class="input-action-row">
-            <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
-              :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
+            <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+              <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
+                :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
+            </div>
             <div class="action-buttons">
-              <el-button type="primary" :loading="loading" :disabled="!question.trim()" @click="sendMessage"
+              <el-button type="primary" :loading="loading" :disabled="!question.trim() && !uploadedExcel" @click="sendMessage"
                 class="send-btn" size="default">
                 <el-icon>
                   <Promotion />
@@ -209,7 +249,7 @@ import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
 import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting, Grid } from '@element-plus/icons-vue'
+import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting, Grid, Upload } from '@element-plus/icons-vue'
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
 import http from '@/js/utils/httpProxy.js'
@@ -392,7 +432,45 @@ const processedConnList = computed(() => {
 async function loadConnList() {
   try {
     const resp = await http.get('/listUserConn')
-    connList.value = resp.data.data || []
+    const rawList = resp.data.data || []
+
+    // 将扁平的 [{connId, name, dbSchema, dirName}] 转为 el-tree-select 需要的树形结构
+    const dirMap = new Map() // dirName -> children[]
+    const noDir = []         // 没有目录的连接
+
+    for (const item of rawList) {
+      const node = {
+        label: item.name,
+        value: item.connId,
+        dbSchema: item.dbSchema || '',
+        isDir: false,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) {
+          dirMap.set(dir, [])
+        }
+        dirMap.get(dir).push(node)
+      } else {
+        noDir.push(node)
+      }
+    }
+
+    const tree = []
+    // 有目录的连接，按目录分组
+    for (const [dirName, children] of dirMap) {
+      tree.push({
+        label: dirName,
+        value: '__dir__' + dirName,
+        isDir: true,
+        children,
+      })
+    }
+    // 没有目录的连接放在顶层
+    tree.push(...noDir)
+
+    connList.value = tree
+
     // 如果有连接且当前未选择，自动选择第一个
     if (connList.value.length > 0 && !connId.value) {
       const firstConn = findFirstSelectableConn(connList.value)
@@ -460,6 +538,18 @@ const confirmTableName = ref('')
 let pendingCallback = null
 let hasShownConfirm = false  // 防止重复弹出
 
+// 多条 SQL 批量确认
+const pendingSQLList = ref([])
+
+// 重试确认
+const showRetryConfirm = ref(false)
+const retryMessage = ref('')
+const lastQuestion = ref('')
+
+// Excel 上传
+const uploadedExcel = ref(null) // { fileId, name, columns, rows, preview }
+const excelUploadRef = ref(null)
+
 function highlightSql(text) {
   if (!text) return ''
   try {
@@ -520,12 +610,34 @@ function scrollToBottom() {
 
 async function sendMessage() {
   const text = question.value.trim()
-  if (!text || loading.value) return
+  if (!text && !uploadedExcel.value) return
+  if (loading.value) return
 
-  // 重置检测标记
+  // 重置状态
   resetDetectFlag()
+  pendingSQLList.value = []
+  showRetryConfirm.value = false
+  lastQuestion.value = text
 
-  chatHistory.value.push({ role: 'user', content: text })
+  // 构建消息内容
+  let messageContent = text
+  let excelContext = null
+
+  if (uploadedExcel.value) {
+    const excel = uploadedExcel.value
+    excelContext = {
+      fileId: excel.fileId,
+      columns: excel.columns,
+      totalRows: excel.rows,
+    }
+    if (!text) {
+      messageContent = `请将上传的 Excel 数据导入数据库。文件ID：${excel.fileId}，Excel 列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
+    } else {
+      messageContent += `\n\n[Excel 文件上下文] 文件ID：${excel.fileId}，列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
+    }
+  }
+
+  chatHistory.value.push({ role: 'user', content: text || '导入 Excel 数据' })
   question.value = ''
   loading.value = true
   thinkingText.value = ''
@@ -537,16 +649,21 @@ async function sendMessage() {
   const auth = sessionStorage.getItem('authentication') || ''
 
   try {
+    const body = {
+      sessionId: sessionId.value,
+      connId: connId.value,
+      schema: schema.value,
+      question: messageContent,
+      tableContext: selectedTables.value,
+    }
+    if (excelContext) {
+      body.excelData = excelContext
+    }
+
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-      body: JSON.stringify({
-        sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
-        question: text,
-        tableContext: selectedTables.value,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!resp.ok) {
@@ -557,6 +674,7 @@ async function sendMessage() {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    const collectedDangerSQLs = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -585,14 +703,13 @@ async function sendMessage() {
               scrollToBottom()
               break
             case 'danger_confirm':
-              // 后端推送的危险 SQL 确认
-              console.log('收到 danger_confirm 事件:', chunk)
-              if (!hasShownConfirm) {
-                hasShownConfirm = true
-                const sqlToConfirm = chunk.sql || chunk.content
-                console.log('准备显示确认对话框，SQL:', sqlToConfirm)
-                showConfirmDialog(sqlToConfirm)
-              }
+              // 收集所有危险 SQL，流结束后统一处理
+              collectedDangerSQLs.push(chunk.sql || chunk.content)
+              break
+            case 'retry_limit':
+              // 工具调用多次失败，推给用户决定
+              retryMessage.value = chunk.content
+              showRetryConfirm.value = true
               break
             case 'error':
               ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
@@ -615,20 +732,26 @@ async function sendMessage() {
       const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
       chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
       if (isSql) lastSql.value = content
-
-      // 关键检测：如果内容包含 [CONFIRM_REQUIRED] 标记，立即触发确认
-      if (!hasShownConfirm && content.includes('[CONFIRM_REQUIRED]')) {
-        const sqlStatements = extractAllSQL(content)
-        for (const sql of sqlStatements) {
-          const analysis = analyzeSQL(sql)
-          if (analysis.riskLevel === 'medium' || analysis.riskLevel === 'high') {
-            showConfirmDialog(sql)
-            break
-          }
-        }
-      }
-
       streamingContent.value = ''
+    }
+
+    // 处理收集到的危险 SQL
+    if (collectedDangerSQLs.length > 0) {
+      if (collectedDangerSQLs.length === 1) {
+        // 单条：用原有的内联确认
+        showConfirmDialog(collectedDangerSQLs[0])
+      } else {
+        // 多条：批量确认
+        pendingSQLList.value = collectedDangerSQLs.map(sql => {
+          const analysis = analyzeSQL(sql)
+          return { sql, ...analysis }
+        })
+      }
+    }
+
+    // 清除已上传的 Excel
+    if (uploadedExcel.value) {
+      uploadedExcel.value = null
     }
   } catch (e) {
     ElMessage({ message: e.message || '请求失败', type: 'error' })
@@ -722,6 +845,162 @@ function handleConfirmCancel() {
   scrollToBottom()
 }
 
+// ── 多条 SQL 批量确认 ──
+async function handleConfirmAllSQL() {
+  const sqls = pendingSQLList.value.map(item => item.sql)
+  pendingSQLList.value = []
+  loading.value = true
+
+  for (const sql of sqls) {
+    const userName = getCurrentUser()
+    const timestamp = new Date().toISOString()
+    const confirmedSql = `${sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
+    await executeConfirmedSQL(confirmedSql)
+  }
+
+  loading.value = false
+  scrollToBottom()
+}
+
+function handleCancelAllSQL() {
+  const count = pendingSQLList.value.length
+  pendingSQLList.value = []
+  chatHistory.value.push({ role: 'assistant', content: `已取消执行 ${count} 条 SQL。` })
+  scrollToBottom()
+}
+
+async function executeConfirmedSQL(confirmedSql) {
+  const actualSQL = confirmedSql.split('\n\n-- CONFIRMED:')[0].trim()
+  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${actualSQL}\n\`\`\`` })
+  scrollToBottom()
+
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: '执行已确认的 SQL',
+        confirmed: true,
+        pendingSQL: confirmedSql,
+      }),
+    })
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let result = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const chunk = JSON.parse(line.slice(6).trim())
+          if (chunk.type === 'content') result += chunk.content
+          if (chunk.type === 'error') ElMessage({ message: chunk.content, type: 'error' })
+        } catch (_) { }
+      }
+    }
+
+    // 更新最后一条消息
+    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+    if (lastMsg) {
+      lastMsg.content = `✅ ${result || '执行成功'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+    }
+  } catch (e) {
+    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+    if (lastMsg) {
+      lastMsg.content = `❌ 执行失败：${e.message}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+    }
+  }
+}
+
+function getCurrentUser() {
+  const userStr = sessionStorage.getItem('currentUser')
+  if (userStr) {
+    try { const user = JSON.parse(userStr); return user.name || 'anonymous' }
+    catch { return 'anonymous' }
+  }
+  return 'anonymous'
+}
+
+// ── 重试 ──
+function handleRetryContinue() {
+  showRetryConfirm.value = false
+  if (lastQuestion.value) {
+    question.value = lastQuestion.value
+    nextTick(() => sendMessage())
+  }
+}
+
+// ── Excel 上传 ──
+async function handleExcelUpload(file) {
+  const rawFile = file.raw || file
+  const formData = new FormData()
+  formData.append('file', rawFile)
+
+  try {
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    const auth = sessionStorage.getItem('authentication') || ''
+    const resp = await fetch(apiBase + '/ai/agent/uploadExcel', {
+      method: 'POST',
+      headers: { 'Authorization': auth },
+      body: formData,
+    })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.error || `上传失败：${resp.status}`)
+    }
+    const data = await resp.json()
+
+    uploadedExcel.value = {
+      fileId: data.fileId,
+      name: data.fileName,
+      columns: data.columns,
+      rows: data.totalRows,
+    }
+
+    // 在聊天区显示预览
+    let previewText = `已上传文件：${data.fileName}\n`
+    previewText += `共 ${data.totalRows} 行数据，${data.columns.length} 列\n\n`
+    previewText += `列名：${data.columns.join(', ')}\n\n`
+    const previewRows = data.preview || []
+    if (previewRows.length > 0) {
+      previewText += `前 ${previewRows.length} 行预览：\n`
+      previewText += '| ' + data.columns.join(' | ') + ' |\n'
+      previewText += '| ' + data.columns.map(() => '---').join(' | ') + ' |\n'
+      for (const row of previewRows) {
+        const cells = data.columns.map((_, i) => {
+          const val = row[i] !== undefined && row[i] !== null ? String(row[i]) : ''
+          return val.length > 20 ? val.substring(0, 20) + '…' : val
+        })
+        previewText += '| ' + cells.join(' | ') + ' |\n'
+      }
+    }
+
+    chatHistory.value.push({ role: 'assistant', content: previewText, hasSql: false })
+    scrollToBottom()
+    ElMessage.success(`已上传 ${data.fileName}，请输入导入指令（如：将数据导入到 xxx 表）`)
+  } catch (e) {
+    ElMessage.error('上传 Excel 文件失败：' + e.message)
+  }
+}
+
+function clearUploadedExcel() {
+  uploadedExcel.value = null
+}
+
 function clearSession() {
   chatHistory.value = []
   sessionId.value = ''
@@ -730,8 +1009,12 @@ function clearSession() {
   lastSql.value = ''
   confirmVisible.value = false
   confirmSQL.value = ''
+  pendingSQLList.value = []
+  showRetryConfirm.value = false
+  uploadedExcel.value = null
   processedLinks.clear()
   resetDetectFlag()
+  ElMessage({ message: '已新建会话', type: 'success' })
 }
 
 function insertToEditor() {
@@ -1005,15 +1288,6 @@ async function deleteSession(id) {
   } catch (e) {
     ElMessage({ message: e.message || '删除会话失败', type: 'error' })
   }
-}
-
-function handleNewSession(id) {
-  // 关闭 popover
-  sessionHistoryVisible.value = false
-  // 延迟一点时间，让 popover 先关闭
-  setTimeout(() => {
-    loadSession(id)
-  }, 100)
 }
 
 function handleClickSession(id) {
@@ -2056,5 +2330,62 @@ onUnmounted(() => {
   background: linear-gradient(90deg, rgba(25, 118, 210, 0.1) 0%, rgba(25, 118, 210, 0.2) 100%);
   color: #1565c0;
   font-weight: 700;
+}
+
+/* 多条 SQL 批量确认 */
+.multi-sql-confirm {
+  border: 2px solid #e6a23c;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fdf6ec;
+  margin: 8px 16px;
+  flex-shrink: 0;
+}
+.sql-confirm-item {
+  margin: 8px 0;
+  padding: 8px;
+  background: #fff;
+  border-radius: 6px;
+  border: 1px solid #ebeef5;
+}
+.sql-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sql-preview-code {
+  margin: 0;
+  padding: 8px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 重试确认 */
+.retry-confirm-block {
+  border: 1px solid #e6a23c;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fdf6ec;
+  margin: 8px 16px;
+  flex-shrink: 0;
+}
+
+/* Excel 上传 */
+.uploaded-file-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #ecf5ff;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #409eff;
 }
 </style>

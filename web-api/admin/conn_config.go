@@ -535,61 +535,6 @@ func convertToDBParam(cfg *ConnCfg) *config.DBParam {
 	}
 	pwd := ""
 	if cfg.Pwd != nil {
-		pwd = *cfg.PwdTYPE_CONN:
-		t = TREE_NODE_TYPE_SCHEMA
-	case TREE_NODE_TYPE_SCHEMA:
-		t = TREE_NODE_TYPE_TABLE
-	case TREE_NODE_TYPE_TABLE:
-		t = TREE_NODE_TYPE_COLUMN
-	case TREE_NODE_TYPE_ALLCOLUMN:
-		t = TREE_NODE_TYPE_ALLCOLUMN
-	}
-	return t
-}
-
-func GetConn(id string, authorization string) *sqlx.DB {
-	userPower := GetUserPower(authorization)
-	if config.Cfg.IsRemote {
-		param := &PowerCheckParam{
-			ConnId: id,
-		}
-		if !checkPower(userPower, param) {
-			logutils.PanicErr(errors.New("无权访问"))
-		}
-	}
-	cfgList := []ConnCfg{}
-	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
-	logutils.PanicErr(err)
-
-	// 解码密码
-	pwd := ""
-	if cfgList[0].Pwd != nil {
-		pwd = utils.AESDecode(*cfgList[0].Pwd)
-	}
-	cfgList[0].Pwd = &pwd
-
-	return config.GetConn(convertToDBParam(&cfgList[0]))
-}
-
-func convertToDBParam(cfg *ConnCfg) *config.DBParam {
-	dbSchema := ""
-	if cfg.DbSchema != nil {
-		dbSchema = *cfg.DbSchema
-	}
-	dbVersion := ""
-	if cfg.DbVersion != nil {
-		dbVersion = *cfg.DbVersion
-	}
-	name := ""
-	if cfg.Name != nil {
-		name = *cfg.Name
-	}
-	user := ""
-	if cfg.User != nil {
-		user = *cfg.User
-	}
-	pwd := ""
-	if cfg.Pwd != nil {
 		pwd = *cfg.Pwd
 	}
 	url := ""

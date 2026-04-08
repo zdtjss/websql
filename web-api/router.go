@@ -92,6 +92,7 @@ func MainRegister(router *gin.Engine) {
 		log.Fatalf("创建 AI Agent Handler 失败：%v", err)
 	}
 	router.POST("/ai/agent/chatStream", agentHandler.ChatStream)
+	router.POST("/ai/agent/uploadExcel", aiagentv2.HandleUploadExcel)
 	router.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 	router.GET("/ai/agent/session", agentHandler.HandleGetSession)
 	router.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)

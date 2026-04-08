@@ -2,6 +2,7 @@ package agentv2
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -68,12 +69,6 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 Agent 失败：" + err.Error()})
-		return
-	}
-
 	// SSE 设置
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -102,12 +97,28 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	err = agent.RunStream(ctx, req, flush)
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
+	if err != nil {
+		close(kaStop)
+		flush(StreamChunk{Type: "error", Content: "创建 Agent 失败：" + err.Error()})
+		return
+	}
+
+	// 执行 Agent
+	// - ChatModel 的临时错误（503 等）由 ModelRetryConfig 在 agent 内部自动重试
+	// - 工具调用错误（SQL 语法错误、字段不存在等）由 Eino ReAct 循环内部自动处理：
+	//   工具返回错误 → 错误作为 tool result 反馈给模型 → 模型重新思考并调整工具调用
+	// - MaxIterations=25 防止无限循环
+	_, runErr := agent.RunStream(ctx, req, flush)
 	close(kaStop)
 
-	if err != nil {
-		log.Printf("[Handler] Agent 执行失败 - err=%v\n", err)
-		flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 服务错误：%s", err.Error())})
+	if runErr != nil {
+		// 过滤掉 DangerousSQLError（已在 RunStream 内部处理）
+		var dangerousErr *DangerousSQLError
+		if !errors.As(runErr, &dangerousErr) {
+			log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
+			flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 处理出错：%s", runErr.Error())})
+		}
 	}
 }
 

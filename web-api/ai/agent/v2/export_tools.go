@@ -231,8 +231,8 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 		f := excelize.NewFile()
 		defer f.Close()
 
-		// 写数据到 Sheet1
-		writeExcelSheet(f, "Sheet1", qr)
+		// 写数据到 Sheet1（使用普通模式以支持图表数据引用）
+		writeExcelSheetMode(f, "Sheet1", qr, false)
 
 		// 查找 X/Y 轴列索引
 		xIdx := colIndex(qr.Columns, input.XAxisField)
@@ -464,26 +464,56 @@ func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTI
 // ──────────────────────────────────────────────
 
 // writeExcelSheet 将查询结果写入指定 sheet
+// 当 useStream=true 时使用 StreamWriter（高性能但不支持图表引用），否则使用普通写入
 func writeExcelSheet(f *excelize.File, sheet string, qr *queryResult) {
-	sw, err := f.NewStreamWriter(sheet)
-	if err != nil {
-		return
-	}
+	writeExcelSheetMode(f, sheet, qr, true)
+}
 
-	header := make([]any, len(qr.Columns))
-	for i, c := range qr.Columns {
-		header[i] = c
-	}
-	sw.SetRow("A1", header)
-
-	for rowIdx, row := range qr.Data {
-		rowData := make([]any, len(qr.Columns))
-		for colIdx, col := range qr.Columns {
-			if v, ok := row[col]; ok {
-				rowData[colIdx] = v
+func writeExcelSheetMode(f *excelize.File, sheet string, qr *queryResult, useStream bool) {
+	if useStream {
+		sw, err := f.NewStreamWriter(sheet)
+		if err != nil {
+			return
+		}
+		header := make([]any, len(qr.Columns))
+		for i, c := range qr.Columns {
+			header[i] = c
+		}
+		sw.SetRow("A1", header)
+		for rowIdx, row := range qr.Data {
+			rowData := make([]any, len(qr.Columns))
+			for colIdx, col := range qr.Columns {
+				if v, ok := row[col]; ok {
+					rowData[colIdx] = v
+				}
+			}
+			sw.SetRow(fmt.Sprintf("A%d", rowIdx+2), rowData)
+		}
+		sw.Flush()
+	} else {
+		// 普通写入模式：兼容图表数据引用
+		for i, c := range qr.Columns {
+			cell := fmt.Sprintf("%s1", colLetter(i))
+			f.SetCellValue(sheet, cell, c)
+		}
+		for rowIdx, row := range qr.Data {
+			for colIdx, col := range qr.Columns {
+				cell := fmt.Sprintf("%s%d", colLetter(colIdx), rowIdx+2)
+				if v, ok := row[col]; ok {
+					switch val := v.(type) {
+					case float64:
+						f.SetCellValue(sheet, cell, val)
+					case float32:
+						f.SetCellValue(sheet, cell, float64(val))
+					case int:
+						f.SetCellValue(sheet, cell, val)
+					case int64:
+						f.SetCellValue(sheet, cell, val)
+					default:
+						f.SetCellValue(sheet, cell, fmt.Sprintf("%v", v))
+					}
+				}
 			}
 		}
-		sw.SetRow(fmt.Sprintf("A%d", rowIdx+2), rowData)
 	}
-	sw.Flush()
 }

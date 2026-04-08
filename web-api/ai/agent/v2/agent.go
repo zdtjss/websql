@@ -39,14 +39,22 @@ type StreamChunk struct {
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	SessionID    string   `json:"sessionId"`
-	UserID       string   `json:"userId"`
-	ConnID       string   `json:"connId"`
-	Schema       string   `json:"schema"`
-	Question     string   `json:"question"`
-	TableContext []string `json:"tableContext"`
-	Confirmed    bool     `json:"confirmed,omitempty"`
-	PendingSQL   string   `json:"pendingSQL,omitempty"`
+	SessionID    string     `json:"sessionId"`
+	UserID       string     `json:"userId"`
+	ConnID       string     `json:"connId"`
+	Schema       string     `json:"schema"`
+	Question     string     `json:"question"`
+	TableContext []string   `json:"tableContext"`
+	Confirmed    bool       `json:"confirmed,omitempty"`
+	PendingSQL   string     `json:"pendingSQL,omitempty"`
+	ExcelData    *ExcelData `json:"excelData,omitempty"`
+}
+
+// ExcelData 前端上传的 Excel 文件信息（不含原始数据，数据在后端暂存区）
+type ExcelData struct {
+	FileID    string   `json:"fileId"`
+	Columns   []string `json:"columns"`
+	TotalRows int      `json:"totalRows"`
 }
 
 // SessionMeta 会话列表摘要
@@ -110,8 +118,16 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&PermissionMiddleware{Scope: scope},
+			&ToolErrorRecoveryMiddleware{},
 			&SQLSecurityMiddleware{},
 		},
+		// ChatModel API 临时错误（503、超时等）自动重试
+		ModelRetryConfig: &adk.ModelRetryConfig{
+			MaxRetries: 5,
+		},
+		// 工具调用错误由 ReAct 循环内部自动处理（错误反馈给模型重新思考），
+		// MaxIterations 控制最大循环次数，防止无限重试
+		MaxIterations: 25,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)
@@ -133,8 +149,10 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	}, nil
 }
 
-// RunStream 流式执行
-func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) error {
+// RunStream 流式执行，返回 (实际使用的 sessionID, 错误)
+// 工具调用错误由 Eino ReAct 循环内部自动处理，ChatModel 临时错误由 ModelRetryConfig 处理。
+// 只有不可恢复的错误（如超过 MaxIterations）才会返回 error。
+func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) (string, error) {
 	log.Printf("[Agent] 开始执行 - sessionID=%s, userID=%s, connID=%s\n", req.SessionID, req.UserID, req.ConnID)
 
 	sessionID := req.SessionID
@@ -143,19 +161,19 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		log.Printf("[Agent] 新建会话 - sessionID=%s\n", sessionID)
 	}
 	if req.UserID == "" {
-		return fmt.Errorf("userId 不能为空")
+		return "", fmt.Errorf("userId 不能为空")
 	}
 
 	sess, err := a.sessions.GetOrCreate(sessionID, req.UserID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
 	// 保存用户消息
 	userMsg := schema.UserMessage(req.Question)
 	if err := sess.Append(userMsg); err != nil {
-		return err
+		return sessionID, err
 	}
 
 	// 获取并截断历史
@@ -169,7 +187,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			Type:    "error",
 			Content: "您暂时没有可访问的数据表权限，请联系管理员开通。",
 		})
-		return nil
+		return sessionID, nil
 	}
 
 	// 构建消息
@@ -182,18 +200,26 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
+	// 导入请求注入 Excel 文件上下文（只传 fileId 和列名，不传数据）
+	if req.ExcelData != nil && req.ExcelData.FileID != "" {
+		sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Excel 文件（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
+			req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
+		sysPrompt += "请先用 get_table_schema 获取目标表结构，将 Excel 列名与表字段做严格匹配，展示映射结果给用户确认后，调用 import_data 工具（传入 fileId、tableName、mapping）执行导入。\n"
+	}
+
 	messages := []adk.Message{
 		&schema.Message{Role: schema.System, Content: sysPrompt},
 	}
 	messages = append(messages, truncated...)
 
 	// 运行 Agent
+	var fullResponse strings.Builder
+	var dangerousSQLs []string // 收集所有拦截到的危险 SQL
+
 	iter := a.agent.Run(ctx, &adk.AgentInput{
 		Messages:        messages,
 		EnableStreaming: true,
 	})
-
-	var fullResponse strings.Builder
 
 	for {
 		event, ok := iter.Next()
@@ -204,12 +230,31 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		if event.Err != nil {
 			var dangerousErr *DangerousSQLError
 			if errors.As(event.Err, &dangerousErr) {
+				// 收集危险 SQL（不中断流程）
+				if len(dangerousErr.SQLList) > 0 {
+					dangerousSQLs = append(dangerousSQLs, dangerousErr.SQLList...)
+				} else if dangerousErr.SQL != "" {
+					dangerousSQLs = append(dangerousSQLs, dangerousErr.SQL)
+				}
 				log.Printf("[Agent] 危险 SQL 拦截 - sql=%s\n", dangerousErr.SQL)
-				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dangerousErr.SQL})
 				continue
 			}
-			flush(StreamChunk{Type: "error", Content: event.Err.Error()})
-			return event.Err
+
+			// 其他工具调用错误：返回给 handler 层处理重试
+			log.Printf("[Agent] 工具调用失败 - err=%v\n", event.Err)
+
+			// 先把已收集的危险 SQL 推出去
+			for _, dsql := range dangerousSQLs {
+				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql})
+			}
+
+			// 保存已有的助手回复
+			if fullResponse.Len() > 0 {
+				assistantMsg := schema.AssistantMessage(fullResponse.String(), nil)
+				_ = sess.Append(assistantMsg)
+			}
+
+			return sessionID, event.Err
 		}
 
 		hasOutput := event.Output != nil && event.Output.MessageOutput != nil
@@ -258,6 +303,13 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
+	// 批量推送所有拦截到的危险 SQL
+	if len(dangerousSQLs) > 0 {
+		for _, dsql := range dangerousSQLs {
+			flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql})
+		}
+	}
+
 	// 保存助手消息
 	if fullResponse.Len() > 0 {
 		assistantMsg := schema.AssistantMessage(fullResponse.String(), nil)
@@ -266,8 +318,16 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
+	// 自动更新会话标题（取第一条用户消息的前60个字符）
+	title := sess.Title()
+	if title != "" && title != "New Session" {
+		if err := UpdateSessionTitleInDB(sess.ID, title); err != nil {
+			log.Printf("[Agent] 更新会话标题失败 - err=%v\n", err)
+		}
+	}
+
 	flush(StreamChunk{Type: "done"})
-	return nil
+	return sessionID, nil
 }
 
 // ──────────────────────────────────────────────
@@ -402,10 +462,15 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.Base
 		return nil, fmt.Errorf("创建 export_analysis_docx 工具失败：%w", err)
 	}
 
+	importDataTool, err := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中。需要提供表名、列名列表和数据行。支持 insert（仅插入）和 upsert（有主键则更新无则插入）两种模式。", NewImportDataFunc(connID, dbType, dbSchema))
+	if err != nil {
+		return nil, fmt.Errorf("创建 import_data 工具失败：%w", err)
+	}
+
 	return []tool.BaseTool{
 		queryTool, execTool, schemaTool,
 		exportExcelTool, exportExcelChartTool, exportPPTTool,
-		exportImageTool, exportDocxTool,
+		exportImageTool, exportDocxTool, importDataTool,
 	}, nil
 }
 
@@ -450,8 +515,27 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 ## 导出操作
 当用户说"导出""下载""Excel""PPT""Word"等，从对话历史中找到最近的 SQL 直接调用导出工具，不要重新生成 SQL。
 
+## 数据导入操作（重要）
+当用户上传了 Excel 文件并要求导入数据时：
+1. 用户消息中会包含 fileId 和 Excel 列名信息（由系统自动注入）
+2. 你需要先调用 get_table_schema 获取目标表结构
+3. 将 Excel 列名与表字段进行严格匹配（必须完全相等，大小写不敏感）
+4. 如果有任何 Excel 列名在表中找不到对应字段，必须立即反馈给用户，要求确认或重新上传
+5. 匹配成功后，向用户展示完整的字段映射表（Excel列名 → 数据库字段名），请求用户确认
+6. 用户确认后，调用 import_data 工具执行导入，传入 fileId、tableName 和 mapping
+7. mapping 格式：{"Excel列名": "数据库字段名", ...}，必须包含所有 Excel 列
+8. 导入模式：有主键的表支持 upsert（自动更新或插入），无主键表仅支持 insert
+9. 对于 upsert 模式，必须明确告知用户将会更新已有数据，等待用户确认
+10. 字段匹配是数据安全红线，绝不允许将数据导入到错误的字段
+
 ## 多轮对话
 你拥有完整的对话历史记忆。"刚才的""上面的""这个结果"等都指上一次查询。
+
+## 错误处理
+当工具调用失败时，系统会自动将错误信息反馈给你。请根据错误信息重新分析：
+- 如果是字段名错误，先用 get_table_schema 验证正确的字段名
+- 如果是 SQL 语法错误，根据数据库类型调整语法
+- 不要重复使用相同的错误参数调用工具
 `)
 
 	return sb.String()
@@ -570,7 +654,21 @@ func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
 	}
 	metas := make([]SessionMeta, 0, len(sessionsDB))
 	for _, sessDB := range sessionsDB {
-		metas = append(metas, SessionMeta{ID: sessDB.ID, Title: sessDB.Title, CreatedAt: sessDB.CreatedAt})
+		title := sessDB.Title
+		// 如果数据库中标题为空，尝试从文件加载
+		if title == "" {
+			if sess, err := s.GetOrCreate(sessDB.ID, sessDB.UserID); err == nil {
+				title = sess.Title()
+				// 回写到数据库
+				if title != "" && title != "New Session" {
+					_ = UpdateSessionTitleInDB(sessDB.ID, title)
+				}
+			}
+		}
+		if title == "" {
+			title = "未命名会话"
+		}
+		metas = append(metas, SessionMeta{ID: sessDB.ID, Title: title, CreatedAt: sessDB.CreatedAt})
 	}
 	return metas, nil
 }
@@ -583,6 +681,8 @@ func (s *SessionStore) Delete(id string) error {
 		return err
 	}
 	delete(s.cache, id)
+	// 同步删除数据库记录
+	_ = DeleteSessionInDB(id)
 	return nil
 }
 
