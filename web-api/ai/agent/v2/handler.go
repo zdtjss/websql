@@ -101,6 +101,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	if err != nil {
 		close(kaStop)
 		flush(StreamChunk{Type: "error", Content: "创建 Agent 失败：" + err.Error()})
+		flush(StreamChunk{Type: "done"})
 		return
 	}
 
@@ -113,12 +114,12 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	close(kaStop)
 
 	if runErr != nil {
-		// 过滤掉 DangerousSQLError（已在 RunStream 内部处理）
 		var dangerousErr *DangerousSQLError
 		if !errors.As(runErr, &dangerousErr) {
 			log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
 			flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 处理出错：%s", runErr.Error())})
 		}
+		flush(StreamChunk{Type: "done"})
 	}
 }
 

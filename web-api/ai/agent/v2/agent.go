@@ -187,6 +187,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			Type:    "error",
 			Content: "您暂时没有可访问的数据表权限，请联系管理员开通。",
 		})
+		flush(StreamChunk{Type: "done"})
 		return sessionID, nil
 	}
 
@@ -228,8 +229,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 
 		if event.Err != nil {
-			var dangerousErr *DangerousSQLError
-			if errors.As(event.Err, &dangerousErr) {
+			if dangerousErr, ok := errors.AsType[*DangerousSQLError](event.Err); ok {
 				// 收集危险 SQL（不中断流程）
 				if len(dangerousErr.SQLList) > 0 {
 					dangerousSQLs = append(dangerousSQLs, dangerousErr.SQLList...)
@@ -422,6 +422,11 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
+	currentDateTimeTool, err := utils.InferTool("current_date_time", "获取当前日期时间", GetCurrentDateTime())
+	if err != nil {
+		return nil, fmt.Errorf("创建 current_date_time 工具失败：%w", err)
+	}
+
 	queryTool, err := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN 查询并返回结果", NewQueryFunc(connID))
 	if err != nil {
 		return nil, fmt.Errorf("创建 query_data 工具失败：%w", err)
@@ -468,7 +473,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.Base
 	}
 
 	return []tool.BaseTool{
-		queryTool, execTool, schemaTool,
+		queryTool, execTool, schemaTool, currentDateTimeTool,
 		exportExcelTool, exportExcelChartTool, exportPPTTool,
 		exportImageTool, exportDocxTool, importDataTool,
 	}, nil
@@ -481,7 +486,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.Base
 func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope) string {
 	var sb strings.Builder
 
-	sb.WriteString("你是一个专业的 SQL 助手，帮助用户查询和分析数据库。\n\n")
+	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。你精通标准 SQL (ANSI SQL) 以及MySQL、MariaDB、Oracle等多种方言特性。你不仅能够写出极致优化、安全高效的 SQL 代码，还具备将数据转化为可执行商业洞察的强大分析能力。善于帮助用户查询和分析数据，也总能用客观严谨、严肃又不失幽默的语言向用户表达。\n\n")
 	fmt.Fprintf(&sb, "数据库类型：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
 
 	// 表上下文
@@ -509,8 +514,13 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 ## 写操作处理（红线）
 - 所有写操作（INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE）必须调用 exec_sql 工具
 - 系统会自动拦截并推送到前端由用户确认，用户确认后才会执行
-- AI 不得绕过此机制，这是安全红线
+- AI 不得绕过此机制，这是必须遵守的安全红线
 - 写操作执行后会自动记入 SQL 审计日志
+
+## 数据洞察与叙事（核心价值）
+- **结果解读**：用自然语言概括数据结果。例如：“共返回 315 行记录，总金额 108 万元。”
+- **异常发现**：主动指出数据中的离群值、空值占比或违反常识的波动（例如：“同比下滑 30% 是一个显著风险信号”）。
+- **行动建议**：基于数据提出 1-2 条具体的、低成本的改进建议。
 
 ## 导出操作
 当用户说"导出""下载""Excel""PPT""Word"等，从对话历史中找到最近的 SQL 直接调用导出工具，不要重新生成 SQL。

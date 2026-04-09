@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"go-web/config"
 	"go-web/logutils"
@@ -50,6 +51,13 @@ type ExportOutput struct {
 	DownloadURL string `json:"downloadUrl"`
 }
 
+type CurrentDateTimeInput struct {
+}
+
+type CurrentDateTimeOutput struct {
+	DateTime string `json:"dateTime"`
+}
+
 // ──────────────────────────────────────────────
 // 数据库连接
 // ──────────────────────────────────────────────
@@ -87,6 +95,13 @@ func getConn(connId string) (*sqlx.DB, string) {
 // ──────────────────────────────────────────────
 // Tool 实现
 // ──────────────────────────────────────────────
+
+// 获取当前日期时间的tool
+func GetCurrentDateTime() func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
+	return func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
+		return &CurrentDateTimeOutput{DateTime: time.Now().Format("2006-01-02 15:09:05")}, nil
+	}
+}
 
 func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
@@ -126,13 +141,15 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 		}
 		sql := strings.TrimSpace(input.SQL)
 		if !strings.Contains(sql, "-- CONFIRMED:") {
-			if isDangerousSQL(sql) {
-				return nil, &DangerousSQLError{SQL: sql}
+			for line := range strings.SplitSeq(sql, ";") {
+				if isDangerousSQL(line) {
+					return nil, &DangerousSQLError{SQL: sql}
+				}
 			}
-			return nil, fmt.Errorf("此操作需要用户确认")
+			// return nil, fmt.Errorf("此操作需要用户确认")
 		}
 		var actualLines []string
-		for _, line := range strings.Split(sql, "\n") {
+		for line := range strings.SplitSeq(sql, "\n") {
 			if !strings.HasPrefix(strings.TrimSpace(line), "-- CONFIRMED:") {
 				actualLines = append(actualLines, line)
 			}

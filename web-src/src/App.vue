@@ -177,7 +177,13 @@
                 :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
             </div>
             <div class="action-buttons">
-              <el-button type="primary" :loading="loading" :disabled="!question.trim() && !uploadedExcel" @click="sendMessage"
+              <el-button v-if="loading" type="danger" @click="stopGeneration"
+                class="stop-btn" size="default">
+                <el-icon>
+                  <VideoPause />
+                </el-icon>
+              </el-button>
+              <el-button v-else type="primary" :disabled="!question.trim() && !uploadedExcel" @click="sendMessage"
                 class="send-btn" size="default">
                 <el-icon>
                   <Promotion />
@@ -317,6 +323,7 @@ const emit = defineEmits([])
 const question = ref('')
 const selectedTables = ref([])
 const loading = ref(false)
+const abortController = ref(null)
 const isRecording = ref(false)
 const thinkingText = ref('')
 const streamingContent = ref('')
@@ -608,6 +615,13 @@ function scrollToBottom() {
   })
 }
 
+function stopGeneration() {
+  if (abortController.value) {
+    abortController.value.abort()
+    abortController.value = null
+  }
+}
+
 async function sendMessage() {
   const text = question.value.trim()
   if (!text && !uploadedExcel.value) return
@@ -648,6 +662,9 @@ async function sendMessage() {
   const url = apiBase + '/ai/agent/chatStream'
   const auth = sessionStorage.getItem('authentication') || ''
 
+  const controller = new AbortController()
+  abortController.value = controller
+
   try {
     const body = {
       sessionId: sessionId.value,
@@ -664,6 +681,7 @@ async function sendMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
       body: JSON.stringify(body),
+      signal: controller.signal,
     })
 
     if (!resp.ok) {
@@ -703,16 +721,15 @@ async function sendMessage() {
               scrollToBottom()
               break
             case 'danger_confirm':
-              // 收集所有危险 SQL，流结束后统一处理
               collectedDangerSQLs.push(chunk.sql || chunk.content)
               break
             case 'retry_limit':
-              // 工具调用多次失败，推给用户决定
               retryMessage.value = chunk.content
               showRetryConfirm.value = true
               break
             case 'error':
-              ElMessage({ message: chunk.content || 'AI 服务错误', type: 'error' })
+              chatHistory.value.push({ role: 'assistant', content: '❌ ' + (chunk.content || 'AI 服务错误') })
+              scrollToBottom()
               break
             case 'done':
               break
@@ -738,10 +755,8 @@ async function sendMessage() {
     // 处理收集到的危险 SQL
     if (collectedDangerSQLs.length > 0) {
       if (collectedDangerSQLs.length === 1) {
-        // 单条：用原有的内联确认
         showConfirmDialog(collectedDangerSQLs[0])
       } else {
-        // 多条：批量确认
         pendingSQLList.value = collectedDangerSQLs.map(sql => {
           const analysis = analyzeSQL(sql)
           return { sql, ...analysis }
@@ -754,9 +769,23 @@ async function sendMessage() {
       uploadedExcel.value = null
     }
   } catch (e) {
-    ElMessage({ message: e.message || '请求失败', type: 'error' })
+    if (e.name === 'AbortError') {
+      if (thinkingText.value) {
+        chatHistory.value.push({ role: 'thinking', content: thinkingText.value, collapsed: true })
+        thinkingText.value = ''
+      }
+      if (streamingContent.value) {
+        chatHistory.value.push({ role: 'assistant', content: streamingContent.value })
+        streamingContent.value = ''
+      }
+      chatHistory.value.push({ role: 'assistant', content: '⏹ 对话已被手动终止' })
+      scrollToBottom()
+    } else {
+      ElMessage({ message: e.message || '请求失败', type: 'error' })
+    }
   } finally {
     loading.value = false
+    abortController.value = null
     scrollToBottom()
   }
 }
@@ -788,6 +817,9 @@ async function handleConfirmExec(confirmedSql) {
   const url = apiBase + '/ai/agent/chatStream'
   const auth = sessionStorage.getItem('authentication') || ''
 
+  const controller = new AbortController()
+  abortController.value = controller
+
   try {
     const resp = await fetch(url, {
       method: 'POST',
@@ -800,6 +832,7 @@ async function handleConfirmExec(confirmedSql) {
         confirmed: true,
         pendingSQL: confirmedSql,
       }),
+      signal: controller.signal,
     })
 
     const reader = resp.body.getReader()
@@ -821,7 +854,8 @@ async function handleConfirmExec(confirmedSql) {
             result += chunk.content
           }
           if (chunk.type === 'error') {
-            ElMessage({ message: chunk.content, type: 'error' })
+            chatHistory.value.push({ role: 'assistant', content: '❌ ' + (chunk.content || '执行失败') })
+            scrollToBottom()
           }
         } catch (_) { }
       }
@@ -831,9 +865,15 @@ async function handleConfirmExec(confirmedSql) {
       chatHistory.value.push({ role: 'assistant', content: result })
     }
   } catch (e) {
-    ElMessage({ message: e.message || '执行失败', type: 'error' })
+    if (e.name === 'AbortError') {
+      chatHistory.value.push({ role: 'assistant', content: '⏹ 执行已被手动终止' })
+      scrollToBottom()
+    } else {
+      ElMessage({ message: e.message || '执行失败', type: 'error' })
+    }
   } finally {
     loading.value = false
+    abortController.value = null
     scrollToBottom()
   }
 }
@@ -908,7 +948,12 @@ async function executeConfirmedSQL(confirmedSql) {
         try {
           const chunk = JSON.parse(line.slice(6).trim())
           if (chunk.type === 'content') result += chunk.content
-          if (chunk.type === 'error') ElMessage({ message: chunk.content, type: 'error' })
+          if (chunk.type === 'error') {
+            const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+            if (lastMsg) {
+              lastMsg.content = `❌ ${chunk.content || '执行失败'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+            }
+          }
         } catch (_) { }
       }
     }
@@ -2188,6 +2233,24 @@ onUnmounted(() => {
 
 .send-btn .el-icon {
   margin-right: 0;
+}
+
+/* 停止按钮 */
+.stop-btn {
+  padding: 8px 20px;
+  min-width: 38px;
+  min-height: 30px;
+  border-radius: 8px;
+  animation: stopPulse 1.5s ease-in-out infinite;
+}
+
+.stop-btn .el-icon {
+  margin-right: 0;
+}
+
+@keyframes stopPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 /* 加入编辑器按钮美化 - 柔和青绿 */

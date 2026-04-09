@@ -33,17 +33,6 @@
     </el-splitter-panel>
   </el-splitter>
 
-  <!-- 配置管理对话框 -->
-  <el-dialog v-model="cfgDialogVisible" @close="cfgDialogVisible = false" :draggable="true" width="1000px"
-    style="height:650px;">
-    <Configuration :isRemote="isRemote" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
-        <el-button @click="cfgDialogVisible = false">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
-
   <!-- 表管理对话框 -->
   <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
     @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
@@ -91,7 +80,6 @@
 import { ref, reactive, shallowRef, onMounted } from 'vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import SQLEditor2 from './SQLEditor2.vue'
-import Configuration from './comonents/Configuration.vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
 import TableManager from './TableManager.vue'
@@ -135,8 +123,6 @@ const loginRules = reactive({
     { required: true, message: '请输入密码', trigger: 'blur' },
   ],
 })
-
-const cfgDialogVisible = ref(false)
 
 const tableMgntDialogVisible = ref(false)
 const viewDialogVisible = ref(false)

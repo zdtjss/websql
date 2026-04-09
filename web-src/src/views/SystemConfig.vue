@@ -14,10 +14,10 @@
         </el-radio-group>
       </el-form-item>
       <el-form-item label="Base URL">
-        <el-input v-model="systemConfig.aiBaseUrl" placeholder="http://localhost:11434" />
+        <el-input v-model="systemConfig.aiBaseUrl" placeholder="https://ollama.com" />
       </el-form-item>
       <el-form-item label="Model">
-        <el-input v-model="systemConfig.aiModel" placeholder="e.g. qwen2.5:14b" />
+        <el-input v-model="systemConfig.aiModel" placeholder="qwen3.5:2b" />
       </el-form-item>
       <el-form-item label="API Key">
         <el-input v-model="systemConfig.aiApiKey" type="password" show-password placeholder="sk-..." />
