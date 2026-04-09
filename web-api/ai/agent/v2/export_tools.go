@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -318,53 +319,6 @@ func getChartType(t string) excelize.ChartType {
 }
 
 // ──────────────────────────────────────────────
-// 分析图表导出（PNG）— 使用 go-chart
-// ──────────────────────────────────────────────
-
-func NewExportAnalysisImageFunc(connID string) func(ctx context.Context, input *ExportAnalysisImageInput) (*ExportAnalysisImageOutput, error) {
-	return func(ctx context.Context, input *ExportAnalysisImageInput) (*ExportAnalysisImageOutput, error) {
-		conn, _ := getConn(connID)
-		if conn == nil {
-			return nil, fmt.Errorf("数据库连接不存在")
-		}
-
-		qr, err := queryForExport(conn, input.SQL)
-		if err != nil {
-			return nil, err
-		}
-
-		xIdx := colIndex(qr.Columns, input.XAxisField)
-		yIdx := colIndex(qr.Columns, input.YAxisField)
-		if xIdx == -1 || yIdx == -1 {
-			return nil, fmt.Errorf("未找到 X 轴字段 '%s' 或 Y 轴字段 '%s'", input.XAxisField, input.YAxisField)
-		}
-
-		fileName := sanitizeFileName(input.FileName, "chart")
-		ensureExportsDir()
-		filePath := fmt.Sprintf("exports/%s.png", fileName)
-
-		title := input.Title
-		if title == "" {
-			title = fmt.Sprintf("%s vs %s", input.XAxisField, input.YAxisField)
-		}
-
-		if err := renderChartPNG(qr, xIdx, yIdx, title, input.ChartType, filePath); err != nil {
-			return nil, fmt.Errorf("生成图表失败：%w", err)
-		}
-
-		url := fmt.Sprintf("/exports/%s.png", fileName)
-		log.Printf("[Tool:export_image] 成功 - url=%s\n", url)
-
-		return &ExportAnalysisImageOutput{
-			Message:     fmt.Sprintf("已生成分析图表，[点击下载](%s)", url),
-			DownloadURL: url,
-			FileType:    "image",
-			Format:      "png",
-		}, nil
-	}
-}
-
-// ──────────────────────────────────────────────
 // Word 报告导出（DOCX = ZIP of XML）
 // ──────────────────────────────────────────────
 
@@ -393,8 +347,16 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 		var chartImagePath string
 		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
 			chartImagePath = fmt.Sprintf("exports/%s_chart.png", fileName)
-			// 默认用前两列作为 X/Y
-			_ = renderChartPNG(qr, 0, 1, title, "bar", chartImagePath)
+			if err := renderChartPNG(qr, 0, 1, title, "bar", chartImagePath); err != nil {
+				log.Printf("[Tool:export_docx] 生成图表失败 - err=%v\n", err)
+				chartImagePath = "" // 图表失败不影响文档生成
+			}
+			// 确认文件确实存在
+			if chartImagePath != "" {
+				if _, statErr := os.Stat(chartImagePath); os.IsNotExist(statErr) {
+					chartImagePath = ""
+				}
+			}
 		}
 
 		if err := generateDocx(qr, title, chartImagePath, filePath); err != nil {
@@ -500,20 +462,41 @@ func writeExcelSheetMode(f *excelize.File, sheet string, qr *queryResult, useStr
 			for colIdx, col := range qr.Columns {
 				cell := fmt.Sprintf("%s%d", colLetter(colIdx), rowIdx+2)
 				if v, ok := row[col]; ok {
-					switch val := v.(type) {
-					case float64:
-						f.SetCellValue(sheet, cell, val)
-					case float32:
-						f.SetCellValue(sheet, cell, float64(val))
-					case int:
-						f.SetCellValue(sheet, cell, val)
-					case int64:
-						f.SetCellValue(sheet, cell, val)
-					default:
-						f.SetCellValue(sheet, cell, fmt.Sprintf("%v", v))
-					}
+					setCellAuto(f, sheet, cell, v)
 				}
 			}
 		}
+	}
+}
+
+// setCellAuto 智能设置单元格值，尽量保留数值类型（避免图表读到文本 0）
+func setCellAuto(f *excelize.File, sheet, cell string, v any) {
+	switch val := v.(type) {
+	case float64:
+		f.SetCellValue(sheet, cell, val)
+	case float32:
+		f.SetCellValue(sheet, cell, float64(val))
+	case int:
+		f.SetCellValue(sheet, cell, val)
+	case int64:
+		f.SetCellValue(sheet, cell, val)
+	case int32:
+		f.SetCellValue(sheet, cell, int64(val))
+	case []byte:
+		// 数据库驱动常返回 []byte，尝试转数值
+		s := string(val)
+		if n, err := strconv.ParseFloat(s, 64); err == nil {
+			f.SetCellValue(sheet, cell, n)
+		} else {
+			f.SetCellValue(sheet, cell, s)
+		}
+	case string:
+		if n, err := strconv.ParseFloat(val, 64); err == nil {
+			f.SetCellValue(sheet, cell, n)
+		} else {
+			f.SetCellValue(sheet, cell, val)
+		}
+	default:
+		f.SetCellValue(sheet, cell, fmt.Sprintf("%v", v))
 	}
 }

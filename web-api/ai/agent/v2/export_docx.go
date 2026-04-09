@@ -240,7 +240,11 @@ func docxImage(rID string, cx, cy int64) string {
   <w:drawing>
     <wp:inline distT="0" distB="0" distL="0" distR="0">
       <wp:extent cx="%d" cy="%d"/>
+      <wp:effectExtent l="0" t="0" r="0" b="0"/>
       <wp:docPr id="1" name="Chart"/>
+      <wp:cNvGraphicFramePr>
+        <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
+      </wp:cNvGraphicFramePr>
       <a:graphic>
         <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
           <pic:pic>

@@ -23,7 +23,7 @@ type Handler struct {
 
 // NewHandler 创建 Handler
 func NewHandler() (*Handler, error) {
-	sessions, err := NewSessionStore("./data/sessions")
+	sessions, err := NewSessionStore()
 	if err != nil {
 		return nil, err
 	}
@@ -230,20 +230,6 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		return
 	}
 
-	sessDB, err := GetSessionByID(sessionID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if sessDB == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
-		return
-	}
-	if sessDB.UserID != user.Id {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问此会话"})
-		return
-	}
-
 	detail, err := h.sessions.GetDetail(sessionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -263,20 +249,6 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
-		return
-	}
-
-	sessDB, err := GetSessionByID(sessionID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if sessDB == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
-		return
-	}
-	if sessDB.UserID != user.Id {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无权删除此会话"})
 		return
 	}
 

@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS t_ai_session (
 	id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL,
 	title TEXT,
-	file_path TEXT,
+	messages TEXT,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

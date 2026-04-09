@@ -1,68 +1,259 @@
 package agentv2
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"go-web/config"
 )
 
+// ──────────────────────────────────────────────
+// 数据结构
+// ──────────────────────────────────────────────
+
 // SessionDB 数据库中的会话记录
 type SessionDB struct {
-	ID        string    `db:"id"`
-	UserID    string    `db:"user_id"`
-	Title     string    `db:"title"`
-	FilePath  string    `db:"file_path"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	ID        string    `db:"id" json:"id"`
+	UserID    string    `db:"user_id" json:"userId"`
+	Title     string    `db:"title" json:"title"`
+	Messages  string    `db:"messages" json:"-"`
+	CreatedAt time.Time `db:"created_at" json:"createdAt"`
+	UpdatedAt time.Time `db:"updated_at" json:"updatedAt"`
 }
 
-// CreateSessionInDB 在数据库中创建会话记录
-func CreateSessionInDB(id, userID, title, filePath string) error {
-	_, err := config.Mngtdb.Exec(`
-		INSERT INTO t_ai_session (id, user_id, title, file_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, id, userID, title, filePath, time.Now(), time.Now())
-	if err != nil {
-		// 如果表不存在，忽略错误
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
-			return nil
+// SessionMessage 存储在 messages JSON 数组中的单条消息
+type SessionMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ──────────────────────────────────────────────
+// Session — 单个会话的内存表示
+// ──────────────────────────────────────────────
+
+type Session struct {
+	ID        string
+	UserID    string
+	CreatedAt time.Time
+	mu        sync.Mutex
+	messages  []SessionMessage
+}
+
+// Append 追加消息并持久化到数据库
+func (s *Session) Append(role, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.messages = append(s.messages, SessionMessage{Role: role, Content: content})
+	return s.saveToDB()
+}
+
+// GetMessages 获取所有消息的副本
+func (s *Session) GetMessages() []SessionMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]SessionMessage, len(s.messages))
+	copy(result, s.messages)
+	return result
+}
+
+// Title 取第一条用户消息的前60个字符作为标题
+func (s *Session) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, msg := range s.messages {
+		if msg.Role == "user" && msg.Content != "" {
+			title := msg.Content
+			if len([]rune(title)) > 60 {
+				title = string([]rune(title)[:60]) + "..."
+			}
+			return title
 		}
+	}
+	return ""
+}
+
+// saveToDB 将消息序列化后写入数据库（调用方需持有锁）
+func (s *Session) saveToDB() error {
+	data, err := json.Marshal(s.messages)
+	if err != nil {
+		return err
+	}
+	title := ""
+	for _, msg := range s.messages {
+		if msg.Role == "user" && msg.Content != "" {
+			title = msg.Content
+			if len([]rune(title)) > 60 {
+				title = string([]rune(title)[:60]) + "..."
+			}
+			break
+		}
+	}
+	_, err = config.Mngtdb.Exec(`
+		UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
+	`, string(data), title, time.Now(), s.ID)
+	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+		return nil
 	}
 	return err
 }
 
-// UpdateSessionTitleInDB 更新会话标题
-func UpdateSessionTitleInDB(id, title string) error {
-	_, err := config.Mngtdb.Exec(`
-		UPDATE t_ai_session SET title = ?, updated_at = ? WHERE id = ?
-	`, title, time.Now(), id)
-	if err != nil {
-		// 如果表不存在，忽略错误
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
-			return nil
+// ──────────────────────────────────────────────
+// SessionStore — 会话存储管理器
+// ──────────────────────────────────────────────
+
+type SessionStore struct {
+	mu    sync.Mutex
+	cache map[string]*Session
+}
+
+func NewSessionStore() (*SessionStore, error) {
+	return &SessionStore{cache: make(map[string]*Session)}, nil
+}
+
+// GetOrCreate 获取或创建会话
+func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if sess, ok := s.cache[id]; ok {
+		return sess, nil
+	}
+
+	// 尝试从数据库加载
+	sess, err := loadSessionFromDB(id)
+	if err != nil || sess == nil {
+		// 不存在，创建新会话
+		sess = &Session{
+			ID:        id,
+			UserID:    userID,
+			CreatedAt: time.Now(),
+			messages:  make([]SessionMessage, 0),
 		}
+		if err := createSessionInDB(id, userID); err != nil {
+			log.Printf("[SessionStore] 创建会话记录失败 - id=%s, err=%v\n", id, err)
+		}
+	}
+
+	s.cache[id] = sess
+	return sess, nil
+}
+
+// ListByUserID 获取用户的会话列表
+func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
+	sessions, err := listSessionsByUserID(userID)
+	if err != nil {
+		return nil, err
+	}
+	metas := make([]SessionMeta, 0, len(sessions))
+	for _, sess := range sessions {
+		title := sess.Title
+		if title == "" {
+			title = "未命名会话"
+		}
+		metas = append(metas, SessionMeta{ID: sess.ID, Title: title, CreatedAt: sess.CreatedAt})
+	}
+	return metas, nil
+}
+
+// Delete 删除会话
+func (s *SessionStore) Delete(id string) error {
+	s.mu.Lock()
+	delete(s.cache, id)
+	s.mu.Unlock()
+	return deleteSessionInDB(id)
+}
+
+// GetDetail 获取会话详情（含完整消息）
+func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
+	sessDB, err := getSessionByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if sessDB == nil {
+		return nil, fmt.Errorf("会话不存在：%s", id)
+	}
+
+	var messages []SessionMessage
+	if sessDB.Messages != "" {
+		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
+	}
+
+	detail := SessionDetail{
+		ID:        sessDB.ID,
+		Title:     sessDB.Title,
+		CreatedAt: sessDB.CreatedAt,
+		Messages:  make([]SessionDetailMessage, 0, len(messages)),
+	}
+	for _, msg := range messages {
+		detail.Messages = append(detail.Messages, SessionDetailMessage{Role: msg.Role, Content: msg.Content})
+	}
+	if detail.Title == "" {
+		detail.Title = "未命名会话"
+	}
+	return &detail, nil
+}
+
+// ──────────────────────────────────────────────
+// 数据库操作（内部函数）
+// ──────────────────────────────────────────────
+
+func createSessionInDB(id, userID string) error {
+	_, err := config.Mngtdb.Exec(`
+		INSERT INTO t_ai_session (id, user_id, title, messages, created_at, updated_at)
+		VALUES (?, ?, '', '[]', ?, ?)
+	`, id, userID, time.Now(), time.Now())
+	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+		return nil
 	}
 	return err
 }
 
-// ListSessionsByUserID 查询用户的会话列表（按创建时间倒序）
-func ListSessionsByUserID(userID string) ([]SessionDB, error) {
+func loadSessionFromDB(id string) (*Session, error) {
+	sessDB, err := getSessionByID(id)
+	if err != nil || sessDB == nil {
+		return nil, err
+	}
+
+	var messages []SessionMessage
+	if sessDB.Messages != "" {
+		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
+	}
+
+	return &Session{
+		ID:        sessDB.ID,
+		UserID:    sessDB.UserID,
+		CreatedAt: sessDB.CreatedAt,
+		messages:  messages,
+	}, nil
+}
+
+func getSessionByID(id string) (*SessionDB, error) {
+	var session SessionDB
+	err := config.Mngtdb.Get(&session, `
+		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, created_at, updated_at
+		FROM t_ai_session WHERE id = ?
+	`, id)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") || strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &session, nil
+}
+
+func listSessionsByUserID(userID string) ([]SessionDB, error) {
 	var sessions []SessionDB
 	err := config.Mngtdb.Select(&sessions, `
-		SELECT id, user_id, title, file_path, created_at, updated_at
-		FROM t_ai_session
-		WHERE user_id = ?
-		ORDER BY created_at DESC
+		SELECT id, user_id, COALESCE(title,'') as title, created_at, updated_at
+		FROM t_ai_session WHERE user_id = ? ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
-		// 如果表不存在，返回空列表
 		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
 			return []SessionDB{}, nil
 		}
@@ -71,116 +262,10 @@ func ListSessionsByUserID(userID string) ([]SessionDB, error) {
 	return sessions, nil
 }
 
-// GetSessionByID 根据 ID 获取会话
-func GetSessionByID(id string) (*SessionDB, error) {
-	var session SessionDB
-	err := config.Mngtdb.Get(&session, `
-		SELECT id, user_id, title, file_path, created_at, updated_at
-		FROM t_ai_session
-		WHERE id = ?
-	`, id)
-	if err != nil {
-		return nil, err
-	}
-	return &session, nil
-}
-
-// DeleteSessionInDB 删除会话记录
-func DeleteSessionInDB(id string) error {
+func deleteSessionInDB(id string) error {
 	_, err := config.Mngtdb.Exec(`DELETE FROM t_ai_session WHERE id = ?`, id)
-	if err != nil {
-		// 如果表不存在，忽略错误
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
-			return nil
-		}
+	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+		return nil
 	}
 	return err
-}
-
-// SessionExistsInDB 检查会话是否存在于数据库
-func SessionExistsInDB(id string) (bool, error) {
-	var count int
-	err := config.Mngtdb.Get(&count, `SELECT COUNT(*) FROM t_ai_session WHERE id = ?`, id)
-	if err != nil {
-		log.Printf("[SessionExistsInDB] 查询失败 - id=%s, err=%v\n", id, err)
-		// 如果表不存在，返回 false 但不报错
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
-			return false, nil
-		}
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// loadSessionHeader 加载会话文件的 header 信息
-func loadSessionHeader(filePath string) (*sessionHeader, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	// 第一行：头部
-	if !scanner.Scan() {
-		return nil, fmt.Errorf("空的会话文件：%s", filePath)
-	}
-	var header sessionHeader
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return nil, fmt.Errorf("%s 中的会话头部损坏：%w", filePath, err)
-	}
-	return &header, scanner.Err()
-}
-
-// MigrateFileSessionsToDB 将现有的文件会话迁移到数据库（启动时调用）
-func MigrateFileSessionsToDB(store *SessionStore) error {
-	// 读取 sessions 目录下的所有文件
-	entries, err := os.ReadDir(store.dir)
-	if err != nil {
-		return fmt.Errorf("读取会话目录失败：%w", err)
-	}
-
-	migrated := 0
-	for _, e := range entries {
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-
-		id := strings.TrimSuffix(e.Name(), ".jsonl")
-		if id == "" {
-			continue
-		}
-
-		// 检查是否已存在于数据库
-		exists, err := SessionExistsInDB(id)
-		if err != nil {
-			continue
-		}
-		if exists {
-			continue
-		}
-
-		// 加载 header
-		filePath := filepath.Join(store.dir, e.Name())
-		header, err := loadSessionHeader(filePath)
-		if err != nil {
-			continue
-		}
-
-		// 插入数据库（使用 id 作为 user_id，因为每个用户只有一个会话）
-		err = CreateSessionInDB(header.ID, header.ID, "", filePath)
-		if err != nil {
-			continue
-		}
-
-		migrated++
-	}
-
-	if migrated > 0 {
-		fmt.Printf("[Migration] 已迁移 %d 个会话到数据库\n", migrated)
-	}
-	return nil
 }
