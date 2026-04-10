@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -328,6 +329,36 @@ func extractLastSQLFromSessionMessages(msgs []SessionMessage) string {
 	return ""
 }
 
+// authTransport 实现了 http.RoundTripper 接口
+type authTransport struct {
+	token     string
+	transport http.RoundTripper
+}
+
+// RoundTrip 在请求发出前自动添加 Authorization 头
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 1. 克隆请求，避免并发修改原始请求导致的数据竞争
+	clonedReq := req.Clone(req.Context())
+	if clonedReq.Header == nil {
+		clonedReq.Header = make(http.Header)
+	}
+
+	clonedReq.Header.Set("Authorization", "Bearer "+t.token)
+
+	// 3. 交由底层 Transport 执行真实网络请求
+	return t.transport.RoundTrip(clonedReq)
+}
+
+// NewAuthClient 创建一个默认携带 Authorization 头的 HTTP 客户端
+func NewAuthClient(token string) *http.Client {
+	return &http.Client{
+		Transport: &authTransport{
+			token:     token,
+			transport: http.DefaultTransport,
+		},
+	}
+}
+
 // ──────────────────────────────────────────────
 // 模型与工具构建
 // ──────────────────────────────────────────────
@@ -344,6 +375,7 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 		if cfg.Temperature > 0 {
 			ollamaCfg.Options = &ollama.Options{Temperature: cfg.Temperature}
 		}
+		ollamaCfg.HTTPClient = NewAuthClient(cfg.ApiKey)
 		return ollama.NewChatModel(ctx, ollamaCfg)
 	case "openai":
 		openaiCfg := &openai.ChatModelConfig{

@@ -63,7 +63,8 @@
               </el-tag>
               <span v-if="item.tableName" style="font-size:12px;color:#909399;">表：{{ item.tableName }}</span>
             </div>
-            <pre class="sql-preview-code">{{ item.sql }}</pre>
+            <!-- <pre class="sql-preview-code">{{ item.sql }}</pre> -->
+            <pre class="sql-pre"><code v-html="highlightSql(item.sql)" /></pre>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
             <el-button size="small" @click="handleCancelAllSQL">全部取消</el-button>

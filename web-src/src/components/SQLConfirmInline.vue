@@ -60,7 +60,8 @@
       <el-button size="small" @click="handleCancel">取消</el-button>
       <el-button size="small" type="primary" :danger="riskLevel === 'high'" @click="handleConfirm"
         :loading="confirmLoading">
-        {{ riskLevel === 'high' ? '确认执行（高危）' : '确认执行' }}
+        <span v-if="riskLevel === 'high'" style="color: #d73a49;">执行（高危）</span>
+        <span v-else>执行</span>
       </el-button>
     </div>
   </div>
@@ -166,12 +167,12 @@ const handleCancel = () => {
 }
 
 // 获取当前用户信息
-const getCurrentUser = () => {
-  const userStr = sessionStorage.getItem('userInfo') || localStorage.getItem('userInfo')
+function getCurrentUser() {
+  const userStr = sessionStorage.getItem('currentUser')
   if (userStr) {
     try {
-      const user = JSON.parse(userStr)
-      return user.username || user.name || 'anonymous'
+      const user = JSON.parse(userStr);
+      return user.name || 'anonymous'
     } catch {
       return 'anonymous'
     }

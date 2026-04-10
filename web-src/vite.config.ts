@@ -32,7 +32,7 @@ export default defineConfig({
         target: 'http://localhost', // 目标代理接口地址
         secure: false,
         changeOrigin: true, // 开启代理，在本地创建一个虚拟服务端
-        rewrite: (path) => path.replace(/^\/api/, '')
+        // rewrite: (path) => path.replace(/^\/api/, '')
       },
       '/sysapi/': {
         target: 'http://localhost:8081', // 目标代理接口地址
