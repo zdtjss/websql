@@ -13,7 +13,7 @@
               <div class="thinking-label" style="cursor:pointer;" @click="msg.collapsed = !msg.collapsed">
                 💭 思考过程 <span style="font-size:11px;">{{ msg.collapsed ? '▶ 展开' : '▼ 折叠' }}</span>
               </div>
-              <pre v-show="!msg.collapsed" class="thinking-content">{{ msg.content }}</pre>
+              <div v-show="!msg.collapsed" class="thinking-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
             </div>
             <div v-else-if="msg.role === 'user'" :class="['chat-bubble', 'user']">
               <div class="bubble-label">你</div>
@@ -34,7 +34,7 @@
           <!-- 实时思考过程（流式中） -->
           <div v-if="thinkingText && loading" class="thinking-block">
             <div class="thinking-label">💭 思考中...</div>
-            <pre class="thinking-content">{{ thinkingText }}</pre>
+            <div class="thinking-content markdown-body" v-html="renderMarkdown(thinkingText)"></div>
           </div>
 
           <!-- 流式输出中 -->
@@ -1636,7 +1636,6 @@ onUnmounted(() => {
 .thinking-content {
   font-size: 13px;
   color: #455a64;
-  white-space: pre-wrap;
   word-break: break-all;
   max-height: 200px;
   overflow-y: auto;
@@ -1644,9 +1643,41 @@ onUnmounted(() => {
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.7);
   border-radius: 8px;
-  /* border-left: 3px solid #546e7a; */
+  line-height: 1.6;
+}
+
+.thinking-content :deep(p) {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.thinking-content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.thinking-content :deep(code) {
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
   font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  color: #c62828;
+}
+
+.thinking-content :deep(pre) {
+  margin: 8px 0;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  overflow: auto;
+  font-size: 12px;
   line-height: 1.5;
+}
+
+.thinking-content :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  color: inherit;
 }
 
 .thinking-content::-webkit-scrollbar {
