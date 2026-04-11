@@ -2592,9 +2592,10 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .mermaid-toolbar {
-  position: sticky;
-  top: 0;
+  position: fixed;
+  top: 20px;
   float: right;
+  right: 18px;
   display: flex;
   gap: 2px;
   z-index: 2;
