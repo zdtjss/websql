@@ -10,10 +10,10 @@
           <!-- 思考过程（历史中的，可折叠） -->
           <div v-for="(msg, idx) in chatHistory" :key="'h' + idx">
             <div v-if="msg.role === 'thinking'" class="thinking-block">
-              <div class="thinking-label" style="cursor:pointer;" @click="msg.collapsed = !msg.collapsed">
+              <div class="thinking-label" style="cursor:pointer;" @click="toggleThinking(msg)">
                 💭 思考过程 <span style="font-size:11px;">{{ msg.collapsed ? '▶ 展开' : '▼ 折叠' }}</span>
               </div>
-              <div v-show="!msg.collapsed" class="thinking-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-show="!msg.collapsed" class="thinking-content markdown-body" v-html="getCachedHtml(msg)"></div>
             </div>
             <div v-else-if="msg.role === 'user'" :class="['chat-bubble', 'user']">
               <div class="bubble-label">你</div>
@@ -24,7 +24,7 @@
               <div v-if="msg.hasSql" class="bubble-content">
                 <pre class="sql-pre"><code v-html="highlightSql(msg.content)" /></pre>
               </div>
-              <div v-else class="bubble-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-else class="bubble-content markdown-body" v-html="getCachedHtml(msg)"></div>
             </div>
             <div v-else-if="msg.role === 'tool_call'" class="tool-call-block">
               <span>🔧 {{ msg.content }}</span>
@@ -255,6 +255,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import MarkdownIt from 'markdown-it'
+import mermaid from 'mermaid'
 import 'highlight.js/styles/stackoverflow-light.css'
 import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting, Grid, Upload } from '@element-plus/icons-vue'
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
@@ -263,6 +264,16 @@ import http from '@/js/utils/httpProxy.js'
 import { useRouter } from 'vue-router'
 
 hljs.registerLanguage('sql', hljsSql)
+
+// 初始化 mermaid
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'default',
+  securityLevel: 'loose',
+  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+})
+
+let mermaidIdCounter = 0
 
 // 获取 API 基础路径
 const apiBase = import.meta.env.VITE_API_URL || ''
@@ -315,6 +326,27 @@ md.renderer.rules.table_open = function (tokens, idx, options, env, self) {
 const defaultTableCloseRender = md.renderer.rules.table_close
 md.renderer.rules.table_close = function (tokens, idx, options, env, self) {
   return '</table></div>'
+}
+
+// 自定义 fence 渲染：mermaid 代码块转为待渲染容器，其余保持默认
+const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
+  return self.renderToken(tokens, idx, options)
+}
+md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+  const token = tokens[idx]
+  const info = token.info ? token.info.trim().toLowerCase() : ''
+  if (info === 'mermaid') {
+    const id = 'mermaid-' + (++mermaidIdCounter)
+    // 对内容进行 HTML 转义，防止 XSS，mermaid.render 会处理原始文本
+    const escaped = token.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+    // 输出占位容器：流式输出时显示源码预览，流结束后由 doRenderMermaidBlocks 替换为 SVG 图表
+    return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
+  }
+  return defaultFenceRender(tokens, idx, options, env, self)
 }
 
 const props = defineProps({})
@@ -608,12 +640,80 @@ function renderMarkdown(text) {
   }
 }
 
+// 缓存版本：用于历史消息，避免重复调用 renderMarkdown 导致 mermaid ID 变化
+function getCachedHtml(msg) {
+  if (!msg._renderedHtml || msg._lastContent !== msg.content) {
+    msg._renderedHtml = renderMarkdown(msg.content)
+    msg._lastContent = msg.content
+  }
+  return msg._renderedHtml
+}
+
+// 渲染 DOM 中所有未处理的 mermaid 容器
+let isMermaidRendering = false
+
+async function doRenderMermaidBlocks(scrollAfter = true) {
+  if (isMermaidRendering) return
+  isMermaidRendering = true
+  try {
+    await nextTick()
+    const containers = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
+    for (const el of containers) {
+      // 跳过隐藏的容器（如折叠的思考区域）
+      if (el.offsetParent === null) continue
+      const id = el.getAttribute('data-mermaid-id')
+      const source = el.getAttribute('data-mermaid-source')
+        ?.replace(/&quot;/g, '"')
+        .replace(/&gt;/g, '>')
+        .replace(/&lt;/g, '<')
+        .replace(/&amp;/g, '&')
+      if (!id || !source) continue
+      const trimmed = source.trim()
+      if (!trimmed || trimmed.length < 5) continue
+      el.setAttribute('data-mermaid-processed', 'true')
+      try {
+        const { svg } = await mermaid.render(id, trimmed)
+        const sourceHtml = `<pre class="mermaid-source-preview" style="display:none;"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+        el.innerHTML =
+          `<div class="mermaid-svg-wrap" data-scale="1">${svg}</div>${sourceHtml}` +
+          `<div class="mermaid-toolbar">` +
+            `<button class="mermaid-tb-btn" title="缩小" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.max(0.25,+(s-0.25).toFixed(2));w.dataset.scale=s;w.style.transform='scale('+s+')'})(this)">🔍−</button>` +
+            `<button class="mermaid-tb-btn" title="重置缩放" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');w.dataset.scale=1;w.style.transform='scale(1)'})(this)">1:1</button>` +
+            `<button class="mermaid-tb-btn" title="放大" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.min(3,+(s+0.25).toFixed(2));w.dataset.scale=s;w.style.transform='scale('+s+')'})(this)">🔍+</button>` +
+            `<button class="mermaid-tb-btn" title="查看源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview');var g=c.querySelector('.mermaid-svg-wrap');if(src.style.display==='none'){src.style.display='block';g.style.display='none';b.textContent='📊';}else{src.style.display='none';g.style.display='block';b.textContent='📝';};})(this)">📝</button>` +
+          `</div>`
+      } catch (e) {
+        console.warn('Mermaid render error:', e)
+        // 渲染失败时显示源码
+        el.innerHTML = `<pre class="mermaid-error"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+      }
+    }
+    // mermaid 渲染完成后再做一次滚动，确保新内容可见
+    if (scrollAfter && containers.length > 0) {
+      await nextTick()
+      if (msgContainer.value) {
+        msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+      }
+    }
+  } finally {
+    isMermaidRendering = false
+  }
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (msgContainer.value) {
       msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
   })
+}
+
+function toggleThinking(msg) {
+  msg.collapsed = !msg.collapsed
+  if (!msg.collapsed) {
+    // 展开时渲染其中可能存在的 mermaid 图表，不滚动到底部
+    nextTick(() => doRenderMermaidBlocks(false))
+  }
 }
 
 function stopGeneration() {
@@ -787,7 +887,9 @@ async function sendMessage() {
   } finally {
     loading.value = false
     abortController.value = null
+    // 流结束后渲染 mermaid 图表
     scrollToBottom()
+    doRenderMermaidBlocks()
   }
 }
 
@@ -1427,6 +1529,8 @@ async function loadSession(id) {
 
       ElMessage({ message: '已加载历史会话', type: 'success' })
       scrollToBottom()
+      // 历史会话加载完成后立即渲染 mermaid
+      doRenderMermaidBlocks()
     }
   } catch (e) {
     ElMessage({ message: e.message || '加载会话失败', type: 'error' })
@@ -1636,8 +1740,8 @@ onUnmounted(() => {
 .thinking-content {
   font-size: 13px;
   color: #455a64;
-  word-break: break-all;
-  max-height: 200px;
+  word-break: break-word;
+  max-height: 400px;
   overflow-y: auto;
   margin: 0;
   padding: 8px 12px;
@@ -1755,7 +1859,7 @@ onUnmounted(() => {
   }
 }
 
-/* ========== Markdown 样式 ========== */
+/* ========== Markdown 样式（基础容器，子元素样式在 unscoped 块中） ========== */
 .markdown-body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
@@ -1763,232 +1867,6 @@ onUnmounted(() => {
   color: #2d3748;
   word-wrap: break-word;
   overflow-wrap: break-word;
-}
-
-.markdown-body p {
-  margin-top: 0;
-  margin-bottom: 12px;
-}
-
-.markdown-body p:last-child {
-  margin-bottom: 0;
-}
-
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3,
-.markdown-body h4,
-.markdown-body h5,
-.markdown-body h6 {
-  margin-top: 20px;
-  margin-bottom: 10px;
-  font-weight: 700;
-  line-height: 1.3;
-  color: #1a202c;
-}
-
-.markdown-body h1 {
-  font-size: 24px;
-  border-bottom: 2px solid #e2e8f0;
-  padding-bottom: 6px;
-}
-
-.markdown-body h2 {
-  font-size: 20px;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 4px;
-}
-
-.markdown-body h3 {
-  font-size: 18px;
-}
-
-.markdown-body h4 {
-  font-size: 16px;
-}
-
-.markdown-body h5 {
-  font-size: 14px;
-}
-
-.markdown-body h6 {
-  font-size: 13px;
-}
-
-.markdown-body ul,
-.markdown-body ol {
-  padding-left: 2em;
-  margin-top: 8px;
-  margin-bottom: 12px;
-}
-
-.markdown-body ul {
-  list-style-type: disc;
-}
-
-.markdown-body ul ul {
-  list-style-type: circle;
-}
-
-.markdown-body ul ul ul {
-  list-style-type: square;
-}
-
-.markdown-body ol {
-  list-style-type: decimal;
-}
-
-.markdown-body li {
-  margin-top: 6px;
-  margin-bottom: 6px;
-  line-height: 1.6;
-}
-
-.markdown-body li+li {
-  margin-top: 6px;
-}
-
-.markdown-body code {
-  padding: 3px 8px;
-  margin: 0;
-  font-size: 13px;
-  background: linear-gradient(135deg, #eceff1 0%, #cfd8dc 100%);
-  border-radius: 6px;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  color: #c62828;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.markdown-body pre {
-  padding: 16px;
-  overflow: auto;
-  font-size: 13px;
-  line-height: 1.6;
-  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
-  border-radius: 10px;
-  margin-top: 12px;
-  margin-bottom: 12px;
-  max-width: 100%;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(0, 0, 0, 0.2);
-}
-
-.markdown-body pre code {
-  display: block;
-  padding: 0;
-  margin: 0;
-  overflow: visible;
-  line-height: inherit;
-  word-wrap: normal;
-  background-color: transparent;
-  border-radius: 0;
-  color: #cfd8dc;
-  white-space: pre;
-}
-
-.markdown-body blockquote {
-  padding: 12px 16px;
-  color: #546e7a;
-  border-left: 4px solid #546e7a;
-  margin: 12px 0;
-  background: rgba(84, 110, 122, 0.05);
-  border-radius: 0 8px 8px 0;
-  font-style: italic;
-}
-
-/* 表格样式优化 */
-.markdown-body table {
-  border-collapse: collapse;
-  width: 100%;
-  max-width: 100%;
-  margin-top: 12px;
-  margin-bottom: 12px;
-  font-size: 13px;
-  display: block;
-  overflow-x: auto;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.markdown-body table th,
-.markdown-body table td {
-  padding: 10px 14px;
-  border: 1px solid #e2e8f0;
-  white-space: nowrap;
-}
-
-.markdown-body table th {
-  font-weight: 700;
-  background: linear-gradient(180deg, #eceff1 0%, #cfd8dc 100%);
-  color: #263238;
-  position: sticky;
-  top: 0;
-  text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: 0.5px;
-}
-
-.markdown-body table tr:nth-child(2n) {
-  background-color: #f5f5f5;
-}
-
-.markdown-body table tr:hover {
-  background-color: #eceff1;
-}
-
-/* 宽表滚动容器 */
-.markdown-body .table-wrapper {
-  overflow-x: auto;
-  margin: 12px 0;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.markdown-body a {
-  color: #1976d2;
-  text-decoration: none;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.2s ease;
-  border-bottom: 1px solid transparent;
-}
-
-.markdown-body a:hover {
-  color: #1565c0;
-  text-decoration: underline;
-  border-bottom-color: #1565c0;
-}
-
-.markdown-body a[target="_blank"]::after {
-  content: " ↗";
-  font-size: 11px;
-  margin-left: 2px;
-}
-
-.markdown-body hr {
-  height: 2px;
-  padding: 0;
-  margin: 20px 0;
-  background: linear-gradient(90deg, #e2e8f0 0%, #cbd5e0 50%, #e2e8f0 100%);
-  border: 0;
-}
-
-.markdown-body strong {
-  font-weight: 700;
-  color: #1a202c;
-}
-
-.markdown-body em {
-  font-style: italic;
-  color: #4a5568;
-}
-
-.markdown-body img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  margin: 8px 0;
 }
 
 /* ========== 历史会话项样式 ========== */
@@ -2197,23 +2075,6 @@ onUnmounted(() => {
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   border: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-/* 消息气泡中的链接 */
-.chat-bubble a {
-  color: inherit;
-  text-decoration: underline;
-  font-weight: 600;
-}
-
-.chat-bubble.user a {
-  color: #ffffff;
-  text-decoration-color: rgba(255, 255, 255, 0.6);
-}
-
-.chat-bubble.user a:hover {
-  color: #e2e8f0;
-  text-decoration-color: #ffffff;
 }
 
 /* ========== 输入区域布局 ========== */
@@ -2482,5 +2343,297 @@ onUnmounted(() => {
   border-radius: 6px;
   font-size: 13px;
   color: #409eff;
+}
+</style>
+
+<style>
+/* ========== Markdown v-html 内容样式（unscoped，确保 v-html 注入的 DOM 元素能被正确样式化） ========== */
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin-top: 20px;
+  margin-bottom: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #1a202c;
+}
+.markdown-body h1 { font-size: 24px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+.markdown-body h2 { font-size: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+.markdown-body h3 { font-size: 18px; }
+.markdown-body h4 { font-size: 16px; }
+.markdown-body h5 { font-size: 14px; }
+.markdown-body h6 { font-size: 13px; }
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 2em;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+.markdown-body ul { list-style-type: disc; }
+.markdown-body ul ul { list-style-type: circle; }
+.markdown-body ul ul ul { list-style-type: square; }
+.markdown-body ol { list-style-type: decimal; }
+.markdown-body li {
+  margin-top: 6px;
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+.markdown-body li+li { margin-top: 6px; }
+.markdown-body code {
+  padding: 3px 8px;
+  margin: 0;
+  font-size: 13px;
+  background: linear-gradient(135deg, #eceff1 0%, #cfd8dc 100%);
+  border-radius: 6px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  color: #c62828;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+.markdown-body pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
+  border-radius: 10px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  max-width: 100%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+  line-height: inherit;
+  word-wrap: normal;
+  background-color: transparent;
+  border-radius: 0;
+  color: #cfd8dc;
+  white-space: pre;
+  border: none;
+}
+.markdown-body blockquote {
+  padding: 12px 16px;
+  color: #546e7a;
+  border-left: 4px solid #546e7a;
+  margin: 12px 0;
+  background: rgba(84, 110, 122, 0.05);
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.markdown-body table th,
+.markdown-body table td {
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.markdown-body table th {
+  font-weight: 700;
+  background: linear-gradient(180deg, #eceff1 0%, #cfd8dc 100%);
+  color: #263238;
+  position: sticky;
+  top: 0;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+.markdown-body table tr:nth-child(2n) { background-color: #f5f5f5; }
+.markdown-body table tr:hover { background-color: #eceff1; }
+.markdown-body .table-wrapper {
+  overflow-x: auto;
+  margin: 12px 0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.markdown-body a {
+  color: #1976d2;
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-bottom: 1px solid transparent;
+}
+.markdown-body a:hover {
+  color: #1565c0;
+  text-decoration: underline;
+  border-bottom-color: #1565c0;
+}
+.markdown-body a[target="_blank"]::after {
+  content: " ↗";
+  font-size: 11px;
+  margin-left: 2px;
+}
+.markdown-body hr {
+  height: 2px;
+  padding: 0;
+  margin: 20px 0;
+  background: linear-gradient(90deg, #e2e8f0 0%, #cbd5e0 50%, #e2e8f0 100%);
+  border: 0;
+}
+.markdown-body strong {
+  font-weight: 700;
+  color: #1a202c;
+}
+.markdown-body em {
+  font-style: italic;
+  color: #4a5568;
+}
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  margin: 8px 0;
+}
+
+/* 思考区域内的 markdown 样式覆盖（更紧凑） */
+.thinking-content.markdown-body { font-size: 13px; color: #455a64; }
+.thinking-content.markdown-body h1 { font-size: 18px; }
+.thinking-content.markdown-body h2 { font-size: 16px; }
+.thinking-content.markdown-body h3 { font-size: 15px; }
+.thinking-content.markdown-body p { margin-bottom: 8px; }
+.thinking-content.markdown-body pre {
+  margin: 8px 0;
+  padding: 12px;
+  font-size: 12px;
+}
+.thinking-content.markdown-body code { font-size: 12px; }
+.thinking-content.markdown-body ul,
+.thinking-content.markdown-body ol { padding-left: 1.5em; margin: 6px 0; }
+.thinking-content.markdown-body li { margin: 4px 0; }
+.thinking-content.markdown-body blockquote {
+  padding: 8px 12px;
+  margin: 8px 0;
+  border-left-width: 3px;
+}
+.thinking-content.markdown-body table { font-size: 12px; margin: 8px 0; }
+.thinking-content.markdown-body table th,
+.thinking-content.markdown-body table td { padding: 6px 10px; }
+.thinking-content.markdown-body strong { color: #37474f; }
+
+/* 用户消息气泡中的链接 */
+.chat-bubble.user a {
+  color: #ffffff;
+  text-decoration-color: rgba(255, 255, 255, 0.6);
+}
+.chat-bubble.user a:hover {
+  color: #e2e8f0;
+  text-decoration-color: #ffffff;
+}
+
+/* Mermaid 容器（unscoped） */
+.mermaid-container {
+  margin: 12px 0;
+  padding: 16px;
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  overflow: auto;
+  text-align: center;
+  position: relative;
+  max-height: 600px;
+}
+.mermaid-source-preview {
+  margin: 0;
+  padding: 12px;
+  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
+  border-radius: 8px;
+  color: #90a4ae;
+  font-size: 12px;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+.mermaid-source-preview code {
+  background: transparent;
+  color: #90a4ae;
+  padding: 0;
+  border: none;
+  font-size: 12px;
+}
+.mermaid-error {
+  margin: 0;
+  padding: 12px;
+  background: #fff5f5;
+  border: 1px solid #fed7d7;
+  border-radius: 6px;
+  color: #c53030;
+  font-size: 12px;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.mermaid-toolbar {
+  position: sticky;
+  top: 0;
+  float: right;
+  display: flex;
+  gap: 2px;
+  z-index: 2;
+  background: rgba(255,255,255,0.88);
+  backdrop-filter: blur(4px);
+  border-radius: 6px;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+.mermaid-tb-btn {
+  cursor: pointer;
+  font-size: 12px;
+  color: #546e7a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  line-height: 1.2;
+  transition: all 0.15s;
+  user-select: none;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.mermaid-tb-btn:hover {
+  color: #1976d2;
+  background: #e3f2fd;
+  border-color: #90caf9;
+}
+.mermaid-tb-btn:active {
+  background: #bbdefb;
+}
+.mermaid-svg-wrap {
+  text-align: center;
+  transform-origin: top center;
+  transition: transform 0.2s ease;
+}
+.mermaid-svg-wrap svg {
+  max-width: 100%;
+  height: auto;
 }
 </style>
