@@ -162,7 +162,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 	if isExportRequest(req.Question) {
 		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
-			sysPrompt += fmt.Sprintf("\n\n⚠️ 用户正在请求导出操作，历史 SQL：\n```sql\n%s\n```\n请直接使用此 SQL 调用导出工具，不要重新生成。", lastSQL)
+			sysPrompt += fmt.Sprintf("\n\n⚠️ 用户正在请求导出操作，历史 SQL：\n```sql\n%s\n```\n如果用户要求导出 Excel，请直接使用此 SQL 调用导出工具；如果用户要求导出 Word/PPT 报告，优先使用 content 模式将分析结果传入。", lastSQL)
 		}
 	}
 
@@ -400,8 +400,8 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.Base
 	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（折线图/柱状图/饼图/散点图）", NewExportExcelWithChartFunc(connID))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", NewExportPPTFunc(connID))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", NewExportAnalysisDocxFunc(connID))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容自动分页生成；2) sql 模式 — 基于 SQL 查询数据生成数据演示", NewExportPPTFunc(connID))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容生成报告；2) sql 模式 — 基于 SQL 查询数据生成数据报告", NewExportAnalysisDocxFunc(connID))
 	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中。需要提供 fileId、tableName 和 mapping。", NewImportDataFunc(connID, dbType, dbSchema))
 
 	return []tool.BaseTool{
@@ -441,12 +441,55 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 ## 工作流程
 1. 理解需求 → 2. 调用 get_table_schema 验证表结构 → 3. 生成 SQL → 4. 执行 → 5. 回复（含表名）
 
+## 输出格式规范（重要）
+你善于使用 Markdown 和 Mermaid 来呈现分析结果，让输出结构清晰、可视化强：
+
+### Markdown 使用规范
+- 使用标题层级组织内容结构
+- 使用粗体强调关键指标和结论
+- 使用行内代码标注字段名、表名、SQL 关键词
+- 使用列表罗列要点
+- 使用表格展示对比数据
+- 使用代码块展示 SQL、配置等
+
+### Mermaid 图表使用规范
+在分析数据关系、流程、趋势时，优先使用 Mermaid 图表增强可读性：
+- 流程/架构：使用 graph TD / graph LR 展示数据流向和系统架构
+- 时序关系：使用 sequenceDiagram 展示交互流程
+- 数据对比：使用 pie 饼图展示占比分布
+- 状态变迁：使用 stateDiagram-v2 展示状态流转
+- ER 关系：使用 erDiagram 展示表间关联
+
+示例：
+` + "```" + `mermaid
+pie title 销售占比
+    "华东" : 35
+    "华南" : 28
+    "华北" : 22
+    "其他" : 15
+` + "```" + `
+
 ## 写操作处理（红线）
 - 所有写操作必须调用 exec_sql 工具，系统会自动拦截并推送到前端由用户确认
 - AI 不得绕过此机制，这是必须遵守的安全红线
 
 ## 导出操作
-当用户说"导出""下载""Excel""PPT""Word"等，从对话历史中找到最近的 SQL 直接调用导出工具。
+导出工具分两种模式，根据场景选择：
+
+### Excel 导出（必须依赖 SQL）
+- export_excel / export_excel_with_chart：必须提供 sql 参数，用于导出原始数据
+
+### Word/PPT 导出（支持内容模式）
+- export_analysis_docx / export_ppt：支持两种方式：
+  1. **内容模式（推荐）**：提供 content 参数（Markdown 格式），将你的分析结论直接生成文档。适用于分析报告、洞察总结等场景
+  2. **SQL 模式**：提供 sql 参数，基于查询数据生成文档。适用于需要展示原始数据的场景
+- 优先使用内容模式，将你已完成的分析结果（含 Markdown 格式、Mermaid 图表）传入 content 参数
+- 内容模式无需数据库连接，即使 SQL 不可用也能生成报告
+
+### 导出决策指南
+- 用户说"导出 Excel" → 必须使用 SQL 模式
+- 用户说"导出报告/Word/PPT" → 优先使用 content 模式，传入你的分析内容
+- 用户说"把数据导出为 Word" → 使用 SQL 模式展示原始数据
 
 ## 数据导入操作
 当用户上传了 Excel 文件并要求导入数据时：

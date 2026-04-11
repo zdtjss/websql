@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +58,8 @@ type ExportExcelWithChartOutput struct {
 }
 
 type ExportPPTInput struct {
-	SQL       string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	SQL       string `json:"sql" jsonschema_description:"用于导出的 SELECT SQL（与 content 二选一，仅 Excel 必须提供 SQL）"`
+	Content   string `json:"content" jsonschema_description:"演示内容（Markdown 格式，与 sql 二选一。按 ## 标题自动分页）"`
 	FileName  string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
 	Title     string `json:"title" jsonschema_description:"PPT 标题"`
 	SlideType string `json:"slideType" jsonschema_description:"幻灯片类型: summary, table, chart"`
@@ -87,10 +89,11 @@ type ExportAnalysisImageOutput struct {
 }
 
 type ExportAnalysisDocxInput struct {
-	SQL          string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	SQL          string `json:"sql" jsonschema_description:"用于导出的 SELECT SQL（与 content 二选一，仅 Excel 必须提供 SQL）"`
+	Content      string `json:"content" jsonschema_description:"分析报告内容（Markdown 格式，与 sql 二选一。可包含标题、段落、列表、代码块、mermaid 图表等）"`
 	FileName     string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
 	Title        string `json:"title" jsonschema_description:"报告标题"`
-	IncludeChart bool   `json:"includeChart" jsonschema_description:"是否包含图表"`
+	IncludeChart bool   `json:"includeChart" jsonschema_description:"是否包含图表（仅 sql 模式有效）"`
 }
 
 type ExportAnalysisDocxOutput struct {
@@ -324,6 +327,28 @@ func getChartType(t string) excelize.ChartType {
 
 func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
 	return func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
+		title := input.Title
+		if title == "" {
+			title = "数据分析报告"
+		}
+
+		fileName := sanitizeFileName(input.FileName, "report")
+		ensureExportsDir()
+		filePath := fmt.Sprintf("exports/%s.docx", fileName)
+
+		if input.Content != "" {
+			if err := generateDocxFromContent(input.Content, title, filePath); err != nil {
+				return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
+			}
+			url := fmt.Sprintf("/exports/%s.docx", fileName)
+			log.Printf("[Tool:export_docx] 成功 (content) - url=%s\n", url)
+			return &ExportAnalysisDocxOutput{
+				Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", url),
+				DownloadURL: url,
+				FileType:    "docx",
+			}, nil
+		}
+
 		conn, _ := getConn(connID)
 		if conn == nil {
 			return nil, fmt.Errorf("数据库连接不存在")
@@ -334,24 +359,13 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 			return nil, err
 		}
 
-		title := input.Title
-		if title == "" {
-			title = "数据分析报告"
-		}
-
-		fileName := sanitizeFileName(input.FileName, "report")
-		ensureExportsDir()
-		filePath := fmt.Sprintf("exports/%s.docx", fileName)
-
-		// 如果需要图表，先生成 PNG
 		var chartImagePath string
 		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
 			chartImagePath = fmt.Sprintf("exports/%s_chart.png", fileName)
 			if err := renderChartPNG(qr, 0, 1, title, "bar", chartImagePath); err != nil {
 				log.Printf("[Tool:export_docx] 生成图表失败 - err=%v\n", err)
-				chartImagePath = "" // 图表失败不影响文档生成
+				chartImagePath = ""
 			}
-			// 确认文件确实存在
 			if chartImagePath != "" {
 				if _, statErr := os.Stat(chartImagePath); os.IsNotExist(statErr) {
 					chartImagePath = ""
@@ -363,7 +377,6 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
 		}
 
-		// 清理临时图表文件
 		if chartImagePath != "" {
 			os.Remove(chartImagePath)
 		}
@@ -385,6 +398,30 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 
 func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
 	return func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
+		title := input.Title
+		if title == "" {
+			title = "数据报告"
+		}
+
+		fileName := sanitizeFileName(input.FileName, "slides")
+		ensureExportsDir()
+		filePath := fmt.Sprintf("exports/%s.pptx", fileName)
+
+		if input.Content != "" {
+			slideCount, err := generatePptxFromContent(input.Content, title, filePath)
+			if err != nil {
+				return nil, fmt.Errorf("生成 PPT 失败：%w", err)
+			}
+			url := fmt.Sprintf("/exports/%s.pptx", fileName)
+			log.Printf("[Tool:export_ppt] 成功 (content) - slides=%d, url=%s\n", slideCount, url)
+			return &ExportPPTOutput{
+				Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
+				SlideCount:  slideCount,
+				DownloadURL: url,
+				FileType:    "ppt",
+			}, nil
+		}
+
 		conn, _ := getConn(connID)
 		if conn == nil {
 			return nil, fmt.Errorf("数据库连接不存在")
@@ -394,15 +431,6 @@ func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTI
 		if err != nil {
 			return nil, err
 		}
-
-		title := input.Title
-		if title == "" {
-			title = "数据报告"
-		}
-
-		fileName := sanitizeFileName(input.FileName, "slides")
-		ensureExportsDir()
-		filePath := fmt.Sprintf("exports/%s.pptx", fileName)
 
 		slideCount, err := generatePptx(qr, title, filePath)
 		if err != nil {
@@ -499,4 +527,163 @@ func setCellAuto(f *excelize.File, sheet, cell string, v any) {
 	default:
 		f.SetCellValue(sheet, cell, fmt.Sprintf("%v", v))
 	}
+}
+
+// ──────────────────────────────────────────────
+// Markdown 解析（供 DOCX/PPTX 内容导出共用）
+// ──────────────────────────────────────────────
+
+type mdBlock struct {
+	Type    string // "h1", "h2", "h3", "paragraph", "list", "code", "mermaid", "table"
+	Content string
+	Lang    string
+}
+
+func parseMarkdownBlocks(content string) []mdBlock {
+	var blocks []mdBlock
+	lines := strings.Split(content, "\n")
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" {
+			i++
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "```") {
+			lang := strings.TrimPrefix(trimmed, "```")
+			var codeLines []string
+			i++
+			for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+				codeLines = append(codeLines, lines[i])
+				i++
+			}
+			if i < len(lines) {
+				i++
+			}
+			blockType := "code"
+			if strings.TrimSpace(lang) == "mermaid" {
+				blockType = "mermaid"
+			}
+			blocks = append(blocks, mdBlock{
+				Type:    blockType,
+				Content: strings.Join(codeLines, "\n"),
+				Lang:    strings.TrimSpace(lang),
+			})
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "### ") {
+			blocks = append(blocks, mdBlock{Type: "h3", Content: strings.TrimPrefix(trimmed, "### ")})
+			i++
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			blocks = append(blocks, mdBlock{Type: "h2", Content: strings.TrimPrefix(trimmed, "## ")})
+			i++
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			blocks = append(blocks, mdBlock{Type: "h1", Content: strings.TrimPrefix(trimmed, "# ")})
+			i++
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "|") {
+			var tableLines []string
+			for i < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
+				tableLines = append(tableLines, lines[i])
+				i++
+			}
+			blocks = append(blocks, mdBlock{Type: "table", Content: strings.Join(tableLines, "\n")})
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			var items []string
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(t, "- ") {
+					items = append(items, strings.TrimPrefix(t, "- "))
+					i++
+				} else if strings.HasPrefix(t, "* ") {
+					items = append(items, strings.TrimPrefix(t, "* "))
+					i++
+				} else if t == "" {
+					i++
+					break
+				} else {
+					break
+				}
+			}
+			blocks = append(blocks, mdBlock{Type: "list", Content: strings.Join(items, "\n")})
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "1) ") {
+			var items []string
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if matched, _ := regexp.MatchString(`^\d+[.)]\s`, t); matched {
+					re := regexp.MustCompile(`^\d+[.)]\s*`)
+					items = append(items, re.ReplaceAllString(t, ""))
+					i++
+				} else if t == "" {
+					i++
+					break
+				} else {
+					break
+				}
+			}
+			blocks = append(blocks, mdBlock{Type: "list", Content: strings.Join(items, "\n")})
+			continue
+		}
+
+		var paraLines []string
+		for i < len(lines) {
+			t := strings.TrimSpace(lines[i])
+			if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```") ||
+				strings.HasPrefix(t, "|") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") {
+				break
+			}
+			if matched, _ := regexp.MatchString(`^\d+[.)]\s`, t); matched {
+				break
+			}
+			paraLines = append(paraLines, lines[i])
+			i++
+		}
+		if len(paraLines) > 0 {
+			blocks = append(blocks, mdBlock{Type: "paragraph", Content: strings.Join(paraLines, " ")})
+		}
+	}
+	return blocks
+}
+
+var reMarkdownBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var reMarkdownItalic = regexp.MustCompile(`\*(.+?)\*`)
+var reMarkdownCode = regexp.MustCompile("`(.+?)`")
+var reMarkdownLink = regexp.MustCompile(`\[(.+?)\]\(.+?\)`)
+
+func stripMarkdownFormatting(s string) string {
+	s = reMarkdownBold.ReplaceAllString(s, "$1")
+	s = reMarkdownItalic.ReplaceAllString(s, "$1")
+	s = reMarkdownCode.ReplaceAllString(s, "$1")
+	s = reMarkdownLink.ReplaceAllString(s, "$1")
+	return s
+}
+
+func isTableSeparator(line string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(line), "|")
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return false
+	}
+	for _, c := range trimmed {
+		if c != '-' && c != ':' && c != ' ' {
+			return false
+		}
+	}
+	return true
 }

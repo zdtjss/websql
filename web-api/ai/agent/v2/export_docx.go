@@ -306,3 +306,146 @@ func xmlEscape(s string) string {
 	xml.EscapeText(&b, []byte(s))
 	return b.String()
 }
+
+// ──────────────────────────────────────────────
+// 基于 Markdown 内容生成 DOCX
+// ──────────────────────────────────────────────
+
+func generateDocxFromContent(content, title, outputPath string) error {
+	blocks := parseMarkdownBlocks(content)
+
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeZipEntry(zw, "[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`)
+
+	writeZipEntry(zw, "_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`)
+
+	writeZipEntry(zw, "word/_rels/document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>`)
+
+	var body strings.Builder
+	body.WriteString(docxHeader())
+	body.WriteString(docxParagraph(title, true, 32, "center"))
+	body.WriteString(docxParagraph("", false, 22, ""))
+	body.WriteString(docxParagraph(
+		fmt.Sprintf("生成时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+		false, 18, ""))
+	body.WriteString(docxParagraph("", false, 22, ""))
+
+	for _, block := range blocks {
+		switch block.Type {
+		case "h1":
+			body.WriteString(docxParagraph(stripMarkdownFormatting(block.Content), true, 28, ""))
+		case "h2":
+			body.WriteString(docxParagraph(stripMarkdownFormatting(block.Content), true, 24, ""))
+		case "h3":
+			body.WriteString(docxParagraph(stripMarkdownFormatting(block.Content), true, 20, ""))
+		case "paragraph":
+			body.WriteString(docxParagraph(stripMarkdownFormatting(block.Content), false, 22, ""))
+		case "list":
+			for _, item := range strings.Split(block.Content, "\n") {
+				body.WriteString(docxParagraph("\u2022 "+stripMarkdownFormatting(item), false, 22, ""))
+			}
+		case "code":
+			body.WriteString(docxParagraph("", false, 12, ""))
+			for _, line := range strings.Split(block.Content, "\n") {
+				body.WriteString(docxCodeParagraph(line))
+			}
+			body.WriteString(docxParagraph("", false, 12, ""))
+		case "mermaid":
+			body.WriteString(docxParagraph("Mermaid 图表", true, 20, ""))
+			for _, line := range strings.Split(block.Content, "\n") {
+				body.WriteString(docxCodeParagraph(line))
+			}
+			body.WriteString(docxParagraph("", false, 12, ""))
+		case "table":
+			body.WriteString(docxMarkdownTable(block.Content))
+			body.WriteString(docxParagraph("", false, 12, ""))
+		}
+	}
+
+	body.WriteString(docxFooter())
+	writeZipEntry(zw, "word/document.xml", body.String())
+
+	return nil
+}
+
+func docxCodeParagraph(text string) string {
+	var sb strings.Builder
+	sb.WriteString("<w:p>")
+	sb.WriteString("<w:pPr><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F5F5F5\"/></w:pPr>")
+	sb.WriteString("<w:r>")
+	sb.WriteString("<w:rPr>")
+	sb.WriteString(`<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:eastAsia="Microsoft YaHei"/>`)
+	sb.WriteString(`<w:sz w:val="18"/><w:szCs w:val="18"/>`)
+	sb.WriteString("</w:rPr>")
+	sb.WriteString("<w:t xml:space=\"preserve\">")
+	sb.WriteString(xmlEscape(text))
+	sb.WriteString("</w:t>")
+	sb.WriteString("</w:r>")
+	sb.WriteString("</w:p>\n")
+	return sb.String()
+}
+
+func docxMarkdownTable(mdTable string) string {
+	lines := strings.Split(mdTable, "\n")
+	var dataLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || isTableSeparator(trimmed) {
+			continue
+		}
+		dataLines = append(dataLines, trimmed)
+	}
+	if len(dataLines) == 0 {
+		return ""
+	}
+
+	var rows [][]string
+	for _, line := range dataLines {
+		line = strings.Trim(line, "|")
+		cells := strings.Split(line, "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(stripMarkdownFormatting(cells[i]))
+		}
+		rows = append(rows, cells)
+	}
+
+	if len(rows) == 0 {
+		return ""
+	}
+
+	cols := rows[0]
+	qr := &queryResult{
+		Columns: cols,
+		Data:    make([]map[string]any, 0, len(rows)-1),
+	}
+	for _, row := range rows[1:] {
+		m := make(map[string]any)
+		for i, col := range cols {
+			if i < len(row) {
+				m[col] = row[i]
+			} else {
+				m[col] = ""
+			}
+		}
+		qr.Data = append(qr.Data, m)
+	}
+	return docxTable(qr)
+}

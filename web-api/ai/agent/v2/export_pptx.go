@@ -515,3 +515,152 @@ func pptxColorBar(id int, x, y, cx, cy int64, color string) string {
 func createFile(path string) (*os.File, error) {
 	return os.Create(path)
 }
+
+// ──────────────────────────────────────────────
+// 基于 Markdown 内容生成 PPTX
+// ──────────────────────────────────────────────
+
+type slideSection struct {
+	Title  string
+	Blocks []mdBlock
+}
+
+func generatePptxFromContent(content, title, outputPath string) (int, error) {
+	blocks := parseMarkdownBlocks(content)
+
+	var sections []slideSection
+	var current slideSection
+
+	for _, block := range blocks {
+		if block.Type == "h1" || block.Type == "h2" {
+			if current.Title != "" || len(current.Blocks) > 0 {
+				sections = append(sections, current)
+			}
+			current = slideSection{Title: stripMarkdownFormatting(block.Content)}
+		} else {
+			current.Blocks = append(current.Blocks, block)
+		}
+	}
+	if current.Title != "" || len(current.Blocks) > 0 {
+		sections = append(sections, current)
+	}
+
+	if len(sections) == 0 {
+		sections = append(sections, slideSection{Title: title, Blocks: blocks})
+	}
+
+	slideCount := len(sections) + 1
+
+	f, err := createFile(outputPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeZipEntry(zw, "[Content_Types].xml", pptxContentTypes(slideCount))
+	writeZipEntry(zw, "_rels/.rels", pptxTopRels())
+	writeZipEntry(zw, "docProps/app.xml", pptxAppXml(slideCount))
+	writeZipEntry(zw, "docProps/core.xml", pptxCoreXml(title))
+	writeZipEntry(zw, "ppt/presentation.xml", pptxPresentation(slideCount))
+	writeZipEntry(zw, "ppt/_rels/presentation.xml.rels", pptxPresentationRels(slideCount))
+	writeZipEntry(zw, "ppt/theme/theme1.xml", pptxTheme())
+	writeZipEntry(zw, "ppt/slideMasters/slideMaster1.xml", pptxSlideMaster())
+	writeZipEntry(zw, "ppt/slideMasters/_rels/slideMaster1.xml.rels", pptxSlideMasterRels())
+	writeZipEntry(zw, "ppt/slideLayouts/slideLayout1.xml", pptxSlideLayout())
+	writeZipEntry(zw, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", pptxSlideLayoutRels())
+
+	writeZipEntry(zw, "ppt/slides/slide1.xml", pptxTitleSlide(title))
+	writeZipEntry(zw, "ppt/slides/_rels/slide1.xml.rels", pptxSlideRels())
+
+	for i, sec := range sections {
+		slideNum := i + 2
+		writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", slideNum), pptxContentSlide(sec.Title, sec.Blocks))
+		writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", slideNum), pptxSlideRels())
+	}
+
+	return slideCount, nil
+}
+
+func pptxContentSlide(slideTitle string, blocks []mdBlock) string {
+	var contentLines []string
+	for _, block := range blocks {
+		switch block.Type {
+		case "h3":
+			contentLines = append(contentLines, "\u25b8 "+stripMarkdownFormatting(block.Content))
+		case "paragraph":
+			contentLines = append(contentLines, stripMarkdownFormatting(block.Content))
+		case "list":
+			for _, item := range strings.Split(block.Content, "\n") {
+				contentLines = append(contentLines, "\u2022 "+stripMarkdownFormatting(item))
+			}
+		case "code":
+			contentLines = append(contentLines, "[\u4ee3\u7801]")
+			codeLines := strings.Split(block.Content, "\n")
+			maxShow := 8
+			if len(codeLines) < maxShow {
+				maxShow = len(codeLines)
+			}
+			for j := 0; j < maxShow; j++ {
+				contentLines = append(contentLines, "  "+codeLines[j])
+			}
+			if len(codeLines) > maxShow {
+				contentLines = append(contentLines, fmt.Sprintf("  ... \u5171 %d \u884c", len(codeLines)))
+			}
+		case "mermaid":
+			contentLines = append(contentLines, "[Mermaid \u56fe\u8868]")
+			mermaidLines := strings.Split(block.Content, "\n")
+			maxShow := 8
+			if len(mermaidLines) < maxShow {
+				maxShow = len(mermaidLines)
+			}
+			for j := 0; j < maxShow; j++ {
+				contentLines = append(contentLines, "  "+mermaidLines[j])
+			}
+			if len(mermaidLines) > maxShow {
+				contentLines = append(contentLines, fmt.Sprintf("  ... \u5171 %d \u884c", len(mermaidLines)))
+			}
+		case "table":
+			lines := strings.Split(block.Content, "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if isTableSeparator(trimmed) {
+					continue
+				}
+				trimmed = strings.Trim(trimmed, "|")
+				cells := strings.Split(trimmed, "|")
+				var cellTexts []string
+				for _, c := range cells {
+					cellTexts = append(cellTexts, strings.TrimSpace(stripMarkdownFormatting(c)))
+				}
+				contentLines = append(contentLines, strings.Join(cellTexts, " | "))
+			}
+		}
+	}
+
+	content := strings.Join(contentLines, "\n")
+	if content == "" {
+		content = slideTitle
+	}
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld>
+  <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FAFAFA"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+  <p:spTree>
+  <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+  <p:grpSpPr/>
+  %s
+  %s
+  %s
+</p:spTree></p:cSld>
+</p:sld>`,
+		pptxColorBar(5, 0, 0, 12192000, 80000, "3F51B5"),
+		pptxTextBox(2, 600000, 300000, 10800000, 800000, slideTitle, 2800, true, "212121"),
+		pptxTextBox(3, 600000, 1300000, 10800000, 5000000, content, 1400, false, "424242"),
+	)
+}
