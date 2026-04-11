@@ -2421,7 +2421,7 @@ onUnmounted(() => {
   word-wrap: normal;
   background-color: transparent;
   border-radius: 0;
-  color: #cfd8dc;
+  /* color: #cfd8dc; */
   white-space: pre;
   border: none;
 }
