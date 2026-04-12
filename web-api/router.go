@@ -168,7 +168,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			"/api/healthCheck",
 			"/api/sysMode",
 			"/assets",
-			"/exports",
+			"/api/exports",
 		}
 
 		path := c.Request.URL.Path
