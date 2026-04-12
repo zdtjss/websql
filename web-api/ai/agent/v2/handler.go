@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go-web/utils"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"go-web/config"
-	"go-web/utils"
 	admin "go-web/web-api/admin"
 
 	"github.com/gin-gonic/gin"
@@ -34,7 +34,8 @@ func NewHandler() (*Handler, error) {
 func (h *Handler) ChatStream(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Printf("[Handler] 请求参数绑定失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误"})
 		return
 	}
 
@@ -99,8 +100,9 @@ func (h *Handler) ChatStream(c *gin.Context) {
 
 	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
 	if err != nil {
+		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
 		close(kaStop)
-		flush(StreamChunk{Type: "error", Content: "创建 Agent 失败：" + err.Error()})
+		flush(StreamChunk{Type: "error", Content: "创建 Agent 失败，请稍后重试"})
 		flush(StreamChunk{Type: "done"})
 		return
 	}
@@ -117,7 +119,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		var dangerousErr *DangerousSQLError
 		if !errors.As(runErr, &dangerousErr) {
 			log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
-			flush(StreamChunk{Type: "error", Content: fmt.Sprintf("AI 处理出错：%s", runErr.Error())})
+			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		}
 		flush(StreamChunk{Type: "done"})
 	}
@@ -182,9 +184,9 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 
 	if err != nil {
 		errMsg = err.Error()
-		// 记录失败的审计日志
+		log.Printf("[Handler] SQL 执行失败 - err=%v\n", err)
 		InsertSQLAudit(auditID, user.Id, userName, req.ConnID, req.SessionID, sql, sqlType, riskLevel, "failed", 0, errMsg)
-		flush(StreamChunk{Type: "error", Content: fmt.Sprintf("执行失败：%s", err.Error())})
+		flush(StreamChunk{Type: "error", Content: "SQL 执行失败，请检查语句是否正确"})
 		return
 	}
 
@@ -207,7 +209,8 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 
 	metas, err := h.sessions.ListByUserID(user.Id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("[Handler] 获取会话列表失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
 		return
 	}
 	if metas == nil {
@@ -232,7 +235,8 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 
 	detail, err := h.sessions.GetDetail(sessionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("[Handler] 获取会话详情失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"session": detail})
@@ -253,7 +257,8 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	}
 
 	if err := h.sessions.Delete(sessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("[Handler] 删除会话失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除会话失败"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
@@ -276,7 +281,8 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 		logs, err = ListSQLAuditLogs(user.Id, 100)
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("[Handler] 获取审计日志失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取审计日志失败"})
 		return
 	}
 	if logs == nil {

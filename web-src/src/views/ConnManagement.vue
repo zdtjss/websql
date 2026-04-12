@@ -176,10 +176,12 @@ const testDbConn = (row) => {
       if (resp.data.code === 200) {
         ElMessage.success("数据库连接成功")
       } else {
-        ElMessage.error("数据库连接失败：" + resp.data.msg)
+        console.error('[ConnManagement] 数据库连接测试失败 - msg:', resp.data.msg)
+        ElMessage.error("数据库连接失败，请检查配置")
       }
     })
-    .catch(() => {
+    .catch((err) => {
+      console.error('[ConnManagement] 数据库连接测试异常:', err)
       ElMessage.error("数据库连接失败：无法连接到数据库")
     })
     .finally(() => {

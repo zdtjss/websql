@@ -54,7 +54,8 @@ func TestDbConn(c *gin.Context) {
 
 	err := db.Ping()
 	if err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "连接失败：" + err.Error()})
+		log.Printf("[TestDbConn] 数据库连接失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "连接失败，请检查数据库配置"})
 		return
 	}
 

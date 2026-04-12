@@ -249,18 +249,19 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
+import http from '@/js/utils/httpProxy.js'
+import { sanitizeError } from '@/utils/errorHandler.js'
+import { analyzeSQL } from '@/utils/sqlRiskAssessment'
+import { Clock, Delete, Document, DocumentAdd, Microphone, Promotion, Setting, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
+import 'highlight.js/styles/stackoverflow-light.css'
 import MarkdownIt from 'markdown-it'
 import mermaid from 'mermaid'
-import 'highlight.js/styles/stackoverflow-light.css'
-import { Microphone, VideoPause, CopyDocument, Delete, FullScreen, Document, Clock, Promotion, DocumentAdd, User, SwitchButton, Setting, Grid, Upload } from '@element-plus/icons-vue'
-import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
-import { analyzeSQL, extractAllSQL, needsConfirmation } from '@/utils/sqlRiskAssessment'
-import http from '@/js/utils/httpProxy.js'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 hljs.registerLanguage('sql', hljsSql)
@@ -675,11 +676,11 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
         const { svg } = await mermaid.render(id, trimmed)
         const sourceHtml = `<pre class="mermaid-source-preview" style="display:none;"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
         el.innerHTML =
-          `<div class="mermaid-svg-wrap" data-scale="1">${svg}</div>${sourceHtml}` +
+          `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>${sourceHtml}` +
           `<div class="mermaid-toolbar">` +
-            `<button class="mermaid-tb-btn" title="缩小" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.max(0.25,+(s-0.25).toFixed(2));w.dataset.scale=s;w.style.transform='scale('+s+')'})(this)">🔍−</button>` +
-            `<button class="mermaid-tb-btn" title="重置缩放" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');w.dataset.scale=1;w.style.transform='scale(1)'})(this)">1:1</button>` +
-            `<button class="mermaid-tb-btn" title="放大" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.min(3,+(s+0.25).toFixed(2));w.dataset.scale=s;w.style.transform='scale('+s+')'})(this)">🔍+</button>` +
+            `<button class="mermaid-tb-btn" title="缩小" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.max(0.25,+(s-0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍−</button>` +
+            `<button class="mermaid-tb-btn" title="重置缩放" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');w.dataset.scale=1;w.dataset.translateX=0;w.dataset.translateY=0;w.style.transform='translate(0px,0px) scale(1)'})(this)">1:1</button>` +
+            `<button class="mermaid-tb-btn" title="放大" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.min(5,+(s+0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍+</button>` +
             `<button class="mermaid-tb-btn" title="查看源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview');var g=c.querySelector('.mermaid-svg-wrap');if(src.style.display==='none'){src.style.display='block';g.style.display='none';b.textContent='📊';}else{src.style.display='none';g.style.display='block';b.textContent='📝';};})(this)">📝</button>` +
           `</div>`
       } catch (e) {
@@ -711,8 +712,110 @@ function scrollToBottom() {
 function toggleThinking(msg) {
   msg.collapsed = !msg.collapsed
   if (!msg.collapsed) {
-    // 展开时渲染其中可能存在的 mermaid 图表，不滚动到底部
     nextTick(() => doRenderMermaidBlocks(false))
+  }
+}
+
+const mermaidDragState = {
+  isDragging: false,
+  startX: 0,
+  startY: 0,
+  startTx: 0,
+  startTy: 0,
+  activeContainer: null,
+}
+
+function updateMermaidWrapTransform(wrap) {
+  const s = parseFloat(wrap.dataset.scale || 1)
+  const tx = parseFloat(wrap.dataset.translateX || 0)
+  const ty = parseFloat(wrap.dataset.translateY || 0)
+  wrap.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
+}
+
+function handleMermaidWheel(e) {
+  if (!e.ctrlKey) return
+  const container = e.target.closest('.mermaid-container')
+  if (!container) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const wrap = container.querySelector('.mermaid-svg-wrap')
+  if (!wrap) return
+
+  const oldScale = parseFloat(wrap.dataset.scale || 1)
+  const delta = e.deltaY > 0 ? -0.1 : 0.1
+  const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
+  if (newScale === oldScale) return
+
+  const rect = container.getBoundingClientRect()
+  const mx = e.clientX - rect.left
+  const my = e.clientY - rect.top
+
+  const oldTx = parseFloat(wrap.dataset.translateX || 0)
+  const oldTy = parseFloat(wrap.dataset.translateY || 0)
+
+  const ratio = newScale / oldScale
+  const newTx = mx - (mx - oldTx) * ratio
+  const newTy = my - (my - oldTy) * ratio
+
+  wrap.dataset.scale = newScale
+  wrap.dataset.translateX = +newTx.toFixed(1)
+  wrap.dataset.translateY = +newTy.toFixed(1)
+  updateMermaidWrapTransform(wrap)
+}
+
+function handleMermaidMouseDown(e) {
+  if (e.button !== 0) return
+  const container = e.target.closest('.mermaid-container')
+  if (!container) return
+  if (e.target.closest('.mermaid-toolbar')) return
+
+  const wrap = container.querySelector('.mermaid-svg-wrap')
+  if (!wrap) return
+
+  e.preventDefault()
+  mermaidDragState.isDragging = true
+  mermaidDragState.startX = e.clientX
+  mermaidDragState.startY = e.clientY
+  mermaidDragState.startTx = parseFloat(wrap.dataset.translateX || 0)
+  mermaidDragState.startTy = parseFloat(wrap.dataset.translateY || 0)
+  mermaidDragState.activeContainer = container
+
+  document.body.classList.add('mermaid-dragging')
+}
+
+function handleMermaidMouseMove(e) {
+  if (!mermaidDragState.isDragging) return
+  const container = mermaidDragState.activeContainer
+  if (!container) return
+
+  const wrap = container.querySelector('.mermaid-svg-wrap')
+  if (!wrap) return
+
+  const dx = e.clientX - mermaidDragState.startX
+  const dy = e.clientY - mermaidDragState.startY
+
+  wrap.dataset.translateX = +(mermaidDragState.startTx + dx).toFixed(1)
+  wrap.dataset.translateY = +(mermaidDragState.startTy + dy).toFixed(1)
+  updateMermaidWrapTransform(wrap)
+}
+
+function handleMermaidMouseUp() {
+  if (!mermaidDragState.isDragging) return
+  mermaidDragState.isDragging = false
+  mermaidDragState.activeContainer = null
+  document.body.classList.remove('mermaid-dragging')
+}
+
+function handleMermaidKeyDown(e) {
+  if (e.key === 'Control' && !e.repeat) {
+    document.body.classList.add('mermaid-ctrl-held')
+  }
+}
+
+function handleMermaidKeyUp(e) {
+  if (e.key === 'Control') {
+    document.body.classList.remove('mermaid-ctrl-held')
   }
 }
 
@@ -829,7 +932,7 @@ async function sendMessage() {
               showRetryConfirm.value = true
               break
             case 'error':
-              chatHistory.value.push({ role: 'assistant', content: '❌ ' + (chunk.content || 'AI 服务错误') })
+              chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(chunk.content) || 'AI 服务错误') })
               scrollToBottom()
               break
             case 'done':
@@ -882,7 +985,7 @@ async function sendMessage() {
       chatHistory.value.push({ role: 'assistant', content: '⏹ 对话已被手动终止' })
       scrollToBottom()
     } else {
-      ElMessage({ message: e.message || '请求失败', type: 'error' })
+      ElMessage({ message: sanitizeError(e) || '请求失败', type: 'error' })
     }
   } finally {
     loading.value = false
@@ -957,7 +1060,7 @@ async function handleConfirmExec(confirmedSql) {
             result += chunk.content
           }
           if (chunk.type === 'error') {
-            chatHistory.value.push({ role: 'assistant', content: '❌ ' + (chunk.content || '执行失败') })
+            chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(chunk.content) || '执行失败') })
             scrollToBottom()
           }
         } catch (_) { }
@@ -972,7 +1075,7 @@ async function handleConfirmExec(confirmedSql) {
       chatHistory.value.push({ role: 'assistant', content: '⏹ 执行已被手动终止' })
       scrollToBottom()
     } else {
-      ElMessage({ message: e.message || '执行失败', type: 'error' })
+      ElMessage({ message: sanitizeError(e) || '执行失败', type: 'error' })
     }
   } finally {
     loading.value = false
@@ -1054,7 +1157,7 @@ async function executeConfirmedSQL(confirmedSql) {
           if (chunk.type === 'error') {
             const lastMsg = chatHistory.value[chatHistory.value.length - 1]
             if (lastMsg) {
-              lastMsg.content = `❌ ${chunk.content || '执行失败'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+              lastMsg.content = `❌ ${sanitizeError(chunk.content) || '执行失败'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
             }
           }
         } catch (_) { }
@@ -1069,7 +1172,7 @@ async function executeConfirmedSQL(confirmedSql) {
   } catch (e) {
     const lastMsg = chatHistory.value[chatHistory.value.length - 1]
     if (lastMsg) {
-      lastMsg.content = `❌ 执行失败：${e.message}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}\n\`\`\`sql\n${actualSQL}\n\`\`\``
     }
   }
 }
@@ -1108,7 +1211,7 @@ async function handleExcelUpload(file) {
     })
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
-      throw new Error(errData.error || `上传失败：${resp.status}`)
+      throw new Error(sanitizeError(errData.error) || `上传失败：${resp.status}`)
     }
     const data = await resp.json()
 
@@ -1141,7 +1244,8 @@ async function handleExcelUpload(file) {
     scrollToBottom()
     ElMessage.success(`已上传 ${data.fileName}，请输入导入指令（如：将数据导入到 xxx 表）`)
   } catch (e) {
-    ElMessage.error('上传 Excel 文件失败：' + e.message)
+    console.error('[App] 上传 Excel 文件失败:', e)
+    ElMessage.error('上传 Excel 文件失败，请检查文件格式')
   }
 }
 
@@ -1250,10 +1354,12 @@ function loginByToken(token) {
       loginDialogVisible.value = false
       ElMessage("登陆成功")
     } else {
-      ElMessage(data.msg)
+      console.error('[App] 登录失败 - code:', resp.data.code)
+      ElMessage("登录失败")
     }
   }).catch((error) => {
-    ElMessage(error)
+    console.error('[App] 登录异常:', error)
+    ElMessage("登录失败")
   });
 }
 
@@ -1310,11 +1416,13 @@ async function loginBio() {
       loadConnList()
       ElMessage("登陆成功")
     } else {
-      ElMessage(data.msg)
+      console.error('[App] bio登录失败 - code:', resp.data.code)
+      ElMessage("登录失败")
       loginDialogVisible.value = true
     }
   }).catch((error) => {
-    ElMessage(error)
+    console.error('[App] bio登录异常:', error)
+    ElMessage("登录失败")
   });
 }
 
@@ -1392,7 +1500,8 @@ async function loadSessionList() {
     sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     sessionList.value = sessions
   } catch (e) {
-    ElMessage({ message: e.message || '加载历史会话失败', type: 'error' })
+    console.error('[App] 加载历史会话失败:', e)
+    ElMessage({ message: '加载历史会话失败', type: 'error' })
   } finally {
     loadingSessions.value = false
   }
@@ -1434,7 +1543,8 @@ async function deleteSession(id) {
     ElMessage({ message: '会话已删除', type: 'success' })
     await loadSessionList() // 刷新列表
   } catch (e) {
-    ElMessage({ message: e.message || '删除会话失败', type: 'error' })
+    console.error('[App] 删除会话失败:', e)
+    ElMessage({ message: '删除会话失败', type: 'error' })
   }
 }
 
@@ -1481,7 +1591,8 @@ async function handleLogin() {
       throw new Error('未获取到 token')
     }
   } catch (e) {
-    ElMessage({ message: e.message || '登录失败', type: 'error' })
+    console.error('[App] 登录失败:', e)
+    ElMessage({ message: '登录失败', type: 'error' })
   } finally {
     loginLoading.value = false
   }
@@ -1533,7 +1644,8 @@ async function loadSession(id) {
       doRenderMermaidBlocks()
     }
   } catch (e) {
-    ElMessage({ message: e.message || '加载会话失败', type: 'error' })
+    console.error('[App] 加载会话失败:', e)
+    ElMessage({ message: '加载会话失败', type: 'error' })
   }
 }
 
@@ -1541,13 +1653,31 @@ onMounted(() => {
   loadConnList()
   getSysModel()
   document.addEventListener('keydown', handleEscKey)
-  // 检查登录状态
+  document.addEventListener('keydown', handleMermaidKeyDown)
+  document.addEventListener('keyup', handleMermaidKeyUp)
+  document.addEventListener('mousemove', handleMermaidMouseMove)
+  document.addEventListener('mouseup', handleMermaidMouseUp)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
+  nextTick(() => {
+    if (msgContainer.value) {
+      msgContainer.value.addEventListener('wheel', handleMermaidWheel, { passive: false })
+      msgContainer.value.addEventListener('mousedown', handleMermaidMouseDown)
+    }
+  })
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleEscKey)
+  document.removeEventListener('keydown', handleMermaidKeyDown)
+  document.removeEventListener('keyup', handleMermaidKeyUp)
+  document.removeEventListener('mousemove', handleMermaidMouseMove)
+  document.removeEventListener('mouseup', handleMermaidMouseUp)
+  if (msgContainer.value) {
+    msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
+    msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)
+  }
+  document.body.classList.remove('mermaid-ctrl-held', 'mermaid-dragging')
 })
 </script>
 
@@ -2558,6 +2688,18 @@ onUnmounted(() => {
   text-align: center;
   position: relative;
   max-height: 600px;
+  cursor: grab;
+}
+body.mermaid-ctrl-held .mermaid-container {
+  cursor: zoom-in !important;
+}
+body.mermaid-dragging,
+body.mermaid-dragging .mermaid-container {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+body.mermaid-dragging .mermaid-container {
+  overflow: hidden;
 }
 .mermaid-source-preview {
   margin: 0;
@@ -2592,19 +2734,18 @@ onUnmounted(() => {
   word-break: break-all;
 }
 .mermaid-toolbar {
-  position: fixed;
-  top: 20px;
-  float: right;
-  right: 18px;
+  position: absolute;
+  top: 10px;
+  right: 10px;
   display: flex;
   gap: 2px;
-  z-index: 2;
-  background: rgba(255,255,255,0.88);
+  z-index: 10;
+  background: rgba(255,255,255,0.95);
   backdrop-filter: blur(4px);
   border-radius: 6px;
-  padding: 3px;
+  padding: 4px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
 }
 .mermaid-tb-btn {
   cursor: pointer;
@@ -2630,8 +2771,8 @@ onUnmounted(() => {
 }
 .mermaid-svg-wrap {
   text-align: center;
-  transform-origin: top center;
-  transition: transform 0.2s ease;
+  transform-origin: 0 0;
+  transition: transform 0.15s ease;
 }
 .mermaid-svg-wrap svg {
   max-width: 100%;

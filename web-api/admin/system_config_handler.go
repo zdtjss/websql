@@ -195,7 +195,7 @@ func TestOutterUserHandler(c *gin.Context) {
 	resp, err := http.Get(url)
 	if err != nil {
 		logutils.PrintErr(err)
-		c.JSON(http.StatusOK, gin.H{"code": 500, "msg": "接口调用失败：" + err.Error()})
+		c.JSON(http.StatusOK, gin.H{"code": 500, "msg": "接口调用失败，请检查网络和配置"})
 		return
 	}
 	defer resp.Body.Close()

@@ -39,8 +39,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { onMounted, ref } from 'vue'
 
 const logs = ref([])
 const loading = ref(false)
@@ -57,7 +57,8 @@ async function loadLogs() {
     const data = await resp.json()
     logs.value = data.data || []
   } catch (e) {
-    ElMessage.error(e.message || '加载审计日志失败')
+    console.error('[SQLAuditLog] 加载审计日志失败:', e)
+    ElMessage.error('加载审计日志失败')
   } finally {
     loading.value = false
   }

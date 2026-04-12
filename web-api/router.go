@@ -24,6 +24,7 @@ var destAddr string = "http://localhost:8083"
 func MainRegister(router *gin.Engine) {
 
 	router.Use(CustomRecovery())
+	router.Use(AuthMiddleware())
 
 	routerGroup := router.Group("api")
 
@@ -123,7 +124,7 @@ func MainRegister(router *gin.Engine) {
 
 	// 2. 注册静态文件（可选，用于明确的静态资源）
 	router.Static("/assets", "./static/assets")
-	router.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
+	routerGroup.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
 	router.NoRoute(func(c *gin.Context) {
@@ -157,6 +158,56 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+// AuthMiddleware 登录验证中间件，使用 gin 中间件模式
+func AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 跳过不需要认证的路径
+		skipPaths := []string{
+			"/api/login",
+			"/api/logout",
+			"/api/healthCheck",
+			"/api/sysMode",
+			"/assets",
+			"/exports",
+		}
+
+		path := c.Request.URL.Path
+		for _, skipPath := range skipPaths {
+			if strings.HasPrefix(path, skipPath) {
+				c.Next()
+				return
+			}
+		}
+
+		// 获取 Authorization 头
+		authorization := c.GetHeader("Authorization")
+		if authorization == "" {
+			c.Abort()
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code": 401,
+				"msg":  "未授权访问，请先登录",
+			})
+			return
+		}
+
+		// 验证 token 是否有效
+		user := admin.GetUser(authorization)
+		if user == nil || user.Id == "" {
+			c.Abort()
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code": 401,
+				"msg":  "登录已过期，请重新登录",
+			})
+			return
+		}
+
+		// 将用户信息存入上下文，后续可以通过 c.Get() 获取
+		c.Set("currentUser", user)
+		c.Set("userId", user.Id)
+		c.Next()
+	}
+}
+
 // 应该是第一个引入
 func hostCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -175,18 +226,22 @@ func CustomRecovery() gin.HandlerFunc {
 	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
 		if recovered != nil {
 
-			// 1. 记录堆栈（必须在 Abort 前！）
 			stack := string(debug.Stack())
 			log.Println("PANIC:", recovered)
 			log.Println(stack)
 
-			// 2. 终止中间件链
 			c.Abort()
 
-			// 4. 使用 c.JSON —— 自动设置 Content-Type + 状态码 + 安全序列化
+			msg := "系统内部错误，请稍后重试"
+			if err, ok := recovered.(error); ok {
+				msg = utils.SanitizeError(err)
+			} else if s, ok := recovered.(string); ok {
+				msg = utils.SanitizeErrMsg(s)
+			}
+
 			c.JSON(http.StatusOK, gin.H{
 				"code": 500,
-				"msg":  recovered,
+				"msg":  msg,
 			})
 		}
 	})

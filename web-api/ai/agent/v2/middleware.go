@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go-web/utils"
 	"log"
 	"strings"
 
@@ -130,7 +131,7 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 			}
 			// 其他错误转为正常返回值，让模型看到错误信息并重新思考
 			log.Printf("[ToolErrorRecovery] 工具 %s 错误已转为结果 - err=%v\n", tCtx.Name, err)
-			return fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", err.Error()), nil
+			return fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", utils.SanitizeError(err)), nil
 		}
 		return result, nil
 	}, nil
@@ -149,7 +150,7 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 				return nil, err
 			}
 			log.Printf("[ToolErrorRecovery:Stream] 工具 %s 错误已转为结果 - err=%v\n", tCtx.Name, err)
-			errMsg := fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", err.Error())
+			errMsg := fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", utils.SanitizeError(err))
 			return schema.StreamReaderFromArray([]string{errMsg}), nil
 		}
 		return result, nil

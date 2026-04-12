@@ -125,11 +125,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, inject } from 'vue'
-import { useRouter } from 'vue-router'
 import http from '@/js/utils/httpProxy'
-import { ElMessage } from 'element-plus'
 import { client, parsers, server } from '@passwordless-id/webauthn'
+import { ElMessage } from 'element-plus'
+import { inject, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 const emit = defineEmits(['config-saved'])
 const router = useRouter()
@@ -220,10 +220,12 @@ const testOutterUser = () => {
       if (resp.data.code === 200) {
         ElMessage.success("测试成功：" + JSON.stringify(resp.data.data))
       } else {
-        ElMessage.error("测试失败：" + resp.data.msg)
+        console.error('[SystemConfig] 外部用户接口测试失败 - msg:', resp.data.msg)
+        ElMessage.error("测试失败，请检查接口配置")
       }
     })
-    .catch(() => {
+    .catch((err) => {
+      console.error('[SystemConfig] 外部用户接口测试异常:', err)
       ElMessage.error("测试失败：接口无响应")
     })
     .finally(() => {
@@ -277,10 +279,12 @@ const registerBio = async () => {
       ElMessage("注册成功")
       checkBioRegistered()
     } else {
-      ElMessage(data.msg)
+      console.error('[SystemConfig] 生物识别注册失败 - code:', resp.data.code)
+      ElMessage("注册失败")
     }
   }).catch((error) => {
-    ElMessage.error(error.message || "注册失败")
+    console.error('[SystemConfig] 生物识别注册异常:', error)
+    ElMessage.error("注册失败")
   }).finally(() => {
     bioRegistering.value = false
   })

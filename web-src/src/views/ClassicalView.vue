@@ -77,15 +77,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, shallowRef, onMounted } from 'vue'
-import { client, parsers, server } from '@passwordless-id/webauthn'
-import SQLEditor2 from './SQLEditor2.vue'
-import TableEditor from './comonents/TableEditor.vue'
-import ViewDialog from './comonents/ViewDialog.vue'
-import TableManager from './TableManager.vue'
-import DataBrowser from './DataBrowser.vue'
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
+import { client, parsers, server } from '@passwordless-id/webauthn'
+import { onMounted, reactive, ref, shallowRef } from 'vue'
+import TableEditor from './comonents/TableEditor.vue'
+import ViewDialog from './comonents/ViewDialog.vue'
+import DataBrowser from './DataBrowser.vue'
+import SQLEditor2 from './SQLEditor2.vue'
+import TableManager from './TableManager.vue'
 
 const showLoginBtn = ref(true)
 
@@ -264,10 +264,12 @@ async function register() {
     if (resp.data.code == 200) {
       ElMessage("注册成功")
     } else {
-      ElMessage(data.msg)
+      console.error('[ClassicalView] 生物识别注册失败 - code:', resp.data.code)
+      ElMessage("注册失败")
     }
   }).catch((error) => {
-    ElMessage(error)
+    console.error('[ClassicalView] 生物识别注册异常:', error)
+    ElMessage("注册失败")
   });
 }
 
@@ -301,10 +303,12 @@ function loginByToken(token) {
       loginDialogVisible.value = false
       ElMessage("登陆成功")
     } else {
-      ElMessage(data.msg)
+      console.error('[ClassicalView] token登录失败 - code:', resp.data.code)
+      ElMessage("登录失败")
     }
   }).catch((error) => {
-    ElMessage(error)
+    console.error('[ClassicalView] token登录异常:', error)
+    ElMessage("登录失败")
   });
 }
 
@@ -359,11 +363,13 @@ async function loginBio() {
       loginDialogVisible.value = false
       ElMessage("登陆成功")
     } else {
-      ElMessage(data.msg)
+      console.error('[ClassicalView] bio登录失败 - code:', resp.data.code)
+      ElMessage("登录失败")
       loginDialogVisible.value = true
     }
   }).catch((error) => {
-    ElMessage(error)
+    console.error('[ClassicalView] bio登录异常:', error)
+    ElMessage("登录失败")
   });
 }
 

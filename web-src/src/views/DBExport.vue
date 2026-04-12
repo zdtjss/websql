@@ -51,11 +51,11 @@
 
 <script setup>
 
-import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import http from '../js/utils/httpProxy.js'
+import { onMounted, ref } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
+import http from '../js/utils/httpProxy.js'
 
 const props = defineProps({
     connId: String,
@@ -145,7 +145,8 @@ function handleFileSelect(options) {
                 importPreviewVisible.value = true
             })
         } catch (err) {
-            ElMessage({ message: '读取 Excel 文件失败：' + err.message, type: 'error' })
+            console.error('[DBExport] 读取 Excel 文件失败:', err)
+            ElMessage({ message: '读取 Excel 文件失败，请检查文件格式', type: 'error' })
         }
     }
     reader.readAsArrayBuffer(options.file)

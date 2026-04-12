@@ -248,12 +248,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ArrowDown, ArrowUp, Filter, Sort } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { Filter, ArrowUp, ArrowDown, Sort } from '@element-plus/icons-vue'
-import http from '../js/utils/httpProxy.js'
+import { computed, onMounted, ref, watch } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
+import http from '../js/utils/httpProxy.js'
 
 const props = defineProps({
   connId: String,
@@ -399,7 +399,8 @@ async function loadData() {
     await fetchTotal()
     await fetchData()
   } catch (err) {
-    ElMessage({ message: err?.message || '加载数据失败', type: 'error' })
+    console.error('[DataBrowser] 加载数据失败:', err)
+    ElMessage({ message: '加载数据失败', type: 'error' })
   } finally {
     loading.value = false
   }
@@ -589,8 +590,7 @@ function exportData() {
       const contentType = res.headers['content-type'] || ''
       if (contentType.includes('application/json')) {
         return res.data.text().then(text => {
-          const err = JSON.parse(text)
-          ElMessage({ message: err.msg || '导出失败', type: 'error' })
+          ElMessage({ message: '导出失败', type: 'error' })
         })
       }
       const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
@@ -645,17 +645,16 @@ async function saveData() {
     const respData = resp.data.data
 
     if (respData && respData.msg) {
-      // Server returned an error message
-      ElMessage({ message: respData.msg, type: 'error' })
-      // Keep dialog open — local data unchanged (automatic rollback)
+      console.error('[DataBrowser] 保存失败 - 后端返回:', respData.msg)
+      ElMessage({ message: '保存失败，请检查数据', type: 'error' })
     } else {
       ElMessage({ message: '保存成功', type: 'success' })
       editDialogVisible.value = false
       await loadData()
     }
   } catch (err) {
-    // HTTP-level error — keep dialog open
-    ElMessage({ message: err?.message || '保存失败', type: 'error' })
+    console.error('[DataBrowser] 保存失败:', err)
+    ElMessage({ message: '保存失败', type: 'error' })
   } finally {
     saving.value = false
   }
@@ -704,14 +703,16 @@ async function insertData() {
     const respData = resp.data.data
 
     if (respData && respData.msg) {
-      ElMessage({ message: respData.msg, type: 'error' })
+      console.error('[DataBrowser] 新增失败 - 后端返回:', respData.msg)
+      ElMessage({ message: '操作失败，请检查数据', type: 'error' })
     } else {
       ElMessage({ message: '新增成功', type: 'success' })
       insertDialogVisible.value = false
       await loadData()
     }
   } catch (err) {
-    ElMessage({ message: err?.message || '新增失败', type: 'error' })
+    console.error('[DataBrowser] 新增失败:', err)
+    ElMessage({ message: '新增失败', type: 'error' })
   } finally {
     inserting.value = false
   }
@@ -731,13 +732,15 @@ async function deleteRow(row) {
     const respData = resp.data.data
 
     if (respData && respData.msg) {
-      ElMessage({ message: respData.msg, type: 'error' })
+      console.error('[DataBrowser] 删除失败 - 后端返回:', respData.msg)
+      ElMessage({ message: '操作失败，请检查数据', type: 'error' })
     } else {
       ElMessage({ message: '删除成功', type: 'success' })
       await loadData()
     }
   } catch (err) {
-    ElMessage({ message: err?.message || '删除失败', type: 'error' })
+    console.error('[DataBrowser] 删除失败:', err)
+    ElMessage({ message: '删除失败', type: 'error' })
   }
 }
 
@@ -757,14 +760,16 @@ function upload(options) {
       ElMessage({ message: '导入成功', type: 'success' })
       loadData()
     } else {
+      console.error('[DataBrowser] 导入失败 - 响应:', res)
       if (res && res.data) {
-        ElMessage({ message: res.data, type: 'error' })
+        ElMessage({ message: '导入失败，请检查数据格式', type: 'error' })
       } else {
         ElMessage({ message: '导入失败', type: 'error' })
       }
     }
   }).catch((err) => {
-    ElMessage({ message: err?.message || '导入失败', type: 'error' })
+    console.error('[DataBrowser] 导入失败:', err)
+    ElMessage({ message: '导入失败', type: 'error' })
   }).finally(() => {
     fileList.value = []
     importing.value = false
@@ -804,7 +809,8 @@ function handleFileSelect(options) {
       }
       importPreviewVisible.value = true
     } catch (err) {
-      ElMessage({ message: '读取 Excel 文件失败：' + err.message, type: 'error' })
+      console.error('[DataBrowser] 读取 Excel 文件失败:', err)
+      ElMessage({ message: '读取 Excel 文件失败，请检查文件格式', type: 'error' })
     }
   }
   reader.readAsArrayBuffer(options.file)

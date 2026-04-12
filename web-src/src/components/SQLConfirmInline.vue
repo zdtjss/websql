@@ -68,8 +68,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { computed, ref } from 'vue'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -154,7 +154,8 @@ const handleConfirm = async () => {
 
     ElMessage.success('操作成功')
   } catch (error) {
-    ElMessage.error(`操作失败：${error.message}`)
+    console.error('[SQLConfirmInline] 操作失败:', error)
+    ElMessage.error('操作失败，请稍后重试')
   } finally {
     confirmLoading.value = false
   }

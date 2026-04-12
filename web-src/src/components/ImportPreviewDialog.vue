@@ -129,11 +129,10 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { CircleCheck, Refresh, RefreshLeft, Upload, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { Warning, CircleCheck, Refresh, Upload, RefreshLeft } from '@element-plus/icons-vue'
+import { computed, ref, watch } from 'vue'
 import http from '../js/utils/httpProxy.js'
-import * as XLSX from 'xlsx'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -286,16 +285,15 @@ function executeImport() {
       }
     } else {
       if (res && res.data) {
-        ElMessage({ message: res.data, type: 'error', duration: 5000 })
+        ElMessage({ message: '导入失败，请检查数据格式', type: 'error', duration: 5000 })
       } else {
         ElMessage({ message: '导入失败', type: 'error', duration: 5000 })
       }
     }
   }).catch((err) => {
     console.error('导入错误:', err)
-    const errorMsg = err?.response?.data || err?.message || '导入失败，请检查数据格式或联系管理员'
     ElMessage({ 
-      message: typeof errorMsg === 'string' ? errorMsg : '导入失败', 
+      message: '导入失败，请检查数据格式或联系管理员', 
       type: 'error',
       duration: 5000,
       showClose: true

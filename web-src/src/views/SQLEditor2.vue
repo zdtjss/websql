@@ -470,7 +470,7 @@ function saveData(rowData: any) {
             }
             const respConlumn = resp.data.data.columns[0].name
             const respData = resp.data.data.data[0]
-            ElMessage({ message: resp.data.data.msg ? resp.data.data.msg : "修改了 " + respData[respConlumn] + " 条数据", type: resp.data.data.msg ? "error" : "success" })
+            ElMessage({ message: resp.data.data.msg ? "操作失败，请检查 SQL 语句" : "修改了 " + respData[respConlumn] + " 条数据", type: resp.data.data.msg ? "error" : "success" })
         }).catch((error) => {
             console.log(error);
         });

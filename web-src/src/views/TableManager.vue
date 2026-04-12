@@ -154,9 +154,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
 import http from '@/js/utils/httpProxy.js'
+import { ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref, watch } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 
 const props = defineProps({
@@ -339,8 +339,7 @@ function exportTable(row) {
       const contentType = res.headers['content-type'] || ''
       if (contentType.includes('application/json')) {
         return res.data.text().then(text => {
-          const err = JSON.parse(text)
-          ElMessage({ message: err.msg || '导出失败', type: 'error' })
+          ElMessage({ message: '导出失败', type: 'error' })
         })
       }
       const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })

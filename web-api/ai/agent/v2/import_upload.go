@@ -132,13 +132,15 @@ func RemoveUploadedFile(id string) {
 func HandleUploadExcel(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件上传失败：" + err.Error()})
+		log.Printf("[UploadExcel] 文件上传失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件上传失败，请检查文件是否正确选择"})
 		return
 	}
 
 	src, err := fileHeader.Open()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "打开文件失败：" + err.Error()})
+		log.Printf("[UploadExcel] 打开文件失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "打开文件失败，请重试"})
 		return
 	}
 	defer src.Close()
@@ -153,13 +155,15 @@ func HandleUploadExcel(c *gin.Context) {
 
 	dst, err := os.Create(diskPath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败：" + err.Error()})
+		log.Printf("[UploadExcel] 保存文件失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败，请重试"})
 		return
 	}
 	if _, err := io.Copy(dst, src); err != nil {
 		dst.Close()
 		os.Remove(diskPath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败：" + err.Error()})
+		log.Printf("[UploadExcel] 写入文件失败 - err=%v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败，请重试"})
 		return
 	}
 	dst.Close()
@@ -168,7 +172,8 @@ func HandleUploadExcel(c *gin.Context) {
 	xlsx, err := excelize.OpenFile(diskPath)
 	if err != nil {
 		os.Remove(diskPath)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取 Excel 文件失败：" + err.Error()})
+		log.Printf("[UploadExcel] 读取 Excel 文件失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取 Excel 文件失败，请检查文件格式"})
 		return
 	}
 	defer xlsx.Close()
@@ -177,7 +182,8 @@ func HandleUploadExcel(c *gin.Context) {
 	allRows, err := xlsx.GetRows(sheetName)
 	if err != nil {
 		os.Remove(diskPath)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取工作表失败：" + err.Error()})
+		log.Printf("[UploadExcel] 读取工作表失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取工作表失败，请检查文件内容"})
 		return
 	}
 	if len(allRows) < 2 {

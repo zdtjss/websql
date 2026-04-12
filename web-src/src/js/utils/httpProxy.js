@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { sanitizeError } from '@/utils/errorHandler.js';
 
 const env = import.meta.env
 
@@ -14,29 +15,34 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
     (response) => {
-        // Skip business-code check for binary/blob responses
         if (response.config.responseType === 'blob') {
             return response;
         }
-        // 假设后端总是返回 HTTP 200，用 data.code 表示业务状态
         const { code, msg } = response.data;
         if (code === 500) {
-            ElMessage({ message: msg || '系统错误', type: 'error' });
-            return Promise.reject(new Error(msg || '系统错误'));
+            ElMessage({ message: sanitizeError(msg) || '系统错误', type: 'error' });
+            return Promise.reject(new Error(sanitizeError(msg) || '系统错误'));
         }
         return response;
     },
     (error) => {
+        // 处理 401 未授权错误，自动退出登录
+        if (error.response && error.response.status === 401) {
+            ElMessage({ message: '登录已过期，请重新登录', type: 'warning' });
+            sessionStorage.removeItem('authentication');
+            sessionStorage.removeItem('currentUser');
+            sessionStorage.removeItem('isRemote');
+            return Promise.reject(error);
+        }
+
         let message = '请求失败';
         if (error.response) {
-            // 服务器返回了响应（但状态码非 2xx）
-            message = error.response.data?.msg || error.response.statusText || '服务异常';
+            const rawMsg = error.response.data?.msg || error.response.statusText || '服务异常';
+            message = sanitizeError(rawMsg);
         } else if (error.request) {
-            // 请求已发出但无响应（如网络错误）
             message = '网络异常，请检查网络连接';
         } else {
-            // 其他错误（如配置错误）
-            message = error.message || '未知错误';
+            message = '请求失败，请稍后重试';
         }
         ElMessage.error(message);
         return Promise.reject(error);

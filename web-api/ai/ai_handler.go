@@ -2,29 +2,31 @@ package ai
 
 import (
 	admin "go-web/web-api/admin"
+	"log"
 
 	"github.com/gin-gonic/gin"
 )
 
-// HandleSaveConfig saves the AI configuration.
 func HandleSaveConfig(c *gin.Context) {
 	var cfg admin.AIConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "参数解析失败：" + err.Error()})
+		log.Printf("[AI] 参数解析失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "参数解析失败"})
 		return
 	}
 	if err := SaveAIConfig(cfg); err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "保存配置失败：" + err.Error()})
+		log.Printf("[AI] 保存配置失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "保存配置失败"})
 		return
 	}
 	c.JSON(200, gin.H{"code": 200, "data": "保存成功"})
 }
 
-// HandleGetConfig returns the AI configuration with the apiKey masked.
 func HandleGetConfig(c *gin.Context) {
 	cfg, err := GetAIConfig()
 	if err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败：" + err.Error()})
+		log.Printf("[AI] 获取配置失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败"})
 		return
 	}
 	if cfg == nil {
@@ -34,11 +36,11 @@ func HandleGetConfig(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 200, "data": cfg})
 }
 
-// HandleTestConfig tests the AI connection.
 func HandleTestConfig(c *gin.Context) {
 	cfg, err := GetAIConfigRaw()
 	if err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败：" + err.Error()})
+		log.Printf("[AI] 获取原始配置失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败"})
 		return
 	}
 	if cfg == nil {
@@ -48,7 +50,8 @@ func HandleTestConfig(c *gin.Context) {
 
 	_, err = CallAI(cfg, []ChatMessage{{Role: "user", Content: "hi"}})
 	if err != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "连接失败：" + err.Error()})
+		log.Printf("[AI] 连接测试失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "AI 服务连接失败，请检查配置和网络"})
 		return
 	}
 	c.JSON(200, gin.H{"code": 200, "msg": "连接成功"})
