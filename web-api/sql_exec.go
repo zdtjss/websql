@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bytes"
+	"fmt"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
@@ -149,7 +150,7 @@ func IsAlphaNumeric(str string) bool {
 }
 
 func min(a, b int) int {
-	if a > b {
+	if a < b {
 		return a
 	}
 	return b
@@ -204,26 +205,44 @@ func batchExec(sql *string, db *sqlx.DB) ([]map[string]any, error) {
 func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error {
 	operationType := ""
 	backupSql := bytes.NewBufferString("select * from ")
-	if strings.HasPrefix(ddlSql, "update ") {
+	lowerSql := strings.ToLower(ddlSql)
+
+	if strings.HasPrefix(lowerSql, "update ") {
 		operationType = "update"
-		tmp := strings.TrimSpace(strings.TrimPrefix(ddlSql, "update "))
-		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
-	} else if strings.HasPrefix(ddlSql, "delete ") {
+		tmp := strings.TrimSpace(strings.TrimPrefix(lowerSql, "update "))
+		spaceIdx := strings.Index(tmp, " ")
+		if spaceIdx == -1 {
+			return fmt.Errorf("无法解析 UPDATE 语句的表名")
+		}
+		backupSql.WriteString(tmp[:spaceIdx])
+	} else if strings.HasPrefix(lowerSql, "delete ") {
 		operationType = "delete"
-		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(ddlSql, "delete ")), "from ")
-		backupSql.WriteString(tmp[:strings.Index(tmp, " ")])
+		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(lowerSql, "delete ")), "from ")
+		spaceIdx := strings.Index(tmp, " ")
+		if spaceIdx == -1 {
+			return fmt.Errorf("无法解析 DELETE 语句的表名")
+		}
+		backupSql.WriteString(tmp[:spaceIdx])
 	}
-	backupSql.WriteString(ddlSql[strings.Index(ddlSql, " where "):])
+
+	whereIdx := strings.Index(lowerSql, " where ")
+	if whereIdx == -1 {
+		return fmt.Errorf("UPDATE/DELETE 操作必须包含 WHERE 条件")
+	}
+	backupSql.WriteString(ddlSql[whereIdx:])
+
 	rows, err := conn.Queryx(backupSql.String())
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	data := dbutils.GetResultRows(conn.DriverName(), rows)
 	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
 	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
 	if err != nil {
 		return err
 	}
+	defer stmt.Close()
 	time.Sleep(time.Microsecond)
 	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, operationType, time.Now(), ddlSql, string(utils.ToJsonString(data)))
 	if err3 != nil {
@@ -235,7 +254,11 @@ func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error
 func recordHistory(ddlSql string, user *admin.User, connId string) {
 	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql) values(?,?,?,?,?,?)"
 	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
-	logutils.PrintErr(err)
+	if err != nil {
+		logutils.PrintErr(err)
+		return
+	}
+	defer stmt.Close()
 	time.Sleep(time.Microsecond)
 	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, "select", time.Now(), ddlSql)
 	logutils.PrintErr(err3)
@@ -291,8 +314,8 @@ type Column struct {
 }
 
 type TableDataList struct {
-	Columns []Column                 `json:"columns"`
-	Data    []map[string]interface{} `json:"data"`
-	CanEdit bool                     `json:"canEdit"`
-	Keys    []string                 `json:"keys"`
+	Columns []Column         `json:"columns"`
+	Data    []map[string]any `json:"data"`
+	CanEdit bool             `json:"canEdit"`
+	Keys    []string         `json:"keys"`
 }

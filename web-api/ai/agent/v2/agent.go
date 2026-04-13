@@ -107,8 +107,8 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&PermissionMiddleware{Scope: scope},
-			&ToolErrorRecoveryMiddleware{},
 			&SQLSecurityMiddleware{},
+			&ToolErrorRecoveryMiddleware{},
 		},
 		ModelRetryConfig: &adk.ModelRetryConfig{MaxRetries: 5},
 		MaxIterations:    25,
@@ -169,7 +169,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	if req.ExcelData != nil && req.ExcelData.FileID != "" {
 		sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Excel 文件（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
 			req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
-		sysPrompt += "请先用 get_table_schema 获取目标表结构，将 Excel 列名与表字段做严格匹配，展示映射结果给用户确认后，调用 import_data 工具（传入 fileId、tableName、mapping）执行导入。\n"
+		sysPrompt += "请先用 get_table_schema 确认目标表存在，然后直接调用 import_data 工具（传入 fileId 和 tableName），后端会自动匹配字段。如果用户没有指定目标表，请询问用户。\n"
 	}
 
 	// 构建 Eino 消息列表
@@ -304,26 +304,34 @@ func extractLastSQLFromSessionMessages(msgs []SessionMessage) string {
 		if msg.Role != "assistant" || msg.Content == "" {
 			continue
 		}
-		startIdx := strings.LastIndex(msg.Content, "```")
-		if startIdx == -1 {
-			continue
-		}
-		endIdx := strings.Index(msg.Content[startIdx+3:], "```")
-		if endIdx == -1 {
-			continue
-		}
-		endIdx = startIdx + 3 + endIdx
-		codeBlock := strings.TrimSpace(msg.Content[startIdx+3 : endIdx])
-		if idx := strings.Index(codeBlock, "\n"); idx != -1 {
-			firstLine := strings.TrimSpace(strings.Split(codeBlock, "\n")[0])
-			if strings.EqualFold(firstLine, "sql") {
-				codeBlock = strings.TrimSpace(codeBlock[idx+1:])
+		// 从后往前查找最后一个 SQL 代码块
+		content := msg.Content
+		for {
+			endIdx := strings.LastIndex(content, "```")
+			if endIdx <= 0 {
+				break
 			}
-		}
-		upper := strings.ToUpper(strings.TrimSpace(codeBlock))
-		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "SHOW") ||
-			strings.HasPrefix(upper, "DESCRIBE") || strings.HasPrefix(upper, "EXPLAIN") {
-			return codeBlock
+			// 找到这个 ``` 对应的开始 ```
+			startIdx := strings.LastIndex(content[:endIdx], "```")
+			if startIdx == -1 {
+				break
+			}
+			codeBlock := strings.TrimSpace(content[startIdx+3 : endIdx])
+			// 去掉语言标识行
+			if idx := strings.Index(codeBlock, "\n"); idx != -1 {
+				firstLine := strings.TrimSpace(codeBlock[:idx])
+				if strings.EqualFold(firstLine, "sql") {
+					codeBlock = strings.TrimSpace(codeBlock[idx+1:])
+				}
+			}
+			upper := strings.ToUpper(strings.TrimSpace(codeBlock))
+			if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "SHOW") ||
+				strings.HasPrefix(upper, "DESCRIBE") || strings.HasPrefix(upper, "EXPLAIN") ||
+				strings.HasPrefix(upper, "WITH") {
+				return codeBlock
+			}
+			// 继续往前找
+			content = content[:startIdx]
 		}
 	}
 	return ""
@@ -398,14 +406,38 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
-	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN 查询并返回结果", NewQueryFunc(connID))
-	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID))
-	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（折线图/柱状图/饼图/散点图）", NewExportExcelWithChartFunc(connID))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容自动分页生成；2) sql 模式 — 基于 SQL 查询数据生成数据演示", NewExportPPTFunc(connID))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容生成报告；2) sql 模式 — 基于 SQL 查询数据生成数据报告", NewExportAnalysisDocxFunc(connID))
-	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中。需要提供 fileId、tableName 和 mapping。", NewImportDataFunc(connID, dbType, dbSchema))
+	queryTool, err := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN 查询并返回结果", NewQueryFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 query_data 失败：%w", err)
+	}
+	execTool, err := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 exec_sql 失败：%w", err)
+	}
+	schemaTool, err := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 get_table_schema 失败：%w", err)
+	}
+	exportExcelTool, err := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 export_excel 失败：%w", err)
+	}
+	exportExcelChartTool, err := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（折线图/柱状图/饼图/散点图）", NewExportExcelWithChartFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 export_excel_with_chart 失败：%w", err)
+	}
+	exportPPTTool, err := utils.InferTool("export_ppt", "生成 PPT 演示文稿。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容自动分页生成；2) sql 模式 — 基于 SQL 查询数据生成数据演示", NewExportPPTFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 export_ppt 失败：%w", err)
+	}
+	exportDocxTool, err := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容生成报告；2) sql 模式 — 基于 SQL 查询数据生成数据报告", NewExportAnalysisDocxFunc(connID))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 export_analysis_docx 失败：%w", err)
+	}
+	importDataTool, err := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中。需要提供 fileId、tableName 和 mapping。", NewImportDataFunc(connID, dbType, dbSchema))
+	if err != nil {
+		return nil, fmt.Errorf("创建工具 import_data 失败：%w", err)
+	}
 
 	return []tool.BaseTool{
 		queryTool, execTool, schemaTool,
@@ -497,12 +529,11 @@ pie title 销售占比
 ## 数据导入操作
 当用户上传了 Excel 文件并要求导入数据时：
 1. 用户消息中会包含 fileId 和 Excel 列名信息
-2. 先调用 get_table_schema 获取目标表结构
-3. 将 Excel 列名与表字段严格匹配（必须完全相等，大小写不敏感）
-4. 匹配失败的列必须立即反馈给用户
-5. 匹配成功后展示完整映射表，请求用户确认
-6. 确认后调用 import_data 工具（传入 fileId、tableName、mapping）
-7. 字段匹配是数据安全红线
+2. 先调用 get_table_schema 获取目标表结构，确认目标表存在
+3. 直接调用 import_data 工具，只需传入 fileId 和 tableName 即可
+4. 后端会自动按列名匹配 Excel 列与数据库字段（大小写不敏感、忽略空格和下划线差异）
+5. 如果你非常确定映射关系，也可以传入 mapping 参数，但这不是必须的
+6. 导入结果会包含实际使用的字段映射，请展示给用户确认
 
 ## 多轮对话
 你拥有完整的对话历史记忆。"刚才的""上面的""这个结果"等都指上一次查询。

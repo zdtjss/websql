@@ -62,32 +62,34 @@ type CurrentDateTimeOutput struct {
 // 数据库连接
 // ──────────────────────────────────────────────
 
+// getConn 获取数据库连接和类型。
+// 注意：每次调用都会查询管理库，高频场景下可考虑缓存。
 func getConn(connId string) (*sqlx.DB, string) {
+	if connId == "" {
+		return nil, ""
+	}
 	cfgList := []admin.ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connId)
 	if err != nil || len(cfgList) == 0 {
 		return nil, ""
 	}
 	cfg := &cfgList[0]
+
+	deref := func(p *string) string {
+		if p != nil {
+			return *p
+		}
+		return ""
+	}
+
 	pwd := ""
 	if cfg.Pwd != nil {
 		pwd = utils.AESDecode(*cfg.Pwd)
 	}
-	name := ""
-	if cfg.Name != nil {
-		name = *cfg.Name
-	}
-	user := ""
-	if cfg.User != nil {
-		user = *cfg.User
-	}
-	url := ""
-	if cfg.Url != nil {
-		url = *cfg.Url
-	}
+
 	conn := config.GetConn(&config.DBParam{
-		Id: cfg.Id, Name: name, DbType: cfg.DbType,
-		User: user, Pwd: pwd, Url: url,
+		Id: cfg.Id, Name: deref(cfg.Name), DbType: cfg.DbType,
+		User: deref(cfg.User), Pwd: pwd, Url: deref(cfg.Url),
 	})
 	return conn, cfg.DbType
 }
@@ -96,10 +98,10 @@ func getConn(connId string) (*sqlx.DB, string) {
 // Tool 实现
 // ──────────────────────────────────────────────
 
-// 获取当前日期时间的tool
+// GetCurrentDateTime 获取当前日期时间的 tool
 func GetCurrentDateTime() func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
 	return func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
-		return &CurrentDateTimeOutput{DateTime: time.Now().Format("2006-01-02 15:09:05")}, nil
+		return &CurrentDateTimeOutput{DateTime: time.Now().Format("2006-01-02 15:04:05")}, nil
 	}
 }
 
@@ -115,8 +117,14 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "WITH") {
-			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH  语句")
+			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句")
 		}
+
+		// 防止大结果集：如果是 SELECT/WITH 且没有行数限制，按数据库方言自动添加
+		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
+			sql = applyRowLimit(sql, conn.DriverName(), 2000)
+		}
+
 		rows, err := conn.Queryx(sql)
 		if err != nil {
 			log.Printf("[Tool:query_data] 查询失败 - err=%v\n", err)
@@ -141,25 +149,20 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 		sql := strings.TrimSpace(input.SQL)
-		if !strings.Contains(sql, "-- CONFIRMED:") {
-			for line := range strings.SplitSeq(sql, ";") {
-				if isDangerousSQL(line) {
-					return nil, &DangerousSQLError{SQL: sql}
-				}
-			}
-			// return nil, fmt.Errorf("此操作需要用户确认")
-		}
-		var actualLines []string
-		for line := range strings.SplitSeq(sql, "\n") {
-			if !strings.HasPrefix(strings.TrimSpace(line), "-- CONFIRMED:") {
-				actualLines = append(actualLines, line)
-			}
-		}
-		actualSQL := strings.TrimSpace(strings.Join(actualLines, "\n"))
-		if actualSQL == "" {
+		if sql == "" {
 			return nil, fmt.Errorf("SQL 不能为空")
 		}
-		result, err := conn.Exec(actualSQL)
+
+		// 所有写操作都必须经过 SQLSecurityMiddleware 拦截 → 前端确认 → handleConfirmedExec 执行。
+		// 这里做最后一道防线：如果 SQL 是危险操作，直接触发拦截。
+		for _, line := range strings.Split(sql, ";") {
+			line = strings.TrimSpace(line)
+			if line != "" && isDangerousSQL(line) {
+				return nil, &DangerousSQLError{SQL: sql}
+			}
+		}
+
+		result, err := conn.Exec(sql)
 		if err != nil {
 			log.Printf("[Tool:exec_sql] 执行失败 - err=%v\n", err)
 			return nil, fmt.Errorf("执行失败：%w", err)
@@ -260,7 +263,7 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 type ImportDataInput struct {
 	FileID    string            `json:"fileId" jsonschema:"required" jsonschema_description:"后端返回的上传文件 ID"`
 	TableName string            `json:"tableName" jsonschema:"required" jsonschema_description:"目标表名"`
-	Mapping   map[string]string `json:"mapping" jsonschema:"required" jsonschema_description:"字段映射：key=Excel列名, value=数据库字段名。所有Excel列都必须映射到表中实际存在的字段。"`
+	Mapping   map[string]string `json:"mapping" jsonschema_description:"字段映射：key=Excel列名, value=数据库字段名。如果不提供，后端会自动按列名匹配（大小写不敏感、去除空格和下划线差异）。"`
 	Mode      string            `json:"mode" jsonschema_description:"导入模式: insert（仅插入）或 upsert（有主键则更新无则插入）。默认 insert"`
 }
 
@@ -271,6 +274,7 @@ type ImportDataOutput struct {
 }
 
 // NewImportDataFunc 数据导入工具 — 从后端暂存区读取 Excel 全量数据，按字段映射导入目标表
+// 当 AI 不提供 mapping 时，后端自动按列名匹配（大小写不敏感、忽略空格和下划线差异）。
 func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 		log.Printf("[Tool:import_data] fileId=%s, table=%s, mapping=%v, mode=%s\n",
@@ -282,9 +286,6 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 		}
 		if input.FileID == "" {
 			return nil, fmt.Errorf("fileId 不能为空，请先上传 Excel 文件")
-		}
-		if len(input.Mapping) == 0 {
-			return nil, fmt.Errorf("字段映射不能为空")
 		}
 
 		mode := strings.ToLower(input.Mode)
@@ -298,34 +299,33 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 			return nil, err
 		}
 
-		// 验证表结构
+		// 获取目标表的实际列名
 		tableColumns, err := getTableColumns(conn, dbType, dbSchema, input.TableName)
 		if err != nil {
 			return nil, fmt.Errorf("获取表 %s 的列信息失败：%w", input.TableName, err)
 		}
-		tableColSet := make(map[string]bool)
-		for _, c := range tableColumns {
-			tableColSet[strings.ToUpper(c)] = true
+		if len(tableColumns) == 0 {
+			return nil, fmt.Errorf("表 %s 不存在或没有列", input.TableName)
 		}
 
-		// 构建映射索引
-		excelColIdx := make(map[string]int)
-		for i, c := range upload.Columns {
-			excelColIdx[c] = i
+		// 构建最终映射：excelColIndex -> dbColumnName
+		// 优先使用 AI 提供的 mapping，否则自动匹配
+		finalMapping, err := buildFinalMapping(upload.Columns, tableColumns, input.Mapping)
+		if err != nil {
+			return nil, err
 		}
 
+		if len(finalMapping) == 0 {
+			return nil, fmt.Errorf("没有任何 Excel 列能匹配到表 %s 的字段。\nExcel 列：%s\n表字段：%s",
+				input.TableName, strings.Join(upload.Columns, ", "), strings.Join(tableColumns, ", "))
+		}
+
+		// 提取有序的 dbColumns 和对应的 excelIndices
 		var dbColumns []string
 		var excelIndices []int
-		for excelCol, dbCol := range input.Mapping {
-			idx, ok := excelColIdx[excelCol]
-			if !ok {
-				return nil, fmt.Errorf("Excel 列 '%s' 在上传文件中不存在，可用列：%s", excelCol, strings.Join(upload.Columns, ", "))
-			}
-			if !tableColSet[strings.ToUpper(dbCol)] {
-				return nil, fmt.Errorf("字段 '%s' 在表 '%s' 中不存在", dbCol, input.TableName)
-			}
+		for excelIdx, dbCol := range finalMapping {
 			dbColumns = append(dbColumns, dbCol)
-			excelIndices = append(excelIndices, idx)
+			excelIndices = append(excelIndices, excelIdx)
 		}
 
 		// 获取主键
@@ -338,7 +338,7 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 		defer tx.Rollback()
 
 		insertedRows, updatedRows := 0, 0
-		for _, excelRow := range upload.Data {
+		for rowNum, excelRow := range upload.Data {
 			row := make([]string, len(dbColumns))
 			for i, idx := range excelIndices {
 				if idx < len(excelRow) {
@@ -348,22 +348,22 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 			if mode == "upsert" && len(primaryKeys) > 0 {
 				exists, err := checkRowExists(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys)
 				if err != nil {
-					return nil, fmt.Errorf("检查数据是否存在失败：%w", err)
+					return nil, fmt.Errorf("第 %d 行检查数据是否存在失败：%w", rowNum+2, err)
 				}
 				if exists {
 					if err := updateRow(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys); err != nil {
-						return nil, fmt.Errorf("更新数据失败：%w", err)
+						return nil, fmt.Errorf("第 %d 行更新数据失败：%w", rowNum+2, err)
 					}
 					updatedRows++
 				} else {
 					if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-						return nil, fmt.Errorf("插入数据失败：%w", err)
+						return nil, fmt.Errorf("第 %d 行插入数据失败：%w", rowNum+2, err)
 					}
 					insertedRows++
 				}
 			} else {
 				if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-					return nil, fmt.Errorf("插入数据失败：%w", err)
+					return nil, fmt.Errorf("第 %d 行插入数据失败：%w", rowNum+2, err)
 				}
 				insertedRows++
 			}
@@ -375,13 +375,122 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 
 		RemoveUploadedFile(input.FileID)
 
+		// 构建详细的映射说明
+		var mappingDesc strings.Builder
+		for i, idx := range excelIndices {
+			if i > 0 {
+				mappingDesc.WriteString(", ")
+			}
+			fmt.Fprintf(&mappingDesc, "%s→%s", upload.Columns[idx], dbColumns[i])
+		}
+
 		msg := fmt.Sprintf("导入完成：插入 %d 行", insertedRows)
 		if updatedRows > 0 {
 			msg += fmt.Sprintf("，更新 %d 行", updatedRows)
 		}
+		msg += fmt.Sprintf("。字段映射：%s", mappingDesc.String())
 		log.Printf("[Tool:import_data] %s\n", msg)
 		return &ImportDataOutput{Message: msg, InsertedRows: insertedRows, UpdatedRows: updatedRows}, nil
 	}
+}
+
+// normalizeColName 标准化列名用于模糊匹配：转小写、去除空格、下划线、连字符
+func normalizeColName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, " ", "")
+	name = strings.ReplaceAll(name, "_", "")
+	name = strings.ReplaceAll(name, "-", "")
+	return name
+}
+
+// buildFinalMapping 构建最终的 excelColumnIndex → dbColumnName 映射。
+//
+// 策略：
+//  1. 如果 AI 提供了 mapping，先尝试使用它（对 key 和 value 都做模糊匹配以容错）
+//  2. 对于 AI mapping 中未匹配到的列，以及 AI 未提供 mapping 的情况，自动按列名匹配
+//  3. 自动匹配规则：精确匹配 > 大小写不敏感匹配 > 标准化匹配（去空格/下划线/连字符）
+func buildFinalMapping(excelColumns, tableColumns []string, aiMapping map[string]string) (map[int]string, error) {
+	result := make(map[int]string)      // excelIndex -> dbColumn
+	usedDBCols := make(map[string]bool) // 已使用的数据库列（大写）
+
+	// 构建 Excel 列名索引（精确 + 标准化）
+	excelByExact := make(map[string]int) // exactName -> index
+	excelByNorm := make(map[string]int)  // normalizedName -> index
+	for i, c := range excelColumns {
+		excelByExact[c] = i
+		excelByNorm[normalizeColName(c)] = i
+	}
+
+	// 构建数据库列名索引（精确 + 标准化 → 原始名）
+	dbByUpper := make(map[string]string) // UPPER(name) -> originalName
+	dbByNorm := make(map[string]string)  // normalizedName -> originalName
+	for _, c := range tableColumns {
+		dbByUpper[strings.ToUpper(c)] = c
+		dbByNorm[normalizeColName(c)] = c
+	}
+
+	// 第一步：如果 AI 提供了 mapping，尝试使用（带容错）
+	if len(aiMapping) > 0 {
+		for aiExcelCol, aiDBCol := range aiMapping {
+			// 查找 Excel 列索引（精确 → 大小写不敏感 → 标准化）
+			excelIdx := -1
+			if idx, ok := excelByExact[aiExcelCol]; ok {
+				excelIdx = idx
+			} else if idx, ok := excelByNorm[normalizeColName(aiExcelCol)]; ok {
+				excelIdx = idx
+			}
+			if excelIdx == -1 {
+				log.Printf("[import_data] AI mapping 中的 Excel 列 '%s' 未找到，跳过\n", aiExcelCol)
+				continue
+			}
+
+			// 查找数据库列名（精确 → 大小写不敏感 → 标准化）
+			dbCol := ""
+			if orig, ok := dbByUpper[strings.ToUpper(aiDBCol)]; ok {
+				dbCol = orig
+			} else if orig, ok := dbByNorm[normalizeColName(aiDBCol)]; ok {
+				dbCol = orig
+			}
+			if dbCol == "" {
+				log.Printf("[import_data] AI mapping 中的数据库字段 '%s' 未找到，跳过\n", aiDBCol)
+				continue
+			}
+
+			if _, exists := result[excelIdx]; exists {
+				continue // 该 Excel 列已映射
+			}
+			if usedDBCols[strings.ToUpper(dbCol)] {
+				continue // 该数据库列已被使用
+			}
+
+			result[excelIdx] = dbCol
+			usedDBCols[strings.ToUpper(dbCol)] = true
+		}
+	}
+
+	// 第二步：对未映射的 Excel 列，自动按列名匹配
+	for i, excelCol := range excelColumns {
+		if _, exists := result[i]; exists {
+			continue // 已通过 AI mapping 映射
+		}
+
+		// 精确匹配
+		if orig, ok := dbByUpper[strings.ToUpper(excelCol)]; ok && !usedDBCols[strings.ToUpper(orig)] {
+			result[i] = orig
+			usedDBCols[strings.ToUpper(orig)] = true
+			continue
+		}
+
+		// 标准化匹配
+		norm := normalizeColName(excelCol)
+		if orig, ok := dbByNorm[norm]; ok && !usedDBCols[strings.ToUpper(orig)] {
+			result[i] = orig
+			usedDBCols[strings.ToUpper(orig)] = true
+			continue
+		}
+	}
+
+	return result, nil
 }
 
 // ──────────────────────────────────────────────
@@ -393,16 +502,32 @@ func getTableColumns(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]strin
 	var args []any
 	switch dbType {
 	case "mysql", "mariadb":
-		query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
-		args = []any{dbSchema, tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
+			args = []any{dbSchema, tableName}
+		} else {
+			// schema 为空时，使用当前连接的默认 schema
+			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	case "oracle":
-		query = "SELECT COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID"
-		args = []any{strings.ToUpper(dbSchema), strings.ToUpper(tableName)}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(dbSchema), strings.ToUpper(tableName)}
+		} else {
+			query = "SELECT COLUMN_NAME FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :1 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(tableName)}
+		}
 	case "sqlite":
 		query = fmt.Sprintf("PRAGMA table_info('%s')", tableName)
 	default:
-		query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
-		args = []any{dbSchema, tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
+			args = []any{dbSchema, tableName}
+		} else {
+			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	}
 	if dbType == "sqlite" {
 		rows, err := conn.Queryx(query)
@@ -437,6 +562,7 @@ func getTableColumns(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]strin
 		}
 		cols = append(cols, colName)
 	}
+	log.Printf("[getTableColumns] dbType=%s, schema=%s, table=%s, columns=%v\n", dbType, dbSchema, tableName, cols)
 	return cols, nil
 }
 
@@ -445,11 +571,21 @@ func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string
 	var args []any
 	switch dbType {
 	case "mysql", "mariadb":
-		query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-		args = []any{dbSchema, tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
+			args = []any{dbSchema, tableName}
+		} else {
+			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = DATABASE() AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	case "oracle":
-		query = `SELECT cols.COLUMN_NAME FROM ALL_CONSTRAINTS cons JOIN ALL_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME AND cons.OWNER = cols.OWNER WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.OWNER = :1 AND cons.TABLE_NAME = :2 ORDER BY cols.POSITION`
-		args = []any{strings.ToUpper(dbSchema), strings.ToUpper(tableName)}
+		if dbSchema != "" {
+			query = `SELECT cols.COLUMN_NAME FROM ALL_CONSTRAINTS cons JOIN ALL_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME AND cons.OWNER = cols.OWNER WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.OWNER = :1 AND cons.TABLE_NAME = :2 ORDER BY cols.POSITION`
+			args = []any{strings.ToUpper(dbSchema), strings.ToUpper(tableName)}
+		} else {
+			query = `SELECT cols.COLUMN_NAME FROM USER_CONSTRAINTS cons JOIN USER_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.TABLE_NAME = :1 ORDER BY cols.POSITION`
+			args = []any{strings.ToUpper(tableName)}
+		}
 	case "sqlite":
 		query = fmt.Sprintf("PRAGMA table_info('%s')", tableName)
 		rows, err := conn.Queryx(query)
@@ -473,8 +609,13 @@ func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string
 		}
 		return keys, nil
 	default:
-		query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-		args = []any{dbSchema, tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
+			args = []any{dbSchema, tableName}
+		} else {
+			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = DATABASE() AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	}
 	rows, err := conn.Queryx(query, args...)
 	if err != nil {
@@ -495,10 +636,16 @@ func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string
 func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string, row []string, primaryKeys []string) (bool, error) {
 	var whereParts []string
 	var args []any
+	argIdx := 0
 	for _, pk := range primaryKeys {
 		for i, col := range columns {
 			if strings.EqualFold(col, pk) {
-				whereParts = append(whereParts, fmt.Sprintf("%s = ?", pk))
+				if dbType == "oracle" {
+					argIdx++
+					whereParts = append(whereParts, fmt.Sprintf("%s = :%d", pk, argIdx))
+				} else {
+					whereParts = append(whereParts, fmt.Sprintf("%s = ?", pk))
+				}
 				args = append(args, row[i])
 				break
 			}
@@ -507,7 +654,12 @@ func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []s
 	if len(whereParts) == 0 {
 		return false, nil
 	}
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s WHERE %s", dbSchema, tableName, strings.Join(whereParts, " AND "))
+
+	tableRef := tableName
+	if dbSchema != "" {
+		tableRef = dbSchema + "." + tableName
+	}
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", tableRef, strings.Join(whereParts, " AND "))
 	var count int
 	err := tx.Get(&count, query, args...)
 	return count > 0, err
@@ -524,8 +676,12 @@ func insertRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 		}
 		args[i] = row[i]
 	}
-	query := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
-		dbSchema, tableName, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
+	tableRef := tableName
+	if dbSchema != "" {
+		tableRef = dbSchema + "." + tableName
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		tableRef, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
 	_, err := tx.Exec(query, args...)
 	return err
 }
@@ -537,12 +693,23 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 	}
 	var setParts, whereParts []string
 	var setArgs, whereArgs []any
+	argIdx := 0
 	for i, col := range columns {
 		if pkSet[strings.ToUpper(col)] {
-			whereParts = append(whereParts, fmt.Sprintf("%s = ?", col))
+			if dbType == "oracle" {
+				argIdx++
+				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", col, argIdx+len(columns)))
+			} else {
+				whereParts = append(whereParts, fmt.Sprintf("%s = ?", col))
+			}
 			whereArgs = append(whereArgs, row[i])
 		} else {
-			setParts = append(setParts, fmt.Sprintf("%s = ?", col))
+			if dbType == "oracle" {
+				argIdx++
+				setParts = append(setParts, fmt.Sprintf("%s = :%d", col, argIdx))
+			} else {
+				setParts = append(setParts, fmt.Sprintf("%s = ?", col))
+			}
 			setArgs = append(setArgs, row[i])
 		}
 	}
@@ -550,8 +717,37 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 		return fmt.Errorf("无法构建更新语句：缺少更新字段或主键条件")
 	}
 	args := append(setArgs, whereArgs...)
-	query := fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s",
-		dbSchema, tableName, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
+	tableRef := tableName
+	if dbSchema != "" {
+		tableRef = dbSchema + "." + tableName
+	}
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		tableRef, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
 	_, err := tx.Exec(query, args...)
 	return err
+}
+
+// applyRowLimit 根据数据库方言为 SQL 添加行数限制，防止大结果集。
+// 如果 SQL 已包含对应的限制语法则不做修改。
+func applyRowLimit(sql, driverName string, maxRows int) string {
+	upper := strings.ToUpper(sql)
+	switch driverName {
+	case "oracle":
+		// Oracle 使用 ROWNUM 或 FETCH FIRST（12c+）
+		if strings.Contains(upper, "ROWNUM") || strings.Contains(upper, "FETCH ") {
+			return sql
+		}
+		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", sql, maxRows)
+	case "sqlite", "mysql", "mariadb":
+		if strings.Contains(upper, " LIMIT ") {
+			return sql
+		}
+		return fmt.Sprintf("%s LIMIT %d", sql, maxRows)
+	default:
+		// 默认使用 LIMIT（MySQL/MariaDB/SQLite/PostgreSQL 等）
+		if strings.Contains(upper, " LIMIT ") {
+			return sql
+		}
+		return fmt.Sprintf("%s LIMIT %d", sql, maxRows)
+	}
 }

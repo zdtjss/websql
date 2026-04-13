@@ -1118,10 +1118,7 @@ async function handleConfirmAllSQL() {
   loading.value = true
 
   for (const sql of sqls) {
-    const userName = getCurrentUser()
-    const timestamp = new Date().toISOString()
-    const confirmedSql = `${sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
-    await executeConfirmedSQL(confirmedSql)
+    await executeConfirmedSQL(sql.trim())
   }
 
   loading.value = false
@@ -1135,9 +1132,8 @@ function handleCancelAllSQL() {
   scrollToBottom()
 }
 
-async function executeConfirmedSQL(confirmedSql) {
-  const actualSQL = confirmedSql.split('\n\n-- CONFIRMED:')[0].trim()
-  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${actualSQL}\n\`\`\`` })
+async function executeConfirmedSQL(sql) {
+  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sql}\n\`\`\`` })
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -1154,7 +1150,7 @@ async function executeConfirmedSQL(confirmedSql) {
         schema: schema.value,
         question: '执行已确认的 SQL',
         confirmed: true,
-        pendingSQL: confirmedSql,
+        pendingSQL: sql,
       }),
     })
 
@@ -1177,7 +1173,7 @@ async function executeConfirmedSQL(confirmedSql) {
           if (chunk.type === 'error') {
             const lastMsg = chatHistory.value[chatHistory.value.length - 1]
             if (lastMsg) {
-              lastMsg.content = `❌ ${sanitizeError(chunk.content) || '执行失败'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+              lastMsg.content = `❌ ${sanitizeError(chunk.content) || '执行失败'}\n\`\`\`sql\n${sql}\n\`\`\``
             }
           }
         } catch (_) { }
@@ -1187,12 +1183,12 @@ async function executeConfirmedSQL(confirmedSql) {
     // 更新最后一条消息
     const lastMsg = chatHistory.value[chatHistory.value.length - 1]
     if (lastMsg) {
-      lastMsg.content = `✅ ${result || '执行成功'}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+      lastMsg.content = `✅ ${result || '执行成功'}\n\`\`\`sql\n${sql}\n\`\`\``
     }
   } catch (e) {
     const lastMsg = chatHistory.value[chatHistory.value.length - 1]
     if (lastMsg) {
-      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}\n\`\`\`sql\n${actualSQL}\n\`\`\``
+      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}\n\`\`\`sql\n${sql}\n\`\`\``
     }
   }
 }
@@ -1243,25 +1239,61 @@ async function handleExcelUpload(file) {
     }
 
     // 在聊天区显示预览
-    let previewText = `已上传文件：${data.fileName}\n`
+    let previewText = `📎 已上传文件：**${data.fileName}**\n`
     previewText += `共 ${data.totalRows} 行数据，${data.columns.length} 列\n\n`
-    previewText += `列名：${data.columns.join(', ')}\n\n`
+    previewText += `列名：\`${data.columns.join('`, `')}\`\n\n`
     const previewRows = data.preview || []
     if (previewRows.length > 0) {
-      previewText += `前 ${previewRows.length} 行预览：\n`
+      previewText += `前 ${previewRows.length} 行原始数据预览：\n`
       previewText += '| ' + data.columns.join(' | ') + ' |\n'
       previewText += '| ' + data.columns.map(() => '---').join(' | ') + ' |\n'
       for (const row of previewRows) {
         const cells = data.columns.map((_, i) => {
           const val = row[i] !== undefined && row[i] !== null ? String(row[i]) : ''
-          return val.length > 20 ? val.substring(0, 20) + '…' : val
+          // 保留原始内容，仅对超长值截断（50字符）
+          return val.length > 50 ? val.substring(0, 50) + '…' : (val || ' ')
         })
         previewText += '| ' + cells.join(' | ') + ' |\n'
+      }
+      if (data.totalRows > previewRows.length) {
+        previewText += `\n*共 ${data.totalRows} 行，以上仅展示前 ${previewRows.length} 行*\n`
+      }
+    }
+
+    // 如果已选择了相关表，自动预匹配字段
+    if (connId.value && selectedTables.value.length === 1) {
+      try {
+        const matchResp = await fetch(apiBase + '/ai/agent/preMatchColumns', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+          body: JSON.stringify({
+            fileId: data.fileId,
+            connId: connId.value,
+            tableName: selectedTables.value[0],
+          }),
+        })
+        if (matchResp.ok) {
+          const matchData = await matchResp.json()
+          previewText += `\n### 字段自动匹配预览（目标表：\`${selectedTables.value[0]}\`）\n`
+          previewText += `匹配 ${matchData.matchedCount}/${matchData.totalExcel} 列\n\n`
+          previewText += '| Excel 列 | 数据库字段 | 状态 |\n'
+          previewText += '| --- | --- | --- |\n'
+          for (const m of matchData.matches) {
+            const status = m.matched ? '✅ 已匹配' : '❌ 未匹配'
+            previewText += `| ${m.excelColumn} | ${m.dbColumn || '-'} | ${status} |\n`
+          }
+          if (matchData.matchedCount < matchData.totalExcel) {
+            previewText += `\n⚠️ 有 ${matchData.totalExcel - matchData.matchedCount} 列未匹配，这些列的数据将不会导入。\n`
+          }
+        }
+      } catch (matchErr) {
+        console.warn('[App] 预匹配失败，不影响上传:', matchErr)
       }
     }
 
     chatHistory.value.push({ role: 'assistant', content: previewText, hasSql: false })
     scrollToBottom()
+    doRenderMermaidBlocks()
     ElMessage.success(`已上传 ${data.fileName}，请输入导入指令（如：将数据导入到 xxx 表）`)
   } catch (e) {
     console.error('[App] 上传 Excel 文件失败:', e)
@@ -1273,7 +1305,7 @@ function clearUploadedExcel() {
   uploadedExcel.value = null
 }
 
-function clearSession() {
+function clearSession(showMsg) {
   chatHistory.value = []
   sessionId.value = ''
   thinkingText.value = ''
@@ -1286,7 +1318,9 @@ function clearSession() {
   uploadedExcel.value = null
   processedLinks.clear()
   resetDetectFlag()
-  ElMessage({ message: '已新建会话', type: 'success' })
+  if(showMsg) {
+    ElMessage({ message: '已新建会话', type: 'success' })
+  }
 }
 
 function insertToEditor() {

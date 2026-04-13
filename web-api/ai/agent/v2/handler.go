@@ -296,20 +296,23 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 // ──────────────────────────────────────────────
 
 func getDBInfo(connID string) (string, string, string) {
+	if connID == "" {
+		return "", "", ""
+	}
 	cfgList := []admin.ConnCfg{}
 	err := config.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connID)
 	if err != nil || len(cfgList) == 0 {
 		return "", "", ""
 	}
-	dbSchema := ""
-	if cfgList[0].DbSchema != nil {
-		dbSchema = *cfgList[0].DbSchema
+	cfg := cfgList[0]
+
+	deref := func(p *string) string {
+		if p != nil {
+			return *p
+		}
+		return ""
 	}
-	dbVersion := ""
-	if cfgList[0].DbVersion != nil {
-		dbVersion = *cfgList[0].DbVersion
-	}
-	return cfgList[0].DbType, dbSchema, dbVersion
+	return cfg.DbType, deref(cfg.DbSchema), deref(cfg.DbVersion)
 }
 
 func detectSQLType(sql string) string {

@@ -200,6 +200,12 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
+	// 防止路径穿越攻击
+	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件名"})
+		return
+	}
+
 	// 支持的文件类型
 	contentTypes := map[string]string{
 		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

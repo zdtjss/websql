@@ -239,3 +239,73 @@ func HandleUploadExcel(c *gin.Context) {
 		"preview":   preview,
 	})
 }
+
+// HandlePreMatchColumns 预匹配 Excel 列与数据库表字段
+// POST /ai/agent/preMatchColumns  { fileId, connId, tableName }
+// 返回自动匹配结果，供前端展示确认
+func HandlePreMatchColumns(c *gin.Context) {
+	var req struct {
+		FileID    string `json:"fileId"`
+		ConnID    string `json:"connId"`
+		TableName string `json:"tableName"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数格式错误"})
+		return
+	}
+	if req.FileID == "" || req.ConnID == "" || req.TableName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "fileId、connId、tableName 不能为空"})
+		return
+	}
+
+	// 获取 Excel 列名
+	uploadIndexMu.RLock()
+	meta, ok := uploadIndex[req.FileID]
+	uploadIndexMu.RUnlock()
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "上传文件不存在或已过期，请重新上传"})
+		return
+	}
+
+	// 获取数据库连接和表列名
+	conn, dbType := getConn(req.ConnID)
+	if conn == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "数据库连接不存在"})
+		return
+	}
+
+	// 从连接配置获取 schema
+	_, dbSchema, _ := getDBInfo(req.ConnID)
+
+	tableColumns, err := getTableColumns(conn, dbType, dbSchema, req.TableName)
+	if err != nil || len(tableColumns) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("获取表 %s 的列信息失败", req.TableName)})
+		return
+	}
+
+	// 自动匹配
+	mapping, _ := buildFinalMapping(meta.Columns, tableColumns, nil)
+
+	// 构建结果
+	type matchItem struct {
+		ExcelColumn string `json:"excelColumn"`
+		DBColumn    string `json:"dbColumn"`
+		Matched     bool   `json:"matched"`
+	}
+	var matches []matchItem
+	for i, excelCol := range meta.Columns {
+		if dbCol, ok := mapping[i]; ok {
+			matches = append(matches, matchItem{ExcelColumn: excelCol, DBColumn: dbCol, Matched: true})
+		} else {
+			matches = append(matches, matchItem{ExcelColumn: excelCol, DBColumn: "", Matched: false})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"matches":      matches,
+		"matchedCount": len(mapping),
+		"totalExcel":   len(meta.Columns),
+		"totalDB":      len(tableColumns),
+		"tableColumns": tableColumns,
+	})
+}

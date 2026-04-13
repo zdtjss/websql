@@ -2,7 +2,6 @@ package webapi
 
 import (
 	"go-web/config"
-	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
 	"go-web/web-api/ai"
@@ -15,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/exp/maps"
 )
 
 // 不需要以/结尾
@@ -99,10 +97,12 @@ func MainRegister(router *gin.Engine) {
 	}
 	routerGroup.POST("/ai/agent/chatStream", agentHandler.ChatStream)
 	routerGroup.POST("/ai/agent/uploadExcel", aiagentv2.HandleUploadExcel)
+	routerGroup.POST("/ai/agent/preMatchColumns", aiagentv2.HandlePreMatchColumns)
 	routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 	routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
 	routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	routerGroup.GET("/ai/agent/audit/logs", agentHandler.HandleGetSQLAuditLogs)
+	routerGroup.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
 
 	routerGroup.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})
@@ -124,7 +124,6 @@ func MainRegister(router *gin.Engine) {
 
 	// 2. 注册静态文件（可选，用于明确的静态资源）
 	router.Static("/assets", "./static/assets")
-	routerGroup.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
 	router.NoRoute(func(c *gin.Context) {
@@ -134,21 +133,29 @@ func MainRegister(router *gin.Engine) {
 	log.Println("路由注册完成")
 }
 
-// 对外代理的接口注册
+// proxy 对外代理的接口
 func proxy(c *gin.Context) {
-
-	req, _ := http.NewRequest(c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
+	req, err := http.NewRequest(c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "创建代理请求失败"})
+		return
+	}
 	defer c.Request.Body.Close()
-	*&req.Header = c.Request.Header
+	req.Header = c.Request.Header.Clone()
 	resp, err := http.DefaultClient.Do(req)
-	logutils.PanicErr(err)
-
-	maps.Copy(c.Request.Header, resp.Header)
-	c.Status(resp.StatusCode)
-
-	_, err2 := io.Copy(c.Writer, resp.Body)
-	logutils.PanicErr(err2)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "代理请求失败"})
+		return
+	}
 	defer resp.Body.Close()
+
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			c.Header(k, vv)
+		}
+	}
+	c.Status(resp.StatusCode)
+	_, _ = io.Copy(c.Writer, resp.Body)
 }
 
 func CORSMiddleware() gin.HandlerFunc {
