@@ -113,8 +113,9 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 		sql := strings.TrimSpace(input.SQL)
 		upper := strings.ToUpper(sql)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
-			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") {
-			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN 语句")
+			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
+			!strings.HasPrefix(upper, "WITH") {
+			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH  语句")
 		}
 		rows, err := conn.Queryx(sql)
 		if err != nil {

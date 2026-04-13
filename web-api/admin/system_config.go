@@ -42,7 +42,6 @@ func GetSystemConfigByKey(key string) *SystemConfig {
 		logutils.PrintErr(fmt.Errorf("查询系统配置失败：%s, %v", key, err))
 		return nil
 	}
-	logutils.PrintErr(fmt.Errorf("查询到配置：%s = %s", key, cfg.ConfigValue))
 	return cfg
 }
 

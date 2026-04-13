@@ -364,6 +364,9 @@ func NewAuthClient(token string) *http.Client {
 // ──────────────────────────────────────────────
 
 func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCallingChatModel, error) {
+	log.Printf("[ChatModel] 初始化配置 - provider=%s, baseUrl=%s, model=%s, temperature=%.2f, maxTokens=%d, enableThinking=%t\n",
+		cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Temperature, cfg.MaxTokens, cfg.EnableThinking)
+
 	switch cfg.Provider {
 	case "ollama":
 		ollamaCfg := &ollama.ChatModelConfig{
@@ -488,7 +491,7 @@ pie title 销售占比
 
 ### 导出决策指南
 - 用户说"导出 Excel" → 必须使用 SQL 模式
-- 用户说"导出报告/Word/PPT" → 优先使用 content 模式，传入你的分析内容
+- 用户说"导出报告/Word/PPT"或"导出上述内容"，或者简短的说“导出” → 优先使用 content 模式，传入你的分析内容
 - 用户说"把数据导出为 Word" → 使用 SQL 模式展示原始数据
 
 ## 数据导入操作

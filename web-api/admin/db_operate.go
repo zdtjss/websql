@@ -215,7 +215,12 @@ func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 	columnMap := make(map[string]string)
 	stmt, err := conn.Prepare(dbutils.SQL_DIALECT[conn.DriverName()]["ColumnMap"])
 	logutils.PrintErr(err)
-	rs, err2 := stmt.Query(table[strings.Index(table, ".")+1:], schema)
+	table = strings.TrimPrefix(table, schema+".")
+	if conn.DriverName() == "oracle" {
+		schema = strings.ToUpper(schema)
+		table = strings.ToUpper(table)
+	}
+	rs, err2 := stmt.Query(table, schema)
 	logutils.PrintErr(err2)
 	var name, comment string
 	for rs.Next() {

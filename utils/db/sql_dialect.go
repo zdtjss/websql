@@ -37,8 +37,8 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listTableColumns": `select a.column_name,case when nullable='Y' then 'YES' else 'NO' end is_nullable, data_type column_type, a.comments COLUMN_COMMENT FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME and a.column_name = b.column_name
 			where 'notexists' <> :1 and a.TABLE_NAME = :2`,
 		"ColumnMap": `SELECT B.COLUMN_NAME, A.COMMENTS column_comment 
-			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
+			FROM ALL_COL_COMMENTS A left join ALL_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME and A.OWNER = B.OWNER
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1 and A.OWNER = :2`,
 		"QueryPrimaryKey": "SELECT b.COLUMN_NAME from user_constraints a left join user_cons_columns b on a.TABLE_NAME = b.TABLE_NAME where a.TABLE_NAME = :1 and CONSTRAINT_TYPE = 'P'",
 		"QueryColType":    "select column_name,DATA_TYPE from USER_TAB_COLUMNS where 'notexists' <> :1 and table_name = :2",
 		"tableOptions":    "SELECT TABLE_NAME,TABLESPACE_NAME,PCT_FREE,INI_TRANS,LOGGING,COMPRESSION FROM USER_TABLES WHERE TABLE_NAME = :1",

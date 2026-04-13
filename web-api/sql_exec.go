@@ -36,17 +36,24 @@ func ExecSQL(c *gin.Context) {
 	}
 
 	if checkPrefx(sqlStr, []string{"update", "delete"}) {
-		backup(sqlStr, user, connId, conn)
+		if err := backup(sqlStr, user, connId, conn); err != nil {
+			writeSQLError(c, err)
+			return
+		}
 	} else {
 		recordHistory(sqlStr, user, connId)
 	}
 
-	// 关键字转小写 select delete update
 	sqlStr = strings.Join([]string{sqlStr[0:min(blankIdx, nlIdx)], sqlStr[min(blankIdx, nlIdx):]}, "")
 
 	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop ", "insert", "create"}) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		rspData.Data = batchExec(&sqlStr, conn)
+		result, err := batchExec(&sqlStr, conn)
+		if err != nil {
+			writeSQLError(c, err)
+			return
+		}
+		rspData.Data = result
 		utils.WriteJson(c.Writer, rspData)
 	} else {
 		params := make([]any, 0)
@@ -55,13 +62,27 @@ func ExecSQL(c *gin.Context) {
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
-		rows, err2 := conn.Queryx(sqlStr, params...)
+
+		var rows *sqlx.Rows
+		var err2 error
+
+		if len(params) > 0 {
+			rows, err2 = conn.Queryx(sqlStr, params...)
+		} else {
+			rows, err2 = conn.Queryx(sqlStr)
+		}
 
 		if err2 != nil {
-			logutils.PanicErr(err2)
+			writeSQLError(c, err2)
+			return
 		}
+		defer rows.Close()
+
 		cts, err3 := rows.ColumnTypes()
-		logutils.PanicErr(err3)
+		if err3 != nil {
+			writeSQLError(c, err3)
+			return
+		}
 		columnList := make([]Column, len(cts))
 		columnNameList := make([]string, 0)
 
@@ -73,15 +94,20 @@ func ExecSQL(c *gin.Context) {
 		var keyIdx []int
 		var keys []string
 		columnMap := map[string]string{}
-		if IsAlphaNumeric(realTableName) && strings.Index(sqlStr, " from ") == strings.LastIndex(sqlStr, " from ") {
 
+		// 尝试从元数据中获取字段注释和主键信息
+		// 适用于单表查询场景
+		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
 			columnMap = admin.ColumnMap(strings.ToLower(realTableName), strings.ToLower(realSchema), conn)
 
-			tx, _ := conn.Beginx()
-			defer tx.Rollback()
-			var err error
-			keys, err = admin.QueryPrimaryKey(schema, realTableName, tx)
-			logutils.PrintErr(err)
+			tx, err := conn.Beginx()
+			if err == nil {
+				defer tx.Rollback()
+				keys, err = admin.QueryPrimaryKey(schema, realTableName, tx)
+				if err != nil {
+					keys = []string{}
+				}
+			}
 		}
 
 		for idx, val := range cts {
@@ -101,9 +127,19 @@ func ExecSQL(c *gin.Context) {
 	}
 }
 
-// 判断字符串是否为字母数字
+func writeSQLError(c *gin.Context, err error) {
+	msg := err.Error()
+	msg = utils.RedactCredentials(msg)
+	if len(msg) > 500 {
+		msg = msg[:500] + "..."
+	}
+	c.JSON(200, gin.H{
+		"code": 500,
+		"msg":  msg,
+	})
+}
+
 func IsAlphaNumeric(str string) bool {
-	// 遍历字符串，判断每个字符是否为字母数字
 	for _, ch := range str {
 		if unicode.IsLetter(ch) || unicode.IsDigit(ch) {
 			return true
@@ -129,11 +165,13 @@ func page(dbtype string, sql *string) *string {
 	return &pageSql
 }
 
-func batchExec(sql *string, db *sqlx.DB) []map[string]any {
+func batchExec(sql *string, db *sqlx.DB) ([]map[string]any, error) {
 	sqlArr := strings.Split(*sql, ";")
 	tx, err := db.Beginx()
+	if err != nil {
+		return nil, err
+	}
 	defer tx.Rollback()
-	logutils.PanicErrf("事务开启失败， %s", err)
 	resultData := []map[string]any{}
 	mgntTx, _ := config.Mngtdb.Beginx()
 	defer mgntTx.Rollback()
@@ -143,19 +181,27 @@ func batchExec(sql *string, db *sqlx.DB) []map[string]any {
 			continue
 		}
 		rs, err2 := tx.Exec(sqlStr)
-		logutils.PanicErr(err2)
+		if err2 != nil {
+			return nil, err2
+		}
 		affected, err := rs.RowsAffected()
-		logutils.PanicErr(err)
+		if err != nil {
+			return nil, err
+		}
 		resultData = append(resultData, map[string]any{"受影响行数": affected})
 	}
 	err = mgntTx.Commit()
-	logutils.PanicErr(err)
+	if err != nil {
+		return nil, err
+	}
 	err = tx.Commit()
-	logutils.PanicErr(err)
-	return resultData
+	if err != nil {
+		return nil, err
+	}
+	return resultData, nil
 }
 
-func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
+func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error {
 	operationType := ""
 	backupSql := bytes.NewBufferString("select * from ")
 	if strings.HasPrefix(ddlSql, "update ") {
@@ -169,23 +215,30 @@ func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
 	}
 	backupSql.WriteString(ddlSql[strings.Index(ddlSql, " where "):])
 	rows, err := conn.Queryx(backupSql.String())
-	logutils.PanicErr(err)
+	if err != nil {
+		return err
+	}
 	data := dbutils.GetResultRows(conn.DriverName(), rows)
 	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
 	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
-	logutils.PanicErr(err)
+	if err != nil {
+		return err
+	}
 	time.Sleep(time.Microsecond)
 	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, operationType, time.Now(), ddlSql, string(utils.ToJsonString(data)))
-	logutils.PanicErr(err3)
+	if err3 != nil {
+		return err3
+	}
+	return nil
 }
 
 func recordHistory(ddlSql string, user *admin.User, connId string) {
 	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql) values(?,?,?,?,?,?)"
 	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
-	logutils.PanicErr(err)
+	logutils.PrintErr(err)
 	time.Sleep(time.Microsecond)
 	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, "select", time.Now(), ddlSql)
-	logutils.PanicErr(err3)
+	logutils.PrintErr(err3)
 }
 
 func checkPrefx(src string, prefix []string) bool {
@@ -206,6 +259,29 @@ func checkContains(src string, suffix []string) bool {
 		}
 	}
 	return false
+}
+
+// isSimpleQuery 判断是否是简单查询（单表查询，无 JOIN、子查询等）
+func isSimpleQuery(sqlStr string) bool {
+	sqlUpper := strings.ToUpper(sqlStr)
+	// 检查是否包含复杂查询关键字
+	complexKeywords := []string{" JOIN ", " UNION ", " INTERSECT ", " EXCEPT ", " WITH "}
+	for _, keyword := range complexKeywords {
+		if strings.Contains(sqlUpper, keyword) {
+			return false
+		}
+	}
+	// 检查 FROM 子句数量
+	fromCount := strings.Count(sqlUpper, " FROM ")
+	if fromCount != 1 {
+		return false
+	}
+	// 检查是否包含子查询
+	selectCount := strings.Count(sqlUpper, " SELECT ")
+	if selectCount > 1 {
+		return false
+	}
+	return true
 }
 
 type Column struct {

@@ -26,6 +26,9 @@ func MainRegister(router *gin.Engine) {
 	router.Use(CustomRecovery())
 	router.Use(AuthMiddleware())
 
+	router.Use(hostCheck())
+	router.Use(CORSMiddleware())
+
 	routerGroup := router.Group("api")
 
 	routerGroup.GET("/listTable", admin.ListTableFat)
@@ -113,9 +116,6 @@ func MainRegister(router *gin.Engine) {
 
 	// router.NoRoute(notFound())
 
-	router.Use(hostCheck())
-	router.Use(CORSMiddleware())
-
 	// 启用 gzip，排除静态文件
 	/* router.Use(gzip.Gzip(gzip.DefaultCompression,
 		gzip.WithExcludedPaths([]string{"/static/"}),
@@ -168,7 +168,6 @@ func AuthMiddleware() gin.HandlerFunc {
 			"/api/healthCheck",
 			"/api/sysMode",
 			"/assets",
-			"/api/exports",
 		}
 
 		path := c.Request.URL.Path
@@ -176,11 +175,19 @@ func AuthMiddleware() gin.HandlerFunc {
 			if strings.HasPrefix(path, skipPath) {
 				c.Next()
 				return
+			} else if strings.EqualFold(path, "/") || strings.EqualFold(path, "/index.html") {
+				c.Next()
+				return
 			}
 		}
 
-		// 获取 Authorization 头
+		// 获取认证信息：优先从 Authorization 头获取，其次从 URL 参数获取
 		authorization := c.GetHeader("Authorization")
+		if authorization == "" {
+			// 尝试从 URL 参数获取 token（用于支持 markdown 链接直接访问）
+			authorization = c.Query("token")
+		}
+
 		if authorization == "" {
 			c.Abort()
 			c.JSON(http.StatusUnauthorized, gin.H{

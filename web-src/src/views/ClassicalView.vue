@@ -128,10 +128,13 @@ const tableMgntDialogVisible = ref(false)
 const viewDialogVisible = ref(false)
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
+const treeLoading = ref(false)
 
 onMounted(() => {
   getSysModel()
-  refreshTree()
+  if (!treeLoading.value) {
+    refreshTree()
+  }
   const storedTabs = JSON.parse(localStorage.getItem("editableTabs") || "[]")
   storedTabs.forEach(tab => {
     if (tab.tabId && tab.tabId.startsWith('tablemgr-')) {
@@ -394,9 +397,18 @@ function getSysModel() {
 }
 
 function refreshTree() {
+  if (treeLoading.value) return
+  treeLoading.value = true
+  treeData.value = []
   http.get("/showTree", { params: { connId: "", key: "", type: "dir", level: 0 } })
     .then((resp) => {
       treeData.value = resp.data.data
+      if (connTree.value) {
+        connTree.value.setData(treeData.value)
+      }
+    })
+    .finally(() => {
+      treeLoading.value = false
     })
 }
 

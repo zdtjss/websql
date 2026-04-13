@@ -104,7 +104,7 @@ func listenStartStatus() {
 		if *isHttps {
 			protocol = "https"
 		}
-		r, _ := client.Get(strings.Join([]string{protocol, "://localhost:", *port, "/healthCheck"}, ""))
+		r, _ := client.Get(strings.Join([]string{protocol, "://localhost:", *port, "/api/healthCheck"}, ""))
 		if r != nil {
 			r.Body.Close()
 			log.Println(strings.Join([]string{"==================== 系统已启动完成，端口：", *port, " 、 https：", strconv.FormatBool(*isHttps), " ===================="}, ""))

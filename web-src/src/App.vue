@@ -298,7 +298,16 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
     // 处理相对路径：如果以 / 开头且不是 // 开头，添加 apiBase
     if (href && href.startsWith('/') && !href.startsWith('//')) {
       // 更新 href 属性
-      token.attrs[hrefIndex][1] = apiBase + href
+      href = apiBase + href
+      token.attrs[hrefIndex][1] = href
+    }
+
+    // 自动添加登录 token：如果是导出链接，添加认证参数
+    const authToken = sessionStorage.getItem('authentication')
+    if (authToken && href && href.includes('/exports/')) {
+      // 检查 URL 是否已有查询参数
+      const separator = href.includes('?') ? '&' : '?'
+      token.attrs[hrefIndex][1] = href + separator + 'token=' + encodeURIComponent(authToken)
     }
 
     // 所有链接都添加 target="_blank"
@@ -631,6 +640,13 @@ function renderMarkdown(text) {
         fullUrl = apiBase + url
       }
 
+      // 自动添加登录 token：如果是导出链接
+      const authToken = sessionStorage.getItem('authentication')
+      if (authToken && fullUrl && fullUrl.includes('/exports/')) {
+        const separator = fullUrl.includes('?') ? '&' : '?'
+        fullUrl = fullUrl + separator + 'token=' + encodeURIComponent(authToken)
+      }
+
       return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>`
     })
 
@@ -675,13 +691,17 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
       try {
         const { svg } = await mermaid.render(id, trimmed)
         const sourceHtml = `<pre class="mermaid-source-preview" style="display:none;"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+        const copyBtnHtml = `<button class="mermaid-tb-btn mermaid-copy-btn" title="复制源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview code');var txt=src.textContent;navigator.clipboard.writeText(txt).then(()=>{b.textContent='✅';setTimeout(()=>b.textContent='📋',1000);}).catch(()=>{b.textContent='❌';setTimeout(()=>b.textContent='📋',1000);});})(this)">📋</button>`
         el.innerHTML =
-          `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>${sourceHtml}` +
           `<div class="mermaid-toolbar">` +
             `<button class="mermaid-tb-btn" title="缩小" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.max(0.25,+(s-0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍−</button>` +
             `<button class="mermaid-tb-btn" title="重置缩放" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');w.dataset.scale=1;w.dataset.translateX=0;w.dataset.translateY=0;w.style.transform='translate(0px,0px) scale(1)'})(this)">1:1</button>` +
             `<button class="mermaid-tb-btn" title="放大" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.min(5,+(s+0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍+</button>` +
             `<button class="mermaid-tb-btn" title="查看源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview');var g=c.querySelector('.mermaid-svg-wrap');if(src.style.display==='none'){src.style.display='block';g.style.display='none';b.textContent='📊';}else{src.style.display='none';g.style.display='block';b.textContent='📝';};})(this)">📝</button>` +
+            copyBtnHtml +
+          `</div>` +
+          `<div class="mermaid-content-wrapper">` +
+            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>${sourceHtml}` +
           `</div>`
       } catch (e) {
         console.warn('Mermaid render error:', e)
@@ -1765,7 +1785,6 @@ onUnmounted(() => {
 
 /* ========== 聊天气泡 ========== */
 .chat-bubble {
-  max-width: 85%;
   border-radius: 16px;
   padding: 12px 16px;
   font-size: 14px;
@@ -2530,11 +2549,9 @@ onUnmounted(() => {
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
 .markdown-body pre {
-  padding: 16px;
   overflow: auto;
   font-size: 13px;
   line-height: 1.6;
-  background: linear-gradient(180deg, #263238 0%, #1c282c 100%);
   border-radius: 10px;
   margin-top: 12px;
   margin-bottom: 12px;
@@ -2544,7 +2561,7 @@ onUnmounted(() => {
 }
 .markdown-body pre code {
   display: block;
-  padding: 0;
+  padding: 5px;
   margin: 0;
   overflow: visible;
   line-height: inherit;
@@ -2680,11 +2697,12 @@ onUnmounted(() => {
 .mermaid-container {
   margin: 12px 0;
   padding: 16px;
+  padding-top: 16px;
   background: #ffffff;
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  overflow: auto;
+  overflow: visible;
   text-align: center;
   position: relative;
   max-height: 600px;
@@ -2701,6 +2719,13 @@ body.mermaid-dragging .mermaid-container {
 body.mermaid-dragging .mermaid-container {
   overflow: hidden;
 }
+
+/* Mermaid 内容包装器，负责滚动 */
+.mermaid-content-wrapper {
+  max-height: 540px;
+  overflow: auto;
+  position: relative;
+}
 .mermaid-source-preview {
   margin: 0;
   padding: 12px;
@@ -2713,6 +2738,11 @@ body.mermaid-dragging .mermaid-container {
   word-break: break-word;
   line-height: 1.5;
   font-family: 'Consolas', 'Monaco', monospace;
+  user-select: text;
+  cursor: text;
+  max-height: 400px;
+  overflow: auto;
+  position: relative;
 }
 .mermaid-source-preview code {
   background: transparent;
@@ -2720,6 +2750,11 @@ body.mermaid-dragging .mermaid-container {
   padding: 0;
   border: none;
   font-size: 12px;
+  user-select: text;
+}
+.mermaid-source-preview::selection {
+  background: rgba(25, 118, 210, 0.3);
+  color: #ffffff;
 }
 .mermaid-error {
   margin: 0;
@@ -2735,17 +2770,21 @@ body.mermaid-dragging .mermaid-container {
 }
 .mermaid-toolbar {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 8px;
+  right: 8px;
   display: flex;
   gap: 2px;
-  z-index: 10;
-  background: rgba(255,255,255,0.95);
-  backdrop-filter: blur(4px);
-  border-radius: 6px;
-  padding: 4px;
+  z-index: 100;
+  background: rgba(255,255,255,0.98);
+  backdrop-filter: blur(8px);
+  border-radius: 8px;
+  padding: 6px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  transition: all 0.2s ease;
+}
+.mermaid-toolbar:hover {
+  box-shadow: 0 6px 16px rgba(0,0,0,0.2);
 }
 .mermaid-tb-btn {
   cursor: pointer;

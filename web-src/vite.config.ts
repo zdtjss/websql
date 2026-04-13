@@ -9,27 +9,12 @@ import vue from '@vitejs/plugin-vue'
 
 // https://vitejs.dev/config
 export default defineConfig({
-  build: {
-    chunkSizeWarningLimit: 1800,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes('vue') || id.includes('pinia') || id.includes("element-plus")) {
-            return 'vue';
-          }
-          if (id.includes('node_modules')) {
-            return 'vendor';
-          }
-        }
-      }
-    }
-  },
   server: {
     port: 5175,
     host: "0.0.0.0",
     proxy: {
       '/api/': {
-        target: 'http://localhost', // 目标代理接口地址
+        target: 'http://localhost:9081', // 目标代理接口地址
         secure: false,
         changeOrigin: true, // 开启代理，在本地创建一个虚拟服务端
         // rewrite: (path) => path.replace(/^\/api/, '')
@@ -41,6 +26,53 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/sysapi/, '/nway-system')
       }
     }
+  },
+  build: {
+    chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // 框架核心
+          if (id.includes('node_modules/vue') || id.includes('node_modules/pinia')) {
+            return 'vue-core';
+          }
+          // UI 库单独分包
+          if (id.includes('node_modules/element-plus')) {
+            return 'element-plus';
+          }
+          // 大型依赖单独分包
+          if (id.includes('node_modules/mermaid')) {
+            return 'mermaid';
+          }
+          if (id.includes('node_modules/markdown-it')) {
+            return 'markdown-it';
+          }
+          if (id.includes('node_modules/axios')) {
+            return 'axios';
+          }
+          // 其他 node_modules 归为 vendor
+          if (id.includes('node_modules')) {
+            return 'vendor';
+          }
+          // 应用代码按功能模块分割
+          if (id.includes('/src/views/')) {
+            const match = id.match(/\/src\/views\/([^/]+)/);
+            if (match) return `views/${match[1]}`;
+          }
+          if (id.includes('/src/components/')) {
+            return 'components';
+          }
+        }
+      }
+    },
+    sourcemap: false,  // 生产环境不生成 source map 减小体积
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,  // 生产环境移除 console
+        drop_debugger: true,
+      },
+    },
   },
   plugins: [
     vue(),
@@ -54,7 +86,8 @@ export default defineConfig({
       IconsResolver({
         enabledCollections: ['ep'],
       }),],
-    }),],
+    }),
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
