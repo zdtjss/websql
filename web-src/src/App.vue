@@ -690,26 +690,33 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
       el.setAttribute('data-mermaid-processed', 'true')
       try {
         const { svg } = await mermaid.render(id, trimmed)
-        const sourceHtml = `<pre class="mermaid-source-preview" style="display:none;"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
-        const copyBtnHtml = `<button class="mermaid-tb-btn mermaid-copy-btn" title="复制源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview code');var txt=src.textContent;navigator.clipboard.writeText(txt).then(()=>{b.textContent='✅';setTimeout(()=>b.textContent='📋',1000);}).catch(()=>{b.textContent='❌';setTimeout(()=>b.textContent='📋',1000);});})(this)">📋</button>`
+        const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
         el.innerHTML =
           `<div class="mermaid-toolbar">` +
-            `<button class="mermaid-tb-btn" title="缩小" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.max(0.25,+(s-0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍−</button>` +
-            `<button class="mermaid-tb-btn" title="重置缩放" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');w.dataset.scale=1;w.dataset.translateX=0;w.dataset.translateY=0;w.style.transform='translate(0px,0px) scale(1)'})(this)">1:1</button>` +
-            `<button class="mermaid-tb-btn" title="放大" onclick="(function(b){var w=b.closest('.mermaid-container').querySelector('.mermaid-svg-wrap');var s=parseFloat(w.dataset.scale||1);s=Math.min(5,+(s+0.25).toFixed(2));var tx=parseFloat(w.dataset.translateX||0);var ty=parseFloat(w.dataset.translateY||0);w.dataset.scale=s;w.style.transform='translate('+tx+'px,'+ty+'px) scale('+s+')'})(this)">🔍+</button>` +
-            `<button class="mermaid-tb-btn" title="查看源码" onclick="(function(b){var c=b.closest('.mermaid-container');var src=c.querySelector('.mermaid-source-preview');var g=c.querySelector('.mermaid-svg-wrap');if(src.style.display==='none'){src.style.display='block';g.style.display='none';b.textContent='📊';}else{src.style.display='none';g.style.display='block';b.textContent='📝';};})(this)">📝</button>` +
-            copyBtnHtml +
+            `<button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">` +
+              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
+            `</button>` +
+            `<button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>` +
+            `<button class="mermaid-tb-btn" data-action="zoom-in" title="放大">` +
+              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
+            `</button>` +
+            `<span class="mermaid-tb-sep"></span>` +
+            `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
+              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
+            `</button>` +
+            `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
+              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+            `</button>` +
           `</div>` +
           `<div class="mermaid-content-wrapper">` +
-            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>${sourceHtml}` +
+            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
+            `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
           `</div>`
       } catch (e) {
         console.warn('Mermaid render error:', e)
-        // 渲染失败时显示源码
         el.innerHTML = `<pre class="mermaid-error"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
       }
     }
-    // mermaid 渲染完成后再做一次滚动，确保新内容可见
     if (scrollAfter && containers.length > 0) {
       await nextTick()
       if (msgContainer.value) {
@@ -727,6 +734,43 @@ function scrollToBottom() {
       msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
   })
+}
+
+// 流式输出中检测已完成的 mermaid 代码块并立即渲染
+// 原理：统计 streamingContent 中 ```mermaid 开始标记和对应的 ``` 结束标记数量，
+// 当有新的完整代码块闭合时触发渲染（带防抖）
+let lastRenderedMermaidCount = 0
+let mermaidRenderTimer = null
+
+function tryRenderStreamingMermaid() {
+  const content = streamingContent.value
+  if (!content.includes('```mermaid')) return
+
+  // 统计已闭合的 mermaid 代码块数量
+  let closedCount = 0
+  let searchFrom = 0
+  while (true) {
+    const startIdx = content.indexOf('```mermaid', searchFrom)
+    if (startIdx === -1) break
+    const afterStart = startIdx + '```mermaid'.length
+    // 找到对应的闭合 ```（跳过开始标记同行的内容）
+    const lineEnd = content.indexOf('\n', afterStart)
+    if (lineEnd === -1) break
+    const closeIdx = content.indexOf('\n```', lineEnd)
+    if (closeIdx === -1) break
+    closedCount++
+    searchFrom = closeIdx + 4
+  }
+
+  if (closedCount > lastRenderedMermaidCount) {
+    lastRenderedMermaidCount = closedCount
+    // 防抖：300ms 内不重复触发
+    if (mermaidRenderTimer) clearTimeout(mermaidRenderTimer)
+    mermaidRenderTimer = setTimeout(() => {
+      doRenderMermaidBlocks(true)
+      mermaidRenderTimer = null
+    }, 300)
+  }
 }
 
 function toggleThinking(msg) {
@@ -790,6 +834,10 @@ function handleMermaidMouseDown(e) {
   if (!container) return
   if (e.target.closest('.mermaid-toolbar')) return
 
+  // 处理工具栏按钮点击（事件委托）
+  const btn = e.target.closest('.mermaid-tb-btn')
+  if (btn) return // 工具栏按钮不触发拖拽
+
   const wrap = container.querySelector('.mermaid-svg-wrap')
   if (!wrap) return
 
@@ -802,6 +850,59 @@ function handleMermaidMouseDown(e) {
   mermaidDragState.activeContainer = container
 
   document.body.classList.add('mermaid-dragging')
+}
+
+// 工具栏按钮事件委托
+function handleMermaidToolbarClick(e) {
+  const btn = e.target.closest('.mermaid-tb-btn[data-action]')
+  if (!btn) return
+  const container = btn.closest('.mermaid-container')
+  if (!container) return
+  const wrap = container.querySelector('.mermaid-svg-wrap')
+  const action = btn.dataset.action
+
+  switch (action) {
+    case 'zoom-in': {
+      if (!wrap) break
+      const s = Math.min(5, +(parseFloat(wrap.dataset.scale || 1) + 0.25).toFixed(2))
+      wrap.dataset.scale = s
+      updateMermaidWrapTransform(wrap)
+      break
+    }
+    case 'zoom-out': {
+      if (!wrap) break
+      const s = Math.max(0.25, +(parseFloat(wrap.dataset.scale || 1) - 0.25).toFixed(2))
+      wrap.dataset.scale = s
+      updateMermaidWrapTransform(wrap)
+      break
+    }
+    case 'zoom-reset': {
+      if (!wrap) break
+      wrap.dataset.scale = 1
+      wrap.dataset.translateX = 0
+      wrap.dataset.translateY = 0
+      updateMermaidWrapTransform(wrap)
+      break
+    }
+    case 'toggle-source': {
+      const src = container.querySelector('.mermaid-source-preview')
+      if (!src || !wrap) break
+      const showing = src.style.display !== 'none'
+      src.style.display = showing ? 'none' : 'block'
+      wrap.style.display = showing ? 'block' : 'none'
+      break
+    }
+    case 'copy-source': {
+      const code = container.querySelector('.mermaid-source-preview code')
+      if (!code) break
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        const origHtml = btn.innerHTML
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+        setTimeout(() => { btn.innerHTML = origHtml }, 1200)
+      }).catch(() => {})
+      break
+    }
+  }
 }
 
 function handleMermaidMouseMove(e) {
@@ -880,6 +981,7 @@ async function sendMessage() {
   loading.value = true
   thinkingText.value = ''
   streamingContent.value = ''
+  lastRenderedMermaidCount = 0
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -942,6 +1044,8 @@ async function sendMessage() {
               break
             case 'content':
               streamingContent.value += chunk.content
+              // 检测是否有新的完整 mermaid 代码块可以渲染
+              tryRenderStreamingMermaid()
               scrollToBottom()
               break
             case 'danger_confirm':
@@ -1717,6 +1821,7 @@ onMounted(() => {
     if (msgContainer.value) {
       msgContainer.value.addEventListener('wheel', handleMermaidWheel, { passive: false })
       msgContainer.value.addEventListener('mousedown', handleMermaidMouseDown)
+      msgContainer.value.addEventListener('click', handleMermaidToolbarClick)
     }
   })
 })
@@ -1730,6 +1835,7 @@ onUnmounted(() => {
   if (msgContainer.value) {
     msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
     msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)
+    msgContainer.value.removeEventListener('click', handleMermaidToolbarClick)
   }
   document.body.classList.remove('mermaid-ctrl-held', 'mermaid-dragging')
 })
@@ -2807,28 +2913,41 @@ body.mermaid-dragging .mermaid-container {
   top: 8px;
   right: 8px;
   display: flex;
+  align-items: center;
   gap: 2px;
   z-index: 100;
   background: rgba(255,255,255,0.98);
   backdrop-filter: blur(8px);
-  border-radius: 8px;
-  padding: 6px;
+  border-radius: 6px;
+  padding: 4px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
-.mermaid-toolbar:hover {
-  box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+.mermaid-container:hover .mermaid-toolbar {
+  opacity: 1;
+}
+.mermaid-tb-sep {
+  width: 1px;
+  height: 16px;
+  background: #e2e8f0;
+  margin: 0 2px;
 }
 .mermaid-tb-btn {
   cursor: pointer;
-  font-size: 12px;
-  color: #546e7a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+  color: #64748b;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
-  padding: 3px 6px;
-  line-height: 1.2;
+  padding: 0;
+  line-height: 1;
   transition: all 0.15s;
   user-select: none;
   font-family: inherit;
@@ -2836,11 +2955,14 @@ body.mermaid-dragging .mermaid-container {
 }
 .mermaid-tb-btn:hover {
   color: #1976d2;
-  background: #e3f2fd;
-  border-color: #90caf9;
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 .mermaid-tb-btn:active {
-  background: #bbdefb;
+  background: #dbeafe;
+}
+.mermaid-tb-btn svg {
+  flex-shrink: 0;
 }
 .mermaid-svg-wrap {
   text-align: center;

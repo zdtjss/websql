@@ -1,10 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import App from '@/App.vue'
 
 const routes = [
   {
     path: '/',
     name: 'App',
-    component: () => import('@/App.vue')
+    component: App
   },
   {
     path: '/system-management',

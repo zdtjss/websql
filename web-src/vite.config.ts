@@ -33,7 +33,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           // 框架核心
-          if (id.includes('node_modules/vue') || id.includes('node_modules/pinia')) {
+          if (id.includes('node_modules/vue') || id.includes('node_modules/pinia') || id.includes('node_modules/vue-router')) {
             return 'vue-core';
           }
           // UI 库单独分包
@@ -50,6 +50,15 @@ export default defineConfig({
           if (id.includes('node_modules/axios')) {
             return 'axios';
           }
+          if (id.includes('node_modules/codemirror')) {
+            return 'codemirror';
+          }
+          if (id.includes('node_modules/exceljs') || id.includes('node_modules/xlsx')) {
+            return 'excel';
+          }
+          if (id.includes('node_modules/highlight.js')) {
+            return 'highlight';
+          }
           // 其他 node_modules 归为 vendor
           if (id.includes('node_modules')) {
             return 'vendor';
@@ -65,12 +74,16 @@ export default defineConfig({
         }
       }
     },
-    sourcemap: false,  // 生产环境不生成 source map 减小体积
+    sourcemap: false,
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: true,  // 生产环境移除 console
+        drop_console: true,
         drop_debugger: true,
+        pure_funcs: ['console.log', 'console.info'],
+      },
+      format: {
+        comments: false,
       },
     },
   },
