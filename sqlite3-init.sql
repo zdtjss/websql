@@ -113,3 +113,19 @@ insert or ignore into t_system_config (id, config_key, config_value, config_type
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000004', 'ai.apiKey', '41bb5b5119d6429e963994921a238d30.IdjfzCmn3goAL8VNT34XITiq', 'ai', 'AI API 密钥');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000005', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）');
+
+CREATE TABLE IF NOT EXISTS t_prompt (
+	id TEXT PRIMARY KEY,
+	title TEXT NOT NULL,
+	content TEXT NOT NULL,
+	created_by TEXT,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS t_prompt_share (
+	id TEXT PRIMARY KEY,
+	prompt_id TEXT NOT NULL,
+	shared_by TEXT NOT NULL,
+	shared_to TEXT NOT NULL
+);

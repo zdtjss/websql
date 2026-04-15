@@ -551,7 +551,6 @@ function saveRoleData(roleData) {
 }
 
 function cancelEdit() {
-  // 取消编辑，重新加载角色权限
   if (currentRole.value) {
     loadPermissionTree()
   }

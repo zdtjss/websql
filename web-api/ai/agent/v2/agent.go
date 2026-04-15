@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -97,9 +98,25 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
+	// 设置为中文
+	err = adk.SetLanguage(adk.LanguageChinese)
+	if err != nil {
+		log.Printf("[Agent] 设置语言失败 - err=%v\n", err)
+	}
+	summarizationMW, err := summarization.New(ctx, &summarization.Config{
+		Model: cm,
+		Trigger: &summarization.TriggerCondition{
+			ContextTokens: 100000,
+		},
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建摘要中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
+	}
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
-		Description: "专业 SQL 助手，支持查询、分析和数据导出",
+		Description: "专业 SQL 助手，支持查询、分析和数据导入导出",
 		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil, scope),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
@@ -109,9 +126,10 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			&PermissionMiddleware{Scope: scope},
 			&SQLSecurityMiddleware{},
 			&ToolErrorRecoveryMiddleware{},
+			summarizationMW,
 		},
-		ModelRetryConfig: &adk.ModelRetryConfig{MaxRetries: 5},
-		MaxIterations:    25,
+		// ModelRetryConfig: &adk.ModelRetryConfig{MaxRetries: 5},
+		MaxIterations: 20,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)

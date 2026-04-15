@@ -64,7 +64,13 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
 	routerGroup.GET("/permissionTree", admin.GetPermissionTree)
 
+	routerGroup.GET("/promptList", admin.PromptList)
+	routerGroup.GET("/promptDetail", admin.PromptDetail)
+	routerGroup.POST("/savePrompt", admin.SavePrompt)
+	routerGroup.GET("/delPrompt", admin.DelPrompt)
+
 	routerGroup.GET("/findUser", admin.FindUser)
+	routerGroup.GET("/findUserBase", admin.FindUserBase)
 	routerGroup.POST("/saveUser", admin.SaveUser)
 	routerGroup.GET("/delUser", admin.DelUser)
 

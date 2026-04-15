@@ -439,6 +439,21 @@ func FindUser(c *gin.Context) {
 	utils.WriteJson(c.Writer, userList)
 }
 
+func FindUserBase(c *gin.Context) {
+	loginName := c.Query("loginName")
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select * from t_user where 1 = 1")
+	if loginName != "" {
+		sql.WriteString(" and login_name = ?")
+		param = append(param, loginName)
+	}
+	userList := []*SharedUser{}
+	err := config.Mngtdb.Select(&userList, sql.String(), param...)
+	logutils.PanicErr(err)
+	utils.WriteJson(c.Writer, userList)
+}
+
 func findByLoginName(loginName string) *User {
 	var users []User
 	err := config.Mngtdb.Select(&users, "select id,name,pwd from t_user where login_name = ?", loginName)
@@ -768,7 +783,7 @@ func getConnTree(roleId string) []*PermissionNode {
 	// 按目录分组组织连接
 	dirMap := make(map[string][]*ConnWithDir)
 	var noParentConns []*ConnWithDir
-	
+
 	for _, conn := range connList {
 		if conn.ParentName != nil && *conn.ParentName != "" {
 			if dirMap[*conn.ParentName] == nil {
@@ -782,7 +797,7 @@ func getConnTree(roleId string) []*PermissionNode {
 
 	// 构建目录节点及其子连接
 	nodes := make([]*PermissionNode, 0)
-	
+
 	// 先添加有目录的连接（目录作为父节点，连接作为子节点）
 	for dirName, conns := range dirMap {
 		dirNode := &PermissionNode{
@@ -797,18 +812,18 @@ func getConnTree(roleId string) []*PermissionNode {
 			},
 			Children: make([]*PermissionNode, 0),
 		}
-		
+
 		for _, conn := range conns {
 			checked := false
 			if roleId != "" && roleConnIds[conn.Id] {
 				checked = true
 			}
-			
+
 			name := ""
 			if conn.Name != nil {
 				name = *conn.Name
 			}
-			
+
 			dirNode.Children = append(dirNode.Children, &PermissionNode{
 				Id:       conn.Id,
 				Label:    name,
@@ -823,22 +838,22 @@ func getConnTree(roleId string) []*PermissionNode {
 				Children: nil, // 使用 nil 而不是空数组，避免前端误判为有子节点
 			})
 		}
-		
+
 		nodes = append(nodes, dirNode)
 	}
-	
+
 	// 添加没有目录的连接
 	for _, conn := range noParentConns {
 		checked := false
 		if roleId != "" && roleConnIds[conn.Id] {
 			checked = true
 		}
-		
+
 		name := ""
 		if conn.Name != nil {
 			name = *conn.Name
 		}
-		
+
 		nodes = append(nodes, &PermissionNode{
 			Id:       conn.Id,
 			Label:    name,

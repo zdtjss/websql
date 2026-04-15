@@ -209,6 +209,11 @@
     </div>
     <div class="login-button-container">
         <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+          <el-button v-if="loginSucc" circle size="small" @click="promptDrawerVisible = true" title="常用提示词">
+            <el-icon>
+              <ChatLineRound />
+            </el-icon>
+          </el-button>
           <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
             <el-icon>
               <Setting />
@@ -245,15 +250,19 @@
       </el-dialog>
     </div>
     </div>
+    <PromptDrawer ref="promptDrawerRef" v-model="promptDrawerVisible" @add="handlePromptAdd" @edit="handlePromptEdit" @send-to-AI="handleSendPromptToAI" />
+    <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" @saved="handlePromptSaved" @send-to-AI="handleSendPromptToAI" />
   </div>
 </template>
 
 <script setup>
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
+import PromptDrawer from '@/components/PromptDrawer.vue'
+import PromptEditDialog from '@/components/PromptEditDialog.vue'
 import http from '@/js/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
-import { Clock, Delete, Document, DocumentAdd, Microphone, Promotion, Setting, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Delete, Document, DocumentAdd, Microphone, Promotion, Setting, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
@@ -377,6 +386,11 @@ const msgContainer = ref(null)
 let speechRecognition = null
 
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
+
+const promptDrawerVisible = ref(false)
+const promptEditDialogVisible = ref(false)
+const editingPromptId = ref('')
+const promptDrawerRef = ref(null)
 
 const showLoginBtn = ref(true)
 const loginDialogVisible = ref(false)
@@ -1409,6 +1423,29 @@ function clearUploadedExcel() {
   uploadedExcel.value = null
 }
 
+function handleSendPromptToAI(content) {
+  promptDrawerVisible.value = false
+  promptEditDialogVisible.value = false
+  question.value = content
+  nextTick(() => sendMessage())
+}
+
+function handlePromptAdd() {
+  editingPromptId.value = ''
+  promptEditDialogVisible.value = true
+}
+
+function handlePromptEdit(promptId) {
+  editingPromptId.value = promptId
+  promptEditDialogVisible.value = true
+}
+
+function handlePromptSaved() {
+  if (promptDrawerRef.value) {
+    promptDrawerRef.value.loadPrompts()
+  }
+}
+
 function clearSession(showMsg) {
   chatHistory.value = []
   sessionId.value = ''
@@ -2355,8 +2392,13 @@ onUnmounted(() => {
 
 /* 滚动条全局美化 - 蓝灰色 */
 :deep(.el-drawer__body) {
+  padding: 3px;
   scrollbar-width: thin;
   scrollbar-color: #78909c rgba(84, 110, 122, 0.05);
+}
+
+:deep(.el-drawer__header) {
+  margin-bottom: 3px;
 }
 
 /* Popover 美化 */

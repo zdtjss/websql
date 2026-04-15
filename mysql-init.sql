@@ -117,3 +117,21 @@ insert ignore into t_system_config (id, config_key, config_value, config_type, r
 ('825683877400000004', 'ai.apiKey', '41bb5b5119d6429e963994921a238d30.IdjfzCmn3goAL8VNT34XITiq', 'ai', 'AI API 密钥'),
 ('825683877400000005', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
 ('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）');
+
+CREATE TABLE IF NOT EXISTS t_prompt (
+	id varchar(36) primary key,
+	title varchar(256) not null,
+	content MEDIUMTEXT not null,
+	created_by varchar(36),
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS t_prompt_share (
+	id varchar(36) primary key,
+	prompt_id varchar(36) not null,
+	shared_by varchar(36) not null,
+	shared_to varchar(36) not null,
+	INDEX idx_prompt_id (prompt_id),
+	INDEX idx_shared_to (shared_to)
+);
