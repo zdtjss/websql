@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS t_prompt (
 	title varchar(256) not null,
 	content MEDIUMTEXT not null,
 	created_by varchar(36),
+	role_id varchar(36),
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );

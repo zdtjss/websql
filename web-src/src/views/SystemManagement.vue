@@ -13,6 +13,11 @@
           <RolePermission />
         </el-tab-pane>
 
+        <!-- 提示词管理 -->
+        <el-tab-pane label="提示词管理" name="prompt" lazy>
+          <PromptManagement />
+        </el-tab-pane>
+
         <!-- 用户管理 -->
         <el-tab-pane label="用户管理" name="user" lazy>
           <UserManagement />
@@ -41,6 +46,7 @@
 import { ref, provide, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import RolePermission from './RolePermission.vue'
+import PromptManagement from './PromptManagement.vue'
 import UserManagement from './UserManagement.vue'
 import ConnManagement from './ConnManagement.vue'
 import DirManagement from './DirManagement.vue'

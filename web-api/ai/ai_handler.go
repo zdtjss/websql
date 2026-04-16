@@ -37,21 +37,21 @@ func HandleGetConfig(c *gin.Context) {
 }
 
 func HandleTestConfig(c *gin.Context) {
-	cfg, err := GetAIConfigRaw()
-	if err != nil {
-		log.Printf("[AI] 获取原始配置失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败"})
+	var cfg admin.AIConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		log.Printf("[AI] 参数解析失败 - err=%v\n", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "参数解析失败"})
 		return
 	}
-	if cfg == nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "请先配置 AI 服务"})
+	if cfg.Provider == "" || cfg.BaseURL == "" || cfg.Model == "" {
+		c.JSON(200, gin.H{"code": 500, "msg": "请填写完整的 AI 配置（provider、baseUrl、model）"})
 		return
 	}
 
-	_, err = CallAI(cfg, []ChatMessage{{Role: "user", Content: "hi"}})
+	_, err := CallAI(&cfg, []ChatMessage{{Role: "user", Content: "hi"}})
 	if err != nil {
 		log.Printf("[AI] 连接测试失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "AI 服务连接失败，请检查配置和网络"})
+		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"code": 200, "msg": "连接成功"})

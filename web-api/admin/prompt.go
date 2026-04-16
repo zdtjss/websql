@@ -5,6 +5,7 @@ import (
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,10 +16,13 @@ type Prompt struct {
 	Title         string       `json:"title" db:"title"`
 	Content       string       `json:"content" db:"content"`
 	CreatedBy     *string      `json:"createdBy" db:"created_by"`
+	RoleId        *string      `json:"roleId" db:"role_id"`
+	RoleName      string       `json:"roleName,omitempty" db:"-"`
 	CreatedAt     *string      `json:"createdAt,omitempty" db:"created_at"`
 	UpdatedAt     *string      `json:"updatedAt,omitempty" db:"updated_at"`
 	CurrentUserId string       `json:"currentUserId" db:"-"`
 	IsShared      bool         `json:"isShared" db:"-"`
+	IsRolePrompt  bool         `json:"isRolePrompt" db:"-"`
 	SharedByName  string       `json:"sharedByName,omitempty" db:"-"`
 	SharedUserIds []string     `json:"sharedUserIds,omitempty" db:"-"`
 	SharedUsers   []SharedUser `json:"sharedUsers,omitempty" db:"-"`
@@ -34,6 +38,7 @@ type PromptSave struct {
 	Id            string   `json:"id"`
 	Title         string   `json:"title"`
 	Content       string   `json:"content"`
+	RoleId        string   `json:"roleId"`
 	SharedUserIds []string `json:"sharedUserIds"`
 }
 
@@ -55,19 +60,49 @@ func getCurrentUserId(c *gin.Context) string {
 func PromptList(c *gin.Context) {
 	userId := getCurrentUserId(c)
 
+	userRoleIds := []string{}
+	config.Mngtdb.Select(&userRoleIds, "select role_id from t_user_role where user_id = ?", userId)
+
 	prompts := []*Prompt{}
-	err := config.Mngtdb.Select(&prompts,
-		`select p.id, p.title, p.content, p.created_by, p.created_at, p.updated_at
-		from t_prompt p
-		where p.created_by = ?
-		union all
-		select p.id, p.title, p.content, p.created_by, p.created_at, p.updated_at
-		from t_prompt p
-		inner join t_prompt_share ps on p.id = ps.prompt_id
-		where ps.shared_to = ?
-		order by updated_at desc`,
-		userId, userId)
-	logutils.PanicErr(err)
+
+	if len(userRoleIds) > 0 {
+		placeholders := strings.Repeat("?,", len(userRoleIds))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := []interface{}{userId, userId}
+		for _, rid := range userRoleIds {
+			args = append(args, rid)
+		}
+
+		err := config.Mngtdb.Select(&prompts,
+			`select p.id, p.title, p.content, p.created_by, p.role_id, p.created_at, p.updated_at
+			from t_prompt p
+			where p.created_by = ?
+			union
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.created_at, p.updated_at
+			from t_prompt p
+			inner join t_prompt_share ps on p.id = ps.prompt_id
+			where ps.shared_to = ?
+			union
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.created_at, p.updated_at
+			from t_prompt p
+			where p.role_id in (`+placeholders+`)
+			order by updated_at desc`,
+			args...)
+		logutils.PanicErr(err)
+	} else {
+		err := config.Mngtdb.Select(&prompts,
+			`select p.id, p.title, p.content, p.created_by, p.role_id, p.created_at, p.updated_at
+			from t_prompt p
+			where p.created_by = ?
+			union
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.created_at, p.updated_at
+			from t_prompt p
+			inner join t_prompt_share ps on p.id = ps.prompt_id
+			where ps.shared_to = ?
+			order by updated_at desc`,
+			userId, userId)
+		logutils.PanicErr(err)
+	}
 
 	if prompts == nil {
 		prompts = []*Prompt{}
@@ -75,14 +110,55 @@ func PromptList(c *gin.Context) {
 
 	for _, p := range prompts {
 		p.CurrentUserId = userId
+		if p.RoleId != nil && *p.RoleId != "" {
+			p.IsRolePrompt = true
+			var roleName string
+			err := config.Mngtdb.Get(&roleName, "select name from t_role where id = ?", *p.RoleId)
+			if err == nil && roleName != "" {
+				p.RoleName = roleName
+			}
+		}
 		p.IsShared = p.CreatedBy != nil && *p.CreatedBy != userId
-		if p.IsShared {
+		if p.IsShared && !p.IsRolePrompt {
 			var sharerName string
 			err := config.Mngtdb.Get(&sharerName, "select name from t_user where id = ?", *p.CreatedBy)
 			if err == nil && sharerName != "" {
 				p.SharedByName = sharerName + " 分享"
 			} else {
 				p.SharedByName = "他人分享"
+			}
+		}
+	}
+
+	utils.WriteJson(c.Writer, prompts)
+}
+
+func PromptListByRole(c *gin.Context) {
+	CheckAdminPower(c)
+	roleId := c.Query("roleId")
+	if roleId == "" {
+		utils.WriteJson(c.Writer, []*Prompt{})
+		return
+	}
+
+	prompts := []*Prompt{}
+	err := config.Mngtdb.Select(&prompts,
+		`select id, title, content, created_by, role_id, created_at, updated_at
+		from t_prompt
+		where role_id = ?
+		order by updated_at desc`, roleId)
+	logutils.PanicErr(err)
+
+	if prompts == nil {
+		prompts = []*Prompt{}
+	}
+
+	for _, p := range prompts {
+		if p.CreatedBy != nil && *p.CreatedBy != "" {
+			var creatorName string
+			err := config.Mngtdb.Get(&creatorName, "select name from t_user where id = ?", *p.CreatedBy)
+			if err == nil && creatorName != "" {
+				p.SharedByName = creatorName
 			}
 		}
 	}
@@ -141,14 +217,19 @@ func SavePrompt(c *gin.Context) {
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 
+	var roleId interface{} = nil
+	if req.RoleId != "" {
+		roleId = req.RoleId
+	}
+
 	if req.Id == "" {
 		req.Id = utils.RandomStr()
-		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, created_at, updated_at) values (?, ?, ?, ?, ?, ?)",
-			req.Id, req.Title, req.Content, userId, now, now)
+		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, role_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+			req.Id, req.Title, req.Content, userId, roleId, now, now)
 		logutils.PanicErrf("保存提示词失败", err)
 	} else {
-		_, err := tx.Exec("update t_prompt set title = ?, content = ?, updated_at = ? where id = ?",
-			req.Title, req.Content, now, req.Id)
+		_, err := tx.Exec("update t_prompt set title = ?, content = ?, role_id = ?, updated_at = ? where id = ?",
+			req.Title, req.Content, roleId, now, req.Id)
 		logutils.PanicErrf("更新提示词失败", err)
 	}
 
@@ -174,9 +255,15 @@ func DelPrompt(c *gin.Context) {
 		logutils.PanicErr(errors.New("缺少 id 参数"))
 	}
 
-	var createdBy string
-	err := config.Mngtdb.Get(&createdBy, "select created_by from t_prompt where id = ?", id)
-	if err != nil || createdBy != userId {
+	prompt := &Prompt{}
+	err := config.Mngtdb.Get(prompt, "select id, created_by, role_id from t_prompt where id = ?", id)
+	if err != nil {
+		logutils.PanicErr(errors.New("提示词不存在"))
+	}
+
+	isCreator := prompt.CreatedBy != nil && *prompt.CreatedBy == userId
+	isRoleOwner := prompt.RoleId != nil && *prompt.RoleId != ""
+	if !isCreator && !isRoleOwner {
 		logutils.PanicErr(errors.New("无权删除此提示词"))
 	}
 

@@ -225,7 +225,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 				log.Printf("[Agent] 危险 SQL 拦截 - sql=%s\n", dangerousErr.SQL)
 				continue
 			}
-			log.Printf("[Agent] 执行失败 - err=%v\n", event.Err)
+			log.Printf("[Agent] 执行失败 - err=%+v\n", event.Err)
 			for _, dsql := range dangerousSQLs {
 				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql})
 			}

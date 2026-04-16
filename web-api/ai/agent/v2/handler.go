@@ -118,7 +118,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	if runErr != nil {
 		var dangerousErr *DangerousSQLError
 		if !errors.As(runErr, &dangerousErr) {
-			log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
+			log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
 			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		}
 		flush(StreamChunk{Type: "done"})

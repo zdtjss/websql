@@ -36,7 +36,7 @@
           placeholder="请输入提示词内容（支持 Markdown 格式）"
         />
       </el-form-item>
-      <el-form-item label="分享给">
+      <el-form-item v-if="!roleId" label="分享给">
         <el-select
           v-model="form.sharedUserIds"
           multiple
@@ -54,7 +54,7 @@
     <template #footer>
       <div class="dialog-footer">
         <el-button @click="$emit('update:modelValue', false)">取消</el-button>
-        <el-button type="primary" @click="handleSendToAI" :disabled="!form.content.trim()">
+        <el-button v-if="!roleId" type="primary" @click="handleSendToAI" :disabled="!form.content.trim()">
           <el-icon><Promotion /></el-icon>
           发送
         </el-button>
@@ -75,6 +75,7 @@ import 'md-editor-v3/lib/style.css'
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   promptId: { type: String, default: '' },
+  roleId: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'saved', 'sendToAI'])
@@ -91,6 +92,7 @@ const form = ref({
   id: '',
   title: '',
   content: '',
+  roleId: '',
   sharedUserIds: [],
 })
 
@@ -103,7 +105,7 @@ function handleOpen() {
   if (props.promptId) {
     loadPromptDetail(props.promptId)
   } else {
-    form.value = { id: '', title: '', content: '', sharedUserIds: [] }
+    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', sharedUserIds: [] }
     userOptions.value = []
   }
   nextTick(() => {
@@ -168,6 +170,7 @@ async function loadPromptDetail(id) {
         id: data.id,
         title: data.title,
         content: data.content,
+        roleId: data.roleId || props.roleId || '',
         sharedUserIds: data.sharedUserIds || [],
       }
       if (data.sharedUsers && data.sharedUsers.length > 0) {
