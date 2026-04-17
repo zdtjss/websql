@@ -147,7 +147,7 @@ func SaveAIConfigToDB(cfg AIConfig) {
 		{ConfigKey: "ai.enableThinking", ConfigValue: fmt.Sprintf("%t", cfg.EnableThinking), ConfigType: "ai", Remark: "启用思考模式"},
 	}
 
-	if cfg.ApiKey != "" && cfg.ApiKey != "****" {
+	if cfg.ApiKey != "" {
 		configs = append(configs, SystemConfigSave{
 			ConfigKey: "ai.apiKey", ConfigValue: cfg.ApiKey, ConfigType: "ai", Remark: "AI API 密钥",
 		})

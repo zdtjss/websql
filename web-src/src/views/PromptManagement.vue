@@ -1,0 +1,292 @@
+<template>
+  <div class="prompt-management-page">
+    <div class="prompt-management-container">
+      <div class="role-list-panel">
+        <div class="panel-header">
+          <h2>角色列表</h2>
+        </div>
+        <div class="role-search">
+          <el-input
+            v-model="roleSearchKey"
+            placeholder="搜索角色"
+            clearable
+            prefix-icon="Search"
+            size="default"
+          />
+        </div>
+        <div class="role-list-content">
+          <div v-if="loadingRoles" style="text-align: center; padding: 20px;">
+            <el-icon class="is-loading"><Loading /></el-icon>
+          </div>
+          <div v-else-if="filteredRoles.length === 0" class="empty-tip">暂无角色</div>
+          <div
+            v-for="role in filteredRoles"
+            :key="role.id"
+            :class="['role-item', { active: currentRole?.id === role.id }]"
+            @click="handleRoleSelect(role)"
+          >
+            <el-icon><User /></el-icon>
+            <span class="role-name">{{ role.name }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="prompt-list-panel">
+        <div class="panel-header">
+          <h2 v-if="currentRole">{{ currentRole.name }} - 提示词列表</h2>
+          <h2 v-else>请选择角色</h2>
+          <el-button v-if="currentRole" type="primary" size="small" @click="handleAdd" icon="Plus">
+            新增提示词
+          </el-button>
+        </div>
+
+        <div v-if="currentRole" class="prompt-list-content">
+          <div v-if="loadingPrompts" style="text-align: center; padding: 20px;">
+            <el-icon class="is-loading"><Loading /></el-icon>
+          </div>
+          <div v-else-if="prompts.length === 0" class="empty-tip">
+            暂无提示词，点击上方"新增提示词"按钮添加
+          </div>
+          <el-table v-else :data="prompts" style="width: 100%" stripe>
+            <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
+            <el-table-column label="创建者" width="120">
+              <template #default="{ row }">
+                {{ row.sharedByName || '-' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="更新时间" width="180">
+              <template #default="{ row }">
+                {{ row.updatedAt || row.createdAt || '-' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button type="primary" size="small" text @click="handleEdit(row)" title="编辑">
+                  <el-icon><Edit /></el-icon>
+                </el-button>
+                <el-button type="danger" size="small" text @click="handleDelete(row)" title="删除">
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-else class="prompt-empty-state">
+          <el-icon size="48" color="#c0c4cc"><Document /></el-icon>
+          <p>请在左侧选择一个角色来管理其提示词</p>
+        </div>
+      </div>
+    </div>
+
+    <PromptEditDialog
+      v-model="editDialogVisible"
+      :prompt-id="editingPromptId"
+      :role-id="currentRole?.id || ''"
+      @saved="handlePromptSaved"
+    />
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import http from '@/js/utils/httpProxy'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Document, Edit, Loading, User } from '@element-plus/icons-vue'
+import PromptEditDialog from '@/components/PromptEditDialog.vue'
+
+const roles = ref([])
+const currentRole = ref(null)
+const prompts = ref([])
+const loadingRoles = ref(false)
+const loadingPrompts = ref(false)
+const roleSearchKey = ref('')
+const editDialogVisible = ref(false)
+const editingPromptId = ref('')
+
+const filteredRoles = computed(() => {
+  if (!roleSearchKey.value) return roles.value
+  const key = roleSearchKey.value.toLowerCase()
+  return roles.value.filter(r => r.name.toLowerCase().includes(key))
+})
+
+onMounted(() => {
+  loadRoles()
+})
+
+async function loadRoles() {
+  loadingRoles.value = true
+  try {
+    const resp = await http.get('/roleBaseList')
+    roles.value = resp.data.data || []
+  } catch (e) {
+    console.error('加载角色列表失败:', e)
+  } finally {
+    loadingRoles.value = false
+  }
+}
+
+function handleRoleSelect(role) {
+  currentRole.value = role
+  loadPromptsByRole(role.id)
+}
+
+async function loadPromptsByRole(roleId) {
+  loadingPrompts.value = true
+  try {
+    const resp = await http.get('/promptListByRole', { params: { roleId } })
+    prompts.value = resp.data.data || []
+  } catch (e) {
+    console.error('加载提示词列表失败:', e)
+  } finally {
+    loadingPrompts.value = false
+  }
+}
+
+function handleAdd() {
+  editingPromptId.value = ''
+  editDialogVisible.value = true
+}
+
+function handleEdit(prompt) {
+  editingPromptId.value = prompt.id
+  editDialogVisible.value = true
+}
+
+function handleDelete(prompt) {
+  ElMessageBox.confirm(
+    `确定要删除提示词 "${prompt.title}" 吗？`,
+    '确认删除',
+    { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+  ).then(async () => {
+    try {
+      await http.get('/delPrompt', { params: { id: prompt.id } })
+      ElMessage.success('删除成功')
+      loadPromptsByRole(currentRole.value.id)
+    } catch (e) {
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {})
+}
+
+function handlePromptSaved() {
+  if (currentRole.value) {
+    loadPromptsByRole(currentRole.value.id)
+  }
+}
+</script>
+
+<style scoped>
+.prompt-management-page {
+  height: 100%;
+}
+
+.prompt-management-container {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  height: 100%;
+}
+
+.role-list-panel,
+.prompt-list-panel {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.panel-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: #303133;
+}
+
+.role-search {
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+.role-list-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.role-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #606266;
+  font-size: 14px;
+}
+
+.role-item:hover {
+  background: #f5f7fa;
+  color: #409eff;
+}
+
+.role-item.active {
+  background: #ecf5ff;
+  color: #409eff;
+  font-weight: 500;
+}
+
+.role-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-list-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.prompt-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  gap: 12px;
+}
+
+.prompt-empty-state p {
+  font-size: 14px;
+  margin: 0;
+}
+
+.empty-tip {
+  text-align: center;
+  color: #909399;
+  padding: 40px 0;
+  font-size: 14px;
+}
+
+:deep(.el-table) {
+  font-size: 14px;
+}
+
+:deep(.el-table .el-button) {
+  padding: 4px 8px;
+}
+</style>

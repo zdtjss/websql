@@ -20,23 +20,103 @@ func listSchema(key string, authorization string) []*Tree {
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listSchema"])
 	logutils.PanicErr(err)
-	tree := make([]*Tree, 0)
+	allSchemas := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
-		tree = append(tree, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
+		allSchemas = append(allSchemas, &Tree{Label: schemaName, Type: TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
 	}
-	return tree
+	// 权限过滤：只返回用户有权限访问的 schema
+	return filterSchemasByPermission(allSchemas, key, authorization)
+}
+
+// filterSchemasByPermission 根据用户权限过滤 schema 列表
+func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []*Tree {
+	userPower := GetUserPower(authorization)
+	if userPower == nil || len(userPower.Power) == 0 {
+		return schemas
+	}
+	powerDetails := findUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		return []*Tree{}
+	}
+	// 检查是否有 conn 级权限（无 schema 配置则全部可用）
+	hasConnPerm := false
+	hasAnySchemaConfig := false
+	allowedSchemas := make(map[string]bool)
+	for _, p := range powerDetails {
+		if p.ConnId != connId {
+			continue
+		}
+		switch p.Level {
+		case "conn":
+			hasConnPerm = true
+		case "schema":
+			hasAnySchemaConfig = true
+			if p.SchemaName != nil {
+				allowedSchemas[*p.SchemaName] = true
+			}
+		case "table":
+			// 有 table 级权限意味着其 schema 也应可见
+			if p.SchemaName != nil {
+				allowedSchemas[*p.SchemaName] = true
+			}
+		case "column":
+			// 有 column 级权限意味着其 schema 也应可见
+			if p.SchemaName != nil {
+				allowedSchemas[*p.SchemaName] = true
+			}
+		}
+	}
+	// conn 级权限且无 schema 配置 → 全部可用
+	if hasConnPerm && !hasAnySchemaConfig {
+		return schemas
+	}
+	// 过滤
+	filtered := make([]*Tree, 0)
+	for _, s := range schemas {
+		if allowedSchemas[s.Label] {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 func checkSchemaAccess(connId, schemaName, authorization string) {
 	userPower := GetUserPower(authorization)
-	param := &PowerCheckParam{
-		ConnId:     connId,
-		SchemaName: schemaName,
-	}
-	if !checkPower(userPower, param) {
+	if userPower == nil || len(userPower.Power) == 0 {
 		logutils.PanicErr(errors.New("无权访问此 Schema"))
+		return
 	}
+	// 使用 powerDetails 进行更精确的层级检查
+	powerDetails := findUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		logutils.PanicErr(errors.New("无权访问此 Schema"))
+		return
+	}
+	for _, p := range powerDetails {
+		if p.ConnId != connId {
+			continue
+		}
+		switch p.Level {
+		case "conn":
+			return // conn 级权限，可以访问所有 schema
+		case "schema":
+			if p.SchemaName != nil && *p.SchemaName == schemaName {
+				return
+			}
+		case "table":
+			// 有 table 级权限意味着可以访问其所属 schema
+			if p.SchemaName != nil && *p.SchemaName == schemaName {
+				return
+			}
+		case "column":
+			// 有 column 级权限意味着可以访问其所属 schema
+			if p.SchemaName != nil && *p.SchemaName == schemaName {
+				return
+			}
+		}
+	}
+	logutils.PanicErr(errors.New("无权访问此 Schema"))
 }
 
 func listTable(key string, schema, authorization string) []*Tree {
@@ -45,35 +125,33 @@ func listTable(key string, schema, authorization string) []*Tree {
 
 	checkSchemaAccess(key, schema, authorization)
 
-	tableName, columnName, columnComment := "", "", ""
+	tableName2, columnName, columnComment := "", "", ""
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
 	logutils.PanicErr(err)
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
 		*&columnComment = ""
-		row.Scan(&tableName, &columnName, &columnComment)
-		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": columnComment})
+		row.Scan(&tableName2, &columnName, &columnComment)
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": columnComment})
 	}
 
 	grouped := make(map[string][]Column)
 
 	for _, col := range tableColumns {
-		tableName := col["tableName"]
-		// 确保 key 存在
-		if grouped[tableName] == nil {
-			grouped[tableName] = make([]Column, 0)
+		tn := col["tableName"]
+		if grouped[tn] == nil {
+			grouped[tn] = make([]Column, 0)
 		}
-		// 只保留 columnName 和 columnComment（可选）
 		fieldInfo := Column{
 			Name:    col["columnName"],
 			Comment: col["columnComment"],
 		}
-		grouped[tableName] = append(grouped[tableName], fieldInfo)
+		grouped[tn] = append(grouped[tn], fieldInfo)
 	}
 
 	row, err = dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
 	logutils.PrintErr(err)
-	tree := make([]*Tree, 0)
+	allTables := make([]*Tree, 0)
 	for row.Next() {
 		row.Scan(&tableName, &tableType, &tableComment)
 		treeNode := &Tree{Label: tableName, Data: map[string]any{"text": tableComment, "columns": grouped[tableName]}, Type: TREE_NODE_TYPE_TABLE}
@@ -87,21 +165,116 @@ func listTable(key string, schema, authorization string) []*Tree {
 		} else if dc.DriverName() == "oracle" {
 			treeNode.Type = strings.ToLower(tableType)
 		}
-		tree = append(tree, treeNode)
+		allTables = append(allTables, treeNode)
 	}
-	return tree
+	// 权限过滤：只返回用户有权限访问的表
+	return filterTreeTablesByPermission(allTables, key, schema, authorization)
+}
+
+// filterTreeTablesByPermission 根据用户权限过滤树中的表列表
+func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization string) []*Tree {
+	userPower := GetUserPower(authorization)
+	if userPower == nil || len(userPower.Power) == 0 {
+		return tables
+	}
+	powerDetails := findUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		return []*Tree{}
+	}
+	// 检查是否有上级权限（conn 或 schema 级）
+	hasConnPerm := false
+	hasSchemaPerm := false
+	hasAnySchemaConfig := false
+	hasAnyTableConfig := false
+	allowedTables := make(map[string]bool)
+	for _, p := range powerDetails {
+		if p.ConnId != connId {
+			continue
+		}
+		switch p.Level {
+		case "conn":
+			hasConnPerm = true
+		case "schema":
+			hasAnySchemaConfig = true
+			if p.SchemaName != nil && *p.SchemaName == schema {
+				hasSchemaPerm = true
+			}
+		case "table":
+			hasAnyTableConfig = true
+			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
+				allowedTables[*p.TableName] = true
+			}
+		case "column":
+			// 有 column 级权限意味着其 table 也应可见
+			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
+				allowedTables[*p.TableName] = true
+			}
+		}
+	}
+	// conn 级权限且无 schema 配置 → 全部可用
+	if hasConnPerm && !hasAnySchemaConfig {
+		return tables
+	}
+	// schema 级权限且无 table 配置 → 全部可用
+	if hasSchemaPerm && !hasAnyTableConfig {
+		return tables
+	}
+	// 过滤
+	filtered := make([]*Tree, 0)
+	for _, t := range tables {
+		if allowedTables[t.Label] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 func checkTableAccess(connId, schemaName, tableName, authorization string) {
 	userPower := GetUserPower(authorization)
-	param := &PowerCheckParam{
-		ConnId:     connId,
-		SchemaName: schemaName,
-		TableName:  tableName,
-	}
-	if !checkPower(userPower, param) {
+	if userPower == nil || len(userPower.Power) == 0 {
 		logutils.PanicErr(errors.New("无权访问此表"))
+		return
 	}
+	powerDetails := findUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		logutils.PanicErr(errors.New("无权访问此表"))
+		return
+	}
+	hasConnPerm := false
+	hasAnySchemaConfig := false
+	hasSchemaPerm := false
+	hasAnyTableConfig := false
+	for _, p := range powerDetails {
+		if p.ConnId != connId {
+			continue
+		}
+		switch p.Level {
+		case "conn":
+			hasConnPerm = true
+		case "schema":
+			hasAnySchemaConfig = true
+			if p.SchemaName != nil && *p.SchemaName == schemaName {
+				hasSchemaPerm = true
+			}
+		case "table":
+			hasAnyTableConfig = true
+			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
+				return // 精确匹配表权限
+			}
+		case "column":
+			// 有 column 级权限意味着可以访问其所属表
+			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
+				return
+			}
+		}
+	}
+	if hasConnPerm && !hasAnySchemaConfig {
+		return
+	}
+	if hasSchemaPerm && !hasAnyTableConfig {
+		return
+	}
+	logutils.PanicErr(errors.New("无权访问此表"))
 }
 
 func listColumns(key string, table, authorization string) []*Tree {

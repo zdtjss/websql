@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { sanitizeError } from '@/utils/errorHandler.js';
+import { ElMessage } from 'element-plus';
 
 const env = import.meta.env
 
@@ -19,6 +20,13 @@ http.interceptors.response.use(
             return response;
         }
         const { code, msg } = response.data;
+        if (code === 401) {
+            sessionStorage.removeItem('authentication');
+            sessionStorage.removeItem('currentUser');
+            sessionStorage.removeItem('isRemote');
+            window.dispatchEvent(new CustomEvent('session-expired', { detail: { message: msg || '登录已过期，请重新登录' } }));
+            return Promise.reject(new Error(msg || '登录已过期'));
+        }
         if (code === 500) {
             ElMessage({ message: sanitizeError(msg) || '系统错误', type: 'error' });
             return Promise.reject(new Error(sanitizeError(msg) || '系统错误'));
@@ -26,12 +34,12 @@ http.interceptors.response.use(
         return response;
     },
     (error) => {
-        // 处理 401 未授权错误，自动退出登录
         if (error.response && error.response.status === 401) {
-            ElMessage({ message: '登录已过期，请重新登录', type: 'warning' });
+            const msg = error.response.data?.msg || '登录已过期，请重新登录';
             sessionStorage.removeItem('authentication');
             sessionStorage.removeItem('currentUser');
             sessionStorage.removeItem('isRemote');
+            window.dispatchEvent(new CustomEvent('session-expired', { detail: { message: msg } }));
             return Promise.reject(error);
         }
 

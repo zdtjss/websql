@@ -10,17 +10,20 @@
   >
     <div class="prompt-drawer-body">
       <el-tabs v-model="activeTab" class="prompt-tabs">
-        <el-tab-pane label="我的" name="mine">
+        <el-tab-pane name="mine">
+          <template #label>
+            <span style="display: inline-flex; align-items: center; gap: 6px;">
+              我的
+              <el-icon v-if="loading" class="is-loading" size="14"><Loading /></el-icon>
+            </span>
+          </template>
           <div class="prompt-toolbar">
             <el-button text size="small" @click="handleAdd">
               <el-icon><Plus /></el-icon>
             </el-button>
           </div>
           <div class="prompt-list">
-            <div v-if="loading" style="text-align: center; padding: 20px;">
-              <el-icon class="is-loading"><Loading /></el-icon>
-            </div>
-            <div v-else-if="myPrompts.length === 0" class="prompt-empty">
+            <div v-if="myPrompts.length === 0" class="prompt-empty">
               暂无提示词
             </div>
             <div

@@ -7,6 +7,7 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -196,6 +197,8 @@ func ListConn2(c *gin.Context) {
 
 	name := c.Query("name")
 	parentId := c.Query("parentId")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 
 	cfgList := []ConnCfg{}
 
@@ -215,12 +218,27 @@ func ListConn2(c *gin.Context) {
 
 	}
 
-	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
+	// 查询总数
+	countSQL := "select count(*) from (" + sql.String() + ") as total_count"
+	var total int
+	err := config.Mngtdb.Get(&total, countSQL, param...)
+	logutils.PanicErr(err)
+
+	// 分页查询
+	sql.WriteString(" order by c.id limit ? offset ?")
+	param = append(param, pageSize, (page-1)*pageSize)
+
+	err = config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
 	for idx := range cfgList {
 		cfgList[idx].Pwd = nil
 	}
-	utils.WriteJson(c.Writer, cfgList)
+	utils.WriteJson(c.Writer, map[string]any{
+		"data":     cfgList,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 
 func ListConnBase(c *gin.Context) {

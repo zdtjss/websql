@@ -24,7 +24,7 @@
     
     <el-table :data="connList" style="width: 100%">
       <el-table-column type="index" width="50" />
-      <el-table-column prop="name" label="连接名称" width="150">
+      <el-table-column prop="name" label="连接名称" width="180">
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.name" />
           <span v-else>{{ scope.row.name }}</span>
@@ -51,7 +51,7 @@
           />
         </template>
       </el-table-column>
-      <el-table-column prop="user" label="用户名" width="120">
+      <el-table-column prop="user" label="用户名" width="180">
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.user" />
           <span v-else>{{ scope.row.user }}</span>
@@ -112,6 +112,17 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-model:current-page="pagination.page"
+      v-model:page-size="pagination.pageSize"
+      :page-sizes="[10, 20, 50, 100]"
+      :total="pagination.total"
+      layout="total, sizes, prev, pager, next, jumper"
+      style="margin-top: 16px; justify-content: center;"
+      @size-change="handleSizeChange"
+      @current-change="handleCurrentChange"
+    />
   </div>
 </template>
 
@@ -125,6 +136,7 @@ const emit = defineEmits(['conn-saved', 'conn-deleted'])
 const connList = ref([])
 const conCfgTreeData = ref([])
 const connQuery = ref({ name: "", parentId: "" })
+const pagination = ref({ page: 1, pageSize: 20, total: 0 })
 
 const dbTypeList = ref([
   { label: "MySQL", value: "mysql" }, 
@@ -145,12 +157,28 @@ const listDirTree = () => {
 }
 
 const listConnCfg = () => {
+  pagination.value.page = 1
   const param = new URLSearchParams()
   param.append("name", connQuery.value.name)
   param.append("parentId", connQuery.value.parentId || '')
+  param.append("page", pagination.value.page)
+  param.append("pageSize", pagination.value.pageSize)
   http.get("/listConn2", { params: param }).then((resp) => {
-    connList.value = resp.data.data.map(e => Object.assign({ editing: false }, e))
+    const result = resp.data.data || resp.data
+    connList.value = (result.data || []).map(e => Object.assign({ editing: false }, e))
+    pagination.value.total = result.total || 0
   })
+}
+
+const handleSizeChange = (size) => {
+  pagination.value.pageSize = size
+  pagination.value.page = 1
+  listConnCfg()
+}
+
+const handleCurrentChange = (page) => {
+  pagination.value.page = page
+  listConnCfg()
 }
 
 const addConn = () => {
@@ -193,6 +221,7 @@ const delConnCfg = (row) => {
   if (row.id) {
     http.get("/delConn", { params: { id: row.id } }).then(() => {
       ElMessage.success("删除成功")
+      pagination.value.page = 1
       listConnCfg()
       emit('conn-deleted', row)
     })

@@ -1,120 +1,61 @@
 <template>
   <div class="role-permission-page">
-    <!-- 主内容区 -->
     <div class="page-content">
       <div class="role-permission-container">
-        <!-- 左侧：角色列表 -->
         <div class="role-list-panel">
           <div class="panel-header">
             <h2>角色列表</h2>
-            <el-button type="primary" size="small" @click="createRole" icon="Plus">
-              新建角色
-            </el-button>
+            <el-button type="primary" size="small" @click="createRole" icon="Plus">新建角色</el-button>
           </div>
-          
-          <el-table 
-            :data="roles" 
-            style="width: 100%" 
-            highlight-current-row
-            @current-change="handleRoleChange"
-          >
+          <el-table :data="roles" style="width: 100%" highlight-current-row @current-change="handleRoleChange">
             <el-table-column prop="name" label="角色名称" />
             <el-table-column label="操作" width="80">
               <template #default="scope">
-                <el-button 
-                  type="danger" 
-                  size="small" 
-                  icon="Delete"
-                  @click="deleteRole(scope.row)"
-                />
+                <el-button type="danger" size="small" icon="Delete" @click.stop="deleteRole(scope.row)" />
               </template>
             </el-table-column>
           </el-table>
         </div>
-
-        <!-- 中间：权限配置 -->
         <div class="permission-config-panel">
           <div class="panel-header">
             <h2 v-if="currentRole">配置权限：{{ currentRole.name }}</h2>
             <h2 v-else>请选择角色</h2>
           </div>
-          
           <div v-if="currentRole" class="permission-config-content">
-            <!-- 层级导航 -->
             <div class="level-nav">
-              <el-button 
-                :type="currentLevel === 'conn' ? 'primary' : ''" 
-                size="small"
-                @click="navigateToLevel('conn')"
-              >
-                <el-icon><Connection /></el-icon>
-                连接
-              </el-button>
-              <el-button 
-                :type="currentLevel === 'schema' ? 'primary' : ''" 
-                size="small"
-                :disabled="!selectedConnId"
-                @click="navigateToLevel('schema')"
-              >
-                <el-icon><Folder /></el-icon>
-                Schema
-              </el-button>
-              <el-button 
-                :type="currentLevel === 'table' ? 'primary' : ''" 
-                size="small"
-                :disabled="!selectedSchema"
-                @click="navigateToLevel('table')"
-              >
-                <el-icon><Grid /></el-icon>
-                表
-              </el-button>
-              <el-button 
-                :type="currentLevel === 'column' ? 'primary' : ''" 
-                size="small"
-                :disabled="!selectedTable"
-                @click="navigateToLevel('column')"
-              >
-                <el-icon><Document /></el-icon>
-                字段
-              </el-button>
-              <!-- 操作按钮 -->
+              <el-breadcrumb separator="/">
+                <el-breadcrumb-item>
+                  <el-button :type="currentLevel === 'conn' ? 'primary' : ''" size="small" @click="navigateToLevel('conn')">
+                    <el-icon><Connection /></el-icon> 连接
+                  </el-button>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item v-if="selectedConnId">
+                  <el-button :type="currentLevel === 'schema' ? 'primary' : ''" size="small" @click="navigateToLevel('schema')">
+                    <el-icon><Folder /></el-icon> {{ selectedConnLabel }}
+                  </el-button>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item v-if="selectedSchema">
+                  <el-button :type="currentLevel === 'table' ? 'primary' : ''" size="small" @click="navigateToLevel('table')">
+                    <el-icon><Grid /></el-icon> {{ selectedSchemaLabel }}
+                  </el-button>
+                </el-breadcrumb-item>
+                <el-breadcrumb-item v-if="selectedTable">
+                  <el-button :type="currentLevel === 'column' ? 'primary' : ''" size="small" @click="navigateToLevel('column')">
+                    <el-icon><Document /></el-icon> {{ selectedTableLabel }}
+                  </el-button>
+                </el-breadcrumb-item>
+              </el-breadcrumb>
               <div class="action-buttons">
                 <el-button type="primary" size="small" @click="savePermissions" :loading="saving">
-                  <el-icon><Check /></el-icon>
-                  保存
+                  <el-icon><Check /></el-icon> 保存
                 </el-button>
-                <el-button size="small" @click="cancelEdit">
-                  <el-icon><Close /></el-icon>
-                  取消
-                </el-button>
+                <el-button size="small" @click="cancelEdit"><el-icon><Close /></el-icon> 取消</el-button>
               </div>
             </div>
-
-            <!-- 权限树 -->
+            <el-alert title="勾选复选框授予权限，点击节点名称进入下一级。上级权限包含下级（如勾选连接则拥有其下所有权限）。「子级已选」表示下级有权限配置但当前节点本身未直接授权。" type="info" :closable="false" style="margin-bottom: 12px; flex-shrink: 0;" />
             <div class="permission-tree-wrapper">
-              <el-alert
-                v-if="currentLevel === 'conn'"
-                title="提示"
-                type="info"
-                :closable="false"
-                style="margin-bottom: 12px; flex-shrink: 0;"
-              >
-                <el-icon><InfoFilled /></el-icon>
-                点击节点可进入下一级，勾选复选框授予权限
-              </el-alert>
-              
               <div class="permission-tree-container">
-                <el-tree
-                  ref="permissionTree"
-                  :data="permissionTreeData"
-                  :props="treeProps"
-                  node-key="id"
-                  show-checkbox
-                  :default-expand-all="false"
-                  check-strictly
-                  @check-change="handleCheckChange"
-                  @node-click="handleNodeClick"
-                >
+                <el-tree ref="treeRef" :data="treeData" :props="treeProps" node-key="id" show-checkbox check-strictly :default-expand-all="true" @check="handleCheck" @node-click="handleNodeClick">
                   <template #default="{ node, data }">
                     <span class="tree-node">
                       <el-icon v-if="data.level === 'dir'"><Folder /></el-icon>
@@ -122,10 +63,9 @@
                       <el-icon v-else-if="data.level === 'schema'"><Folder /></el-icon>
                       <el-icon v-else-if="data.level === 'table'"><Grid /></el-icon>
                       <el-icon v-else-if="data.level === 'column'"><Document /></el-icon>
-                      <span class="node-label">{{ node.label }}</span>
-                      <span v-if="data.data?.comment" class="node-comment">
-                        {{ data.data.comment }}
-                      </span>
+                      <span class="node-label" :class="{ 'node-clickable': data.level !== 'column' && data.level !== 'dir' }">{{ node.label }}</span>
+                      <el-tag v-if="isImplicitNode(data.id)" size="small" type="warning" class="implicit-tag">子级已选</el-tag>
+                      <span v-if="data.data && data.data.comment" class="node-comment">{{ data.data.comment }}</span>
                     </span>
                   </template>
                 </el-tree>
@@ -139,62 +79,53 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, onMounted, nextTick } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-const router = useRouter()
-
-// 数据
+// ─── 角色列表 ───
 const roles = ref([])
 const currentRole = ref(null)
+
+// ─── 层级导航状态 ───
 const currentLevel = ref('conn')
-const permissionTreeData = ref([])
-const saving = ref(false)
-const permissionTree = ref(null)
-
-// 当前选中状态
 const selectedConnId = ref('')
+const selectedConnLabel = ref('')
 const selectedSchema = ref('')
+const selectedSchemaLabel = ref('')
 const selectedTable = ref('')
+const selectedTableLabel = ref('')
 
-// 维护所有选中的 keys（包括不在当前树中的父级节点）
-const allCheckedKeys = ref([])
+// ─── 树相关 ───
+const treeRef = ref(null)
+const treeData = ref([])
+const saving = ref(false)
+const treeProps = { children: 'children', label: 'label' }
 
-// 存储当前接口返回的所有节点 keys（用于判断哪些节点是接口返回的）
-const allNodeKeysInCurrentResponse = ref([])
+// ─── 核心权限状态 ───
+// explicitKeys: 用户手动勾选的权限 key（只有这些会保存到后端）
+// 格式: connId / connId::schema / connId::schema::table / connId::schema::table::column
+const explicitKeys = reactive(new Set())
 
-// 树配置
-const treeProps = {
-  children: 'children',
-  label: 'label',
-  level: 'level'
-}
+// implicitKeys: 因为下级有权限而需要在视觉上标记的父级 key（不保存到后端）
+const implicitKeys = reactive(new Set())
 
-// 生命周期
+// 当前树中所有节点的 key（用于增量保存时判断范围）
+const currentTreeNodeKeys = reactive(new Set())
+
+// 防止程序设置 checkbox 时触发 handleCheck
+let isProgrammatic = false
+
+// ─── 生命周期 ───
 onMounted(() => {
   loadRoles()
 })
 
-// 方法
-function goBack() {
-  router.push('/')
-}
-
+// ─── 角色管理 ───
 function loadRoles() {
   http.get('/roleList').then(resp => {
     roles.value = resp.data.data || []
   })
-}
-
-// 将权限对象转换为可比较的字符串 key
-function permToKey(p) {
-  const parts = [p.connId]
-  if (p.schemaName) parts.push(p.schemaName)
-  if (p.tableName) parts.push(p.tableName)
-  if (p.columnName) parts.push(p.columnName)
-  return parts.join('::')
 }
 
 function createRole() {
@@ -204,341 +135,302 @@ function createRole() {
     inputPattern: /.+/,
     inputErrorMessage: '角色名称不能为空',
   }).then(({ value }) => {
-    const newRole = {
-      id: '',
-      name: value,
-      powerList: []
-    }
-    saveRoleData(newRole).then(() => {
+    http.post('/saveRole', { id: '', name: value, addPowers: [], delPowers: [] }).then(() => {
       loadRoles()
     })
   })
 }
 
 function handleRoleChange(role) {
-  if (role) {
-    currentRole.value = role
-    navigateToLevel('conn')
-  }
+  if (!role) return
+  currentRole.value = role
+  // 从 role.powerList 初始化 explicitKeys
+  initExplicitKeysFromRole(role)
+  navigateToLevel('conn')
 }
 
 function deleteRole(role) {
-  ElMessageBox.confirm(
-    `确定要删除角色 "${role.name}" 吗？`,
-    '确认删除',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    }
-  ).then(() => {
+  ElMessageBox.confirm(`确定要删除角色 "${role.name}" 吗？`, '确认删除', {
+    confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
+  }).then(() => {
     http.get('/delRole', { params: { id: role.id } }).then(() => {
       ElMessage.success('删除成功')
-      if (currentRole.value?.id === role.id) {
-        currentRole.value = null
-      }
+      if (currentRole.value?.id === role.id) currentRole.value = null
       loadRoles()
     })
   })
 }
 
-function navigateToLevel(level) {
-  currentLevel.value = level
-  
-  // 重置下级选择
-  if (level === 'conn') {
-    selectedConnId.value = ''
-    selectedSchema.value = ''
-    selectedTable.value = ''
-  } else if (level === 'schema') {
-    selectedSchema.value = ''
-    selectedTable.value = ''
-  } else if (level === 'table') {
-    selectedTable.value = ''
+// ─── 从角色的 powerList 初始化 explicitKeys ───
+function initExplicitKeysFromRole(role) {
+  explicitKeys.clear()
+  implicitKeys.clear()
+  const powers = role.powerList || []
+  for (const p of powers) {
+    explicitKeys.add(permToKey(p))
   }
-  
-  // 清空当前树的选中状态（allCheckedKeys 保持不变）
-  if (permissionTree.value) {
-    permissionTree.value.setCheckedKeys([])
-  }
-  
-  loadPermissionTree()
 }
 
-function loadPermissionTree() {
-  const params = { 
-    level: currentLevel.value,
-    roleId: currentRole.value?.id
+function permToKey(p) {
+  const parts = [p.connId]
+  if (p.schemaName) parts.push(p.schemaName)
+  if (p.tableName) parts.push(p.tableName)
+  if (p.columnName) parts.push(p.columnName)
+  return parts.join('::')
+}
+
+// ─── 层级导航 ───
+function navigateToLevel(level) {
+  currentLevel.value = level
+  if (level === 'conn') {
+    selectedConnId.value = ''
+    selectedConnLabel.value = ''
+    selectedSchema.value = ''
+    selectedSchemaLabel.value = ''
+    selectedTable.value = ''
+    selectedTableLabel.value = ''
+  } else if (level === 'schema') {
+    selectedSchema.value = ''
+    selectedSchemaLabel.value = ''
+    selectedTable.value = ''
+    selectedTableLabel.value = ''
+  } else if (level === 'table') {
+    selectedTable.value = ''
+    selectedTableLabel.value = ''
   }
-  
+  loadTree()
+}
+
+// ─── 加载权限树 ───
+function loadTree() {
+  const params = { level: currentLevel.value, roleId: currentRole.value?.id }
   if (selectedConnId.value) params.connId = selectedConnId.value
   if (selectedSchema.value) params.schema = selectedSchema.value
   if (selectedTable.value) params.table = selectedTable.value
-  
+
   http.get('/permissionTree', { params }).then(resp => {
-    permissionTreeData.value = resp.data.data || []
-    
-    // 提取接口返回的所有节点 keys
-    const extractAllKeys = (nodes) => {
-      const keys = []
-      const traverse = (nodeList) => {
-        for (const node of nodeList) {
-          keys.push(node.id)
-          if (node.children && node.children.length > 0) {
-            traverse(node.children)
-          }
-        }
-      }
-      traverse(nodes)
-      return keys
-    }
-    allNodeKeysInCurrentResponse.value = extractAllKeys(permissionTreeData.value)
-    console.log('接口返回的节点 keys:', allNodeKeysInCurrentResponse.value)
-    
-    nextTick(() => {
-      syncTreeCheckedState()
-    })
+    treeData.value = resp.data.data || []
+    // 收集当前树所有节点 key
+    currentTreeNodeKeys.clear()
+    collectNodeKeys(treeData.value)
+    nextTick(() => syncTreeVisual())
   })
 }
 
-function handleNodeClick(node) {
-  if (node.level === 'dir') {
-    // 目录节点不需要特殊处理，展开/收起由树组件自动处理
+function collectNodeKeys(nodes) {
+  for (const n of nodes) {
+    currentTreeNodeKeys.add(n.id)
+    if (n.children && n.children.length > 0) collectNodeKeys(n.children)
+  }
+}
+
+// ─── 同步树的视觉状态 ───
+// 根据 explicitKeys 计算当前树中哪些节点应该被勾选（explicit）或标记（implicit）
+function syncTreeVisual() {
+  if (!treeRef.value) return
+  isProgrammatic = true
+
+  // 1. 计算当前树中应该勾选的节点（explicit 的）
+  const checkedKeys = []
+  for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) continue
+    if (explicitKeys.has(key)) {
+      checkedKeys.push(key)
+    }
+  }
+
+  // 2. 计算 implicit 节点（当前树中的节点，自身不在 explicitKeys 中，但有下级在 explicitKeys 中）
+  implicitKeys.clear()
+  computeImplicitKeys()
+
+  // 3. 对于 implicit 的节点，也需要勾选（视觉上显示为选中），但会有「子级已选」标签区分
+  const allVisualKeys = [...checkedKeys]
+  for (const key of currentTreeNodeKeys) {
+    if (implicitKeys.has(key) && !allVisualKeys.includes(key)) {
+      allVisualKeys.push(key)
+    }
+  }
+
+  // 4. dir 节点：如果其下有任何被勾选或 implicit 的子节点，也勾选 dir
+  for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) {
+      const dirNode = findNodeInTree(treeData.value, key)
+      if (dirNode && dirNode.children) {
+        const hasChild = dirNode.children.some(c => allVisualKeys.includes(c.id))
+        if (hasChild && !allVisualKeys.includes(key)) {
+          allVisualKeys.push(key)
+        }
+      }
+    }
+  }
+
+  treeRef.value.setCheckedKeys(allVisualKeys)
+  nextTick(() => { isProgrammatic = false })
+}
+
+// 计算 implicit keys：当前树中的节点，自身不在 explicitKeys，但其下级路径有 explicitKeys
+function computeImplicitKeys() {
+  implicitKeys.clear()
+  // 遍历所有 explicitKeys，对每个 key 向上推导其所有祖先
+  for (const key of explicitKeys) {
+    const ancestors = getAncestorKeys(key)
+    for (const ancestor of ancestors) {
+      // 只有祖先自身不在 explicitKeys 中，才算 implicit
+      if (!explicitKeys.has(ancestor) && currentTreeNodeKeys.has(ancestor)) {
+        implicitKeys.add(ancestor)
+      }
+    }
+  }
+}
+
+// 根据 key 格式推导所有祖先 key
+// connId::schema::table::column -> [connId::schema::table, connId::schema, connId]
+function getAncestorKeys(key) {
+  if (key.startsWith('dir::')) return []
+  const parts = key.split('::')
+  const ancestors = []
+  for (let i = parts.length - 1; i >= 1; i--) {
+    ancestors.push(parts.slice(0, i).join('::'))
+  }
+  return ancestors
+}
+
+function findNodeInTree(nodes, id) {
+  for (const n of nodes) {
+    if (n.id === id) return n
+    if (n.children) {
+      const found = findNodeInTree(n.children, id)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// ─── 判断节点是否为 implicit（子级已选但自身未直接授权）───
+function isImplicitNode(nodeId) {
+  return implicitKeys.has(nodeId)
+}
+
+// ─── 处理用户勾选 ───
+function handleCheck(nodeData, checkState) {
+  if (isProgrammatic) return
+  // dir 节点不作为权限
+  if (nodeData.id.startsWith('dir::')) {
+    // 如果勾选了 dir，则勾选其下所有 conn 子节点
+    if (nodeData.children) {
+      const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
+      for (const child of nodeData.children) {
+        if (child.level === 'conn') {
+          if (isNowChecked) {
+            explicitKeys.add(child.id)
+          } else {
+            explicitKeys.delete(child.id)
+            removeDescendantKeys(child.id)
+          }
+        }
+      }
+    }
+    nextTick(() => syncTreeVisual())
     return
   }
-  if (node.level === 'conn') {
-    selectedConnId.value = node.id
+
+  const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
+  if (isNowChecked) {
+    explicitKeys.add(nodeData.id)
+  } else {
+    // 取消勾选：如果节点本身在 explicitKeys 中，只移除自身
+    // 如果节点是 implicit 的（自身不在 explicitKeys，但因子级而显示），则移除所有下级
+    if (explicitKeys.has(nodeData.id)) {
+      explicitKeys.delete(nodeData.id)
+    } else {
+      // implicit 节点被取消 → 移除所有下级权限
+      removeDescendantKeys(nodeData.id)
+    }
+  }
+  nextTick(() => syncTreeVisual())
+}
+
+// 移除某个 key 的所有下级 explicitKeys
+function removeDescendantKeys(parentKey) {
+  const prefix = parentKey + '::'
+  const toRemove = []
+  for (const key of explicitKeys) {
+    if (key.startsWith(prefix)) {
+      toRemove.push(key)
+    }
+  }
+  for (const key of toRemove) {
+    explicitKeys.delete(key)
+  }
+}
+
+// ─── 节点点击（进入下一级）───
+function handleNodeClick(nodeData) {
+  if (nodeData.level === 'dir') return
+  if (nodeData.level === 'conn') {
+    selectedConnId.value = nodeData.id
+    selectedConnLabel.value = nodeData.label
     navigateToLevel('schema')
-  } else if (node.level === 'schema') {
-    selectedSchema.value = node.id
+  } else if (nodeData.level === 'schema') {
+    selectedSchema.value = nodeData.id
+    selectedSchemaLabel.value = nodeData.label
     navigateToLevel('table')
-  } else if (node.level === 'table') {
-    selectedTable.value = node.id
+  } else if (nodeData.level === 'table') {
+    selectedTable.value = nodeData.id
+    selectedTableLabel.value = nodeData.label
     navigateToLevel('column')
   }
 }
 
-// 处理节点勾选状态变化
-function handleCheckChange(nodeData, checked) {
-  console.log('handleCheckChange 被调用:', {
-    nodeId: nodeData.id,
-    checked: checked,
-    nodeLevel: nodeData.level
-  })
-  
-  if (checked) {
-    // 选中时，自动选中所有父级节点（向上传递）
-    const currentKey = nodeData.id
-    
-    // 获取当前树中已选中的 keys
-    const currentCheckedKeys = permissionTree.value.getCheckedKeys() || []
-    console.log('当前树中选中的 keys:', currentCheckedKeys)
-    
-    // 获取父级节点 keys（包括目录节点）
-    let parentKeys = []
-    if (nodeData.level === 'conn' && nodeData.parentId && nodeData.parentId.startsWith('dir::')) {
-      // conn 节点的父节点是目录节点
-      parentKeys = [nodeData.parentId]
-    } else if (nodeData.level === 'schema') {
-      // schema 节点的父节点是 conn
-      parentKeys = [nodeData.parentId]
-    } else if (nodeData.level === 'table') {
-      // table 节点的父节点路径：connId::schema
-      const parts = nodeData.id.split('::')
-      if (parts.length >= 2) {
-        parentKeys = [parts.slice(0, 2).join('::')]
-      }
-    } else if (nodeData.level === 'column') {
-      // column 节点的父节点路径：connId::schema::table
-      const parts = nodeData.id.split('::')
-      if (parts.length >= 3) {
-        parentKeys = [parts.slice(0, 3).join('::')]
-      }
-    }
-    
-    console.log('父级节点 keys:', parentKeys)
-    
-    // 合并当前选中的 key 和所有父级 key
-    const allKeys = new Set([...currentCheckedKeys, ...parentKeys])
-    console.log('合并后的 keys:', allKeys)
-    
-    // 更新全局选中 keys
-    allCheckedKeys.value = Array.from(allKeys)
-    console.log('allCheckedKeys:', allCheckedKeys.value)
-    
-    // 使用 setCheckedKeys 批量设置（设置所有选中的 keys，包括父级）
-    permissionTree.value.setCheckedKeys(Array.from(allKeys))
-  } else {
-    // 取消选中时，从全局选中 keys 中移除
-    const currentKey = nodeData.id
-    allCheckedKeys.value = allCheckedKeys.value.filter(key => key !== currentKey)
-    
-    // 同步树的选中状态
-    permissionTree.value.setCheckedKeys(allCheckedKeys.value)
-  }
-}
-
-// 获取当前节点的所有父级节点 key
-// 节点 ID 格式：connId::schema::table::column
-function getParentKeys(key) {
-  const parts = key.split('::')
-  const parents = []
-  
-  // 逐级向上构建父级节点的 key
-  // 例如：conn1::schema1::table1::col1 的父级有：
-  // - conn1::schema1::table1 (table 级)
-  // - conn1::schema1 (schema 级)
-  // - conn1 (conn 级)
-  for (let i = parts.length - 1; i > 0; i--) {
-    parents.push(parts.slice(0, i).join('::'))
-  }
-  
-  return parents
-}
-
-// 同步树的勾选状态
-function syncTreeCheckedState() {
-  const treeRef = permissionTree.value
-  if (!treeRef) return
-  
-  // 从后端返回的节点数据中提取所有已勾选的节点 key
-  const extractCheckedKeys = (nodes) => {
-    const keys = []
-    const traverse = (nodeList) => {
-      for (const node of nodeList) {
-        if (node.checked) {
-          keys.push(node.id)
-        }
-        if (node.children && node.children.length > 0) {
-          traverse(node.children)
-        }
-      }
-    }
-    traverse(nodes)
-    return keys
-  }
-  
-  const checkedKeys = extractCheckedKeys(permissionTreeData.value)
-  
-  // 设置树的选中状态（显示已保存的权限）
-  if (checkedKeys.length > 0) {
-    treeRef.setCheckedKeys(checkedKeys)
-  }
-}
-
-function getConnNameById(connId) {
-  // 在权限树数据中查找连接名称
-  const findConn = (nodes) => {
-    for (const node of nodes) {
-      if (node.id === connId) return node.label
-      if (node.children) {
-        const found = findConn(node.children)
-        if (found) return found
-      }
-    }
-    return null
-  }
-  return findConn(permissionTreeData.value) || ''
-}
-
-function findConnById(connId) {
-  const findInTree = (nodes) => {
-    for (const node of nodes) {
-      if (node.id === connId) return node
-      if (node.children) {
-        const found = findInTree(node.children)
-        if (found) return found
-      }
-    }
-    return null
-  }
-  return findInTree(permissionTreeData.value)
-}
-
+// ─── 保存权限 ───
 function savePermissions() {
   if (!currentRole.value) return
-  
   saving.value = true
-  
-  // 获取当前树中实际勾选的 keys
-  const currentTreeCheckedKeys = permissionTree.value.getCheckedKeys() || []
-  
-  // 调试信息：查看当前树选中的 keys
-  console.log('当前树选中的 keys:', currentTreeCheckedKeys)
-  console.log('接口返回的节点 keys:', allNodeKeysInCurrentResponse.value)
-  
-  // 从当前勾选的节点构建权限列表
+
+  // 从 explicitKeys 构建当前层级范围内的权限列表
   const currentPowers = []
-  for (const key of currentTreeCheckedKeys) {
-    // 跳过目录节点（dir:: 开头的 key）
-    if (key.startsWith('dir::')) {
-      continue
-    }
-    
+  for (const key of explicitKeys) {
+    if (key.startsWith('dir::')) continue
     const parts = key.split('::')
     const connId = parts[0]
     const schema = parts[1] || ''
     const table = parts[2] || ''
     const column = parts[3] || ''
-    
     let level = 'conn'
     if (column) level = 'column'
     else if (table) level = 'table'
     else if (schema) level = 'schema'
-    
-    const connName = getConnNameById(connId)
-    
+
     currentPowers.push({
       connId,
-      connName,
+      connName: null,
       schemaName: schema || null,
       tableName: table || null,
       columnName: column || null,
-      level
+      level,
     })
   }
-  
-  // 调试信息：查看构建的权限列表
-  console.log('当前构建的权限列表:', currentPowers)
-  
-  // 获取旧权限中属于当前层级的权限（只在接口返回的节点范围内的）
+
+  // 旧权限
   const oldPowers = currentRole.value.powerList || []
-  const oldPowersInCurrentResponse = oldPowers.filter(p => {
-    const key = permToKey(p)
-    return allNodeKeysInCurrentResponse.value.includes(key)
-  })
-  
-  console.log('旧权限中在接口返回范围内的:', oldPowersInCurrentResponse)
-  
-  // 计算增量
-  const oldKeysInCurrentResponse = new Set(oldPowersInCurrentResponse.map(permToKey))
-  const currentKeys = new Set(currentPowers.map(permToKey))
-  
-  // 只处理真正取消选中的权限（接口返回了，旧权限中有，但本次未选中）
-  const delPowers = oldPowersInCurrentResponse.filter(p => !currentKeys.has(permToKey(p)))
-  
-  // 只处理真正新增的权限（本次选中了，但旧权限中没有）
-  const addPowers = currentPowers.filter(p => !oldKeysInCurrentResponse.has(permToKey(p)))
-  
-  // 调试信息：查看增量
-  console.log('addPowers:', addPowers)
-  console.log('delPowers:', delPowers)
-  
+  const oldKeySet = new Set(oldPowers.map(permToKey))
+  const newKeySet = new Set([...explicitKeys].filter(k => !k.startsWith('dir::')))
+
+  // 增量计算
+  const addPowers = currentPowers.filter(p => !oldKeySet.has(permToKey(p)))
+  const delPowers = oldPowers.filter(p => !newKeySet.has(permToKey(p)))
+
   const roleData = {
     id: currentRole.value.id,
     name: currentRole.value.name,
     addPowers,
-    delPowers
+    delPowers,
   }
-  
-  saveRoleData(roleData).then(() => {
+
+  http.post('/saveRole', roleData).then(() => {
     saving.value = false
-    // 更新当前角色的权限列表（合并所有层级的权限）
-    const remainingOldPowers = oldPowers.filter(p => {
-      const key = permToKey(p)
-      return !allNodeKeysInCurrentResponse.value.includes(key)
-    })
-    currentRole.value.powerList = [...remainingOldPowers, ...currentPowers]
+    // 更新本地角色的 powerList
+    currentRole.value.powerList = currentPowers
     loadRoles()
     ElMessage.success('保存成功')
   }).catch(() => {
@@ -546,13 +438,10 @@ function savePermissions() {
   })
 }
 
-function saveRoleData(roleData) {
-  return http.post('/saveRole', roleData)
-}
-
 function cancelEdit() {
   if (currentRole.value) {
-    loadPermissionTree()
+    initExplicitKeysFromRole(currentRole.value)
+    loadTree()
   }
 }
 </script>
@@ -564,42 +453,17 @@ function cancelEdit() {
   flex-direction: column;
   background: #f5f7fa;
 }
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 24px;
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0;
-}
-
 .page-content {
   flex: 1;
   padding: 20px;
   overflow: hidden;
 }
-
 .role-permission-container {
   display: grid;
   grid-template-columns: 300px 1fr;
   gap: 20px;
   height: 100%;
 }
-
 .role-list-panel,
 .permission-config-panel {
   background: #fff;
@@ -609,7 +473,6 @@ function cancelEdit() {
   flex-direction: column;
   overflow: hidden;
 }
-
 .panel-header {
   padding: 16px 20px;
   border-bottom: 1px solid #e4e7ed;
@@ -617,14 +480,12 @@ function cancelEdit() {
   justify-content: space-between;
   align-items: center;
 }
-
 .panel-header h2 {
   font-size: 18px;
   font-weight: 600;
   margin: 0;
   color: #303133;
 }
-
 .permission-config-content {
   flex: 1;
   display: flex;
@@ -633,58 +494,69 @@ function cancelEdit() {
   overflow: hidden;
   height: 100%;
 }
-
 .level-nav {
   display: flex;
-  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 16px;
   padding-bottom: 16px;
   border-bottom: 1px solid #e4e7ed;
   flex-shrink: 0;
 }
-
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .permission-tree-wrapper {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  margin-bottom: 16px;
   min-height: 0;
 }
-
 .permission-tree-container {
   flex: 1;
   overflow-y: auto;
   overflow-x: auto;
 }
-
-.action-buttons {
-  padding-right: 35px;
-  position: absolute;
-  right: 20px;
-}
-
 .tree-node {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-
 .node-label {
-  flex: 1;
+  flex-shrink: 0;
 }
-
+.node-label.node-clickable {
+  cursor: pointer;
+  color: #409eff;
+}
+.node-label.node-clickable:hover {
+  text-decoration: underline;
+}
 .node-comment {
   font-size: 12px;
   color: #909399;
   margin-left: 8px;
 }
-
+.implicit-tag {
+  margin-left: 8px;
+  font-size: 11px;
+}
+/* implicit 节点的 checkbox 用半选样式区分 */
+:deep(.el-tree) .is-checked .el-checkbox__inner {
+  background-color: #409eff;
+  border-color: #409eff;
+}
 :deep(.el-table) {
   font-size: 14px;
 }
-
 :deep(.el-table .el-button) {
   padding: 4px 8px;
+}
+:deep(.el-breadcrumb) {
+  display: flex;
+  align-items: center;
 }
 </style>

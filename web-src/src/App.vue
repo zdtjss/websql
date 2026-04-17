@@ -219,7 +219,7 @@
               <Setting />
             </el-icon>
           </el-button>
-          <el-button v-if="!loginSucc && isRemote" circle size="small" @click="toLogin" title="登录">
+          <el-button v-if="!loginSucc && isRemote" circle size="small" @click="showLoginDialog" title="登录">
             <el-icon>
               <User />
             </el-icon>
@@ -230,26 +230,9 @@
             </el-icon>
           </el-button>
         </div>
-      <!-- 登录对话框 -->
-      <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
-        @opened="loginName.focus()">
-        <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
-          <el-form-item label="用户名" prop="name">
-            <el-input ref="loginName" v-model="loginForm.name" />
-          </el-form-item>
-          <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
-            <el-input v-model="loginForm.password" type="password" />
-          </el-form-item>
-        </el-form>
-        <template #footer>
-          <span class="dialog-footer">
-            <el-button type="primary" @click="login" :loading="logining">登录</el-button>
-            <el-button @click="loginDialogVisible = false">关闭</el-button>
-          </span>
-        </template>
-      </el-dialog>
     </div>
     </div>
+    <LoginDialog ref="loginDialogRef" v-model="loginDialogVisible" @login-success="handleLoginSuccess" />
     <PromptDrawer ref="promptDrawerRef" v-model="promptDrawerVisible" @add="handlePromptAdd" @edit="handlePromptEdit" @send-to-AI="handleSendPromptToAI" />
     <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" @saved="handlePromptSaved" @send-to-AI="handleSendPromptToAI" />
   </div>
@@ -259,11 +242,11 @@
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import PromptDrawer from '@/components/PromptDrawer.vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
+import LoginDialog from '@/components/LoginDialog.vue'
 import http from '@/js/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { ChatLineRound, Clock, Delete, Document, DocumentAdd, Microphone, Promotion, Setting, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
-import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
@@ -1024,6 +1007,15 @@ async function sendMessage() {
       signal: controller.signal,
     })
 
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     if (!resp.ok) {
       ElMessage({ message: `请求失败: ${resp.status}`, type: 'error' })
       return
@@ -1179,6 +1171,15 @@ async function handleConfirmExec(confirmedSql) {
       signal: controller.signal,
     })
 
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -1272,6 +1273,15 @@ async function executeConfirmedSQL(sql) {
       }),
     })
 
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -1343,6 +1353,16 @@ async function handleExcelUpload(file) {
       headers: { 'Authorization': auth },
       body: formData,
     })
+
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
       throw new Error(sanitizeError(errData.error) || `上传失败：${resp.status}`)
@@ -1633,6 +1653,41 @@ function logout() {
     })
 }
 
+const loginDialogRef = ref(null)
+
+function showLoginDialog() {
+  loginDialogVisible.value = true
+}
+
+function handleSessionExpired() {
+  loginSucc.value = false
+  sessionStorage.removeItem('authentication')
+  sessionStorage.removeItem('currentUser')
+  // 延迟一下再弹出登录对话框，确保 UI 状态已更新
+  nextTick(() => {
+    loginDialogVisible.value = true
+  })
+}
+
+function handleSessionExpiredEvent(event) {
+  const message = event.detail?.message || '登录已过期，请重新登录'
+  ElMessage({ message: message, type: 'warning' })
+  handleSessionExpired()
+}
+
+function handleLoginSuccess(userData) {
+  currentUser.value = userData
+  loginSucc.value = true
+  loadConnList()
+  loadPromptList()
+}
+
+function loadPromptList() {
+  if (promptDrawerRef.value) {
+    promptDrawerRef.value.loadPrompts()
+  }
+}
+
 function openSystemManagement() {
   console.log('[App.vue] 打开系统管理页面，当前 currentUser:', currentUser.value)
   // 将 currentUser 存储到 sessionStorage
@@ -1685,6 +1740,15 @@ async function loadSessionList() {
       headers: { 'Authorization': auth }
     })
 
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     if (!resp.ok) {
       throw new Error(`请求失败：${resp.status}`)
     }
@@ -1730,6 +1794,15 @@ async function deleteSession(id) {
       method: 'GET',
       headers: { 'Authorization': auth }
     })
+
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
 
     if (!resp.ok) {
       throw new Error(`请求失败：${resp.status}`)
@@ -1811,6 +1884,15 @@ async function loadSession(id) {
       headers: { 'Authorization': auth }
     })
 
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
     if (!resp.ok) {
       throw new Error(`请求失败：${resp.status}`)
     }
@@ -1852,6 +1934,7 @@ onMounted(() => {
   document.addEventListener('keyup', handleMermaidKeyUp)
   document.addEventListener('mousemove', handleMermaidMouseMove)
   document.addEventListener('mouseup', handleMermaidMouseUp)
+  window.addEventListener('session-expired', handleSessionExpiredEvent)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
   nextTick(() => {
@@ -1869,6 +1952,7 @@ onUnmounted(() => {
   document.removeEventListener('keyup', handleMermaidKeyUp)
   document.removeEventListener('mousemove', handleMermaidMouseMove)
   document.removeEventListener('mouseup', handleMermaidMouseUp)
+  window.removeEventListener('session-expired', handleSessionExpiredEvent)
   if (msgContainer.value) {
     msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
     msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)

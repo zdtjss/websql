@@ -20,7 +20,7 @@
         <el-input v-model="systemConfig.aiModel" placeholder="qwen3.5:2b" />
       </el-form-item>
       <el-form-item label="API Key">
-        <el-input v-model="systemConfig.aiApiKey" type="password" show-password placeholder="sk-..." />
+        <el-input v-model="systemConfig.aiApiKey" placeholder="sk-..." />
       </el-form-item>
       <el-form-item label="Temperature">
         <el-slider v-model="systemConfig.aiTemperature" :min="0" :max="2" :step="0.1" show-input />

@@ -14,8 +14,5 @@ func GetAIConfig() (*admin.AIConfig, error) {
 	if cfg == nil {
 		return nil, nil
 	}
-	if cfg.ApiKey != "" {
-		cfg.ApiKey = "****"
-	}
 	return cfg, nil
 }

@@ -58,11 +58,6 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 		}
 	}
 
-	// 隐藏 apiKey
-	if cfg.AIApiKey != "" {
-		cfg.AIApiKey = "****"
-	}
-
 	logutils.PrintErr(fmt.Errorf("返回配置数据：%+v", cfg))
 	utils.WriteJson(c.Writer, cfg)
 }
@@ -83,7 +78,7 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 	SaveSystemConfig(&SystemConfigSave{
 		ConfigKey: "ai.model", ConfigValue: cfg.AIModel, ConfigType: "ai", Remark: "AI 模型名称",
 	})
-	if cfg.AIApiKey != "" && cfg.AIApiKey != "****" {
+	if cfg.AIApiKey != "" {
 		SaveSystemConfig(&SystemConfigSave{
 			ConfigKey: "ai.apiKey", ConfigValue: cfg.AIApiKey, ConfigType: "ai", Remark: "AI API 密钥",
 		})
@@ -132,10 +127,6 @@ func GetAIConfigHandler(c *gin.Context) {
 			"apiKey":   "",
 		})
 		return
-	}
-	// 隐藏 apiKey
-	if cfg.ApiKey != "" {
-		cfg.ApiKey = "****"
 	}
 	utils.WriteJson(c.Writer, cfg)
 }
