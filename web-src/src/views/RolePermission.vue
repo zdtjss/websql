@@ -246,21 +246,29 @@ function syncTreeVisual() {
   // 3. 对于 implicit 的节点，也需要勾选（视觉上显示为选中），但会有「子级已选」标签区分
   const allVisualKeys = [...checkedKeys]
   for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) continue // dir 节点不勾选
     if (implicitKeys.has(key) && !allVisualKeys.includes(key)) {
       allVisualKeys.push(key)
     }
   }
 
-  // 4. dir 节点：如果其下有任何被勾选或 implicit 的子节点，也勾选 dir
+  // 4. dir 节点处理：
+  //    - 所有子连接都被选中（explicit 或 implicit）→ 勾选 dir
+  //    - 部分子连接被选中 → 不勾选 dir，但标记为 implicit（显示「子级已选」）
+  //    - 无子连接被选中 → 不勾选 dir
   for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) {
-      const dirNode = findNodeInTree(treeData.value, key)
-      if (dirNode && dirNode.children) {
-        const hasChild = dirNode.children.some(c => allVisualKeys.includes(c.id))
-        if (hasChild && !allVisualKeys.includes(key)) {
-          allVisualKeys.push(key)
-        }
-      }
+    if (!key.startsWith('dir::')) continue
+    const dirNode = findNodeInTree(treeData.value, key)
+    if (!dirNode || !dirNode.children || dirNode.children.length === 0) continue
+    const connChildren = dirNode.children.filter(c => c.level === 'conn')
+    if (connChildren.length === 0) continue
+    const selectedCount = connChildren.filter(c => allVisualKeys.includes(c.id)).length
+    if (selectedCount === connChildren.length) {
+      // 全选 → 勾选 dir
+      allVisualKeys.push(key)
+    } else if (selectedCount > 0) {
+      // 部分选中 → 标记为 implicit（不勾选，只显示标签）
+      implicitKeys.add(key)
     }
   }
 

@@ -39,9 +39,6 @@ func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []
 	if len(powerDetails) == 0 {
 		return []*Tree{}
 	}
-	// 检查是否有 conn 级权限（无 schema 配置则全部可用）
-	hasConnPerm := false
-	hasAnySchemaConfig := false
 	allowedSchemas := make(map[string]bool)
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
@@ -49,29 +46,22 @@ func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []
 		}
 		switch p.Level {
 		case "conn":
-			hasConnPerm = true
+			// conn 级权限 → 全部 schema 可用（无论是否有下级配置）
+			return schemas
 		case "schema":
-			hasAnySchemaConfig = true
 			if p.SchemaName != nil {
 				allowedSchemas[*p.SchemaName] = true
 			}
 		case "table":
-			// 有 table 级权限意味着其 schema 也应可见
 			if p.SchemaName != nil {
 				allowedSchemas[*p.SchemaName] = true
 			}
 		case "column":
-			// 有 column 级权限意味着其 schema 也应可见
 			if p.SchemaName != nil {
 				allowedSchemas[*p.SchemaName] = true
 			}
 		}
 	}
-	// conn 级权限且无 schema 配置 → 全部可用
-	if hasConnPerm && !hasAnySchemaConfig {
-		return schemas
-	}
-	// 过滤
 	filtered := make([]*Tree, 0)
 	for _, s := range schemas {
 		if allowedSchemas[s.Label] {
@@ -181,11 +171,6 @@ func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization 
 	if len(powerDetails) == 0 {
 		return []*Tree{}
 	}
-	// 检查是否有上级权限（conn 或 schema 级）
-	hasConnPerm := false
-	hasSchemaPerm := false
-	hasAnySchemaConfig := false
-	hasAnyTableConfig := false
 	allowedTables := make(map[string]bool)
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
@@ -193,33 +178,23 @@ func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization 
 		}
 		switch p.Level {
 		case "conn":
-			hasConnPerm = true
+			// conn 级权限 → 全部表可用
+			return tables
 		case "schema":
-			hasAnySchemaConfig = true
 			if p.SchemaName != nil && *p.SchemaName == schema {
-				hasSchemaPerm = true
+				// schema 级权限 → 该 schema 下全部表可用
+				return tables
 			}
 		case "table":
-			hasAnyTableConfig = true
 			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
 				allowedTables[*p.TableName] = true
 			}
 		case "column":
-			// 有 column 级权限意味着其 table 也应可见
 			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
 				allowedTables[*p.TableName] = true
 			}
 		}
 	}
-	// conn 级权限且无 schema 配置 → 全部可用
-	if hasConnPerm && !hasAnySchemaConfig {
-		return tables
-	}
-	// schema 级权限且无 table 配置 → 全部可用
-	if hasSchemaPerm && !hasAnyTableConfig {
-		return tables
-	}
-	// 过滤
 	filtered := make([]*Tree, 0)
 	for _, t := range tables {
 		if allowedTables[t.Label] {
@@ -240,39 +215,26 @@ func checkTableAccess(connId, schemaName, tableName, authorization string) {
 		logutils.PanicErr(errors.New("无权访问此表"))
 		return
 	}
-	hasConnPerm := false
-	hasAnySchemaConfig := false
-	hasSchemaPerm := false
-	hasAnyTableConfig := false
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
 			continue
 		}
 		switch p.Level {
 		case "conn":
-			hasConnPerm = true
+			return // conn 级权限 → 全部表可用
 		case "schema":
-			hasAnySchemaConfig = true
 			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				hasSchemaPerm = true
+				return // schema 级权限 → 该 schema 下全部表可用
 			}
 		case "table":
-			hasAnyTableConfig = true
 			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
-				return // 精确匹配表权限
+				return
 			}
 		case "column":
-			// 有 column 级权限意味着可以访问其所属表
 			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
 				return
 			}
 		}
-	}
-	if hasConnPerm && !hasAnySchemaConfig {
-		return
-	}
-	if hasSchemaPerm && !hasAnyTableConfig {
-		return
 	}
 	logutils.PanicErr(errors.New("无权访问此表"))
 }

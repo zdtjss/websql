@@ -61,8 +61,6 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 
 	hasConnPerm := false
 	hasSchemaPerm := false
-	hasAnySchemaConfig := false
-	hasAnyTableConfig := false
 
 	for _, power := range powerList {
 		if power.ConnId != connId {
@@ -86,13 +84,11 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		case "conn":
 			hasConnPerm = true
 		case "schema":
-			hasAnySchemaConfig = true
 			if schemaName == "" || pSchema == schemaName {
 				hasSchemaPerm = true
 			}
 		case "table":
 			if (schemaName == "" || pSchema == schemaName) && pTable != "" {
-				hasAnyTableConfig = true
 				scope.AllowedTables[pTable] = true
 			}
 		case "column":
@@ -107,12 +103,12 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		}
 	}
 
-	// 向下继承规则
-	if hasConnPerm && !hasAnySchemaConfig {
+	// 向下继承规则：上级权限无条件包含下级所有权限
+	if hasConnPerm {
 		scope.HasFullConnAccess = true
 		return scope
 	}
-	if hasSchemaPerm && !hasAnyTableConfig {
+	if hasSchemaPerm {
 		scope.HasFullSchemaAccess = true
 		return scope
 	}

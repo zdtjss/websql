@@ -360,11 +360,6 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 	hasTablePermission := false
 	hasColumnPermission := false
 
-	// 标记是否配置了下级权限（只统计当前层级下的）
-	hasAnySchemaInThisConn := false  // 当前 conn 下是否配置了任何 schema
-	hasAnyTableInThisSchema := false // 当前 schema 下是否配置了任何 table
-	hasAnyColumnInThisTable := false // 当前 table 下是否配置了任何 column
-
 	for _, power := range powerDetails {
 		if power.ConnId != param.ConnId {
 			continue
@@ -376,35 +371,21 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 			log.Printf("checkPowerByParam: 有 conn 权限 connId=%s", power.ConnId)
 		case "schema":
 			if power.SchemaName != nil {
-				// 统计当前 conn 下是否有 schema 配置
-				hasAnySchemaInThisConn = true
-				// log.Printf("checkPowerByParam: 有 schema 权限 connId=%s, schema=%s", power.ConnId, *power.SchemaName)
-				// 检查是否有当前 schema 的权限（如果请求的 schema 为空，则匹配所有）
 				if param.SchemaName == "" || *power.SchemaName == param.SchemaName {
 					hasSchemaPermission = true
-					log.Printf("checkPowerByParam: 匹配当前 schema=%s", param.SchemaName)
 				}
 			}
 		case "table":
 			if power.SchemaName != nil && power.TableName != nil {
-				// 统计当前 schema 下是否有 table 配置（如果请求的 schema 为空，则匹配所有）
 				if param.SchemaName == "" || *power.SchemaName == param.SchemaName {
-					hasAnyTableInThisSchema = true
-					// log.Printf("checkPowerByParam: 有 table 权限 schema=%s, table=%s", *power.SchemaName, *power.TableName)
-					// 检查是否有当前 table 的权限
 					if param.TableName == "" || *power.TableName == param.TableName {
 						hasTablePermission = true
-						// log.Printf("checkPowerByParam: 匹配当前 table=%s", param.TableName)
 					}
 				}
 			}
 		case "column":
 			if power.SchemaName != nil && power.TableName != nil && power.ColumnName != nil {
-				// 统计当前 table 下是否有 column 配置（如果请求的 schema 为空，则匹配所有）
 				if param.SchemaName == "" || (*power.SchemaName == param.SchemaName && *power.TableName == param.TableName) {
-					hasAnyColumnInThisTable = true
-					// log.Printf("checkPowerByParam: 有 column 权限 table=%s, column=%s", *power.TableName, *power.ColumnName)
-					// 检查是否有当前 column 的权限
 					if *power.ColumnName != "" {
 						hasColumnPermission = true
 					}
@@ -413,62 +394,30 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 		}
 	}
 
-	log.Printf("checkPowerByParam: hasConn=%v, hasSchema=%v, hasTable=%v, hasColumn=%v, hasAnySchema=%v, hasAnyTable=%v, hasAnyColumn=%v",
-		hasConnPermission, hasSchemaPermission, hasTablePermission, hasColumnPermission,
-		hasAnySchemaInThisConn, hasAnyTableInThisSchema, hasAnyColumnInThisTable)
+	log.Printf("checkPowerByParam: hasConn=%v, hasSchema=%v, hasTable=%v, hasColumn=%v",
+		hasConnPermission, hasSchemaPermission, hasTablePermission, hasColumnPermission)
 
-	// 权限判断逻辑（向下继承）
+	// 权限判断逻辑（上级权限无条件包含下级）
 
-	// 1. 检查 conn 级权限
+	// 1. conn 级权限 → 直接通过
 	if hasConnPermission {
-		// 如果 conn 下没有配置任何 schema，则有所有 schema 权限
-		if !hasAnySchemaInThisConn {
-			log.Printf("checkPowerByParam: conn 级通过（无 schema 配置）")
-			return true
-		}
-		// 如果配置了 schema，检查是否有当前 schema 的权限
-		if hasSchemaPermission {
-			// 特殊情况：如果请求的 schema 为空（列举所有表），需要继续检查 table 级权限
-			if param.SchemaName == "" && hasAnyTableInThisSchema && !hasTablePermission {
-				// 有 schema 权限，但 schema 下配置了 table 权限，且当前表不在权限列表中
-				// 这种情况不应该通过，让后续逻辑判断
-				// log.Printf("checkPowerByParam: schema 级权限但配置了 table，继续检查")
-			} else {
-				log.Printf("checkPowerByParam: conn 级通过（有 schema 权限）")
-				return true
-			}
-		}
+		log.Printf("checkPowerByParam: conn 级通过")
+		return true
 	}
 
-	// 2. 检查 schema 级权限
+	// 2. schema 级权限 → 直接通过
 	if hasSchemaPermission {
-		// 如果 schema 下没有配置任何 table，则有所有 table 权限
-		if !hasAnyTableInThisSchema {
-			log.Printf("checkPowerByParam: schema 级通过（无 table 配置）")
-			return true
-		}
-		// 如果配置了 table，检查是否有当前 table 的权限
-		if hasTablePermission {
-			log.Printf("checkPowerByParam: schema 级通过（有 table 权限）")
-			return true
-		}
+		log.Printf("checkPowerByParam: schema 级通过")
+		return true
 	}
 
-	// 3. 检查 table 级权限
+	// 3. table 级权限 → 直接通过
 	if hasTablePermission {
-		// 如果 table 下没有配置任何 column，则有所有 column 权限（即有表权限）
-		if !hasAnyColumnInThisTable {
-			log.Printf("checkPowerByParam: table 级通过（无 column 配置）")
-			return true
-		}
-		// 如果配置了 column，只要有 column 权限就有表权限
-		if hasColumnPermission {
-			log.Printf("checkPowerByParam: table 级通过（有 column 权限）")
-			return true
-		}
+		log.Printf("checkPowerByParam: table 级通过")
+		return true
 	}
 
-	// 4. 检查 column 级权限
+	// 4. column 级权限 → 通过（表示至少可以访问该表的部分字段）
 	if hasColumnPermission {
 		log.Printf("checkPowerByParam: column 级通过")
 		return true
