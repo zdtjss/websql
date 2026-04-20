@@ -133,6 +133,13 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 		return
 	}
 
+	// SQL 签名验证：防止前端篡改确认执行的 SQL
+	if req.PendingSign == "" || !VerifySQLSign(req.PendingSQL, req.PendingSign) {
+		log.Printf("[Handler] SQL 签名验证失败 - userId=%s, sql=%s\n", user.Id, req.PendingSQL)
+		c.JSON(http.StatusForbidden, gin.H{"error": "SQL 签名验证失败，请重新操作"})
+		return
+	}
+
 	// 权限检查
 	_, dbSchema, _ := getDBInfo(req.ConnID)
 	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)

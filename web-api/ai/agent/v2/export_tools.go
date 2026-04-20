@@ -118,8 +118,20 @@ func queryForExport(conn *sqlx.DB, sql string) (*queryResult, error) {
 	if sql == "" {
 		return nil, fmt.Errorf("SQL 不能为空")
 	}
-	if !strings.HasPrefix(strings.ToUpper(sql), "SELECT") {
+	// 去除注释后检查 SQL 类型
+	stripped := stripSQLComments(sql)
+	upper := strings.ToUpper(stripped)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
 		return nil, fmt.Errorf("导出仅支持 SELECT 查询")
+	}
+	// WITH CTE 中不允许包含写操作
+	if strings.HasPrefix(upper, "WITH") {
+		writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
+		for _, kw := range writeKeywords {
+			if strings.Contains(upper, kw) {
+				return nil, fmt.Errorf("导出查询不允许包含写操作（%s）", strings.TrimSpace(kw))
+			}
+		}
 	}
 
 	rows, err := conn.Queryx(sql)

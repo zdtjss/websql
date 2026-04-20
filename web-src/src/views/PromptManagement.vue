@@ -94,6 +94,7 @@ import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Edit, Loading, User } from '@element-plus/icons-vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
+import { preloadVditor } from '@/utils/vditorLoader'
 
 const roles = ref([])
 const currentRole = ref(null)
@@ -112,6 +113,8 @@ const filteredRoles = computed(() => {
 
 onMounted(() => {
   loadRoles()
+  // 进入提示词管理页面时预加载 Vditor
+  preloadVditor()
 })
 
 async function loadRoles() {

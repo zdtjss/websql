@@ -242,6 +242,7 @@
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import PromptDrawer from '@/components/PromptDrawer.vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
+import { preloadVditor } from '@/utils/vditorLoader'
 import LoginDialog from '@/components/LoginDialog.vue'
 import http from '@/js/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
@@ -578,6 +579,7 @@ const processedLinks = new Set()
 // SQL 确认相关
 const confirmVisible = ref(false)
 const confirmSQL = ref('')
+const confirmSign = ref('')
 const confirmOperationType = ref('SELECT')
 const confirmRiskLevel = ref('low')
 const confirmDescription = ref('')
@@ -1055,7 +1057,7 @@ async function sendMessage() {
               scrollToBottom()
               break
             case 'danger_confirm':
-              collectedDangerSQLs.push(chunk.sql || chunk.content)
+              collectedDangerSQLs.push({ sql: chunk.sql || chunk.content, sign: chunk.sqlSign || '' })
               break
             case 'retry_limit':
               retryMessage.value = chunk.content
@@ -1089,11 +1091,11 @@ async function sendMessage() {
     // 处理收集到的危险 SQL
     if (collectedDangerSQLs.length > 0) {
       if (collectedDangerSQLs.length === 1) {
-        showConfirmDialog(collectedDangerSQLs[0])
+        showConfirmDialog(collectedDangerSQLs[0].sql, collectedDangerSQLs[0].sign)
       } else {
-        pendingSQLList.value = collectedDangerSQLs.map(sql => {
-          const analysis = analyzeSQL(sql)
-          return { sql, ...analysis }
+        pendingSQLList.value = collectedDangerSQLs.map(item => {
+          const analysis = analyzeSQL(item.sql)
+          return { sql: item.sql, sign: item.sign, ...analysis }
         })
       }
     }
@@ -1127,11 +1129,12 @@ async function sendMessage() {
 }
 
 // 显示确认区域
-function showConfirmDialog(sql) {
+function showConfirmDialog(sql, sign) {
   // 分析 SQL
   const analysis = analyzeSQL(sql)
 
   confirmSQL.value = sql
+  confirmSign.value = sign || ''
   confirmOperationType.value = analysis.type
   confirmRiskLevel.value = analysis.riskLevel
   confirmDescription.value = analysis.description
@@ -1167,6 +1170,7 @@ async function handleConfirmExec(confirmedSql) {
         question: '执行已确认的 SQL',
         confirmed: true,
         pendingSQL: confirmedSql,
+        pendingSign: confirmSign.value,
       }),
       signal: controller.signal,
     })
@@ -1232,12 +1236,12 @@ function handleConfirmCancel() {
 
 // ── 多条 SQL 批量确认 ──
 async function handleConfirmAllSQL() {
-  const sqls = pendingSQLList.value.map(item => item.sql)
+  const items = pendingSQLList.value.map(item => ({ sql: item.sql, sign: item.sign }))
   pendingSQLList.value = []
   loading.value = true
 
-  for (const sql of sqls) {
-    await executeConfirmedSQL(sql.trim())
+  for (const item of items) {
+    await executeConfirmedSQL(item.sql.trim(), item.sign || '')
   }
 
   loading.value = false
@@ -1251,7 +1255,7 @@ function handleCancelAllSQL() {
   scrollToBottom()
 }
 
-async function executeConfirmedSQL(sql) {
+async function executeConfirmedSQL(sql, sign) {
   chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sql}\n\`\`\`` })
   scrollToBottom()
 
@@ -1270,6 +1274,7 @@ async function executeConfirmedSQL(sql) {
         question: '执行已确认的 SQL',
         confirmed: true,
         pendingSQL: sql,
+        pendingSign: sign || '',
       }),
     })
 
@@ -1944,6 +1949,12 @@ onMounted(() => {
       msgContainer.value.addEventListener('click', handleMermaidToolbarClick)
     }
   })
+  // 空闲时预加载 Vditor 模块，用户打开编辑器时无需等待
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(() => preloadVditor(), { timeout: 5000 })
+  } else {
+    setTimeout(() => preloadVditor(), 3000)
+  }
 })
 
 onUnmounted(() => {

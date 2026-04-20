@@ -28,8 +28,10 @@ func (e *DangerousSQLError) Error() string {
 }
 
 // isDangerousSQL 检查 SQL 是否为写操作（所有写操作都需要用户确认）
+// 会先去除 SQL 注释，防止通过注释前缀绕过检测
 func isDangerousSQL(sql string) bool {
-	upper := strings.ToUpper(strings.TrimSpace(sql))
+	stripped := stripSQLComments(strings.TrimSpace(sql))
+	upper := strings.ToUpper(stripped)
 	patterns := []string{
 		"DROP ", "TRUNCATE ", "DELETE ",
 		"ALTER ", "CREATE ", "REPLACE ",
@@ -41,6 +43,36 @@ func isDangerousSQL(sql string) bool {
 		}
 	}
 	return false
+}
+
+// stripSQLComments 去除 SQL 开头的注释（行注释和块注释），防止注释绕过安全检测
+func stripSQLComments(sql string) string {
+	for {
+		sql = strings.TrimSpace(sql)
+		if sql == "" {
+			return sql
+		}
+		// 去除行注释 -- ...
+		if strings.HasPrefix(sql, "--") {
+			idx := strings.Index(sql, "\n")
+			if idx == -1 {
+				return "" // 整条都是注释
+			}
+			sql = sql[idx+1:]
+			continue
+		}
+		// 去除块注释 /* ... */
+		if strings.HasPrefix(sql, "/*") {
+			idx := strings.Index(sql, "*/")
+			if idx == -1 {
+				return "" // 未闭合的块注释
+			}
+			sql = sql[idx+2:]
+			continue
+		}
+		break
+	}
+	return strings.TrimSpace(sql)
 }
 
 // SQLSecurityMiddleware SQL 安全中间件 - 拦截所有写操作

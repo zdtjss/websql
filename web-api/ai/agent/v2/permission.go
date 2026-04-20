@@ -365,6 +365,8 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt":
 			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "import_data":
+			return m.checkImportAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
 			return endpoint(ctx, argumentsInJSON, opts...)
 		}
@@ -483,6 +485,19 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		if !m.Scope.IsTableAllowed(table) {
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
 		}
+	}
+
+	return endpoint(ctx, args, opts...)
+}
+
+func (m *PermissionMiddleware) checkImportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	var input ImportDataInput
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return "", err
+	}
+
+	if input.TableName != "" && !m.Scope.IsTableAllowed(input.TableName) {
+		return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", input.TableName), Objects: []string{input.TableName}}
 	}
 
 	return endpoint(ctx, args, opts...)

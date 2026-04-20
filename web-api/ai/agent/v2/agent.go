@@ -3,6 +3,9 @@ package agentv2
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -29,9 +32,10 @@ import (
 
 // StreamChunk 流式输出块
 type StreamChunk struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
-	SQL     string `json:"sql,omitempty"`
+	Type        string `json:"type"`
+	Content     string `json:"content,omitempty"`
+	SQL         string `json:"sql,omitempty"`         // 展示用，用户可以看到要执行的 SQL
+	InterruptID string `json:"interruptId,omitempty"` // 服务端暂存 ID，确认时回传此 ID（不回传 SQL）
 }
 
 // ChatRequest 聊天请求
@@ -43,7 +47,7 @@ type ChatRequest struct {
 	Question     string     `json:"question"`
 	TableContext []string   `json:"tableContext"`
 	Confirmed    bool       `json:"confirmed,omitempty"`
-	PendingSQL   string     `json:"pendingSQL,omitempty"`
+	InterruptID  string     `json:"interruptId,omitempty"` // 确认执行时回传的服务端暂存 ID
 	ExcelData    *ExcelData `json:"excelData,omitempty"`
 }
 
@@ -227,7 +231,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			}
 			log.Printf("[Agent] 执行失败 - err=%+v\n", event.Err)
 			for _, dsql := range dangerousSQLs {
-				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql})
+				iid := StorePendingSQL(dsql, req.ConnID, req.UserID, sessionID)
+				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql, InterruptID: iid})
 			}
 			if fullResponse.Len() > 0 {
 				_ = sess.Append("assistant", fullResponse.String())
@@ -279,9 +284,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
-	// 推送危险 SQL
+	// 推送危险 SQL（SQL 存储在服务端，前端只拿到 interruptID）
 	for _, dsql := range dangerousSQLs {
-		flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql})
+		iid := StorePendingSQL(dsql, req.ConnID, req.UserID, sessionID)
+		flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql, InterruptID: iid})
 	}
 
 	// 保存助手消息
@@ -386,6 +392,26 @@ func NewAuthClient(token string) *http.Client {
 }
 
 // ──────────────────────────────────────────────
+// SQL 签名（防止前端篡改确认执行的 SQL）
+// ──────────────────────────────────────────────
+
+// sqlSignKey 用于 HMAC 签名的密钥（与 AES 密钥区分）
+var sqlSignKey = []byte("SQL_SIGN_KEY_NWAY_2025")
+
+// SignSQL 对 SQL 生成 HMAC-SHA256 签名
+func SignSQL(sql string) string {
+	mac := hmac.New(sha256.New, sqlSignKey)
+	mac.Write([]byte(strings.TrimSpace(sql)))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifySQLSign 验证 SQL 签名是否匹配
+func VerifySQLSign(sql, sign string) bool {
+	expected := SignSQL(sql)
+	return hmac.Equal([]byte(expected), []byte(sign))
+}
+
+// ──────────────────────────────────────────────
 // 模型与工具构建
 // ──────────────────────────────────────────────
 
@@ -424,7 +450,7 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
-	queryTool, err := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN 查询并返回结果", NewQueryFunc(connID))
+	queryTool, err := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
 	if err != nil {
 		return nil, fmt.Errorf("创建工具 query_data 失败：%w", err)
 	}

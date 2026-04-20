@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,18 @@ import (
 
 	"github.com/jmoiron/sqlx"
 )
+
+// isValidTableName 验证表名是否合法，防止 SQL 注入
+// 只允许字母、数字、下划线、点号（schema.table）和反引号
+var validTableNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_` + "`" + `.]+$`)
+
+func isValidTableName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	return validTableNameRegex.MatchString(name)
+}
 
 // ──────────────────────────────────────────────
 // Tool 输入/输出结构体
@@ -113,11 +126,24 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 			return nil, fmt.Errorf("数据库连接不存在：%s", connId)
 		}
 		sql := strings.TrimSpace(input.SQL)
-		upper := strings.ToUpper(sql)
+		// 先去除 SQL 注释，防止注释绕过类型检测
+		stripped := stripSQLComments(sql)
+		upper := strings.ToUpper(stripped)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "WITH") {
 			return nil, fmt.Errorf("query_data 仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句")
+		}
+		// WITH CTE 可能包含写操作（如 WITH deleted AS (DELETE ...) SELECT ...），需要额外检查
+		if strings.HasPrefix(upper, "WITH") {
+			// 检查 CTE 体内是否包含写操作关键字
+			cteUpper := strings.ToUpper(stripped)
+			writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
+			for _, kw := range writeKeywords {
+				if strings.Contains(cteUpper, kw) {
+					return nil, fmt.Errorf("query_data 不允许在 WITH 语句中包含写操作（%s），请使用 exec_sql 工具", strings.TrimSpace(kw))
+				}
+			}
 		}
 
 		// 防止大结果集：如果是 SELECT/WITH 且没有行数限制，按数据库方言自动添加
@@ -182,18 +208,32 @@ func NewSchemaFunc(connId, dbType, dbSchema string) func(ctx context.Context, in
 		}
 		var sb strings.Builder
 		for _, table := range input.Tables {
+			// 验证表名，防止 SQL 注入
+			if !isValidTableName(table) {
+				logutils.PrintErr(fmt.Errorf("无效的表名：%s", table))
+				continue
+			}
 			var schemaSQL string
 			switch actualDBType {
 			case "mysql", "mariadb":
 				schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
 			case "sqlite":
-				schemaSQL = fmt.Sprintf("SELECT sql FROM sqlite_master WHERE type='table' AND name='%s'", table)
+				schemaSQL = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
 			case "oracle":
-				schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s') FROM DUAL", strings.ToUpper(table))
+				schemaSQL = "SELECT DBMS_METADATA.GET_DDL('TABLE', :1) FROM DUAL"
 			default:
 				schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
 			}
-			rows, err := conn.Query(schemaSQL)
+			var rows *sqlx.Rows
+			var err error
+			switch actualDBType {
+			case "sqlite":
+				rows, err = conn.Queryx(schemaSQL, table)
+			case "oracle":
+				rows, err = conn.Queryx(schemaSQL, strings.ToUpper(table))
+			default:
+				rows, err = conn.Queryx(schemaSQL)
+			}
 			if err != nil {
 				logutils.PrintErr(fmt.Errorf("获取表结构失败 %s: %w", table, err))
 				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbSchema, table))

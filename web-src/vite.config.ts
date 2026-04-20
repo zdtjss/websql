@@ -59,6 +59,9 @@ export default defineConfig({
           if (id.includes('node_modules/highlight.js')) {
             return 'highlight';
           }
+          if (id.includes('node_modules/vditor')) {
+            return 'vditor';
+          }
           // 其他 node_modules 归为 vendor
           if (id.includes('node_modules')) {
             return 'vendor';
