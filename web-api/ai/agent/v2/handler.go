@@ -2,15 +2,14 @@ package agentv2
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"go-web/utils"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"go-web/config"
+	"go-web/utils"
 	admin "go-web/web-api/admin"
 
 	"github.com/gin-gonic/gin"
@@ -21,7 +20,6 @@ type Handler struct {
 	sessions *SessionStore
 }
 
-// NewHandler 创建 Handler
 func NewHandler() (*Handler, error) {
 	sessions, err := NewSessionStore()
 	if err != nil {
@@ -39,9 +37,9 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	// 确认执行请求走单独逻辑
-	if req.Confirmed && req.PendingSQL != "" {
-		h.handleConfirmedExec(c, req)
+	// 确认执行请求 → 通过 Runner.ResumeWithParams 恢复
+	if req.Confirmed && req.InterruptID != "" && req.CheckPointID != "" {
+		h.handleResumeExec(c, req)
 		return
 	}
 
@@ -76,7 +74,6 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	defer c.Writer.Flush()
 
-	// 心跳
 	kaStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -107,63 +104,35 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	// 执行 Agent
-	// - ChatModel 的临时错误（503 等）由 ModelRetryConfig 在 agent 内部自动重试
-	// - 工具调用错误（SQL 语法错误、字段不存在等）由 Eino ReAct 循环内部自动处理：
-	//   工具返回错误 → 错误作为 tool result 反馈给模型 → 模型重新思考并调整工具调用
-	// - MaxIterations=25 防止无限循环
 	_, runErr := agent.RunStream(ctx, req, flush)
 	close(kaStop)
 
 	if runErr != nil {
-		var dangerousErr *DangerousSQLError
-		if !errors.As(runErr, &dangerousErr) {
-			log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
-			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
-		}
+		log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
+		flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		flush(StreamChunk{Type: "done"})
 	}
 }
 
-// handleConfirmedExec 处理用户确认后的危险 SQL 执行
-func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
+// handleResumeExec 处理用户确认后的恢复执行
+// 通过 Runner.ResumeWithParams 从 CheckPoint 恢复，SQL 从服务端取回，前端无法篡改
+func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
 
-	// SQL 签名验证：防止前端篡改确认执行的 SQL
-	if req.PendingSign == "" || !VerifySQLSign(req.PendingSQL, req.PendingSign) {
-		log.Printf("[Handler] SQL 签名验证失败 - userId=%s, sql=%s\n", user.Id, req.PendingSQL)
-		c.JSON(http.StatusForbidden, gin.H{"error": "SQL 签名验证失败，请重新操作"})
+	cfg := admin.GetAIConfigFromDB()
+	if cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "未配置 AI 服务"})
 		return
 	}
 
-	// 权限检查
-	_, dbSchema, _ := getDBInfo(req.ConnID)
+	ctx := c.Request.Context()
+
+	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
 	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
-	if scope.IsRemote {
-		tables := extractTablesFromSQL(req.PendingSQL)
-		for _, table := range tables {
-			if !scope.IsTableAllowed(table) {
-				c.Header("Content-Type", "text/event-stream")
-				c.Header("Cache-Control", "no-cache")
-				c.Header("Connection", "keep-alive")
-				data, _ := json.Marshal(StreamChunk{Type: "error", Content: fmt.Sprintf("无权访问表：%s", table)})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
-				c.Writer.Flush()
-				return
-			}
-		}
-	}
-
-	// 获取数据库连接
-	conn, _ := getConn(req.ConnID)
-	if conn == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库连接不存在"})
-		return
-	}
 
 	// SSE 设置
 	c.Header("Content-Type", "text/event-stream")
@@ -176,34 +145,32 @@ func (h *Handler) handleConfirmedExec(c *gin.Context, req ChatRequest) {
 		c.Writer.Flush()
 	}
 
-	sql := strings.TrimSpace(req.PendingSQL)
-
-	// 记录审计日志
-	auditID := utils.RandomStr()
-	sqlType := detectSQLType(sql)
-	riskLevel := detectRiskLevel(sql)
-	userName := user.Name
-
-	// 执行 SQL
-	result, err := conn.Exec(sql)
-	var affected int64
-	var errMsg string
-
+	// 创建 Agent（需要与原始执行使用相同的 CheckPointStore）
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
 	if err != nil {
-		errMsg = err.Error()
-		log.Printf("[Handler] SQL 执行失败 - err=%v\n", err)
-		InsertSQLAudit(auditID, user.Id, userName, req.ConnID, req.SessionID, sql, sqlType, riskLevel, "failed", 0, errMsg)
-		flush(StreamChunk{Type: "error", Content: "SQL 执行失败，请检查语句是否正确"})
+		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
+		flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
+		flush(StreamChunk{Type: "done"})
 		return
 	}
 
-	affected, _ = result.RowsAffected()
+	// 获取会话
+	var sess *Session
+	if req.SessionID != "" {
+		sess, _ = h.sessions.GetOrCreate(req.SessionID, user.Id)
+	}
 
-	// 记录成功的审计日志
-	InsertSQLAudit(auditID, user.Id, userName, req.ConnID, req.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
+	// 记录审计日志
+	auditID := utils.RandomStr()
+	InsertSQLAudit(auditID, user.Id, user.Name, req.ConnID, req.SessionID, "(通过 Runner 恢复执行)", "RESUME", "medium", "pending", 0, "")
 
-	flush(StreamChunk{Type: "content", Content: fmt.Sprintf("✅ 执行成功，影响 %d 行\n\n%s", affected, sql)})
-	flush(StreamChunk{Type: "done"})
+	// 通过 Runner 恢复执行
+	if err := agent.ResumeStream(ctx, req.CheckPointID, req.InterruptID, req.Confirmed, flush, sess); err != nil {
+		log.Printf("[Handler] 恢复执行失败 - err=%v\n", err)
+		InsertSQLAudit(auditID, user.Id, user.Name, req.ConnID, req.SessionID, "(恢复执行失败)", "RESUME", "medium", "failed", 0, err.Error())
+		flush(StreamChunk{Type: "error", Content: "恢复执行失败：" + err.Error()})
+		flush(StreamChunk{Type: "done"})
+	}
 }
 
 // HandleGetSessions 获取当前用户的会话列表
@@ -213,10 +180,8 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-
 	metas, err := h.sessions.ListByUserID(user.Id)
 	if err != nil {
-		log.Printf("[Handler] 获取会话列表失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
 		return
 	}
@@ -233,16 +198,13 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
 		return
 	}
-
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-
 	detail, err := h.sessions.GetDetail(sessionID)
 	if err != nil {
-		log.Printf("[Handler] 获取会话详情失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败"})
 		return
 	}
@@ -256,15 +218,12 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
 		return
 	}
-
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-
 	if err := h.sessions.Delete(sessionID); err != nil {
-		log.Printf("[Handler] 删除会话失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除会话失败"})
 		return
 	}
@@ -278,8 +237,6 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-
-	// 管理员可以查看所有日志，普通用户只能查看自己的
 	var logs []SQLAuditLog
 	var err error
 	if user.Id == config.AdminId {
@@ -288,7 +245,6 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 		logs, err = ListSQLAuditLogs(user.Id, 100)
 	}
 	if err != nil {
-		log.Printf("[Handler] 获取审计日志失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取审计日志失败"})
 		return
 	}
@@ -312,7 +268,6 @@ func getDBInfo(connID string) (string, string, string) {
 		return "", "", ""
 	}
 	cfg := cfgList[0]
-
 	deref := func(p *string) string {
 		if p != nil {
 			return *p

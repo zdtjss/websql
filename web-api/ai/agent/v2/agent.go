@@ -3,17 +3,12 @@ package agentv2
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
+	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	admin "go-web/web-api/admin"
 
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -32,10 +27,11 @@ import (
 
 // StreamChunk 流式输出块
 type StreamChunk struct {
-	Type        string `json:"type"`
-	Content     string `json:"content,omitempty"`
-	SQL         string `json:"sql,omitempty"`         // 展示用，用户可以看到要执行的 SQL
-	InterruptID string `json:"interruptId,omitempty"` // 服务端暂存 ID，确认时回传此 ID（不回传 SQL）
+	Type         string `json:"type"`
+	Content      string `json:"content,omitempty"`
+	SQL          string `json:"sql,omitempty"`          // 展示用
+	InterruptID  string `json:"interruptId,omitempty"`  // Eino 中断地址 ID
+	CheckPointID string `json:"checkPointId,omitempty"` // Runner CheckPoint ID
 }
 
 // ChatRequest 聊天请求
@@ -47,7 +43,8 @@ type ChatRequest struct {
 	Question     string     `json:"question"`
 	TableContext []string   `json:"tableContext"`
 	Confirmed    bool       `json:"confirmed,omitempty"`
-	InterruptID  string     `json:"interruptId,omitempty"` // 确认执行时回传的服务端暂存 ID
+	InterruptID  string     `json:"interruptId,omitempty"`  // 确认时回传
+	CheckPointID string     `json:"checkPointId,omitempty"` // 确认时回传
 	ExcelData    *ExcelData `json:"excelData,omitempty"`
 }
 
@@ -80,10 +77,14 @@ type SessionDetailMessage struct {
 }
 
 // ──────────────────────────────────────────────
-// SQLAgent
+// SQLAgent + Runner
 // ──────────────────────────────────────────────
 
+// 全局 CheckPointStore（单实例共享）
+var globalCheckPointStore = NewInMemoryCheckPointStore()
+
 type SQLAgent struct {
+	runner   *adk.Runner
 	agent    *adk.ChatModelAgent
 	sessions *SessionStore
 	dbType   string
@@ -102,11 +103,12 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
-	// 设置为中文
+
 	err = adk.SetLanguage(adk.LanguageChinese)
 	if err != nil {
 		log.Printf("[Agent] 设置语言失败 - err=%v\n", err)
 	}
+
 	summarizationMW, err := summarization.New(ctx, &summarization.Config{
 		Model: cm,
 		Trigger: &summarization.TriggerCondition{
@@ -128,23 +130,31 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&PermissionMiddleware{Scope: scope},
-			&SQLSecurityMiddleware{},
+			// 不再需要 SQLSecurityMiddleware — 危险 SQL 检测已移到 exec_sql 工具内部
+			// 使用 tool.StatefulInterrupt 实现，由 Runner 自动 checkpoint
 			&ToolErrorRecoveryMiddleware{},
 			summarizationMW,
 		},
-		// ModelRetryConfig: &adk.ModelRetryConfig{MaxRetries: 5},
 		MaxIterations: 20,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)
 	}
+
+	// 创建 Runner，配置 CheckPointStore 用于中断状态持久化
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+		CheckPointStore: globalCheckPointStore,
+	})
+
 	if sessions == nil {
 		sessions, _ = NewSessionStore()
 	}
-	return &SQLAgent{agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope}, nil
+	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope}, nil
 }
 
-// RunStream 流式执行
+// RunStream 流式执行（首次查询）
 func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) (string, error) {
 	log.Printf("[Agent] 开始执行 - sessionID=%s, userID=%s, connID=%s\n", req.SessionID, req.UserID, req.ConnID)
 
@@ -163,12 +173,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	}
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
-	// 保存用户消息
 	if err := sess.Append("user", req.Question); err != nil {
 		return sessionID, err
 	}
 
-	// 获取并截断历史，转为 schema.Message
 	allMsgs := sess.GetMessages()
 	truncated := truncateSessionMessages(allMsgs)
 	log.Printf("[Agent] 历史消息 - total=%d, truncated=%d\n", len(allMsgs), len(truncated))
@@ -179,7 +187,6 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		return sessionID, nil
 	}
 
-	// 构建系统提示词
 	sysPrompt := buildSystemPrompt(a.dbType, a.dbSchema, "", req.TableContext, a.scope)
 
 	if isExportRequest(req.Question) {
@@ -207,11 +214,61 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
-	// 运行 Agent
-	var fullResponse strings.Builder
-	var dangerousSQLs []string
+	// 使用 Runner.Run 执行，传入 CheckPointID 以支持中断恢复
+	// CheckPointID 使用 sessionID，确保同一会话的中断可以恢复
+	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
+	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
 
-	iter := a.agent.Run(ctx, &adk.AgentInput{Messages: messages, EnableStreaming: true})
+	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
+
+	// 如果被中断，将 checkPointID 存入会话以便恢复
+	if interrupted {
+		// checkPointID 已通过 flush 推送给前端
+		log.Printf("[Agent] 执行被中断 - checkPointID=%s\n", checkPointID)
+	}
+
+	if fullResponse.Len() > 0 {
+		if err := sess.Append("assistant", fullResponse.String()); err != nil {
+			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
+		}
+	}
+
+	// 无论是否中断都发 done，让前端结束 loading 状态
+	// 中断场景下前端已通过 danger_confirm 事件知道需要用户确认
+	flush(StreamChunk{Type: "done"})
+
+	return sessionID, nil
+}
+
+// ResumeStream 恢复被中断的执行（用户确认后）
+func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interruptID string, approved bool, flush func(StreamChunk), sess *Session) error {
+	log.Printf("[Agent] 恢复执行 - checkPointID=%s, interruptID=%s, approved=%v\n", checkPointID, interruptID, approved)
+
+	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
+		Targets: map[string]any{
+			interruptID: approved,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("恢复执行失败：%w", err)
+	}
+
+	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
+
+	if fullResponse.Len() > 0 {
+		if err := sess.Append("assistant", fullResponse.String()); err != nil {
+			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
+		}
+	}
+
+	flush(StreamChunk{Type: "done"})
+	return nil
+}
+
+// processEvents 处理 Agent 事件流
+func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush func(StreamChunk), sess *Session, checkPointID string) (strings.Builder, bool) {
+	var fullResponse strings.Builder
+	interrupted := false
 
 	for {
 		event, ok := iter.Next()
@@ -219,25 +276,33 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			break
 		}
 		if event.Err != nil {
-			var dangerousErr *DangerousSQLError
-			if errors.As(event.Err, &dangerousErr) {
-				if len(dangerousErr.SQLList) > 0 {
-					dangerousSQLs = append(dangerousSQLs, dangerousErr.SQLList...)
-				} else if dangerousErr.SQL != "" {
-					dangerousSQLs = append(dangerousSQLs, dangerousErr.SQL)
+			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
+			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
+			break
+		}
+
+		// 检查是否被中断
+		if event.Action != nil && event.Action.Interrupted != nil {
+			interrupted = true
+			for _, ictx := range event.Action.Interrupted.InterruptContexts {
+				if !ictx.IsRootCause {
+					continue
 				}
-				log.Printf("[Agent] 危险 SQL 拦截 - sql=%s\n", dangerousErr.SQL)
-				continue
-			}
-			log.Printf("[Agent] 执行失败 - err=%+v\n", event.Err)
-			for _, dsql := range dangerousSQLs {
-				iid := StorePendingSQL(dsql, req.ConnID, req.UserID, sessionID)
-				flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql, InterruptID: iid})
+				if sqlInfo, ok := ictx.Info.(*DangerousSQLInfo); ok {
+					log.Printf("[Agent] 危险 SQL 中断 - id=%s, sql=%s\n", ictx.ID, sqlInfo.SQL)
+					flush(StreamChunk{
+						Type:         "danger_confirm",
+						Content:      "检测到危险 SQL，需要用户确认",
+						SQL:          sqlInfo.SQL,
+						InterruptID:  ictx.ID,
+						CheckPointID: checkPointID,
+					})
+				}
 			}
 			if fullResponse.Len() > 0 {
 				_ = sess.Append("assistant", fullResponse.String())
 			}
-			return sessionID, event.Err
+			break
 		}
 
 		hasOutput := event.Output != nil && event.Output.MessageOutput != nil
@@ -284,21 +349,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
-	// 推送危险 SQL（SQL 存储在服务端，前端只拿到 interruptID）
-	for _, dsql := range dangerousSQLs {
-		iid := StorePendingSQL(dsql, req.ConnID, req.UserID, sessionID)
-		flush(StreamChunk{Type: "danger_confirm", Content: "检测到危险 SQL，需要用户确认", SQL: dsql, InterruptID: iid})
-	}
-
-	// 保存助手消息
-	if fullResponse.Len() > 0 {
-		if err := sess.Append("assistant", fullResponse.String()); err != nil {
-			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
-		}
-	}
-
-	flush(StreamChunk{Type: "done"})
-	return sessionID, nil
+	return fullResponse, interrupted
 }
 
 // ──────────────────────────────────────────────
@@ -328,20 +379,17 @@ func extractLastSQLFromSessionMessages(msgs []SessionMessage) string {
 		if msg.Role != "assistant" || msg.Content == "" {
 			continue
 		}
-		// 从后往前查找最后一个 SQL 代码块
 		content := msg.Content
 		for {
 			endIdx := strings.LastIndex(content, "```")
 			if endIdx <= 0 {
 				break
 			}
-			// 找到这个 ``` 对应的开始 ```
 			startIdx := strings.LastIndex(content[:endIdx], "```")
 			if startIdx == -1 {
 				break
 			}
 			codeBlock := strings.TrimSpace(content[startIdx+3 : endIdx])
-			// 去掉语言标识行
 			if idx := strings.Index(codeBlock, "\n"); idx != -1 {
 				firstLine := strings.TrimSpace(codeBlock[:idx])
 				if strings.EqualFold(firstLine, "sql") {
@@ -354,7 +402,6 @@ func extractLastSQLFromSessionMessages(msgs []SessionMessage) string {
 				strings.HasPrefix(upper, "WITH") {
 				return codeBlock
 			}
-			// 继续往前找
 			content = content[:startIdx]
 		}
 	}
@@ -367,48 +414,19 @@ type authTransport struct {
 	transport http.RoundTripper
 }
 
-// RoundTrip 在请求发出前自动添加 Authorization 头
 func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// 1. 克隆请求，避免并发修改原始请求导致的数据竞争
 	clonedReq := req.Clone(req.Context())
 	if clonedReq.Header == nil {
 		clonedReq.Header = make(http.Header)
 	}
-
 	clonedReq.Header.Set("Authorization", "Bearer "+t.token)
-
-	// 3. 交由底层 Transport 执行真实网络请求
 	return t.transport.RoundTrip(clonedReq)
 }
 
-// NewAuthClient 创建一个默认携带 Authorization 头的 HTTP 客户端
 func NewAuthClient(token string) *http.Client {
 	return &http.Client{
-		Transport: &authTransport{
-			token:     token,
-			transport: http.DefaultTransport,
-		},
+		Transport: &authTransport{token: token, transport: http.DefaultTransport},
 	}
-}
-
-// ──────────────────────────────────────────────
-// SQL 签名（防止前端篡改确认执行的 SQL）
-// ──────────────────────────────────────────────
-
-// sqlSignKey 用于 HMAC 签名的密钥（与 AES 密钥区分）
-var sqlSignKey = []byte("SQL_SIGN_KEY_NWAY_2025")
-
-// SignSQL 对 SQL 生成 HMAC-SHA256 签名
-func SignSQL(sql string) string {
-	mac := hmac.New(sha256.New, sqlSignKey)
-	mac.Write([]byte(strings.TrimSpace(sql)))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// VerifySQLSign 验证 SQL 签名是否匹配
-func VerifySQLSign(sql, sign string) bool {
-	expected := SignSQL(sql)
-	return hmac.Equal([]byte(expected), []byte(sign))
 }
 
 // ──────────────────────────────────────────────
@@ -416,8 +434,7 @@ func VerifySQLSign(sql, sign string) bool {
 // ──────────────────────────────────────────────
 
 func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCallingChatModel, error) {
-	log.Printf("[ChatModel] 初始化配置 - provider=%s, baseUrl=%s, model=%s, temperature=%.2f, maxTokens=%d, enableThinking=%t\n",
-		cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Temperature, cfg.MaxTokens, cfg.EnableThinking)
+	log.Printf("[ChatModel] 初始化 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
 	switch cfg.Provider {
 	case "ollama":
@@ -450,44 +467,24 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
-	queryTool, err := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 query_data 失败：%w", err)
-	}
-	execTool, err := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 exec_sql 失败：%w", err)
-	}
-	schemaTool, err := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 get_table_schema 失败：%w", err)
-	}
-	exportExcelTool, err := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 export_excel 失败：%w", err)
-	}
-	exportExcelChartTool, err := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（折线图/柱状图/饼图/散点图）", NewExportExcelWithChartFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 export_excel_with_chart 失败：%w", err)
-	}
-	exportPPTTool, err := utils.InferTool("export_ppt", "生成 PPT 演示文稿。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容自动分页生成；2) sql 模式 — 基于 SQL 查询数据生成数据演示", NewExportPPTFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 export_ppt 失败：%w", err)
-	}
-	exportDocxTool, err := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）。支持两种模式：1) content 模式（推荐）— 传入 Markdown 分析内容生成报告；2) sql 模式 — 基于 SQL 查询数据生成数据报告", NewExportAnalysisDocxFunc(connID))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 export_analysis_docx 失败：%w", err)
-	}
-	importDataTool, err := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中。需要提供 fileId、tableName 和 mapping。", NewImportDataFunc(connID, dbType, dbSchema))
-	if err != nil {
-		return nil, fmt.Errorf("创建工具 import_data 失败：%w", err)
-	}
+	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
+	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID))
+	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", NewExportExcelWithChartFunc(connID))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", NewExportPPTFunc(connID))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", NewExportAnalysisDocxFunc(connID))
+	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema))
 
-	return []tool.BaseTool{
-		queryTool, execTool, schemaTool,
-		exportExcelTool, exportExcelChartTool, exportPPTTool,
-		exportDocxTool, importDataTool,
-	}, nil
+	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool}
+	// 过滤掉 nil（InferTool 失败时）
+	var validTools []tool.BaseTool
+	for _, t := range allTools {
+		if t != nil {
+			validTools = append(validTools, t)
+		}
+	}
+	return validTools, nil
 }
 
 // ──────────────────────────────────────────────
@@ -520,64 +517,19 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 ## 工作流程
 1. 理解需求 → 2. 调用 get_table_schema 验证表结构 → 3. 生成 SQL → 4. 执行 → 5. 回复（含表名）
 
-## 输出格式规范（重要）
-你善于使用 Markdown 和 Mermaid 来呈现分析结果，让输出结构清晰、可视化强：
-
-### Markdown 使用规范
-- 使用标题层级组织内容结构
-- 使用粗体强调关键指标和结论
-- 使用行内代码标注字段名、表名、SQL 关键词
-- 使用列表罗列要点
-- 使用表格展示对比数据
-- 使用代码块展示 SQL、配置等
-
-### Mermaid 图表使用规范
-在分析数据关系、流程、趋势时，优先使用 Mermaid 图表增强可读性：
-- 流程/架构：使用 graph TD / graph LR 展示数据流向和系统架构
-- 时序关系：使用 sequenceDiagram 展示交互流程
-- 数据对比：使用 pie 饼图展示占比分布
-- 状态变迁：使用 stateDiagram-v2 展示状态流转
-- ER 关系：使用 erDiagram 展示表间关联
-
-示例：
-` + "```" + `mermaid
-pie title 销售占比
-    "华东" : 35
-    "华南" : 28
-    "华北" : 22
-    "其他" : 15
-` + "```" + `
-
 ## 写操作处理（红线）
 - 所有写操作必须调用 exec_sql 工具，系统会自动拦截并推送到前端由用户确认
 - AI 不得绕过此机制，这是必须遵守的安全红线
 
 ## 导出操作
-导出工具分两种模式，根据场景选择：
-
-### Excel 导出（必须依赖 SQL）
-- export_excel / export_excel_with_chart：必须提供 sql 参数，用于导出原始数据
-
-### Word/PPT 导出（支持内容模式）
-- export_analysis_docx / export_ppt：支持两种方式：
-  1. **内容模式（推荐）**：提供 content 参数（Markdown 格式），将你的分析结论直接生成文档。适用于分析报告、洞察总结等场景
-  2. **SQL 模式**：提供 sql 参数，基于查询数据生成文档。适用于需要展示原始数据的场景
-- 优先使用内容模式，将你已完成的分析结果（含 Markdown 格式、Mermaid 图表）传入 content 参数
-- 内容模式无需数据库连接，即使 SQL 不可用也能生成报告
-
-### 导出决策指南
-- 用户说"导出 Excel" → 必须使用 SQL 模式
-- 用户说"导出报告/Word/PPT"或"导出上述内容"，或者简短的说“导出” → 优先使用 content 模式，传入你的分析内容
-- 用户说"把数据导出为 Word" → 使用 SQL 模式展示原始数据
+- export_excel / export_excel_with_chart：必须提供 sql 参数
+- export_analysis_docx / export_ppt：支持 content 模式（推荐）和 sql 模式
 
 ## 数据导入操作
 当用户上传了 Excel 文件并要求导入数据时：
-1. 用户消息中会包含 fileId 和 Excel 列名信息
-2. 先调用 get_table_schema 获取目标表结构，确认目标表存在
-3. 直接调用 import_data 工具，只需传入 fileId 和 tableName 即可
-4. 后端会自动按列名匹配 Excel 列与数据库字段（大小写不敏感、忽略空格和下划线差异）
-5. 如果你非常确定映射关系，也可以传入 mapping 参数，但这不是必须的
-6. 导入结果会包含实际使用的字段映射，请展示给用户确认
+1. 先调用 get_table_schema 获取目标表结构
+2. 直接调用 import_data 工具，传入 fileId 和 tableName
+3. 后端会自动按列名匹配
 
 ## 多轮对话
 你拥有完整的对话历史记忆。"刚才的""上面的""这个结果"等都指上一次查询。

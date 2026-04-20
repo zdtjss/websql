@@ -579,7 +579,8 @@ const processedLinks = new Set()
 // SQL 确认相关
 const confirmVisible = ref(false)
 const confirmSQL = ref('')
-const confirmSign = ref('')
+const confirmInterruptId = ref('')
+const confirmCheckPointId = ref('')
 const confirmOperationType = ref('SELECT')
 const confirmRiskLevel = ref('low')
 const confirmDescription = ref('')
@@ -1057,7 +1058,7 @@ async function sendMessage() {
               scrollToBottom()
               break
             case 'danger_confirm':
-              collectedDangerSQLs.push({ sql: chunk.sql || chunk.content, sign: chunk.sqlSign || '' })
+              collectedDangerSQLs.push({ sql: chunk.sql || chunk.content, interruptId: chunk.interruptId || '', checkPointId: chunk.checkPointId || '' })
               break
             case 'retry_limit':
               retryMessage.value = chunk.content
@@ -1091,11 +1092,11 @@ async function sendMessage() {
     // 处理收集到的危险 SQL
     if (collectedDangerSQLs.length > 0) {
       if (collectedDangerSQLs.length === 1) {
-        showConfirmDialog(collectedDangerSQLs[0].sql, collectedDangerSQLs[0].sign)
+        showConfirmDialog(collectedDangerSQLs[0].sql, collectedDangerSQLs[0].interruptId, collectedDangerSQLs[0].checkPointId)
       } else {
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, sign: item.sign, ...analysis }
+          return { sql: item.sql, interruptId: item.interruptId, checkPointId: item.checkPointId, ...analysis }
         })
       }
     }
@@ -1129,12 +1130,12 @@ async function sendMessage() {
 }
 
 // 显示确认区域
-function showConfirmDialog(sql, sign) {
-  // 分析 SQL
+function showConfirmDialog(sql, interruptId, checkPointId) {
   const analysis = analyzeSQL(sql)
 
   confirmSQL.value = sql
-  confirmSign.value = sign || ''
+  confirmInterruptId.value = interruptId || ''
+  confirmCheckPointId.value = checkPointId || ''
   confirmOperationType.value = analysis.type
   confirmRiskLevel.value = analysis.riskLevel
   confirmDescription.value = analysis.description
@@ -1151,6 +1152,10 @@ function resetDetectFlag() {
 async function handleConfirmExec(confirmedSql) {
   loading.value = true
   confirmVisible.value = false
+
+  // 将 SQL 保留在聊天记录中
+  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` })
+  scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/chatStream'
@@ -1169,8 +1174,8 @@ async function handleConfirmExec(confirmedSql) {
         schema: schema.value,
         question: '执行已确认的 SQL',
         confirmed: true,
-        pendingSQL: confirmedSql,
-        pendingSign: confirmSign.value,
+        interruptId: confirmInterruptId.value,
+        checkPointId: confirmCheckPointId.value,
       }),
       signal: controller.signal,
     })
@@ -1230,18 +1235,18 @@ async function handleConfirmExec(confirmedSql) {
 // 处理取消确认
 function handleConfirmCancel() {
   confirmVisible.value = false
-  chatHistory.value.push({ role: 'assistant', content: '已取消执行危险操作。' })
+  chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` })
   scrollToBottom()
 }
 
 // ── 多条 SQL 批量确认 ──
 async function handleConfirmAllSQL() {
-  const items = pendingSQLList.value.map(item => ({ sql: item.sql, sign: item.sign }))
+  const items = pendingSQLList.value.map(item => ({ sql: item.sql, interruptId: item.interruptId, checkPointId: item.checkPointId }))
   pendingSQLList.value = []
   loading.value = true
 
   for (const item of items) {
-    await executeConfirmedSQL(item.sql.trim(), item.sign || '')
+    await executeConfirmedSQL(item.interruptId, item.checkPointId)
   }
 
   loading.value = false
@@ -1249,14 +1254,17 @@ async function handleConfirmAllSQL() {
 }
 
 function handleCancelAllSQL() {
-  const count = pendingSQLList.value.length
+  const items = pendingSQLList.value
   pendingSQLList.value = []
-  chatHistory.value.push({ role: 'assistant', content: `已取消执行 ${count} 条 SQL。` })
+  // 将每条 SQL 保留在聊天记录中
+  for (const item of items) {
+    chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
+  }
   scrollToBottom()
 }
 
-async function executeConfirmedSQL(sql, sign) {
-  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sql}\n\`\`\`` })
+async function executeConfirmedSQL(interruptId, checkPointId) {
+  chatHistory.value.push({ role: 'assistant', content: '⏳ 正在执行...' })
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -1271,10 +1279,10 @@ async function executeConfirmedSQL(sql, sign) {
         sessionId: sessionId.value,
         connId: connId.value,
         schema: schema.value,
-        question: '执行已确认的 SQL',
+        question: 'resume confirmed SQL',
         confirmed: true,
-        pendingSQL: sql,
-        pendingSign: sign || '',
+        interruptId: interruptId,
+        checkPointId: checkPointId,
       }),
     })
 
