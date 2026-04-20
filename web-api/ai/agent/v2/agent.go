@@ -94,12 +94,12 @@ type SQLAgent struct {
 
 const maxHistoryRounds = 20
 
-func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore, scope *PermissionScope) (*SQLAgent, error) {
+func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
-	tools, err := buildTools(ctx, connID, dbType, dbSchema)
+	tools, err := buildTools(ctx, connID, dbType, dbSchema, auditCtx)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
@@ -466,9 +466,9 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 	}
 }
 
-func buildTools(_ context.Context, connID, dbType, dbSchema string) ([]tool.BaseTool, error) {
+func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *ExecAuditCtx) ([]tool.BaseTool, error) {
 	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
-	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID))
+	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, auditCtx))
 	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", NewExportExcelWithChartFunc(connID))

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"go-web/config"
-	"go-web/utils"
 	admin "go-web/web-api/admin"
 
 	"github.com/gin-gonic/gin"
@@ -95,7 +94,9 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+		ConnID: req.ConnID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
+	})
 	if err != nil {
 		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
 		close(kaStop)
@@ -146,7 +147,9 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	}
 
 	// 创建 Agent（需要与原始执行使用相同的 CheckPointStore）
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope)
+	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+		ConnID: req.ConnID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
+	})
 	if err != nil {
 		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
 		flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
@@ -160,14 +163,9 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		sess, _ = h.sessions.GetOrCreate(req.SessionID, user.Id)
 	}
 
-	// 记录审计日志
-	auditID := utils.RandomStr()
-	InsertSQLAudit(auditID, user.Id, user.Name, req.ConnID, req.SessionID, "(通过 Runner 恢复执行)", "RESUME", "medium", "pending", 0, "")
-
-	// 通过 Runner 恢复执行
+	// 通过 Runner 恢复执行（审计日志在 exec_sql 工具内部记录，包含真实 SQL）
 	if err := agent.ResumeStream(ctx, req.CheckPointID, req.InterruptID, req.Confirmed, flush, sess); err != nil {
 		log.Printf("[Handler] 恢复执行失败 - err=%v\n", err)
-		InsertSQLAudit(auditID, user.Id, user.Name, req.ConnID, req.SessionID, "(恢复执行失败)", "RESUME", "medium", "failed", 0, err.Error())
 		flush(StreamChunk{Type: "error", Content: "恢复执行失败：" + err.Error()})
 		flush(StreamChunk{Type: "done"})
 	}

@@ -129,7 +129,15 @@ func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*
 	}
 }
 
-func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+// ExecAuditCtx holds context for audit logging within exec_sql tool
+type ExecAuditCtx struct {
+	ConnID    string
+	UserID    string
+	UserName  string
+	SessionID string
+}
+
+func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 		log.Printf("[Tool:exec_sql] sql=%s\n", input.SQL)
 		sql := strings.TrimSpace(input.SQL)
@@ -170,11 +178,22 @@ func NewExecFunc(connId string) func(ctx context.Context, input *ExecInput) (*Ex
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connId)
 		}
+
+		auditID := utils.RandomStr()
+		sqlType := detectSQLType(sql)
+		riskLevel := detectRiskLevel(sql)
+
 		result, err := conn.Exec(sql)
 		if err != nil {
+			if auditCtx != nil {
+				InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, auditCtx.ConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "failed", 0, err.Error())
+			}
 			return nil, fmt.Errorf("exec failed: %w", err)
 		}
 		affected, _ := result.RowsAffected()
+		if auditCtx != nil {
+			InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, auditCtx.ConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
+		}
 		log.Printf("[Tool:exec_sql] ok - affectedRows=%d\n", affected)
 		return &ExecOutput{AffectedRows: affected, Message: fmt.Sprintf("ok, %d rows affected", affected)}, nil
 	}
