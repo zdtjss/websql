@@ -578,7 +578,7 @@ const processedLinks = new Set()
 // SQL 确认相关
 const confirmVisible = ref(false)
 const confirmSQL = ref('')
-const confirmInterruptId = ref('')
+const confirmInterruptIds = ref([])
 const confirmCheckPointId = ref('')
 const confirmOperationType = ref('SELECT')
 const confirmRiskLevel = ref('low')
@@ -1103,13 +1103,21 @@ async function sendMessage() {
 
     // 处理收集到的危险 SQL
     if (collectedDangerSQLs.length > 0) {
+      // 所有 danger_confirm 来自同一个 checkpoint，收集所有 interruptId
+      const checkPointId = collectedDangerSQLs[0].checkPointId
+      const allInterruptIds = collectedDangerSQLs.map(d => d.interruptId)
+
       if (collectedDangerSQLs.length === 1) {
-        showConfirmDialog(collectedDangerSQLs[0].sql, collectedDangerSQLs[0].interruptId, collectedDangerSQLs[0].checkPointId)
+        showConfirmDialog(collectedDangerSQLs[0].sql, allInterruptIds, checkPointId)
       } else {
+        // 多条 SQL：合并显示，共享一个确认按钮，一次性 Resume 所有
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, interruptId: item.interruptId, checkPointId: item.checkPointId, ...analysis }
+          return { sql: item.sql, ...analysis }
         })
+        // 保存 interruptIds 和 checkPointId 供批量确认使用
+        pendingSQLList.interruptIds = allInterruptIds
+        pendingSQLList.checkPointId = checkPointId
       }
     }
 
@@ -1142,11 +1150,11 @@ async function sendMessage() {
 }
 
 // 显示确认区域
-function showConfirmDialog(sql, interruptId, checkPointId) {
+function showConfirmDialog(sql, interruptIds, checkPointId) {
   const analysis = analyzeSQL(sql)
 
   confirmSQL.value = sql
-  confirmInterruptId.value = interruptId || ''
+  confirmInterruptIds.value = Array.isArray(interruptIds) ? interruptIds : [interruptIds]
   confirmCheckPointId.value = checkPointId || ''
   confirmOperationType.value = analysis.type
   confirmRiskLevel.value = analysis.riskLevel
@@ -1165,130 +1173,119 @@ async function handleConfirmExec(confirmedSql) {
   loading.value = true
   confirmVisible.value = false
 
-  // 将 SQL 保留在聊天记录中
-  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` })
+  // 将已确认的 SQL 保留在聊天记录中（无论后续执行成功与否）
+  const sqlForDisplay = confirmSQL.value
+  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`` })
+  const execMsgIdx = chatHistory.value.length - 1
   scrollToBottom()
 
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+
   try {
-    // 恢复执行后，可能还会收到新的 danger_confirm 事件
-    // 需要循环处理，直到收到 done 或 error
-    let currentInterruptId = confirmInterruptId.value
-    let currentCheckPointId = confirmCheckPointId.value
+    const controller = new AbortController()
+    abortController.value = controller
 
-    while (true) {
-      const apiBase = import.meta.env.VITE_API_URL || ''
-      const url = apiBase + '/ai/agent/chatStream'
-      const auth = sessionStorage.getItem('authentication') || ''
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: '执行已确认的 SQL',
+        confirmed: true,
+        interruptIds: confirmInterruptIds.value,
+        checkPointId: confirmCheckPointId.value,
+      }),
+      signal: controller.signal,
+    })
 
-      const controller = new AbortController()
-      abortController.value = controller
-
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-        body: JSON.stringify({
-          sessionId: sessionId.value,
-          connId: connId.value,
-          schema: schema.value,
-          question: '执行已确认的 SQL',
-          confirmed: true,
-          interruptId: currentInterruptId,
-          checkPointId: currentCheckPointId,
-        }),
-        signal: controller.signal,
-      })
-
-      if (resp.status === 401) {
-        const errorData = await resp.json().catch(() => ({}))
-        if (errorData.code === 401) {
-          ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
-          handleSessionExpired()
-          return
-        }
-      }
-
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let result = ''
-      let newDangerConfirm = null
-      let hasError = false
-      let errorMsg = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop()
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const chunk = JSON.parse(line.slice(6).trim())
-            if (chunk.type === 'content') {
-              result += chunk.content
-              // 实时更新最后一条消息内容
-              const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-              if (lastMsg) {
-                lastMsg.content = `⏳ 正在执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` + (result ? `\n\n${result}` : '')
-              }
-              scrollToBottom()
-            }
-            if (chunk.type === 'danger_confirm') {
-              // 收到新的危险 SQL 确认请求，需要暂停并等待用户确认
-              newDangerConfirm = {
-                sql: chunk.sql || chunk.content,
-                interruptId: chunk.interruptId || '',
-                checkPointId: chunk.checkPointId || ''
-              }
-            }
-            if (chunk.type === 'error') {
-              hasError = true
-              errorMsg = chunk.content || '执行失败'
-            }
-            if (chunk.type === 'done') {
-              // 全部执行完成
-            }
-          } catch (_) { }
-        }
-      }
-
-      if (hasError) {
-        chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(errorMsg) || '执行失败') })
-        scrollToBottom()
-        break
-      }
-
-      if (newDangerConfirm) {
-        // 有新的危险 SQL 需要确认，暂停并显示确认弹窗
-        const newAnalysis = analyzeSQL(newDangerConfirm.sql)
-        confirmSQL.value = newDangerConfirm.sql
-        confirmInterruptId.value = newDangerConfirm.interruptId
-        confirmCheckPointId.value = newDangerConfirm.checkPointId
-        confirmOperationType.value = newAnalysis.type
-        confirmRiskLevel.value = newAnalysis.riskLevel
-        confirmDescription.value = newAnalysis.description
-        confirmTableName.value = newAnalysis.tableName || ''
-        confirmVisible.value = true
-        loading.value = false
-        abortController.value = null
-        scrollToBottom()
-
-        // 等待用户确认（通过 confirmVisible 的 watch 或下次调用 handleConfirmExec）
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
         return
       }
+    }
 
-      // 没有新的危险 SQL，执行完成
-      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-      if (lastMsg && !result) {
-        lastMsg.content = `✅ 执行成功`
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let contentResult = ''
+    const collectedDangerSQLs = []
+    let hasError = false
+    let errorMsg = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const trimmed = line.slice(6).trim()
+        if (!trimmed) continue
+        try {
+          const chunk = JSON.parse(trimmed)
+          if (chunk.type === 'content') {
+            contentResult += chunk.content
+            scrollToBottom()
+          }
+          if (chunk.type === 'danger_confirm') {
+            // Agent 恢复执行后又遇到新的危险 SQL
+            collectedDangerSQLs.push({
+              sql: chunk.sql || chunk.content,
+              interruptId: chunk.interruptId || '',
+              checkPointId: chunk.checkPointId || ''
+            })
+          }
+          if (chunk.type === 'error') {
+            hasError = true
+            errorMsg = chunk.content || '执行失败'
+          }
+        } catch (_) { }
       }
-      break
+    }
+
+    // 更新执行结果到聊天记录
+    if (hasError) {
+      chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`\n${sanitizeError(errorMsg)}`
+    } else {
+      chatHistory.value[execMsgIdx].content = `✅ 已执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``
+    }
+
+    // 如果 Agent 继续输出了内容（比如执行结果说明），追加到聊天记录
+    if (contentResult) {
+      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    }
+
+    scrollToBottom()
+
+    // 如果恢复执行后又遇到新的危险 SQL，弹出确认框
+    if (collectedDangerSQLs.length > 0) {
+      loading.value = false
+      abortController.value = null
+      const cpId = collectedDangerSQLs[0].checkPointId
+      const ids = collectedDangerSQLs.map(d => d.interruptId)
+      if (collectedDangerSQLs.length === 1) {
+        showConfirmDialog(collectedDangerSQLs[0].sql, ids, cpId)
+      } else {
+        pendingSQLList.value = collectedDangerSQLs.map(item => {
+          const analysis = analyzeSQL(item.sql)
+          return { sql: item.sql, ...analysis }
+        })
+        pendingSQLList.interruptIds = ids
+        pendingSQLList.checkPointId = cpId
+      }
+      return
     }
   } catch (e) {
     if (e.name === 'AbortError') {
-      chatHistory.value.push({ role: 'assistant', content: '⏹ 执行已被手动终止' })
-      scrollToBottom()
+      chatHistory.value[execMsgIdx].content = `⏹ 已终止：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``
     } else {
       ElMessage({ message: sanitizeError(e) || '执行失败', type: 'error' })
     }
@@ -1308,32 +1305,27 @@ function handleConfirmCancel() {
 
 // ── 多条 SQL 批量确认 ──
 async function handleConfirmAllSQL() {
-  const items = pendingSQLList.value.map(item => ({ sql: item.sql, interruptId: item.interruptId, checkPointId: item.checkPointId }))
+  const items = [...pendingSQLList.value]
+  const interruptIds = pendingSQLList.interruptIds || []
+  const checkPointId = pendingSQLList.checkPointId || ''
   pendingSQLList.value = []
   loading.value = true
 
+  // 将所有 SQL 保留在聊天记录中
   for (const item of items) {
-    await executeConfirmedSQL(item.interruptId, item.checkPointId)
+    chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
   }
+  scrollToBottom()
+
+  // 一次性 Resume 所有 interruptId
+  await executeBatchResume(items, interruptIds, checkPointId)
 
   loading.value = false
   scrollToBottom()
 }
 
-function handleCancelAllSQL() {
-  const items = pendingSQLList.value
-  pendingSQLList.value = []
-  // 将每条 SQL 保留在聊天记录中
-  for (const item of items) {
-    chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
-  }
-  scrollToBottom()
-}
-
-async function executeConfirmedSQL(interruptId, checkPointId) {
-  chatHistory.value.push({ role: 'assistant', content: '⏳ 正在执行...' })
-  scrollToBottom()
-
+// 批量恢复执行：一次 Resume 传入所有 interruptId
+async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/chatStream'
   const auth = sessionStorage.getItem('authentication') || ''
@@ -1348,7 +1340,7 @@ async function executeConfirmedSQL(interruptId, checkPointId) {
         schema: schema.value,
         question: 'resume confirmed SQL',
         confirmed: true,
-        interruptId: interruptId,
+        interruptIds: interruptIds,
         checkPointId: checkPointId,
       }),
     })
@@ -1365,8 +1357,8 @@ async function executeConfirmedSQL(interruptId, checkPointId) {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let result = ''
-    let newDangerConfirm = null
+    let contentResult = ''
+    const collectedDangerSQLs = []
     let hasError = false
     let errorMsg = ''
 
@@ -1378,66 +1370,167 @@ async function executeConfirmedSQL(interruptId, checkPointId) {
       buf = lines.pop()
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue
+        const trimmed = line.slice(6).trim()
+        if (!trimmed) continue
         try {
-          const chunk = JSON.parse(line.slice(6).trim())
-          if (chunk.type === 'thinking') {
-            // 流式更新思考内容（如果需要显示）
-            continue
-          }
-          if (chunk.type === 'content') {
-            result += chunk.content
-            // 实时更新最后一条消息内容，让 Vue 响应式系统自动更新页面
-            const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-            if (lastMsg) {
-              lastMsg.content = result
-            }
-            scrollToBottom()
-          }
+          const chunk = JSON.parse(trimmed)
+          if (chunk.type === 'content') contentResult += chunk.content
           if (chunk.type === 'danger_confirm') {
-            newDangerConfirm = {
+            collectedDangerSQLs.push({
               sql: chunk.sql || chunk.content,
               interruptId: chunk.interruptId || '',
               checkPointId: chunk.checkPointId || ''
-            }
+            })
+          }
+          if (chunk.type === 'error') { hasError = true; errorMsg = chunk.content || 'exec failed' }
+        } catch (_) { }
+      }
+    }
+
+    // 更新所有 SQL 的执行状态
+    for (const item of sqlItems) {
+      const idx = chatHistory.value.findLastIndex(m => m.content && m.content.includes(item.sql))
+      if (idx >= 0) {
+        chatHistory.value[idx].content = hasError
+          ? `❌ 执行失败：\n\`\`\`sql\n${item.sql}\n\`\`\``
+          : `✅ 已执行：\n\`\`\`sql\n${item.sql}\n\`\`\``
+      }
+    }
+
+    if (contentResult) {
+      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    }
+
+    if (collectedDangerSQLs.length > 0) {
+      const cpId = collectedDangerSQLs[0].checkPointId
+      const ids = collectedDangerSQLs.map(d => d.interruptId)
+      if (collectedDangerSQLs.length === 1) {
+        showConfirmDialog(collectedDangerSQLs[0].sql, ids, cpId)
+      } else {
+        pendingSQLList.value = collectedDangerSQLs.map(item => {
+          const analysis = analyzeSQL(item.sql)
+          return { sql: item.sql, ...analysis }
+        })
+        pendingSQLList.interruptIds = ids
+        pendingSQLList.checkPointId = cpId
+      }
+    }
+  } catch (e) {
+    ElMessage({ message: sanitizeError(e) || 'exec failed', type: 'error' })
+  }
+}
+
+function handleCancelAllSQL() {
+  const items = pendingSQLList.value
+  pendingSQLList.value = []
+  // 将每条 SQL 保留在聊天记录中
+  for (const item of items) {
+    chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
+  }
+  scrollToBottom()
+}
+
+async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
+  // 将 SQL 保留在聊天记录中
+  chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sqlText}\n\`\`\`` })
+  const execMsgIdx = chatHistory.value.length - 1
+  scrollToBottom()
+
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: 'resume confirmed SQL',
+        confirmed: true,
+        interruptIds: [interruptId],
+        checkPointId: checkPointId,
+      }),
+    })
+
+    if (resp.status === 401) {
+      const errorData = await resp.json().catch(() => ({}))
+      if (errorData.code === 401) {
+        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+        handleSessionExpired()
+        return
+      }
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let contentResult = ''
+    const collectedDangerSQLs = []
+    let hasError = false
+    let errorMsg = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const trimmed = line.slice(6).trim()
+        if (!trimmed) continue
+        try {
+          const chunk = JSON.parse(trimmed)
+          if (chunk.type === 'content') {
+            contentResult += chunk.content
+            scrollToBottom()
+          }
+          if (chunk.type === 'danger_confirm') {
+            collectedDangerSQLs.push({
+              sql: chunk.sql || chunk.content,
+              interruptId: chunk.interruptId || '',
+              checkPointId: chunk.checkPointId || ''
+            })
           }
           if (chunk.type === 'error') {
             hasError = true
-            errorMsg = chunk.content || '执行失败'
+            errorMsg = chunk.content || 'exec failed'
           }
         } catch (_) { }
       }
     }
 
+    // 更新执行结果
     if (hasError) {
-      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-      if (lastMsg) {
-        lastMsg.content = `❌ ${sanitizeError(errorMsg) || '执行失败'}`
-      }
-    } else if (newDangerConfirm) {
-      // 有新的危险 SQL 需要确认，显示确认弹窗
-      const newAnalysis = analyzeSQL(newDangerConfirm.sql)
-      confirmSQL.value = newDangerConfirm.sql
-      confirmInterruptId.value = newDangerConfirm.interruptId
-      confirmCheckPointId.value = newDangerConfirm.checkPointId
-      confirmOperationType.value = newAnalysis.type
-      confirmRiskLevel.value = newAnalysis.riskLevel
-      confirmDescription.value = newAnalysis.description
-      confirmTableName.value = newAnalysis.tableName || ''
-      confirmVisible.value = true
-      loading.value = false
-      scrollToBottom()
+      chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(errorMsg)}`
     } else {
-      // 更新最后一条消息（如果没有实时更新，则在这里更新）
-      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-      if (lastMsg && !result) {
-        lastMsg.content = `✅ 执行成功`
+      chatHistory.value[execMsgIdx].content = `✅ 已执行：\n\`\`\`sql\n${sqlText}\n\`\`\``
+    }
+
+    if (contentResult) {
+      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    }
+
+    // 如果恢复执行后又遇到新的危险 SQL，弹出确认框
+    if (collectedDangerSQLs.length > 0) {
+      const cpId = collectedDangerSQLs[0].checkPointId
+      const ids = collectedDangerSQLs.map(d => d.interruptId)
+      if (collectedDangerSQLs.length === 1) {
+        showConfirmDialog(collectedDangerSQLs[0].sql, ids, cpId)
+      } else {
+        pendingSQLList.value = collectedDangerSQLs.map(item => {
+          const analysis = analyzeSQL(item.sql)
+          return { sql: item.sql, ...analysis }
+        })
+        pendingSQLList.interruptIds = ids
+        pendingSQLList.checkPointId = cpId
       }
     }
   } catch (e) {
-    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-    if (lastMsg) {
-      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}`
-    }
+    chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(e)}`
   }
 }
 

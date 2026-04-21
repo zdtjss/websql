@@ -43,7 +43,7 @@ type ChatRequest struct {
 	Question     string     `json:"question"`
 	TableContext []string   `json:"tableContext"`
 	Confirmed    bool       `json:"confirmed,omitempty"`
-	InterruptID  string     `json:"interruptId,omitempty"`  // 确认时回传
+	InterruptIDs []string   `json:"interruptIds,omitempty"` // 确认时回传（支持多条）
 	CheckPointID string     `json:"checkPointId,omitempty"` // 确认时回传
 	ExcelData    *ExcelData `json:"excelData,omitempty"`
 }
@@ -242,31 +242,34 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 // ResumeStream 恢复被中断的执行（用户确认后）
 // 返回 interrupted 标志，如果为 true，说明再次被中断（如新的危险 SQL），需要等待用户再次确认
-func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interruptID string, approved bool, flush func(StreamChunk), sess *Session) (bool, error) {
-	log.Printf("[Agent] 恢复执行 - checkPointID=%s, interruptID=%s, approved=%v\n", checkPointID, interruptID, approved)
+func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, targets map[string]bool, flush func(StreamChunk), sess *Session) error {
+	log.Printf("[Agent] resume - cpID=%s, targets=%v\n", checkPointID, targets)
 
-	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
-		Targets: map[string]any{
-			interruptID: approved,
-		},
-	})
-	if err != nil {
-		return false, fmt.Errorf("恢复执行失败：%w", err)
+	// 将所有 interruptID 放入 Targets map，一次性恢复
+	targetsAny := make(map[string]any, len(targets))
+	for id, approved := range targets {
+		targetsAny[id] = approved
 	}
 
-	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
+	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
+		Targets: targetsAny,
+	})
+	if err != nil {
+		return fmt.Errorf("resume failed: %w", err)
+	}
+
+	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
 
 	if fullResponse.Len() > 0 {
 		if err := sess.Append("assistant", fullResponse.String()); err != nil {
-			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
+			log.Printf("[Agent] save assistant msg failed - err=%v\n", err)
 		}
 	}
 
-	// 只有在没有被中断时才发送 done，否则前端会停止等待后续确认
-	if !interrupted {
-		flush(StreamChunk{Type: "done"})
-	}
-	return interrupted, nil
+	// Always send done so frontend unlocks UI
+	// If a new dangerous SQL was encountered, frontend already got danger_confirm event
+	flush(StreamChunk{Type: "done"})
+	return nil
 }
 
 // processEvents 处理 Agent 事件流

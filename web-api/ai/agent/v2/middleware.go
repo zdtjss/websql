@@ -2,12 +2,14 @@ package agentv2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/components/tool"
+	adkTool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -61,32 +63,44 @@ func stripSQLComments(sql string) string {
 // DangerousSQLInfo — 危险 SQL 中断时传递给用户的信息
 // ──────────────────────────────────────────────
 
-// DangerousSQLInfo 是 tool.StatefulInterrupt 的 info 参数，
-// 会通过 InterruptCtx.Info 传递到前端，让用户看到要执行的 SQL。
 type DangerousSQLInfo struct {
 	SQL       string `json:"sql"`
-	RiskLevel string `json:"riskLevel"` // high / medium
-	SQLType   string `json:"sqlType"`   // DELETE / DROP / INSERT 等
+	RiskLevel string `json:"riskLevel"`
+	SQLType   string `json:"sqlType"`
 }
 
 func init() {
-	// 注册自定义类型，确保 gob 序列化/反序列化正常
 	schema.RegisterName[*DangerousSQLInfo]("agentv2.DangerousSQLInfo")
-	// string 类型由 Eino 框架内部自动注册，不需要重复注册
 }
 
 // ──────────────────────────────────────────────
 // ToolErrorRecoveryMiddleware
 // ──────────────────────────────────────────────
 //
-// Eino 的 ToolsNode 在工具返回 error 时会直接中断整个 graph 执行。
-// 但对于业务层面的错误（SQL 语法错误、字段不存在等），我们希望把错误信息
-// 作为正常的 tool result 返回给模型，让 ReAct 循环继续。
-//
-// tool.Interrupt 产生的错误必须原样传播（触发 Runner checkpoint），不能拦截。
+// 将业务错误（SQL 语法错误等）转为正常 tool result，让 ReAct 循环继续。
+// Interrupt 错误必须原样传播，由 Runner 捕获并 checkpoint。
+// 使用 compose.ExtractInterruptInfo 精确判断 Interrupt 错误。
 
 type ToolErrorRecoveryMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
+}
+
+// isInterruptErr uses three methods to reliably detect Eino interrupt errors:
+// 1. compose.ExtractInterruptInfo — detects graph-level interrupts
+// 2. compose.IsInterruptRerunError — detects tool-level interrupts (core.InterruptSignal)
+// 3. errors.As for *adk.InterruptSignal — direct type check as final fallback
+func isInterruptErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, ok := compose.ExtractInterruptInfo(err); ok {
+		return true
+	}
+	if _, ok := compose.IsInterruptRerunError(err); ok {
+		return true
+	}
+	var is *adk.InterruptSignal
+	return errors.As(err, &is)
 }
 
 func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
@@ -94,15 +108,14 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 	endpoint adk.InvokableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
-	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (string, error) {
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
-			// Interrupt 错误必须原样传播，让 Runner 捕获并 checkpoint
-			if isInterruptError(err) {
+			if isInterruptErr(err) {
 				return "", err
 			}
-			log.Printf("[ToolErrorRecovery] 工具 %s 错误已转为结果 - err=%v\n", tCtx.Name, err)
-			return fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", err.Error()), nil
+			log.Printf("[ToolErrorRecovery] tool %s error converted to result - err=%v\n", tCtx.Name, err)
+			return fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error()), nil
 		}
 		return result, nil
 	}, nil
@@ -113,28 +126,16 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 	endpoint adk.StreamableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
-	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (*schema.StreamReader[string], error) {
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
-			if isInterruptError(err) {
+			if isInterruptErr(err) {
 				return nil, err
 			}
-			log.Printf("[ToolErrorRecovery:Stream] 工具 %s 错误已转为结果 - err=%v\n", tCtx.Name, err)
-			errMsg := fmt.Sprintf("[工具调用失败] %s\n请根据错误信息调整参数后重试。", err.Error())
+			log.Printf("[ToolErrorRecovery:Stream] tool %s error converted to result - err=%v\n", tCtx.Name, err)
+			errMsg := fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error())
 			return schema.StreamReaderFromArray([]string{errMsg}), nil
 		}
 		return result, nil
 	}, nil
-}
-
-// isInterruptError 检查错误是否为 Eino 的 Interrupt 错误
-// Interrupt 错误包含特定的内部标记，这里通过错误链检查
-func isInterruptError(err error) bool {
-	// Eino 的 interrupt 错误实现了特定接口或包含特定字符串
-	// 最可靠的方式是检查错误字符串中是否包含 interrupt 标记
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "interrupt") || strings.Contains(errStr, "Interrupt")
 }

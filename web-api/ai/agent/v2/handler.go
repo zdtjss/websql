@@ -37,7 +37,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	// 确认执行请求 → 通过 Runner.ResumeWithParams 恢复
-	if req.Confirmed && req.InterruptID != "" && req.CheckPointID != "" {
+	if req.Confirmed && len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
 		h.handleResumeExec(c, req)
 		return
 	}
@@ -184,16 +184,17 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		sess, _ = h.sessions.GetOrCreate(req.SessionID, user.Id)
 	}
 
-	// 通过 Runner 恢复执行（审计日志在 exec_sql 工具内部记录，包含真实 SQL）
-	// 注意：如果恢复执行后再次被中断（如新的危险 SQL），不会发送 done，前端会继续等待下一次确认
-	interrupted, err := agent.ResumeStream(ctx, req.CheckPointID, req.InterruptID, req.Confirmed, flush, sess)
-	if err != nil {
-		log.Printf("[Handler] 恢复执行失败 - err=%v\n", err)
-		flush(StreamChunk{Type: "error", Content: "恢复执行失败：" + err.Error()})
-		flush(StreamChunk{Type: "done"})
+	// 构建 targets map：所有 interruptID 都标记为 approved
+	targets := make(map[string]bool, len(req.InterruptIDs))
+	for _, id := range req.InterruptIDs {
+		targets[id] = req.Confirmed
 	}
-	if interrupted {
-		log.Printf("[Handler] 恢复执行后再次被中断，等待用户下一次确认\n")
+
+	// 通过 Runner 恢复执行（审计日志在 exec_sql 工具内部记录，包含真实 SQL）
+	if err := agent.ResumeStream(ctx, req.CheckPointID, targets, flush, sess); err != nil {
+		log.Printf("[Handler] resume failed - err=%v\n", err)
+		flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
+		flush(StreamChunk{Type: "done"})
 	}
 	close(kaStop)
 }
