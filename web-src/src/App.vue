@@ -43,6 +43,12 @@
             <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingContent)"></div>
           </div>
 
+          <!-- 危险SQL确认后的流式输出 -->
+          <div v-if="streamingExecContent" class="chat-bubble assistant">
+            <div class="bubble-label">AI</div>
+            <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingExecContent)"></div>
+          </div>
+
           <div v-if="loading" style="color:#909399;font-size:13px;padding:4px 0;">AI 正在处理...</div>
         </div>
 
@@ -363,6 +369,7 @@ const abortController = ref(null)
 const isRecording = ref(false)
 const thinkingText = ref('')
 const streamingContent = ref('')
+const streamingExecContent = ref('') // 用于危险SQL确认后的流式响应
 const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
@@ -1176,7 +1183,6 @@ async function handleConfirmExec(confirmedSql) {
   // 将已确认的 SQL 保留在聊天记录中（无论后续执行成功与否）
   const sqlForDisplay = confirmSQL.value
   chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`` })
-  const execMsgIdx = chatHistory.value.length - 1
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -1214,7 +1220,7 @@ async function handleConfirmExec(confirmedSql) {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let contentResult = ''
+    streamingExecContent.value = '' // 清空之前的内容
     const collectedDangerSQLs = []
     let hasError = false
     let errorMsg = ''
@@ -1232,7 +1238,7 @@ async function handleConfirmExec(confirmedSql) {
         try {
           const chunk = JSON.parse(trimmed)
           if (chunk.type === 'content') {
-            contentResult += chunk.content
+            streamingExecContent.value += chunk.content
             scrollToBottom()
           }
           if (chunk.type === 'danger_confirm') {
@@ -1251,16 +1257,20 @@ async function handleConfirmExec(confirmedSql) {
       }
     }
 
+    // 将流式内容添加到聊天记录
+    const execContent = streamingExecContent.value
+    streamingExecContent.value = '' // 清空流式内容
+
     // 更新执行结果到聊天记录
     if (hasError) {
-      chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`\n${sanitizeError(errorMsg)}`
+      chatHistory.value.push({ role: 'assistant', content: `❌ 执行失败：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`\n${sanitizeError(errorMsg)}` })
     } else {
-      chatHistory.value[execMsgIdx].content = `✅ 已执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``
+      chatHistory.value.push({ role: 'assistant', content: `✅ 已执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`` })
     }
 
     // 如果 Agent 继续输出了内容（比如执行结果说明），追加到聊天记录
-    if (contentResult) {
-      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    if (execContent) {
+      chatHistory.value.push({ role: 'assistant', content: execContent })
     }
 
     scrollToBottom()
@@ -1285,10 +1295,11 @@ async function handleConfirmExec(confirmedSql) {
     }
   } catch (e) {
     if (e.name === 'AbortError') {
-      chatHistory.value[execMsgIdx].content = `⏹ 已终止：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``
+      chatHistory.value.push({ role: 'assistant', content: `⏹ 已终止：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`` })
     } else {
       ElMessage({ message: sanitizeError(e) || '执行失败', type: 'error' })
     }
+    streamingExecContent.value = ''
   } finally {
     loading.value = false
     abortController.value = null
@@ -1357,7 +1368,7 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let contentResult = ''
+    streamingExecContent.value = ''
     const collectedDangerSQLs = []
     let hasError = false
     let errorMsg = ''
@@ -1374,7 +1385,7 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
         if (!trimmed) continue
         try {
           const chunk = JSON.parse(trimmed)
-          if (chunk.type === 'content') contentResult += chunk.content
+          if (chunk.type === 'content') streamingExecContent.value += chunk.content
           if (chunk.type === 'danger_confirm') {
             collectedDangerSQLs.push({
               sql: chunk.sql || chunk.content,
@@ -1387,18 +1398,20 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
       }
     }
 
+    // 将流式内容添加到聊天记录
+    const execContent = streamingExecContent.value
+    streamingExecContent.value = ''
+
     // 更新所有 SQL 的执行状态
     for (const item of sqlItems) {
-      const idx = chatHistory.value.findLastIndex(m => m.content && m.content.includes(item.sql))
-      if (idx >= 0) {
-        chatHistory.value[idx].content = hasError
+      chatHistory.value.push({ role: 'assistant', content: hasError
           ? `❌ 执行失败：\n\`\`\`sql\n${item.sql}\n\`\`\``
           : `✅ 已执行：\n\`\`\`sql\n${item.sql}\n\`\`\``
-      }
+      })
     }
 
-    if (contentResult) {
-      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    if (execContent) {
+      chatHistory.value.push({ role: 'assistant', content: execContent })
     }
 
     if (collectedDangerSQLs.length > 0) {
@@ -1416,6 +1429,7 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
       }
     }
   } catch (e) {
+    streamingExecContent.value = ''
     ElMessage({ message: sanitizeError(e) || 'exec failed', type: 'error' })
   }
 }
@@ -1433,7 +1447,6 @@ function handleCancelAllSQL() {
 async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
   // 将 SQL 保留在聊天记录中
   chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${sqlText}\n\`\`\`` })
-  const execMsgIdx = chatHistory.value.length - 1
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -1467,7 +1480,7 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let contentResult = ''
+    streamingExecContent.value = ''
     const collectedDangerSQLs = []
     let hasError = false
     let errorMsg = ''
@@ -1485,7 +1498,7 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
         try {
           const chunk = JSON.parse(trimmed)
           if (chunk.type === 'content') {
-            contentResult += chunk.content
+            streamingExecContent.value += chunk.content
             scrollToBottom()
           }
           if (chunk.type === 'danger_confirm') {
@@ -1503,15 +1516,19 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
       }
     }
 
+    // 将流式内容添加到聊天记录
+    const execContent = streamingExecContent.value
+    streamingExecContent.value = ''
+
     // 更新执行结果
     if (hasError) {
-      chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(errorMsg)}`
+      chatHistory.value.push({ role: 'assistant', content: `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(errorMsg)}` })
     } else {
-      chatHistory.value[execMsgIdx].content = `✅ 已执行：\n\`\`\`sql\n${sqlText}\n\`\`\``
+      chatHistory.value.push({ role: 'assistant', content: `✅ 已执行：\n\`\`\`sql\n${sqlText}\n\`\`\`` })
     }
 
-    if (contentResult) {
-      chatHistory.value.push({ role: 'assistant', content: contentResult })
+    if (execContent) {
+      chatHistory.value.push({ role: 'assistant', content: execContent })
     }
 
     // 如果恢复执行后又遇到新的危险 SQL，弹出确认框
@@ -1530,7 +1547,8 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
       }
     }
   } catch (e) {
-    chatHistory.value[execMsgIdx].content = `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(e)}`
+    streamingExecContent.value = ''
+    chatHistory.value.push({ role: 'assistant', content: `❌ 执行失败：\n\`\`\`sql\n${sqlText}\n\`\`\`\n${sanitizeError(e)}` })
   }
 }
 
@@ -1684,6 +1702,7 @@ function clearSession(showMsg) {
   sessionId.value = ''
   thinkingText.value = ''
   streamingContent.value = ''
+  streamingExecContent.value = ''
   lastSql.value = ''
   confirmVisible.value = false
   confirmSQL.value = ''
