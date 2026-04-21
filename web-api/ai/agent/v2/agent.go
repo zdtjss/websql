@@ -241,7 +241,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 }
 
 // ResumeStream 恢复被中断的执行（用户确认后）
-func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interruptID string, approved bool, flush func(StreamChunk), sess *Session) error {
+// 返回 interrupted 标志，如果为 true，说明再次被中断（如新的危险 SQL），需要等待用户再次确认
+func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interruptID string, approved bool, flush func(StreamChunk), sess *Session) (bool, error) {
 	log.Printf("[Agent] 恢复执行 - checkPointID=%s, interruptID=%s, approved=%v\n", checkPointID, interruptID, approved)
 
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
@@ -250,10 +251,10 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interr
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("恢复执行失败：%w", err)
+		return false, fmt.Errorf("恢复执行失败：%w", err)
 	}
 
-	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
+	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
 
 	if fullResponse.Len() > 0 {
 		if err := sess.Append("assistant", fullResponse.String()); err != nil {
@@ -261,8 +262,11 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, interr
 		}
 	}
 
-	flush(StreamChunk{Type: "done"})
-	return nil
+	// 只有在没有被中断时才发送 done，否则前端会停止等待后续确认
+	if !interrupted {
+		flush(StreamChunk{Type: "done"})
+	}
+	return interrupted, nil
 }
 
 // processEvents 处理 Agent 事件流

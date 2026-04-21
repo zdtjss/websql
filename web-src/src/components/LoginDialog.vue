@@ -21,7 +21,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { ElMessage } from 'element-plus'
 import { client, server } from '@passwordless-id/webauthn'
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 const props = defineProps({
   modelValue: {
@@ -52,6 +52,13 @@ const loginRules = reactive({
 })
 
 const bioLocalStorageKey = 'nway_websql_bio_credential_id'
+
+// 监听对话框打开，自动尝试智能登录
+watch(dialogVisible, (newVal) => {
+  if (newVal) {
+    tryAutoLogin()
+  }
+})
 
 function handleClose() {
   emit('update:modelValue', false)
@@ -101,10 +108,12 @@ function loginByToken(token) {
     } else {
       console.error('[LoginDialog] 登录失败 - code:', resp.data.code)
       ElMessage('登录失败')
+      emit('update:modelValue', true)
     }
   }).catch((error) => {
     console.error('[LoginDialog] 登录异常:', error)
     ElMessage('登录失败')
+    emit('update:modelValue', true)
   })
 }
 
@@ -115,10 +124,8 @@ async function loginBio() {
     challenge: server.randomChallenge()
   })
 
-  const authenticationParsed = await JSON.parse(authentication)
-
   const params = new URLSearchParams()
-  params.append('key', authenticationParsed.credentialId)
+  params.append('key', authentication.id)
   params.append('loginType', 'bio')
   http.post('/login', params).then((resp) => {
     if (resp.data.code == 200) {
@@ -137,6 +144,7 @@ async function loginBio() {
   }).catch((error) => {
     console.error('[LoginDialog] bio登录异常:', error)
     ElMessage('登录失败')
+    emit('update:modelValue', true)
   })
 }
 
@@ -148,9 +156,11 @@ function tryAutoLogin() {
   } else {
     const credentialId = window.localStorage.getItem(bioLocalStorageKey)
     if (credentialId && client.isAvailable()) {
+      // 先关闭对话框，再调用指纹登录，避免同时显示两个对话框
+      emit('update:modelValue', false)
       loginBio()
     } else {
-      emit('update:modelValue', true)
+      // 不自动显示对话框，等待用户主动点击
     }
   }
 }

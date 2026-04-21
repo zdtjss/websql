@@ -27,7 +27,13 @@ export default defineConfig({
       }
     }
   },
+  optimizeDeps: {
+    include: ['vditor'],
+  },
   build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+    },
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
@@ -59,9 +65,10 @@ export default defineConfig({
           if (id.includes('node_modules/highlight.js')) {
             return 'highlight';
           }
-          if (id.includes('node_modules/vditor')) {
-            return 'vditor';
-          }
+          // Don't manually chunk vditor - let it go to vendor to avoid rolldown UMD conversion bug
+          // if (id.includes('node_modules/vditor')) {
+          //   return 'vditor';
+          // }
           // 其他 node_modules 归为 vendor
           if (id.includes('node_modules')) {
             return 'vendor';

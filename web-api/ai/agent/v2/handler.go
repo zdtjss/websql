@@ -139,6 +139,23 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
+	defer c.Writer.Flush()
+
+	// keep-alive 心跳机制，防止连接超时
+	kaStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-ticker.C:
+				c.Writer.WriteString("data: \n\n")
+				c.Writer.Flush()
+			}
+		}
+	}()
 
 	flush := func(chunk StreamChunk) {
 		data, _ := json.Marshal(chunk)
@@ -148,10 +165,14 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 
 	// 创建 Agent（需要与原始执行使用相同的 CheckPointStore）
 	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
-		ConnID: req.ConnID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
+		ConnID:    req.ConnID,
+		UserID:    user.Id,
+		UserName:  user.Name,
+		SessionID: req.SessionID,
 	})
 	if err != nil {
 		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
+		close(kaStop)
 		flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
 		flush(StreamChunk{Type: "done"})
 		return
@@ -164,11 +185,17 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	}
 
 	// 通过 Runner 恢复执行（审计日志在 exec_sql 工具内部记录，包含真实 SQL）
-	if err := agent.ResumeStream(ctx, req.CheckPointID, req.InterruptID, req.Confirmed, flush, sess); err != nil {
+	// 注意：如果恢复执行后再次被中断（如新的危险 SQL），不会发送 done，前端会继续等待下一次确认
+	interrupted, err := agent.ResumeStream(ctx, req.CheckPointID, req.InterruptID, req.Confirmed, flush, sess)
+	if err != nil {
 		log.Printf("[Handler] 恢复执行失败 - err=%v\n", err)
 		flush(StreamChunk{Type: "error", Content: "恢复执行失败：" + err.Error()})
 		flush(StreamChunk{Type: "done"})
 	}
+	if interrupted {
+		log.Printf("[Handler] 恢复执行后再次被中断，等待用户下一次确认\n")
+	}
+	close(kaStop)
 }
 
 // HandleGetSessions 获取当前用户的会话列表

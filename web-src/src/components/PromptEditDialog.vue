@@ -25,7 +25,7 @@
         <el-input v-model="form.title" placeholder="请输入提示词标题" maxlength="100" show-word-limit />
       </el-form-item>
       <el-form-item label="内容" prop="content">
-        <div ref="vditorContainerRef" class="vditor-container" v-loading="vditorLoading" element-loading-text="编辑器在路上...">
+        <div ref="vditorContainerRef" class="vditor-container" v-loading="vditorLoading" element-loading-text="稍等片刻...">
         </div>
       </el-form-item>
       <el-form-item v-if="!roleId" label="分享给">

@@ -384,7 +384,6 @@ const loginFormRef = ref()
 const currentUser = ref(sessionStorage.getItem("currentUser") ? JSON.parse(sessionStorage.getItem("currentUser")) : { id: "", name: "", isAdmin: false })
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 const logining = ref(false)
-const bioLocalStorageKey = "nway_websql_bio_credential_id"
 
 const router = useRouter()
 
@@ -1065,6 +1064,19 @@ async function sendMessage() {
               showRetryConfirm.value = true
               break
             case 'error':
+              // 先将已有的思考过程和内容加入历史
+              if (thinkingText.value) {
+                chatHistory.value.push({ role: 'thinking', content: thinkingText.value, collapsed: true })
+                thinkingText.value = ''
+              }
+              if (streamingContent.value) {
+                const content = streamingContent.value
+                const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
+                chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
+                if (isSql) lastSql.value = content
+                streamingContent.value = ''
+              }
+              // 然后再添加错误消息，确保显示在结果区域下方
               chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(chunk.content) || 'AI 服务错误') })
               scrollToBottom()
               break
@@ -1157,66 +1169,121 @@ async function handleConfirmExec(confirmedSql) {
   chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` })
   scrollToBottom()
 
-  const apiBase = import.meta.env.VITE_API_URL || ''
-  const url = apiBase + '/ai/agent/chatStream'
-  const auth = sessionStorage.getItem('authentication') || ''
-
-  const controller = new AbortController()
-  abortController.value = controller
-
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-      body: JSON.stringify({
-        sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
-        question: '执行已确认的 SQL',
-        confirmed: true,
-        interruptId: confirmInterruptId.value,
-        checkPointId: confirmCheckPointId.value,
-      }),
-      signal: controller.signal,
-    })
-
-    if (resp.status === 401) {
-      const errorData = await resp.json().catch(() => ({}))
-      if (errorData.code === 401) {
-        ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
-        handleSessionExpired()
-        return
-      }
-    }
-
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    let result = ''
+    // 恢复执行后，可能还会收到新的 danger_confirm 事件
+    // 需要循环处理，直到收到 done 或 error
+    let currentInterruptId = confirmInterruptId.value
+    let currentCheckPointId = confirmCheckPointId.value
 
     while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop()
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          const chunk = JSON.parse(line.slice(6).trim())
-          if (chunk.type === 'content') {
-            result += chunk.content
-          }
-          if (chunk.type === 'error') {
-            chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(chunk.content) || '执行失败') })
-            scrollToBottom()
-          }
-        } catch (_) { }
-      }
-    }
+      const apiBase = import.meta.env.VITE_API_URL || ''
+      const url = apiBase + '/ai/agent/chatStream'
+      const auth = sessionStorage.getItem('authentication') || ''
 
-    if (result) {
-      chatHistory.value.push({ role: 'assistant', content: result })
+      const controller = new AbortController()
+      abortController.value = controller
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+        body: JSON.stringify({
+          sessionId: sessionId.value,
+          connId: connId.value,
+          schema: schema.value,
+          question: '执行已确认的 SQL',
+          confirmed: true,
+          interruptId: currentInterruptId,
+          checkPointId: currentCheckPointId,
+        }),
+        signal: controller.signal,
+      })
+
+      if (resp.status === 401) {
+        const errorData = await resp.json().catch(() => ({}))
+        if (errorData.code === 401) {
+          ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' })
+          handleSessionExpired()
+          return
+        }
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let result = ''
+      let newDangerConfirm = null
+      let hasError = false
+      let errorMsg = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const chunk = JSON.parse(line.slice(6).trim())
+            if (chunk.type === 'content') {
+              result += chunk.content
+              // 实时更新最后一条消息内容
+              const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+              if (lastMsg) {
+                lastMsg.content = `⏳ 正在执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` + (result ? `\n\n${result}` : '')
+              }
+              scrollToBottom()
+            }
+            if (chunk.type === 'danger_confirm') {
+              // 收到新的危险 SQL 确认请求，需要暂停并等待用户确认
+              newDangerConfirm = {
+                sql: chunk.sql || chunk.content,
+                interruptId: chunk.interruptId || '',
+                checkPointId: chunk.checkPointId || ''
+              }
+            }
+            if (chunk.type === 'error') {
+              hasError = true
+              errorMsg = chunk.content || '执行失败'
+            }
+            if (chunk.type === 'done') {
+              // 全部执行完成
+            }
+          } catch (_) { }
+        }
+      }
+
+      if (hasError) {
+        chatHistory.value.push({ role: 'assistant', content: '❌ ' + (sanitizeError(errorMsg) || '执行失败') })
+        scrollToBottom()
+        break
+      }
+
+      if (newDangerConfirm) {
+        // 有新的危险 SQL 需要确认，暂停并显示确认弹窗
+        const newAnalysis = analyzeSQL(newDangerConfirm.sql)
+        confirmSQL.value = newDangerConfirm.sql
+        confirmInterruptId.value = newDangerConfirm.interruptId
+        confirmCheckPointId.value = newDangerConfirm.checkPointId
+        confirmOperationType.value = newAnalysis.type
+        confirmRiskLevel.value = newAnalysis.riskLevel
+        confirmDescription.value = newAnalysis.description
+        confirmTableName.value = newAnalysis.tableName || ''
+        confirmVisible.value = true
+        loading.value = false
+        abortController.value = null
+        scrollToBottom()
+
+        // 等待用户确认（通过 confirmVisible 的 watch 或下次调用 handleConfirmExec）
+        return
+      }
+
+      // 没有新的危险 SQL，执行完成
+      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+      if (lastMsg && !result) {
+        lastMsg.content = `✅ 执行成功`
+      }
+      break
     }
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -1299,6 +1366,9 @@ async function executeConfirmedSQL(interruptId, checkPointId) {
     const decoder = new TextDecoder()
     let buf = ''
     let result = ''
+    let newDangerConfirm = null
+    let hasError = false
+    let errorMsg = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -1310,26 +1380,63 @@ async function executeConfirmedSQL(interruptId, checkPointId) {
         if (!line.startsWith('data: ')) continue
         try {
           const chunk = JSON.parse(line.slice(6).trim())
-          if (chunk.type === 'content') result += chunk.content
-          if (chunk.type === 'error') {
+          if (chunk.type === 'thinking') {
+            // 流式更新思考内容（如果需要显示）
+            continue
+          }
+          if (chunk.type === 'content') {
+            result += chunk.content
+            // 实时更新最后一条消息内容，让 Vue 响应式系统自动更新页面
             const lastMsg = chatHistory.value[chatHistory.value.length - 1]
             if (lastMsg) {
-              lastMsg.content = `❌ ${sanitizeError(chunk.content) || '执行失败'}\n\`\`\`sql\n${sql}\n\`\`\``
+              lastMsg.content = result
             }
+            scrollToBottom()
+          }
+          if (chunk.type === 'danger_confirm') {
+            newDangerConfirm = {
+              sql: chunk.sql || chunk.content,
+              interruptId: chunk.interruptId || '',
+              checkPointId: chunk.checkPointId || ''
+            }
+          }
+          if (chunk.type === 'error') {
+            hasError = true
+            errorMsg = chunk.content || '执行失败'
           }
         } catch (_) { }
       }
     }
 
-    // 更新最后一条消息
-    const lastMsg = chatHistory.value[chatHistory.value.length - 1]
-    if (lastMsg) {
-      lastMsg.content = `✅ ${result || '执行成功'}\n\`\`\`sql\n${sql}\n\`\`\``
+    if (hasError) {
+      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+      if (lastMsg) {
+        lastMsg.content = `❌ ${sanitizeError(errorMsg) || '执行失败'}`
+      }
+    } else if (newDangerConfirm) {
+      // 有新的危险 SQL 需要确认，显示确认弹窗
+      const newAnalysis = analyzeSQL(newDangerConfirm.sql)
+      confirmSQL.value = newDangerConfirm.sql
+      confirmInterruptId.value = newDangerConfirm.interruptId
+      confirmCheckPointId.value = newDangerConfirm.checkPointId
+      confirmOperationType.value = newAnalysis.type
+      confirmRiskLevel.value = newAnalysis.riskLevel
+      confirmDescription.value = newAnalysis.description
+      confirmTableName.value = newAnalysis.tableName || ''
+      confirmVisible.value = true
+      loading.value = false
+      scrollToBottom()
+    } else {
+      // 更新最后一条消息（如果没有实时更新，则在这里更新）
+      const lastMsg = chatHistory.value[chatHistory.value.length - 1]
+      if (lastMsg && !result) {
+        lastMsg.content = `✅ 执行成功`
+      }
     }
   } catch (e) {
     const lastMsg = chatHistory.value[chatHistory.value.length - 1]
     if (lastMsg) {
-      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}\n\`\`\`sql\n${sql}\n\`\`\``
+      lastMsg.content = `❌ 执行失败：${sanitizeError(e)}`
     }
   }
 }
@@ -1551,109 +1658,6 @@ function handleEscKey(e) {
   }
 }
 
-function toLogin() {
-  const searchParams = new URLSearchParams(window.location.search);
-  const authorization = searchParams.get('authorization');
-  if (authorization) {
-    loginByToken(authorization)
-  } else {
-    const credentialId = window.localStorage.getItem(bioLocalStorageKey)
-    if (credentialId && client.isAvailable()) {
-      loginBio()
-    } else {
-      loginDialogVisible.value = true
-    }
-  }
-}
-
-function loginByToken(token) {
-  const params = new URLSearchParams();
-  params.append("key", token);
-  params.append("loginType", "token");
-  http.post("/login", params).then((resp) => {
-    if (resp.data.code == 200) {
-      currentUser.value = resp.data.data
-      sessionStorage.setItem("authentication", resp.data.data["authentication"])
-      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
-      loadConnList()
-      loginForm.value = {}
-      logining.value = false
-      loginSucc.value = true
-      loginDialogVisible.value = false
-      ElMessage("登陆成功")
-    } else {
-      console.error('[App] 登录失败 - code:', resp.data.code)
-      ElMessage("登录失败")
-    }
-  }).catch((error) => {
-    console.error('[App] 登录异常:', error)
-    ElMessage("登录失败")
-  });
-}
-
-function login() {
-  loginFormRef.value.validate(isValid => {
-    if (isValid) {
-      logining.value = true
-      const params = new URLSearchParams();
-      params.append("name", loginForm.value.name);
-      params.append("password", loginForm.value.password);
-      params.append("loginType", "pwd");
-      http.post("/login", params, {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }).then((resp) => {
-        currentUser.value = resp.data.data
-        sessionStorage.setItem("authentication", resp.headers.get("authentication"))
-        sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
-        loginForm.value = {}
-        logining.value = false
-        loginSucc.value = true
-        loginDialogVisible.value = false
-        loadConnList()
-        ElMessage("登陆成功")
-      }).finally(() => logining.value = false)
-    }
-  })
-}
-
-async function loginBio() {
-
-   const credential = window.localStorage.getItem(bioLocalStorageKey)
-  // 第一个参数指定值，可以简化用户选择的操作
-  let authentication = await client.authenticate({
-    allowCredentials: credential == null ? [] : [JSON.parse(credential)],
-    challenge: server.randomChallenge()
-  })
-
-  const authenticationParsed = await parsers.parseAuthentication(authentication);
-
-  const params = new URLSearchParams();
-  params.append("key", authenticationParsed.credentialId);
-  params.append("loginType", "bio");
-  http.post("/login", params).then((resp) => {
-    if (resp.data.code == 200) {
-      currentUser.value = resp.data.data
-      sessionStorage.setItem("authentication", resp.headers.get("authentication"))
-      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
-      loginForm.value = {}
-      logining.value = false
-      loginSucc.value = true
-      loginDialogVisible.value = false
-      loadConnList()
-      ElMessage("登陆成功")
-    } else {
-      console.error('[App] bio登录失败 - code:', resp.data.code)
-      ElMessage("登录失败")
-      loginDialogVisible.value = true
-    }
-  }).catch((error) => {
-    console.error('[App] bio登录异常:', error)
-    ElMessage("登录失败")
-  });
-}
-
 function logout() {
   http.post("/logout")
     .then((resp) => {
@@ -1676,15 +1680,18 @@ function handleSessionExpired() {
   loginSucc.value = false
   sessionStorage.removeItem('authentication')
   sessionStorage.removeItem('currentUser')
-  // 延迟一下再弹出登录对话框，确保 UI 状态已更新
+  sessionStorage.removeItem('isRemote')
+  // 延迟一下再尝试登录，确保 UI 状态已更新
   nextTick(() => {
     loginDialogVisible.value = true
   })
 }
 
 function handleSessionExpiredEvent(event) {
-  const message = event.detail?.message || '登录已过期，请重新登录'
-  ElMessage({ message: message, type: 'warning' })
+  const message = event.detail?.message || ''
+  if (message) {
+    ElMessage({ message: message, type: 'warning' })
+  }
   handleSessionExpired()
 }
 
@@ -1713,7 +1720,7 @@ function getSysModel() {
     isRemote.value = resp.data.data.isRemote
     sessionStorage.setItem("isRemote", isRemote.value.toString())
     if (!loginSucc.value && isRemote.value) {
-      toLogin()
+      loginDialogVisible.value = true
     }
   })
 }

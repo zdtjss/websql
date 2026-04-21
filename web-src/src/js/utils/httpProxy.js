@@ -21,11 +21,16 @@ http.interceptors.response.use(
         }
         const { code, msg } = response.data;
         if (code === 401) {
+            const isLoginExpired = !!sessionStorage.getItem('authentication');
             sessionStorage.removeItem('authentication');
             sessionStorage.removeItem('currentUser');
             sessionStorage.removeItem('isRemote');
-            window.dispatchEvent(new CustomEvent('session-expired', { detail: { message: msg || '登录已过期，请重新登录' } }));
-            return Promise.reject(new Error(msg || '登录已过期'));
+            window.dispatchEvent(new CustomEvent('session-expired', { 
+                detail: { 
+                    message: isLoginExpired ? (msg || '登录已过期，请重新登录') : '' 
+                } 
+            }));
+            return Promise.reject(new Error(''));
         }
         if (code === 500) {
             ElMessage({ message: sanitizeError(msg) || '系统错误', type: 'error' });
@@ -35,11 +40,16 @@ http.interceptors.response.use(
     },
     (error) => {
         if (error.response && error.response.status === 401) {
+            const isLoginExpired = !!sessionStorage.getItem('authentication');
             const msg = error.response.data?.msg || '登录已过期，请重新登录';
             sessionStorage.removeItem('authentication');
             sessionStorage.removeItem('currentUser');
             sessionStorage.removeItem('isRemote');
-            window.dispatchEvent(new CustomEvent('session-expired', { detail: { message: msg } }));
+            window.dispatchEvent(new CustomEvent('session-expired', { 
+                detail: { 
+                    message: isLoginExpired ? msg : '' 
+                } 
+            }));
             return Promise.reject(error);
         }
 

@@ -150,19 +150,30 @@ func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context
 		if wasInterrupted && hasState {
 			isTarget, hasData, approved := tool.GetResumeContext[bool](ctx)
 			if !isTarget {
-				// Not the resume target, re-interrupt to preserve state
-				return nil, tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-					SQL: savedSQL, RiskLevel: detectRiskLevel(savedSQL), SQLType: detectSQLType(savedSQL),
-				}, savedSQL)
-			}
-			if hasData && approved {
+				// Not the resume target - this is a new SQL call after resume
+				// Must check if this new SQL is also dangerous and requires confirmation
+				log.Printf("[Tool:exec_sql] not resume target, checking new SQL - sql=%s\n", sql)
+				for _, line := range strings.Split(sql, ";") {
+					line = strings.TrimSpace(line)
+					if line != "" && isDangerousSQL(line) {
+						log.Printf("[Tool:exec_sql] new dangerous SQL intercepted - sql=%s\n", sql)
+						return nil, tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
+							SQL: sql, RiskLevel: detectRiskLevel(sql), SQLType: detectSQLType(sql),
+						}, sql)
+					}
+				}
+				// Not dangerous, proceed with execution
+				// fall through to execute
+			} else if hasData && approved {
 				log.Printf("[Tool:exec_sql] user approved, executing saved SQL - sql=%s\n", savedSQL)
 				sql = savedSQL
-			} else {
+			} else if isTarget && (!hasData || !approved) {
+				// Resume target but user cancelled
 				return &ExecOutput{AffectedRows: 0, Message: "cancelled by user"}, nil
 			}
 		} else {
 			// First execution - check for dangerous SQL
+			// Each dangerous SQL must be independently confirmed by the user, even if it was confirmed before
 			for _, line := range strings.Split(sql, ";") {
 				line = strings.TrimSpace(line)
 				if line != "" && isDangerousSQL(line) {
