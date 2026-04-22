@@ -1,9 +1,9 @@
 <template>
-  <div class="table-manager" style="height: calc(100vh - 60px); display: flex; flex-direction: column;">
+  <div class="table-manager classical-panel">
     <!-- Toolbar -->
-    <div class="toolbar" style="padding: 6px 10px; border-bottom: 1px solid #e4e7ed; display: flex; align-items: center; gap: 8px;">
-      <el-button size="small" type="primary" @click="onNewTable">新建表</el-button>
-      <el-button size="small" @click="loadTables">刷新</el-button>
+    <div class="tm-toolbar">
+      <el-button size="small" type="primary" @click="onNewTable" :icon="Plus">新建表</el-button>
+      <el-button size="small" @click="loadTables" :icon="Refresh">刷新</el-button>
     </div>
 
     <!-- 新建表 Dialog -->
@@ -96,18 +96,19 @@
   </el-dialog>
 
   <!-- Main content: left list + right editor -->
-    <div style="flex: 1; display: flex; overflow: hidden;">
+    <div class="tm-body">
       <!-- Left: table list -->
-      <div style="width: 30%; border-right: 1px solid #e4e7ed; display: flex; flex-direction: column; overflow: hidden;">
-        <div style="padding: 8px;">
+      <div class="tm-sidebar">
+        <div class="tm-search">
           <el-input
             v-model="searchKeyword"
-            placeholder="搜索表名"
+            placeholder="搜索表名..."
             clearable
             size="small"
+            :prefix-icon="Search"
           />
         </div>
-        <div style="flex: 1; overflow: auto;">
+        <div class="tm-table-list">
           <el-table
             :data="filteredTables"
             highlight-current-row
@@ -118,17 +119,27 @@
           >
             <el-table-column prop="name" label="表名" show-overflow-tooltip />
             <el-table-column prop="comment" label="注释" show-overflow-tooltip />
-            <el-table-column label="操作" width="60" align="center">
+            <el-table-column label="" width="44" align="center">
               <template #default="scope">
                 <el-dropdown trigger="click" @command="(cmd) => onTableAction(cmd, scope.row)" @click.stop>
-                  <el-icon style="cursor: pointer;" :size="16" title="操作"><MoreFilled /></el-icon>
+                  <el-icon style="cursor: pointer; color: #909399;" :size="16" title="操作"><MoreFilled /></el-icon>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="browse">浏览数据</el-dropdown-item>
-                      <el-dropdown-item command="export">数据导出</el-dropdown-item>
-                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                      <el-dropdown-item command="truncate" divided>清空表</el-dropdown-item>
-                      <el-dropdown-item command="drop" style="color: #f56c6c;">删除表</el-dropdown-item>
+                      <el-dropdown-item command="browse">
+                        <el-icon><Document /></el-icon>浏览数据
+                      </el-dropdown-item>
+                      <el-dropdown-item command="export">
+                        <el-icon><Download /></el-icon>数据导出
+                      </el-dropdown-item>
+                      <el-dropdown-item command="rename">
+                        <el-icon><Edit /></el-icon>重命名
+                      </el-dropdown-item>
+                      <el-dropdown-item command="truncate" divided>
+                        <el-icon><Delete /></el-icon>清空表
+                      </el-dropdown-item>
+                      <el-dropdown-item command="drop" style="color: #f56c6c;">
+                        <el-icon><DeleteFilled /></el-icon>删除表
+                      </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -139,9 +150,10 @@
       </div>
 
       <!-- Right: TableEditor -->
-      <div style="width: 70%; overflow: auto; padding: 8px;">
-        <div v-if="!selectedTable" style="display: flex; align-items: center; justify-content: center; height: 100%; color: #909399;">
-          点击左侧表名查看表结构
+      <div class="tm-editor">
+        <div v-if="!selectedTable" class="classical-empty">
+          <div class="empty-icon">📋</div>
+          <div>点击左侧表名查看表结构</div>
         </div>
         <TableEditor
           v-else
@@ -155,7 +167,8 @@
 
 <script setup>
 import http from '@/js/utils/httpProxy.js'
-import { ElMessageBox } from 'element-plus'
+import { Delete, DeleteFilled, Document, Download, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 
@@ -445,3 +458,81 @@ watch(
   }
 )
 </script>
+
+
+<style scoped>
+.table-manager {
+  height: calc(100vh - 60px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.tm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #fafbfc;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.tm-toolbar .el-button {
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.tm-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.tm-sidebar {
+  width: 30%;
+  min-width: 240px;
+  max-width: 400px;
+  border-right: 1px solid #ebeef5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fafbfc;
+}
+
+.tm-search {
+  padding: 10px 12px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.tm-table-list {
+  flex: 1;
+  overflow: auto;
+}
+
+.tm-editor {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+/* TableEditor 在 TableManager 内时撑满高度 */
+.tm-editor :deep(.table-editor-tabs) {
+  height: calc(100vh - 120px);
+}
+
+.classical-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #c0c4cc;
+  font-size: 14px;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.classical-empty .empty-icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+</style>

@@ -441,12 +441,16 @@ func FindUser(c *gin.Context) {
 
 func FindUserBase(c *gin.Context) {
 	loginName := c.Query("loginName")
+	key := c.Query("key")
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select * from t_user where 1 = 1")
+	sql.WriteString("select id, name, login_name from t_user where 1 = 1")
 	if loginName != "" {
 		sql.WriteString(" and login_name = ?")
 		param = append(param, loginName)
+	} else if key != "" {
+		sql.WriteString(" and (login_name like ? or name like ?)")
+		param = append(param, "%"+key+"%", "%"+key+"%")
 	}
 	userList := []*SharedUser{}
 	err := config.Mngtdb.Select(&userList, sql.String(), param...)

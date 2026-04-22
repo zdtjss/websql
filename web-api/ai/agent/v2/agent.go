@@ -130,8 +130,8 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&PermissionMiddleware{Scope: scope},
-			// DangerousSQLApprovalMiddleware：统一拦截 exec_sql 工具，对危险SQL执行审批流程
-			// 这是 eino 标准 ApprovalMiddleware 模式，确保所有危险SQL必须经过用户确认
+			// DangerousSQLApprovalMiddleware：拦截 exec_sql 工具，对危险 SQL 执行审批流程
+			// 严格遵循 eino ApprovalMiddleware 模式，确保所有危险 SQL 必须经过用户确认
 			&DangerousSQLApprovalMiddleware{},
 			&ToolErrorRecoveryMiddleware{},
 			summarizationMW,
@@ -199,7 +199,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	if req.ExcelData != nil && req.ExcelData.FileID != "" {
 		sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Excel 文件（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
 			req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
-		sysPrompt += "请先用 get_table_schema 确认目标表存在，然后直接调用 import_data 工具（传入 fileId 和 tableName），后端会自动匹配字段。如果用户没有指定目标表，请询问用户。\n"
+		sysPrompt += "请先用 get_table_schema 确认目标表存在并获取表结构，然后向用户明确说明：1）目标表名 2）操作模式（插入/更新/插入+更新）3）字段映射关系 4）预计影响行数。等用户确认后再调用 import_data 工具。如果用户没有指定目标表，请询问用户。\n"
 	}
 
 	// 构建 Eino 消息列表
@@ -241,8 +241,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	return sessionID, nil
 }
 
-// ResumeStream 恢复被中断的执行（用户确认后）
-// 返回 interrupted 标志，如果为 true，说明再次被中断（如新的危险 SQL），需要等待用户再次确认
+// ResumeStream 恢复被中断的执行（用户确认/取消后）
+// 当再次被中断时（如 LLM 生成了新的危险 SQL），不发送 done，让前端继续等待用户确认
 func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, targets map[string]bool, flush func(StreamChunk), sess *Session) error {
 	log.Printf("[Agent] resume - cpID=%s, targets=%v\n", checkPointID, targets)
 
@@ -260,7 +260,7 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 		return fmt.Errorf("resume failed: %w", err)
 	}
 
-	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
+	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
 
 	if fullResponse.Len() > 0 {
 		if err := sess.Append("assistant", fullResponse.String()); err != nil {
@@ -268,9 +268,14 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 		}
 	}
 
-	// Always send done so frontend unlocks UI
-	// If a new dangerous SQL was encountered, frontend already got danger_confirm event
-	flush(StreamChunk{Type: "done"})
+	// 关键安全逻辑：仅在未被再次中断时发送 done
+	// 如果被中断（LLM 又生成了新的危险 SQL），前端已收到 danger_confirm 事件，
+	// 此时不能发送 done，否则前端会提前结束 loading，忽略新的确认请求
+	if !interrupted {
+		flush(StreamChunk{Type: "done"})
+	} else {
+		log.Printf("[Agent] resume 后再次被中断，不发送 done - cpID=%s\n", checkPointID)
+	}
 	return nil
 }
 
@@ -293,11 +298,13 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		// 检查是否被中断
 		if event.Action != nil && event.Action.Interrupted != nil {
 			interrupted = true
+			hasDangerConfirm := false
 			for _, ictx := range event.Action.Interrupted.InterruptContexts {
 				if !ictx.IsRootCause {
 					continue
 				}
 				if sqlInfo, ok := ictx.Info.(*DangerousSQLInfo); ok {
+					hasDangerConfirm = true
 					log.Printf("[Agent] 危险 SQL 中断 - id=%s, sql=%s\n", ictx.ID, sqlInfo.SQL)
 					flush(StreamChunk{
 						Type:         "danger_confirm",
@@ -306,7 +313,16 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 						InterruptID:  ictx.ID,
 						CheckPointID: checkPointID,
 					})
+				} else {
+					log.Printf("[Agent] 未知类型中断 - id=%s, info=%T\n", ictx.ID, ictx.Info)
 				}
+			}
+			if !hasDangerConfirm {
+				// 中断事件中没有 DangerousSQLInfo，属于异常情况
+				// 标记为非中断，让调用方发送 done，避免前端永远卡住
+				interrupted = false
+				log.Printf("[Agent] 中断事件无 DangerousSQLInfo，视为非中断\n")
+				flush(StreamChunk{Type: "error", Content: "AI 处理出现异常中断，请重试"})
 			}
 			if fullResponse.Len() > 0 {
 				_ = sess.Append("assistant", fullResponse.String())
@@ -534,11 +550,17 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 - export_excel / export_excel_with_chart：必须提供 sql 参数
 - export_analysis_docx / export_ppt：支持 content 模式（推荐）和 sql 模式
 
-## 数据导入操作
+## 数据导入操作（重要）
 当用户上传了 Excel 文件并要求导入数据时：
 1. 先调用 get_table_schema 获取目标表结构
-2. 直接调用 import_data 工具，传入 fileId 和 tableName
-3. 后端会自动按列名匹配
+2. **在调用 import_data 之前，必须先向用户明确说明以下信息，等待用户确认后再执行：**
+   - 目标表名
+   - 操作模式：是"插入新数据"（insert）、"更新已有数据"（upsert），还是"插入+更新"
+   - 预计影响的数据行数
+   - 字段映射关系（Excel 列 → 数据库列）
+3. 用户确认后，调用 import_data 工具（传入 fileId、tableName 和 mode）
+4. 后端会自动按列名匹配字段
+5. 如果用户没有指定目标表，必须先询问用户
 
 ## 多轮对话
 你拥有完整的对话历史记忆。"刚才的""上面的""这个结果"等都指上一次查询。

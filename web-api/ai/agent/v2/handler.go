@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,8 +37,8 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	// 确认执行请求 → 通过 Runner.ResumeWithParams 恢复
-	if req.Confirmed && len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
+	// 确认/取消执行请求 → 通过 Runner.ResumeWithParams 恢复
+	if len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
 		h.handleResumeExec(c, req)
 		return
 	}
@@ -184,7 +185,7 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		sess, _ = h.sessions.GetOrCreate(req.SessionID, user.Id)
 	}
 
-	// 构建 targets map：所有 interruptID 都标记为 approved
+	// 构建 targets map：所有 interruptID 标记为 approved/rejected
 	targets := make(map[string]bool, len(req.InterruptIDs))
 	for _, id := range req.InterruptIDs {
 		targets[id] = req.Confirmed
@@ -263,13 +264,24 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-	var logs []SQLAuditLog
-	var err error
-	if user.Id == config.AdminId {
-		logs, err = ListSQLAuditLogs("", 100)
-	} else {
-		logs, err = ListSQLAuditLogs(user.Id, 100)
+
+	filterUserID := c.Query("userId")
+	startTime := c.Query("startTime")
+	endTime := c.Query("endTime")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if pageSize > 200 {
+		pageSize = 200
 	}
+
+	// 非管理员只能查自己的日志
+	scopeUserID := ""
+	if user.Id != config.AdminId {
+		scopeUserID = user.Id
+		filterUserID = "" // 非管理员忽略 userId 过滤
+	}
+
+	logs, total, err := ListSQLAuditLogsFiltered(scopeUserID, filterUserID, startTime, endTime, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取审计日志失败"})
 		return
@@ -277,7 +289,7 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 	if logs == nil {
 		logs = []SQLAuditLog{}
 	}
-	c.JSON(http.StatusOK, gin.H{"data": logs})
+	c.JSON(http.StatusOK, gin.H{"data": logs, "total": total})
 }
 
 // ──────────────────────────────────────────────

@@ -43,26 +43,58 @@ func InsertSQLAudit(id, userID, userName, connID, sessionID, sqlText, sqlType, r
 
 // ListSQLAuditLogs 查询审计日志
 func ListSQLAuditLogs(userID string, limit int) ([]SQLAuditLog, error) {
-	var logs []SQLAuditLog
-	var err error
+	logs, _, err := ListSQLAuditLogsFiltered(userID, "", "", "", 1, limit)
+	return logs, err
+}
 
-	if userID == "" {
-		err = config.Mngtdb.Select(&logs, `
-			SELECT id, user_id, user_name, conn_id, session_id, sql_text, sql_type, risk_level, status, affected_rows, exec_time, confirm_time, error_msg
-			FROM t_sql_audit ORDER BY exec_time DESC LIMIT ?
-		`, limit)
-	} else {
-		err = config.Mngtdb.Select(&logs, `
-			SELECT id, user_id, user_name, conn_id, session_id, sql_text, sql_type, risk_level, status, affected_rows, exec_time, confirm_time, error_msg
-			FROM t_sql_audit WHERE user_id = ? ORDER BY exec_time DESC LIMIT ?
-		`, userID, limit)
+// ListSQLAuditLogsFiltered 带过滤条件查询审计日志（支持分页）
+func ListSQLAuditLogsFiltered(userID, filterUserID, startTime, endTime string, page, pageSize int) ([]SQLAuditLog, int, error) {
+	whereClause := ` WHERE 1=1`
+	args := []any{}
+
+	if userID != "" {
+		whereClause += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	if filterUserID != "" {
+		whereClause += ` AND user_id = ?`
+		args = append(args, filterUserID)
+	}
+	if startTime != "" {
+		whereClause += ` AND exec_time >= ?`
+		args = append(args, startTime)
+	}
+	if endTime != "" {
+		whereClause += ` AND exec_time <= ?`
+		args = append(args, endTime)
 	}
 
+	// count
+	total := 0
+	countSQL := `SELECT COUNT(*) FROM t_sql_audit` + whereClause
+	err := config.Mngtdb.Get(&total, countSQL, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "doesn't exist") {
-			return []SQLAuditLog{}, nil
+			return []SQLAuditLog{}, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
-	return logs, nil
+
+	// data
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+	dataSQL := `SELECT id, user_id, user_name, conn_id, session_id, sql_text, sql_type, risk_level, status, affected_rows, exec_time, confirm_time, error_msg FROM t_sql_audit` + whereClause + ` ORDER BY exec_time DESC LIMIT ? OFFSET ?`
+	dataArgs := append(args, pageSize, offset)
+
+	var logs []SQLAuditLog
+	err = config.Mngtdb.Select(&logs, dataSQL, dataArgs...)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "doesn't exist") {
+			return []SQLAuditLog{}, 0, nil
+		}
+		return nil, 0, err
+	}
+	return logs, total, nil
 }

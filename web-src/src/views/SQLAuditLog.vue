@@ -19,7 +19,16 @@
         />
       </el-form-item>
       <el-form-item label="用户">
-        <el-select v-model="queryParams.userId" placeholder="请选择用户" clearable filterable style="width: 200px;">
+        <el-select
+          v-model="queryParams.userId"
+          placeholder="输入用户名搜索"
+          clearable
+          filterable
+          remote
+          :remote-method="searchUsers"
+          :loading="userLoading"
+          style="width: 220px;"
+        >
           <el-option v-for="user in userList" :key="user.id" :label="`${user.name} (${user.loginName})`" :value="user.id" />
         </el-select>
       </el-form-item>
@@ -59,41 +68,51 @@
     </el-table>
 
     <el-empty v-if="!loading && logs.length === 0" description="暂无审计日志" />
+
+    <div v-if="total > 0" style="display: flex; justify-content: flex-end; margin-top: 12px;">
+      <el-pagination
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        :page-sizes="[20, 50, 100]"
+        :total="total"
+        layout="total, sizes, prev, pager, next"
+        @current-change="loadLogs"
+        @size-change="onSizeChange"
+        small
+      />
+    </div>
   </div>
 </template>
 
 <script setup>
+import http from '@/js/utils/httpProxy.js'
 import { ElMessage } from 'element-plus'
 import { onMounted, ref } from 'vue'
 
 const logs = ref([])
 const loading = ref(false)
 const userList = ref([])
-const apiBase = import.meta.env.VITE_API_URL || ''
+const userLoading = ref(false)
 const queryParams = ref({ userId: '' })
 const dateRange = ref([])
+const currentPage = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 async function loadLogs() {
   loading.value = true
   try {
-    const params = new URLSearchParams()
+    const params = { page: currentPage.value, pageSize: pageSize.value }
     if (queryParams.value.userId) {
-      params.append('userId', queryParams.value.userId)
+      params.userId = queryParams.value.userId
     }
     if (dateRange.value && dateRange.value.length === 2) {
-      params.append('startTime', dateRange.value[0])
-      params.append('endTime', dateRange.value[1])
+      params.startTime = dateRange.value[0]
+      params.endTime = dateRange.value[1]
     }
-    const queryString = params.toString()
-    const url = apiBase + '/ai/agent/audit/logs' + (queryString ? `?${queryString}` : '')
-    
-    const auth = sessionStorage.getItem('authentication') || ''
-    const resp = await fetch(url, {
-      headers: { 'Authorization': auth }
-    })
-    if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
-    const data = await resp.json()
-    logs.value = data.data || []
+    const resp = await http.get('/ai/agent/audit/logs', { params })
+    logs.value = resp.data.data || []
+    total.value = resp.data.total || 0
   } catch (e) {
     console.error('[SQLAuditLog] 加载审计日志失败:', e)
     ElMessage.error('加载审计日志失败')
@@ -103,26 +122,35 @@ async function loadLogs() {
 }
 
 function handleSearch() {
+  currentPage.value = 1
   loadLogs()
 }
 
-async function loadUsers() {
+async function searchUsers(query) {
+  if (!query) {
+    userList.value = []
+    return
+  }
+  userLoading.value = true
   try {
-    const auth = sessionStorage.getItem('authentication') || ''
-    const resp = await fetch(apiBase + '/findUser', {
-      headers: { 'Authorization': auth }
-    })
-    if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
-    const data = await resp.json()
-    userList.value = data.data || []
+    const resp = await http.get('/findUserBase', { params: { key: query } })
+    userList.value = resp.data.data || []
   } catch (e) {
-    console.error('[SQLAuditLog] 加载用户列表失败:', e)
+    console.error('[SQLAuditLog] 搜索用户失败:', e)
+  } finally {
+    userLoading.value = false
   }
 }
 
 function handleReset() {
   queryParams.value.userId = ''
   dateRange.value = []
+  currentPage.value = 1
+  loadLogs()
+}
+
+function onSizeChange() {
+  currentPage.value = 1
   loadLogs()
 }
 
@@ -139,7 +167,6 @@ function getTypeTag(type_) {
 }
 
 onMounted(() => {
-  loadUsers()
   loadLogs()
 })
 </script>

@@ -1,35 +1,48 @@
 <template>
-    <div style="height: calc(100vh - 60px);" @keyup.f9="exec" @keyup.ctrl.shift.f="formatSql">
-        <el-splitter layout="vertical"  @resize="onResultDivResize">
+    <div class="sql-editor-panel" @keyup.f9="exec" @keyup.ctrl.shift.f="formatSql">
+        <el-splitter layout="vertical" @resize="onResultDivResize">
 
-            <div class="toolbar">
-                <el-button @click="exec" :loading="exectingSql" title="F9">执行</el-button>
-                <el-button @click="exportDb">导表</el-button>
-                <el-button @click="exportCurrentToXlsx">excel</el-button>
-                <el-dropdown @command="handleDdlCommand" style="margin-left: 12px;">
-                    <el-button>
-                        SQL<el-icon class="el-icon--right"><arrow-down /></el-icon>
+            <div class="sql-toolbar">
+                <div class="toolbar-left">
+                    <el-button type="primary" @click="exec" :loading="exectingSql" title="F9">
+                        <el-icon style="margin-right: 4px;"><VideoPlay /></el-icon>执行
                     </el-button>
-                    <template #dropdown>
-                        <el-dropdown-menu>
-                            <el-dropdown-item command="insert">insert</el-dropdown-item>
-                            <el-dropdown-item command="update">update</el-dropdown-item>
-                            <el-dropdown-item command="create">create</el-dropdown-item>
-                        </el-dropdown-menu>
-                    </template>
-                </el-dropdown>
-                <el-button @click="formatSql" style="margin-left: 12px;" title="Ctrl + Shift + F">美化</el-button>
-                <el-button @click="listBackupData" style="margin-left: 12px;">备份</el-button>
-                <el-button @click="openTableManager" style="margin-left: 12px;">表管理</el-button>
-                <div style="float:right;">
-                    <div style="display: inline-block;margin-right: 15px;">
-                        <span>允许修改</span><span><input v-model="canModify" type="checkbox"></input></span>
-                    </div>
-                    <span>最大行数：<el-input v-model="maxLine" style="width:50px;" size="small" /></span>
+                    <el-divider direction="vertical" />
+                    <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
+                    <el-dropdown @command="handleDdlCommand" style="margin-left: 4px;">
+                        <el-button>
+                            SQL<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                        </el-button>
+                        <template #dropdown>
+                            <el-dropdown-menu>
+                                <el-dropdown-item command="insert">生成 INSERT</el-dropdown-item>
+                                <el-dropdown-item command="update">生成 UPDATE</el-dropdown-item>
+                                <el-dropdown-item command="create" divided>查看建表语句</el-dropdown-item>
+                            </el-dropdown-menu>
+                        </template>
+                    </el-dropdown>
+                    <el-divider direction="vertical" />
+                    <el-button @click="exportDb">导表</el-button>
+                    <el-button @click="exportCurrentToXlsx">导出 Excel</el-button>
+                    <el-divider direction="vertical" />
+                    <el-button @click="listBackupData">备份</el-button>
+                    <el-button @click="openTableManager">表管理</el-button>
+                </div>
+                <div class="toolbar-right">
+                    <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom" :show-after="400">
+                        <label class="modify-toggle">
+                            <el-switch v-model="canModify" size="small" />
+                            <span class="modify-label">{{ canModify ? '可写' : '只读' }}</span>
+                        </label>
+                    </el-tooltip>
+                    <el-divider direction="vertical" />
+                    <span class="max-rows-label">行数上限</span>
+                    <el-input v-model="maxLine" style="width: 56px;" size="small" />
                 </div>
             </div>
+
             <el-splitter-panel size="55%">
-                <div id="sqlArea" ref="sqlAreaRef" class="sql_area" style="height: calc(100vh * 0.55 - 55px);">
+                <div id="sqlArea" ref="sqlAreaRef" class="sql-area">
                     <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
                 </div>
             </el-splitter-panel>
@@ -819,23 +832,84 @@ const dragEnd = (e: DragEvent) => {
 
 </script>
 <style>
+.sql-editor-panel {
+    height: calc(100vh - 60px);
+}
+
+/* ── Toolbar ── */
+.sql-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #fafbfc;
+    border-bottom: 1px solid #ebeef5;
+    gap: 4px;
+}
+
+.sql-toolbar .toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.sql-toolbar .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sql-toolbar .el-button {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 13px;
+    border-radius: 6px;
+}
+
+.sql-toolbar .el-divider--vertical {
+    margin: 0 4px;
+    height: 16px;
+}
+
+.modify-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.modify-label {
+    font-size: 12px;
+    color: #606266;
+    user-select: none;
+}
+
+.max-rows-label {
+    font-size: 12px;
+    color: #909399;
+    white-space: nowrap;
+}
+
+/* ── SQL Editor Area ── */
+.sql-area {
+    padding: 0;
+    margin-top: 2px;
+    border-top: 1px solid #ebeef5;
+    height: calc(100vh * 0.55 - 50px);
+}
+
 .cm-editor {
     height: 100%;
     width: 100%;
-    font-size: 18px;
-}
-
-.sql_area {
-    padding: 0px;
-    margin-top: 5px;
-    border-top: dashed 1px gray;
+    font-size: 15px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 }
 
 .codemirror {
     height: 100%;
 }
 
-/** 表头可选择复制 */
+/* ── Result Table ── */
 .el-table-v2__header-cell-text {
     user-select: text;
 }
@@ -855,13 +929,16 @@ const dragEnd = (e: DragEvent) => {
     overflow: visible;
     .header-text {
         flex: 1;
-        max-width: calc(100% - 12px); /* 留出拖动标识空间 */
+        max-width: calc(100% - 12px);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         user-select: text;
         box-sizing: border-box;
         line-height: 35px;
+        font-weight: 600;
+        font-size: 13px;
+        color: #606266;
     }
     .drag-line {
         position: absolute;
@@ -870,54 +947,47 @@ const dragEnd = (e: DragEvent) => {
         bottom: 0;
         cursor: ew-resize;
         width: 12px;
-        border-right: 1px solid #409eff;
-        background: rgba(64, 158, 255, 0.1);
+        border-right: 2px solid transparent;
         z-index: 100;
-        transition: opacity 0.2s;
+        transition: all 0.15s;
         flex-shrink: 0;
-        opacity: 0; /* 默认隐藏 */
+        opacity: 0;
         &:hover {
             opacity: 1;
-            background: rgba(64, 158, 255, 0.2);
+            border-right-color: #409eff;
+            background: rgba(64, 158, 255, 0.08);
         }
     }
 }
 
-/* 确保表格单元格允许溢出内容显示 */
 .el-table-v2__header-cell,
 .el-table-v2__header-cell-content {
     overflow: visible !important;
     padding-right: 12px !important;
 }
 
-/* 确保表格头部容器允许溢出内容显示 */
 .el-table-v2__header,
 .el-table-v2__header-wrapper,
 .el-table-v2__header-row {
     overflow: visible !important;
 }
 
-/* 为表头容器添加额外的内边距 */
 .el-table-v2 {
     overflow: visible !important;
 }
 
-/* 确保拖动标识不被裁剪 */
 .header-box {
     overflow: visible !important;
 }
 
 .el-drawer__header {
-    margin-bottom: -20px
+    margin-bottom: -20px;
 }
 
-.el-button {
-    height: 25px;
-    padding: 8px 10px;
+/* ── Data Details Dialog ── */
+.el-dialog .el-form-item {
+    margin-bottom: 12px;
 }
 </style>
 <style lang="less" scoped>
-.toolbar {
-    padding: 0px;
-}
 </style>

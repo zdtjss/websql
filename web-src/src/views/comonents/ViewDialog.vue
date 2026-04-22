@@ -1,7 +1,7 @@
 <template>
-    <el-tabs v-model="activeName" type="card" style="height:500px;" @tab-click="loadData">
+    <el-tabs v-model="activeName" type="card" class="view-dialog-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
-            <el-table :data="columnList" style="width: 100%" height="470">
+            <el-table :data="columnList" style="width: 100%" height="470" size="small" stripe>
                 <el-table-column prop="columnName" label="名称" width="250" />
                 <el-table-column prop="columnType" label="类型" width="160" />
                 <el-table-column prop="isNullable" label="可空" width="100" />
@@ -9,14 +9,14 @@
             </el-table>
         </el-tab-pane>
         <el-tab-pane label="选项" name="option">
-
+            <el-empty description="暂无选项信息" />
         </el-tab-pane>
         <el-tab-pane label="统计" name="statistics">
-
+            <el-empty description="暂无统计信息" />
         </el-tab-pane>
-        <el-tab-pane label="create" name="showCreate">
-            <el-scrollbar style="font-size: 18px;width: 100%;height: 470px;">
-                <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
+        <el-tab-pane label="DDL" name="showCreate">
+            <el-scrollbar style="font-size: 15px; width: 100%; height: 470px;">
+                <pre style="margin: 0; padding: 12px;"><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
         </el-tab-pane>
     </el-tabs>
@@ -97,4 +97,25 @@ function getSqlLang(schema) {
 
 </script>
 
-<style lang="less" scoped></style>
+<style lang="less" scoped>
+.view-dialog-tabs {
+    height: 500px;
+
+    :deep(.el-tabs__header) {
+        margin-bottom: 0;
+        background: #fafbfc;
+        border-bottom: 1px solid #ebeef5;
+        padding: 0 8px;
+    }
+
+    :deep(.el-tabs__item) {
+        font-size: 13px;
+        height: 34px;
+        line-height: 34px;
+    }
+
+    :deep(.el-tabs__item.is-active) {
+        font-weight: 500;
+    }
+}
+</style>

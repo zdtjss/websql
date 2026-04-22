@@ -1331,11 +1331,33 @@ async function handleConfirmExec(confirmedSql) {
   }
 }
 
-// 处理取消确认
-function handleConfirmCancel() {
+// 处理取消确认 — 向后端发送 confirmed=false 的 Resume 请求，清理 checkpoint 状态
+async function handleConfirmCancel() {
   confirmVisible.value = false
   chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${confirmSQL.value}\n\`\`\`` })
   scrollToBottom()
+
+  // 向后端发送取消请求，确保 checkpoint 状态被正确处理
+  const apiBase = import.meta.env.VITE_API_URL || ''
+  const url = apiBase + '/ai/agent/chatStream'
+  const auth = sessionStorage.getItem('authentication') || ''
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+      body: JSON.stringify({
+        sessionId: sessionId.value,
+        connId: connId.value,
+        schema: schema.value,
+        question: '取消执行',
+        confirmed: false,
+        interruptIds: confirmInterruptIds.value,
+        checkPointId: confirmCheckPointId.value,
+      }),
+    })
+  } catch (_) {
+    // 取消请求失败不影响用户体验
+  }
 }
 
 // ── 多条 SQL 批量确认 ──
@@ -1475,8 +1497,10 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
   }
 }
 
-function handleCancelAllSQL() {
+async function handleCancelAllSQL() {
   const items = pendingSQLList.value
+  const allInterruptIds = pendingSQLList.interruptIds || []
+  const checkPointId = pendingSQLList.checkPointId || ''
   pendingSQLList.value = []
   selectAllChecked.value = false
   // 将每条 SQL 保留在聊天记录中
@@ -1484,6 +1508,30 @@ function handleCancelAllSQL() {
     chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
   }
   scrollToBottom()
+
+  // 向后端发送取消请求，确保 checkpoint 状态被正确处理
+  if (allInterruptIds.length > 0 && checkPointId) {
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    const url = apiBase + '/ai/agent/chatStream'
+    const auth = sessionStorage.getItem('authentication') || ''
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': auth },
+        body: JSON.stringify({
+          sessionId: sessionId.value,
+          connId: connId.value,
+          schema: schema.value,
+          question: '取消执行',
+          confirmed: false,
+          interruptIds: allInterruptIds,
+          checkPointId: checkPointId,
+        }),
+      })
+    } catch (_) {
+      // 取消请求失败不影响用户体验
+    }
+  }
 }
 
 async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {

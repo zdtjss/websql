@@ -9,23 +9,25 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
-	adkTool "github.com/cloudwego/eino/components/tool"
-	einoTool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
-// isDangerousSQL 检查 SQL 是否为写操作（所有写操作都需要用户确认）
-// 会先去除 SQL 注释，防止通过注释前缀绕过检测
+// ──────────────────────────────────────────────
+// 危险 SQL 检测
+// ──────────────────────────────────────────────
+
+// isDangerousSQL 检查 SQL 是否为写操作。
+// 先去除前导注释，防止通过 "-- \nDELETE" 或 "/* */DELETE" 绕过。
 func isDangerousSQL(sql string) bool {
 	stripped := stripSQLComments(strings.TrimSpace(sql))
 	upper := strings.ToUpper(stripped)
-	patterns := []string{
+	for _, p := range []string{
 		"DROP ", "TRUNCATE ", "DELETE ",
 		"ALTER ", "CREATE ", "REPLACE ",
 		"INSERT ", "UPDATE ", "MERGE ",
-	}
-	for _, p := range patterns {
+	} {
 		if strings.HasPrefix(upper, p) {
 			return true
 		}
@@ -33,7 +35,18 @@ func isDangerousSQL(sql string) bool {
 	return false
 }
 
-// stripSQLComments 去除 SQL 开头的注释（行注释和块注释），防止注释绕过安全检测
+// containsDangerousSQL 检查一段可能包含多条 SQL（分号分隔）的文本中是否有危险 SQL。
+func containsDangerousSQL(sql string) bool {
+	for _, line := range strings.Split(sql, ";") {
+		line = strings.TrimSpace(line)
+		if line != "" && isDangerousSQL(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripSQLComments 去除 SQL 开头的注释（行注释和块注释），防止注释绕过安全检测。
 func stripSQLComments(sql string) string {
 	for {
 		sql = strings.TrimSpace(sql)
@@ -62,7 +75,7 @@ func stripSQLComments(sql string) string {
 }
 
 // ──────────────────────────────────────────────
-// DangerousSQLInfo — 危险 SQL 中断时传递给用户的信息
+// DangerousSQLInfo — 中断时传递给前端的信息
 // ──────────────────────────────────────────────
 
 type DangerousSQLInfo struct {
@@ -79,7 +92,6 @@ func init() {
 // SQLApprovalResult — 用户审批结果
 // ──────────────────────────────────────────────
 
-// SQLApprovalResult 表示用户对危险SQL的审批结果
 type SQLApprovalResult struct {
 	Approved         bool   `json:"approved"`
 	DisapproveReason string `json:"disapproveReason,omitempty"`
@@ -89,205 +101,147 @@ type SQLApprovalResult struct {
 // DangerousSQLApprovalMiddleware
 // ──────────────────────────────────────────────
 //
-// 统一拦截 exec_sql 工具的调用，对所有危险SQL执行审批流程。
-// 这是 eino 标准 ApprovalMiddleware 模式的具体实现。
+// 拦截 exec_sql 工具调用，对所有危险 SQL 强制用户确认。
 //
-// 执行流程：
-//  1. 首次调用：解析工具参数，检测SQL是否危险
-//     - 如果是危险SQL → 触发 StatefulInterrupt，保存SQL到状态
-//     - 如果是安全SQL → 直接放行，调用原始 endpoint
-//  2. Resume 调用：
-//     - 读取用户审批结果
-//     - 如果批准 → 调用原始 endpoint 执行（使用服务端保存的SQL）
-//     - 如果拒绝 → 返回拒绝信息，不执行
+// 设计原则（安全底线）：
+//   任何不确定的情况一律中断，宁可多问一次用户，绝不放过一条未确认的写操作。
 //
-// 安全保证：
-//  - 所有危险SQL必须经过用户确认才能执行
-//  - 执行时使用的是服务端保存的SQL，不是前端传来的，防止篡改
-//  - 每条SQL有独立的 interrupt ID，支持逐条确认和批量确认
+// 严格遵循 eino ApprovalMiddleware 三段式模式：
+//   1. !wasInterrupted → 首次调用，检测危险则中断
+//   2. isTarget && hasData && approved → 用户已确认，放行执行
+//   3. 其他所有情况 → 重新中断（包括 isTarget 但类型不匹配、非 target 等）
 
 type DangerousSQLApprovalMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
 
-// WrapInvokableToolCall 拦截同步工具调用
+// WrapInvokableToolCall 拦截同步工具调用。
 func (m *DangerousSQLApprovalMiddleware) WrapInvokableToolCall(
-	ctx context.Context,
+	_ context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
-	return m.wrapToolCall(ctx, endpoint, tCtx)
+	if tCtx.Name != "exec_sql" {
+		return endpoint, nil
+	}
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		return approvalGate(ctx, tCtx.Name, argumentsInJSON, opts,
+			func(ctx context.Context, args string, opts []tool.Option) (string, error) {
+				return endpoint(ctx, args, opts...)
+			},
+		)
+	}, nil
 }
 
-// WrapStreamableToolCall 拦截流式工具调用
-// 安全关键：必须实现此方法，否则流式模式下危险SQL可能绕过审批
+// WrapStreamableToolCall 拦截流式工具调用。
+// 必须实现，否则 EnableStreaming=true 时 exec_sql 走流式通道会绕过审批。
 func (m *DangerousSQLApprovalMiddleware) WrapStreamableToolCall(
-	ctx context.Context,
+	_ context.Context,
 	endpoint adk.StreamableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
-	// 只拦截 exec_sql 工具
 	if tCtx.Name != "exec_sql" {
 		return endpoint, nil
 	}
-
-	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (*schema.StreamReader[string], error) {
-		// ── 步骤1：检查是否从中断恢复 ──
-		wasInterrupted, hasState, savedArgs := einoTool.GetInterruptState[string](ctx)
-		if wasInterrupted && hasState {
-			result, err := m.handleResume(ctx, toInvokableEndpoint(endpoint), savedArgs, opts)
-			if err != nil {
-				return nil, err
-			}
-			return schema.StreamReaderFromArray([]string{result}), nil
-		}
-
-		// ── 步骤2：首次调用，解析参数并检测危险SQL ──
-		var input ExecInput
-		if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		sql := strings.TrimSpace(input.SQL)
-		if sql == "" {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		// 检测是否包含危险SQL（按分号分割，逐条检测）
-		var dangerousSQLs []string
-		for _, line := range strings.Split(sql, ";") {
-			line = strings.TrimSpace(line)
-			if line != "" && isDangerousSQL(line) {
-				dangerousSQLs = append(dangerousSQLs, line)
-			}
-		}
-
-		// 如果没有危险SQL，直接放行
-		if len(dangerousSQLs) == 0 {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		// 有危险SQL → 触发中断，保存原始参数供 Resume 后使用
-		log.Printf("[ApprovalMiddleware:Stream] 拦截危险SQL - tool=%s, sql=%s\n", tCtx.Name, sql)
-		return nil, einoTool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-			SQL:       sql,
-			RiskLevel: detectRiskLevel(sql),
-			SQLType:   detectSQLType(sql),
-		}, argumentsInJSON)
-	}, nil
-}
-
-// wrapToolCall 统一的工具调用拦截逻辑
-func (m *DangerousSQLApprovalMiddleware) wrapToolCall(
-	ctx context.Context,
-	endpoint adk.InvokableToolCallEndpoint,
-	tCtx *adk.ToolContext,
-) (adk.InvokableToolCallEndpoint, error) {
-	// 只拦截 exec_sql 工具
-	if tCtx.Name != "exec_sql" {
-		return endpoint, nil
-	}
-
-	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (string, error) {
-		// ── 步骤1：检查是否从中断恢复 ──
-		wasInterrupted, hasState, savedArgs := einoTool.GetInterruptState[string](ctx)
-		if wasInterrupted && hasState {
-			return m.handleResume(ctx, endpoint, savedArgs, opts)
-		}
-
-		// ── 步骤2：首次调用，解析参数并检测危险SQL ──
-		var input ExecInput
-		if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		sql := strings.TrimSpace(input.SQL)
-		if sql == "" {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		// 检测是否包含危险SQL（按分号分割，逐条检测）
-		var dangerousSQLs []string
-		for _, line := range strings.Split(sql, ";") {
-			line = strings.TrimSpace(line)
-			if line != "" && isDangerousSQL(line) {
-				dangerousSQLs = append(dangerousSQLs, line)
-			}
-		}
-
-		// 如果没有危险SQL，直接放行
-		if len(dangerousSQLs) == 0 {
-			return endpoint(ctx, argumentsInJSON, opts...)
-		}
-
-		// 有危险SQL → 触发中断，保存原始参数供 Resume 后使用
-		log.Printf("[ApprovalMiddleware] 拦截危险SQL - tool=%s, sql=%s\n", tCtx.Name, sql)
-		return "", einoTool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-			SQL:       sql,
-			RiskLevel: detectRiskLevel(sql),
-			SQLType:   detectSQLType(sql),
-		}, argumentsInJSON)
-	}, nil
-}
-
-// toInvokableEndpoint 将 StreamableToolCallEndpoint 转换为 InvokableToolCallEndpoint
-// 用于在流式模式下复用 handleResume 逻辑
-func toInvokableEndpoint(endpoint adk.StreamableToolCallEndpoint) adk.InvokableToolCallEndpoint {
-	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (string, error) {
-		reader, err := endpoint(ctx, argumentsInJSON, opts...)
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+		result, err := approvalGate(ctx, tCtx.Name, argumentsInJSON, opts,
+			func(ctx context.Context, args string, opts []tool.Option) (string, error) {
+				reader, err := endpoint(ctx, args, opts...)
+				if err != nil {
+					return "", err
+				}
+				// 消费流式结果为完整字符串
+				var sb strings.Builder
+				for {
+					chunk, recvErr := reader.Recv()
+					if recvErr != nil {
+						break
+					}
+					sb.WriteString(chunk)
+				}
+				return sb.String(), nil
+			},
+		)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		var result strings.Builder
-		for {
-			chunk, err := reader.Recv()
-			if err != nil {
-				break
-			}
-			result.WriteString(chunk)
-		}
-		return result.String(), nil
-	}
+		return schema.StreamReaderFromArray([]string{result}), nil
+	}, nil
 }
 
-// handleResume 处理恢复执行
-func (m *DangerousSQLApprovalMiddleware) handleResume(
+// execFunc 统一的执行函数签名，屏蔽同步/流式差异。
+type execFunc func(ctx context.Context, args string, opts []tool.Option) (string, error)
+
+// approvalGate 是审批逻辑的唯一实现，同步和流式共用，消除重复。
+//
+// 核心安全原则：只有一条路径能放行执行 —— isTarget && hasData && approved。
+// 其他所有路径要么中断，要么返回拒绝信息。绝不存在"兜底放行"。
+func approvalGate(
 	ctx context.Context,
-	endpoint adk.InvokableToolCallEndpoint,
-	savedArgs string,
-	opts []adkTool.Option,
+	toolName string,
+	argumentsInJSON string,
+	opts []tool.Option,
+	exec execFunc,
 ) (string, error) {
-	// 读取用户审批结果
-	isTarget, hasData, approval := einoTool.GetResumeContext[SQLApprovalResult](ctx)
-	if !isTarget {
-		// 不是恢复目标 → 重新中断以保持状态
-		log.Printf("[ApprovalMiddleware] 非恢复目标，重新中断\n")
-		return "", einoTool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-			SQL: savedArgs, RiskLevel: detectRiskLevel(savedArgs), SQLType: detectSQLType(savedArgs),
-		}, savedArgs)
+
+	wasInterrupted, _, savedArgs := tool.GetInterruptState[string](ctx)
+
+	// ── 阶段 1：首次调用 ──
+	if !wasInterrupted {
+		sql := extractSQLFromArgs(argumentsInJSON)
+		if sql == "" || !containsDangerousSQL(sql) {
+			// 安全 SQL，直接放行
+			return exec(ctx, argumentsInJSON, opts)
+		}
+		// 危险 SQL → 中断，保存原始参数
+		log.Printf("[ApprovalMiddleware] 拦截危险 SQL - tool=%s, sql=%s\n", toolName, sql)
+		return "", tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
+			SQL:       sql,
+			RiskLevel: detectRiskLevel(sql),
+			SQLType:   detectSQLType(sql),
+		}, argumentsInJSON)
 	}
 
-	if !hasData {
-		// 没有审批数据 → 重新中断
-		log.Printf("[ApprovalMiddleware] 无审批数据，重新中断\n")
-		return "", einoTool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-			SQL: savedArgs, RiskLevel: detectRiskLevel(savedArgs), SQLType: detectSQLType(savedArgs),
-		}, savedArgs)
+	// ── 阶段 2：从中断恢复 ──
+	isTarget, hasData, approval := tool.GetResumeContext[SQLApprovalResult](ctx)
+
+	// 唯一的放行路径：是恢复目标 + 有审批数据 + 用户批准
+	if isTarget && hasData && approval.Approved {
+		log.Printf("[ApprovalMiddleware] 用户批准执行 - tool=%s\n", toolName)
+		return exec(ctx, savedArgs, opts)
 	}
 
-	if !approval.Approved {
-		// 用户拒绝
+	// 用户明确拒绝
+	if isTarget && hasData && !approval.Approved {
 		reason := approval.DisapproveReason
 		if reason == "" {
 			reason = "用户取消执行"
 		}
-		log.Printf("[ApprovalMiddleware] 用户拒绝执行 - reason=%s\n", reason)
+		log.Printf("[ApprovalMiddleware] 用户拒绝执行 - tool=%s, reason=%s\n", toolName, reason)
 		return fmt.Sprintf(`{"message": "%s", "affectedRows": 0}`, reason), nil
 	}
 
-	// 用户批准 → 使用服务端保存的原始参数执行
-	log.Printf("[ApprovalMiddleware] 用户批准执行 - args=%s\n", savedArgs)
-	return endpoint(ctx, savedArgs, opts...)
+	// 其他所有情况（非 target、无数据、类型不匹配等）→ 重新中断
+	// 安全原则：不确定就中断，绝不放行
+	sql := extractSQLFromArgs(savedArgs)
+	if sql == "" {
+		sql = savedArgs // 兜底：无法解析时用原始 JSON
+	}
+	log.Printf("[ApprovalMiddleware] 重新中断 - tool=%s, isTarget=%v, hasData=%v\n", toolName, isTarget, hasData)
+	return "", tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
+		SQL:       sql,
+		RiskLevel: detectRiskLevel(sql),
+		SQLType:   detectSQLType(sql),
+	}, savedArgs)
+}
+
+// extractSQLFromArgs 从工具参数 JSON 中提取 SQL 字段。
+func extractSQLFromArgs(argumentsInJSON string) string {
+	var input ExecInput
+	if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(input.SQL)
 }
 
 // ──────────────────────────────────────────────
@@ -296,16 +250,15 @@ func (m *DangerousSQLApprovalMiddleware) handleResume(
 //
 // 将业务错误（SQL 语法错误等）转为正常 tool result，让 ReAct 循环继续。
 // Interrupt 错误必须原样传播，由 Runner 捕获并 checkpoint。
-// 使用 compose.ExtractInterruptInfo 精确判断 Interrupt 错误。
 
 type ToolErrorRecoveryMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
 
-// isInterruptErr uses three methods to reliably detect Eino interrupt errors:
-// 1. compose.ExtractInterruptInfo — detects graph-level interrupts
-// 2. compose.IsInterruptRerunError — detects tool-level interrupts (core.InterruptSignal)
-// 3. errors.As for *adk.InterruptSignal — direct type check as final fallback
+// isInterruptErr 使用三种方式可靠检测 eino 中断错误：
+//  1. compose.ExtractInterruptInfo — graph 级中断
+//  2. compose.IsInterruptRerunError — tool 级中断 (core.InterruptSignal)
+//  3. errors.As for *adk.InterruptSignal — 直接类型检查兜底
 func isInterruptErr(err error) bool {
 	if err == nil {
 		return false
@@ -321,17 +274,17 @@ func isInterruptErr(err error) bool {
 }
 
 func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
-	ctx context.Context,
+	_ context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
-	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (string, error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
 			if isInterruptErr(err) {
-				return "", err
+				return "", err // 中断错误必须原样传播
 			}
-			log.Printf("[ToolErrorRecovery] tool %s error converted to result - err=%v\n", tCtx.Name, err)
+			log.Printf("[ToolErrorRecovery] tool %s error → result - err=%v\n", tCtx.Name, err)
 			return fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error()), nil
 		}
 		return result, nil
@@ -339,17 +292,17 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 }
 
 func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
-	ctx context.Context,
+	_ context.Context,
 	endpoint adk.StreamableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
-	return func(ctx context.Context, argumentsInJSON string, opts ...adkTool.Option) (*schema.StreamReader[string], error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
 			if isInterruptErr(err) {
-				return nil, err
+				return nil, err // 中断错误必须原样传播
 			}
-			log.Printf("[ToolErrorRecovery:Stream] tool %s error converted to result - err=%v\n", tCtx.Name, err)
+			log.Printf("[ToolErrorRecovery:Stream] tool %s error → result - err=%v\n", tCtx.Name, err)
 			errMsg := fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error())
 			return schema.StreamReaderFromArray([]string{errMsg}), nil
 		}

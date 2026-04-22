@@ -1,30 +1,41 @@
 <template>
-  <div class="data-browser" style="height: calc(100vh - 60px); display: flex; flex-direction: column;">
+  <div class="data-browser classical-panel">
     <!-- Toolbar -->
-    <div class="toolbar" style="padding: 6px 10px; border-bottom: 1px solid #e4e7ed; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-      <span style="font-weight: 600; font-size: 14px; margin-right: 8px;">{{ tableName }}</span>
-      <el-button size="small" @click="loadData" :loading="loading">刷新</el-button>
-      <el-button size="small" type="primary" @click="openInsertDialog">新增</el-button>
-      <el-upload
-        :file-list="fileList"
-        :http-request="handleFileSelect"
-        :show-file-list="false"
-        :limit="1"
-        accept=".xlsx,.xls"
-      >
-        <el-dropdown @command="handleImportCommand" style="margin-left: 12px;">
-          <el-button type="success">
-            导入<el-icon class="el-icon--right"><arrow-down /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="insert">新增</el-dropdown-item>
-              <el-dropdown-item command="update">修改</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </el-upload>
-      <el-button size="small" type="warning" :loading="exporting" @click="exportData">导出</el-button>
+    <div class="db-toolbar">
+      <div class="toolbar-left">
+        <span class="toolbar-title">
+          <el-icon :size="16" color="#409eff"><Grid /></el-icon>
+          {{ tableName }}
+        </span>
+        <el-divider direction="vertical" />
+        <el-button size="small" @click="loadData" :loading="loading" :icon="Refresh">刷新</el-button>
+        <el-button size="small" type="primary" @click="openInsertDialog" :icon="Plus">新增</el-button>
+        <el-upload
+          :file-list="fileList"
+          :http-request="handleFileSelect"
+          :show-file-list="false"
+          :limit="1"
+          accept=".xlsx,.xls"
+        >
+          <el-dropdown @command="handleImportCommand">
+            <el-button size="small" type="success">
+              导入<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="insert">新增导入</el-dropdown-item>
+                <el-dropdown-item command="update">更新导入</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </el-upload>
+        <el-button size="small" type="warning" :loading="exporting" @click="exportData" :icon="Download">导出</el-button>
+      </div>
+      <div class="toolbar-right" v-if="filterExpr">
+        <el-tag closable type="info" size="small" @close="filterExpr = ''; columnFilterConditions = {}; loadData()">
+          过滤中
+        </el-tag>
+      </div>
     </div>
 
     <!-- Table area -->
@@ -102,7 +113,7 @@
     </div>
 
     <!-- Pagination -->
-    <div style="padding: 8px 10px; border-top: 1px solid #e4e7ed; display: flex; justify-content: flex-end;">
+    <div class="db-pagination">
       <el-pagination
         v-model:current-page="currentPage"
         v-model:page-size="pageSize"
@@ -111,6 +122,7 @@
         layout="total, sizes, prev, pager, next"
         @current-change="onPageChange"
         @size-change="onSizeChange"
+        small
       />
     </div>
 
@@ -175,13 +187,13 @@
   <el-dialog
     v-model="editDialogVisible"
     :title="'编辑 - ' + tableName"
-    width="700px"
+    width="720px"
     :draggable="true"
     destroy-on-close
-    style="max-height: 80vh; overflow-y: auto;"
+    class="classical-dialog"
   >
-    <div style="max-height: 500px; overflow-y: auto;">
-      <el-form :model="editRowData" label-width="auto" style="margin-right: 10px;">
+    <div style="max-height: 480px; overflow-y: auto; padding-right: 8px;">
+      <el-form :model="editRowData" label-width="auto" size="default">
         <el-form-item
           v-for="col in dataColumns"
           :key="col.name"
@@ -207,13 +219,13 @@
   <el-dialog
     v-model="insertDialogVisible"
     :title="'新增 - ' + tableName"
-    width="700px"
+    width="720px"
     :draggable="true"
     destroy-on-close
-    style="max-height: 80vh; overflow-y: auto;"
+    class="classical-dialog"
   >
-    <div style="max-height: 500px; overflow-y: auto;">
-      <el-form :model="insertRowData" label-width="auto" style="margin-right: 10px;">
+    <div style="max-height: 480px; overflow-y: auto; padding-right: 8px;">
+      <el-form :model="insertRowData" label-width="auto" size="default">
         <el-form-item
           v-for="col in dataColumns"
           :key="col.name"
@@ -248,7 +260,7 @@
 </template>
 
 <script setup>
-import { ArrowDown, ArrowUp, Filter, Sort } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Download, Filter, Grid, Plus, Refresh, Sort } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import * as XLSX from 'xlsx'
@@ -831,3 +843,64 @@ watch(
   }
 )
 </script>
+
+
+<style scoped>
+.data-browser {
+  height: calc(100vh - 60px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.db-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #fafbfc;
+  border-bottom: 1px solid #ebeef5;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.db-toolbar .toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-toolbar .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-toolbar .toolbar-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.db-toolbar .el-button {
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.db-toolbar .el-divider--vertical {
+  margin: 0 4px;
+  height: 16px;
+}
+
+.db-pagination {
+  padding: 8px 14px;
+  border-top: 1px solid #ebeef5;
+  display: flex;
+  justify-content: flex-end;
+  background: #fafbfc;
+}
+</style>

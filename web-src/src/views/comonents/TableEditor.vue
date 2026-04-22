@@ -647,20 +647,42 @@ function copyCreateScript() {
 
 <style lang="less" scoped>
 .table-editor-tabs {
-    height: calc(100vh - 120px);
     display: flex;
     flex-direction: column;
+
+    :deep(.el-tabs__header) {
+        margin-bottom: 0;
+        background: #fafbfc;
+        border-bottom: 1px solid #ebeef5;
+        padding: 0 8px;
+    }
+
+    :deep(.el-tabs__item) {
+        font-size: 13px;
+        height: 34px;
+        line-height: 34px;
+        border-radius: 6px 6px 0 0;
+    }
+
+    :deep(.el-tabs__item.is-active) {
+        background: #fff;
+        font-weight: 500;
+    }
 
     :deep(.el-tabs__content) {
         flex: 1;
         overflow: auto;
+        padding: 8px;
     }
 }
+
+/* 在 TableManager 页面内使用时，撑满剩余高度 */
 
 .col-table {
     width: 100%;
     max-height: 500px;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .modify_icon {
@@ -672,7 +694,7 @@ function copyCreateScript() {
     transform: translateY(-50%);
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease-in-out;
+    transition: opacity 0.15s ease;
 }
 
 .column_name:hover .modify_icon,

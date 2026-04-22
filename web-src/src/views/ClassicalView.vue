@@ -1,85 +1,118 @@
 <template>
-  <el-splitter style="height: calc(100vh - 16px);">
-    <el-splitter-panel :collapsible="true" size="15%">
-      <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
-        :props="{ isLeaf: 'isLeaf' }">
-        <template #default="{ node, data }">
-          <div class="table-node-wrapper">
-            <a :title="data.data != null ? data.data.text : ''" :class="data.type">{{ node.label }}</a>
-            <i v-if="data.type === 'schema'" class="icon-table-manager icon icon16" title="表管理"
-              @click.stop="openTableManager(node)"></i>
-            <i v-if="data.type === 'table'" class="icon-view-table icon icon16" title="查看表信息"
-              @click.stop="viewTableInfo(node)"></i>
-            <i v-if="data.type === 'table'" class="icon-browse-data icon icon16" title="浏览数据"
-              @click.stop="openDataBrowserFromNode(node)"></i>
-            <i v-if="data.type === 'view'" class="icon-view-table icon icon16" title="查看视图信息"
-              @click.stop="viewViewInfo(node)"></i>
+  <div class="classical-layout">
+    <el-splitter style="height: 100vh;">
+      <el-splitter-panel :collapsible="true" size="300px" :min="300" :max="500">
+        <div class="sidebar-panel">
+          <div class="sidebar-header">
+            <span class="sidebar-title">📂 数据库</span>
+            <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
+              <el-icon :size="14"><Refresh /></el-icon>
+            </el-button>
           </div>
-        </template>
-      </el-tree>
-    </el-splitter-panel>
-    <el-splitter-panel>
-      <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="demo-tabs" closable
-        @tab-remove="removeTab">
-        <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId">
-          <template #label>
-            <span>
-              <span :title="item.connName ? item.connName + '/' + item.title : item.title">{{ item.title }}</span>
-            </span>
-          </template>
-          <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" />
-        </el-tab-pane>
-      </el-tabs>
-    </el-splitter-panel>
-  </el-splitter>
+          <div class="sidebar-tree">
+            <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
+              :props="{ isLeaf: 'isLeaf' }" :indent="16">
+              <template #default="{ node, data }">
+                <div class="tree-node" :class="'tree-node--' + data.type">
+                  <span class="tree-node-icon">
+                    <span v-if="data.type === 'dir'">📁</span>
+                    <span v-else-if="data.type === 'conn'">🔗</span>
+                    <span v-else-if="data.type === 'schema'">🗄️</span>
+                    <span v-else-if="data.type === 'table'">📋</span>
+                    <span v-else-if="data.type === 'view'">👁️</span>
+                    <span v-else>📄</span>
+                  </span>
+                  <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
+                  <span class="tree-node-actions">
+                    <el-tooltip v-if="data.type === 'schema'" content="表管理" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Grid /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'table'" content="查看表结构" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewTableInfo(node)"><InfoFilled /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'table'" content="浏览数据" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openDataBrowserFromNode(node)"><Document /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'view'" content="查看视图" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewViewInfo(node)"><View /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </div>
+              </template>
+            </el-tree>
+          </div>
+        </div>
+      </el-splitter-panel>
+      <el-splitter-panel>
+        <div class="main-content">
+          <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="main-tabs" closable
+            @tab-remove="removeTab">
+            <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId">
+              <template #label>
+                <span class="tab-label" :title="item.connName ? item.connName + '/' + item.title : item.title">
+                  {{ item.title }}
+                </span>
+              </template>
+              <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" />
+            </el-tab-pane>
+          </el-tabs>
+          <div v-else class="empty-workspace">
+            <div class="empty-icon">🗄️</div>
+            <div class="empty-text">点击左侧数据库展开表结构</div>
+          </div>
+        </div>
+      </el-splitter-panel>
+    </el-splitter>
 
-  <!-- 表管理对话框 -->
-  <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
-    @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1000px"
-    style="height:650px;">
-    <TableEditor :tableMeta="tableMeta" @tableDrop="tableMgntDialogVisible = false; tableMeta = {}" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+    <!-- 表管理对话框 -->
+    <el-dialog v-model="tableMgntDialogVisible" :title="tableMgntTitle"
+      @close="tableMgntDialogVisible = false; tableMeta = {}" :draggable="true" destroy-on-close width="1060px"
+      class="classical-dialog">
+      <TableEditor :tableMeta="tableMeta" @tableDrop="tableMgntDialogVisible = false; tableMeta = {}" />
+      <template #footer>
         <el-button @click="tableMgntDialogVisible = false; tableMeta = {}">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
+      </template>
+    </el-dialog>
 
-  <!-- 视图查看对话框 -->
-  <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false; tableMeta = {}"
-    :draggable="true" destroy-on-close width="1000px" style="height:650px;">
-    <ViewDialog :tableMeta="tableMeta" />
-    <template #footer>
-      <div class="dialog-footer" style="position: absolute;right: 15px;bottom: 20px;">
+    <!-- 视图查看对话框 -->
+    <el-dialog v-model="viewDialogVisible" :title="tableMgntTitle" @close="viewDialogVisible = false; tableMeta = {}"
+      :draggable="true" destroy-on-close width="1060px" class="classical-dialog">
+      <ViewDialog :tableMeta="tableMeta" />
+      <template #footer>
         <el-button @click="viewDialogVisible = false; tableMeta = {}">关闭</el-button>
-      </div>
-    </template>
-  </el-dialog>
+      </template>
+    </el-dialog>
 
-  <!-- 登录对话框 -->
-  <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="350px" @keyup.enter="login"
-    @opened="loginName.focus()">
-    <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
-      <el-form-item label="用户名" prop="name">
-        <el-input ref="loginName" v-model="loginForm.name" />
-      </el-form-item>
-      <el-form-item label="密&nbsp;&nbsp;&nbsp;码" prop="password">
-        <el-input v-model="loginForm.password" type="password" />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <span class="dialog-footer">
+    <!-- 登录对话框 -->
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="380px" @keyup.enter="login"
+      @opened="loginName.focus()" class="login-dialog">
+      <template #header>
+        <div class="login-header">
+          <span class="login-icon">🔐</span>
+          <span>登录</span>
+        </div>
+      </template>
+      <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
+        <el-form-item label="用户名" prop="name">
+          <el-input ref="loginName" v-model="loginForm.name" placeholder="请输入用户名" />
+        </el-form-item>
+        <el-form-item label="密码" prop="password">
+          <el-input v-model="loginForm.password" type="password" placeholder="请输入密码" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="loginDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="login" :loading="logining">登录</el-button>
-        <el-button @click="loginDialogVisible = false">关闭</el-button>
-      </span>
-    </template>
-  </el-dialog>
+      </template>
+    </el-dialog>
+  </div>
 </template>
 
 <script setup>
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
+import { Document, Grid, InfoFilled, Refresh, View } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
@@ -496,115 +529,228 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 </script>
 
 <style scoped>
-.layout-container-demo {
-  /* width: calc(100vw * 0.98); */
-  height: calc(100vh);
+.classical-layout {
+  height: 100vh;
+  overflow: hidden;
+  background: #f5f7fa;
 }
 
-.layout-container-demo .el-header {
-  position: relative;
-  color: var(--el-text-color-primary);
+/* ── Sidebar ── */
+.sidebar-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-right: 1px solid #ebeef5;
 }
 
-.layout-container-demo .el-aside {
-  color: var(--el-text-color-primary);
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #f0f2f5;
 }
 
-.layout-container-demo .el-menu {
-  border-right: none;
+.sidebar-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  letter-spacing: 0.5px;
 }
 
-.layout-container-demo .el-main {
-  padding: 0;
+.sidebar-refresh-btn {
+  color: #909399;
+  padding: 4px;
+  border-radius: 4px;
+}
+.sidebar-refresh-btn:hover {
+  color: #409eff;
+  background: #ecf5ff;
 }
 
-.table-node-wrapper {
-  position: relative;
+.sidebar-tree {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+/* Tree node styling */
+.tree-node {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding-right: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.tree-node-icon {
+  font-size: 14px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.tree-node-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #303133;
+}
+
+.tree-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tree-node:hover .tree-node-actions {
+  opacity: 1;
+}
+
+/* Type-specific node styling for visual hierarchy */
+.tree-node--dir .tree-node-label {
+  font-weight: 600;
+  color: #303133;
+}
+
+.tree-node--conn .tree-node-label {
+  font-weight: 500;
+  color: #409eff;
+}
+
+.tree-node--schema .tree-node-label {
+  color: #303133;
+}
+
+.tree-node--table .tree-node-label,
+.tree-node--view .tree-node-label {
+  color: #606266;
+  font-size: 12.5px;
+}
+
+.tree-action-icon {
+  cursor: pointer;
+  color: #909399;
+  padding: 2px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.tree-action-icon:hover {
+  color: #409eff;
+  background: #ecf5ff;
+}
+
+/* ── Main Content ── */
+.main-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.main-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-tabs :deep(.el-tabs__header) {
+  background: #fafbfc;
+  border-bottom: 1px solid #ebeef5;
+  padding: 0 8px;
+  margin-bottom: 0;
+}
+
+.main-tabs :deep(.el-tabs__item) {
+  font-size: 13px;
+  padding: 0 16px;
+  height: 36px;
+  line-height: 36px;
+  border-radius: 6px 6px 0 0;
+  transition: all 0.2s ease;
+}
+
+.main-tabs :deep(.el-tabs__item.is-active) {
+  background: #fff;
+  font-weight: 500;
+}
+
+.main-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  overflow: hidden;
+}
+
+.main-tabs :deep(.el-tab-pane) {
+  height: 100%;
+}
+
+.tab-label {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   display: inline-block;
-  padding-right: 64px;
+  vertical-align: middle;
 }
 
-.icon-view-table {
-  background-image: url("@/assets/icon/view_info.svg");
-  background-size: 16px 16px;
-  background-repeat: no-repeat;
-  background-position: center;
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -20px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
+/* ── Empty State ── */
+.empty-workspace {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #c0c4cc;
+  gap: 16px;
 }
 
-.table-node-wrapper:hover .icon-view-table {
-  opacity: 1;
+.empty-icon {
+  font-size: 56px;
+  opacity: 0.5;
 }
 
-
-.icon-table-manager {
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -40px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-  font-style: normal;
-  font-size: 12px;
-  line-height: 16px;
-  text-align: center;
-}
-.icon-table-manager::after {
-  content: '🗂';
-}
-.table-node-wrapper:hover .icon-table-manager {
-  opacity: 1;
-}
-.icon-table-manager:hover {
-  opacity: 0.8 !important;
-}
-.icon-view-table:hover {
-  opacity: 0.8 !important;
+.empty-text {
+  font-size: 14px;
 }
 
-.icon-view-table:hover {
-  opacity: 0.8;
+/* ── Login Dialog ── */
+.login-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
-.icon-browse-data {
-  width: 16px;
-  height: 16px;
-  position: absolute;
-  right: -40px;
-  top: 50%;
-  transform: translateY(-50%);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-  font-style: normal;
-  font-size: 12px;
-  line-height: 16px;
-  text-align: center;
+.login-icon {
+  font-size: 20px;
 }
-.icon-browse-data::after {
-  content: '📋';
-}
-.table-node-wrapper:hover .icon-browse-data {
-  opacity: 1;
-}
-.icon-browse-data:hover {
-  opacity: 0.8 !important;
+
+/* ── Dialog improvements ── */
+.classical-dialog :deep(.el-dialog__body) {
+  padding: 12px 20px;
+  max-height: 65vh;
+  overflow-y: auto;
 }
 </style>
 
 <style lang="less" scoped>
-.el-tree-node {
-  overflow-x: auto;
+:deep(.el-tree-node__content) {
+  height: 32px;
+}
+:deep(.el-tree-node__content:hover) {
+  background-color: #f0f7ff;
+}
+:deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background-color: #ecf5ff;
 }
 </style>
