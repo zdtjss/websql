@@ -5,7 +5,31 @@
       <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
     </div>
 
-    <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 280px)" v-loading="loading">
+    <el-form :inline="true" :model="queryParams" style="margin-bottom: 16px;">
+      <el-form-item label="执行时间">
+        <el-date-picker
+          v-model="dateRange"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          format="YYYY-MM-DD HH:mm:ss"
+          value-format="YYYY-MM-DD HH:mm:ss"
+          :default-time="[new Date(), new Date()]"
+        />
+      </el-form-item>
+      <el-form-item label="用户">
+        <el-select v-model="queryParams.userId" placeholder="请选择用户" clearable filterable style="width: 200px;">
+          <el-option v-for="user in userList" :key="user.id" :label="`${user.name} (${user.loginName})`" :value="user.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="handleSearch">查询</el-button>
+        <el-button @click="handleReset">重置</el-button>
+      </el-form-item>
+    </el-form>
+
+    <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 340px)" v-loading="loading">
       <el-table-column prop="execTime" label="执行时间" width="170" sortable>
         <template #default="{ row }">
           {{ formatDate(row.execTime) }}
@@ -44,13 +68,27 @@ import { onMounted, ref } from 'vue'
 
 const logs = ref([])
 const loading = ref(false)
+const userList = ref([])
 const apiBase = import.meta.env.VITE_API_URL || ''
+const queryParams = ref({ userId: '' })
+const dateRange = ref([])
 
 async function loadLogs() {
   loading.value = true
   try {
+    const params = new URLSearchParams()
+    if (queryParams.value.userId) {
+      params.append('userId', queryParams.value.userId)
+    }
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.append('startTime', dateRange.value[0])
+      params.append('endTime', dateRange.value[1])
+    }
+    const queryString = params.toString()
+    const url = apiBase + '/ai/agent/audit/logs' + (queryString ? `?${queryString}` : '')
+    
     const auth = sessionStorage.getItem('authentication') || ''
-    const resp = await fetch(apiBase + '/ai/agent/audit/logs', {
+    const resp = await fetch(url, {
       headers: { 'Authorization': auth }
     })
     if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
@@ -62,6 +100,30 @@ async function loadLogs() {
   } finally {
     loading.value = false
   }
+}
+
+function handleSearch() {
+  loadLogs()
+}
+
+async function loadUsers() {
+  try {
+    const auth = sessionStorage.getItem('authentication') || ''
+    const resp = await fetch(apiBase + '/findUser', {
+      headers: { 'Authorization': auth }
+    })
+    if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
+    const data = await resp.json()
+    userList.value = data.data || []
+  } catch (e) {
+    console.error('[SQLAuditLog] 加载用户列表失败:', e)
+  }
+}
+
+function handleReset() {
+  queryParams.value.userId = ''
+  dateRange.value = []
+  loadLogs()
 }
 
 function formatDate(isoString) {
@@ -76,7 +138,10 @@ function getTypeTag(type_) {
   return map[type_] || ''
 }
 
-onMounted(loadLogs)
+onMounted(() => {
+  loadUsers()
+  loadLogs()
+})
 </script>
 
 <style scoped>

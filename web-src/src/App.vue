@@ -62,20 +62,29 @@
           <div style="font-weight:600;margin-bottom:8px;font-size:14px;">
             检测到 {{ pendingSQLList.length }} 条需要确认的 SQL：
           </div>
+          <div style="margin-bottom:8px;">
+            <el-checkbox v-model="selectAllChecked" @change="handleSelectAllChange">
+              全选
+            </el-checkbox>
+            <span style="font-size:12px;color:#909399;margin-left:8px;">
+              已选择 {{ pendingSQLList.filter(i => i.selected).length }} 条
+            </span>
+          </div>
           <div v-for="(item, idx) in pendingSQLList" :key="idx" class="sql-confirm-item">
             <div class="sql-confirm-header">
-              <el-tag :type="item.riskLevel === 'high' ? 'danger' : 'warning'" size="small">
-                {{ item.riskLevel === 'high' ? '高危' : '中危' }} - {{ item.type }}
-              </el-tag>
+              <el-checkbox v-model="item.selected" style="margin-right:8px;">
+                <el-tag :type="item.riskLevel === 'high' ? 'danger' : 'warning'" size="small">
+                  {{ item.riskLevel === 'high' ? '高危' : '中危' }} - {{ item.type }}
+                </el-tag>
+              </el-checkbox>
               <span v-if="item.tableName" style="font-size:12px;color:#909399;">表：{{ item.tableName }}</span>
             </div>
-            <!-- <pre class="sql-preview-code">{{ item.sql }}</pre> -->
             <pre class="sql-pre"><code v-html="highlightSql(item.sql)" /></pre>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
             <el-button size="small" @click="handleCancelAllSQL">全部取消</el-button>
-            <el-button size="small" type="danger" @click="handleConfirmAllSQL">
-              确认执行全部 ({{ pendingSQLList.length }} 条)
+            <el-button size="small" type="danger" @click="handleConfirmSelectedSQL" :disabled="selectedSQLCount === 0">
+              确认执行选中 ({{ selectedSQLCount }} 条)
             </el-button>
           </div>
         </div>
@@ -596,6 +605,19 @@ let hasShownConfirm = false  // 防止重复弹出
 
 // 多条 SQL 批量确认
 const pendingSQLList = ref([])
+const selectAllChecked = ref(false)
+
+// 计算选中的SQL数量
+const selectedSQLCount = computed(() => {
+  return pendingSQLList.value.filter(item => item.selected).length
+})
+
+// 全选/取消全选
+function handleSelectAllChange(val) {
+  pendingSQLList.value.forEach(item => {
+    item.selected = val
+  })
+}
 
 // 重试确认
 const showRetryConfirm = ref(false)
@@ -1117,11 +1139,12 @@ async function sendMessage() {
       if (collectedDangerSQLs.length === 1) {
         showConfirmDialog(collectedDangerSQLs[0].sql, allInterruptIds, checkPointId)
       } else {
-        // 多条 SQL：合并显示，共享一个确认按钮，一次性 Resume 所有
+        // 多条 SQL：合并显示，支持逐条选择和批量确认
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, ...analysis }
+          return { sql: item.sql, ...analysis, selected: true }
         })
+        selectAllChecked.value = true
         // 保存 interruptIds 和 checkPointId 供批量确认使用
         pendingSQLList.interruptIds = allInterruptIds
         pendingSQLList.checkPointId = checkPointId
@@ -1286,8 +1309,9 @@ async function handleConfirmExec(confirmedSql) {
       } else {
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, ...analysis }
+          return { sql: item.sql, ...analysis, selected: true }
         })
+        selectAllChecked.value = true
         pendingSQLList.interruptIds = ids
         pendingSQLList.checkPointId = cpId
       }
@@ -1315,21 +1339,37 @@ function handleConfirmCancel() {
 }
 
 // ── 多条 SQL 批量确认 ──
-async function handleConfirmAllSQL() {
-  const items = [...pendingSQLList.value]
-  const interruptIds = pendingSQLList.interruptIds || []
+async function handleConfirmSelectedSQL() {
+  const selectedItems = pendingSQLList.value.filter(item => item.selected)
+  if (selectedItems.length === 0) {
+    ElMessage.warning('请至少选择一条SQL')
+    return
+  }
+
+  const allItems = [...pendingSQLList.value]
+  const allInterruptIds = pendingSQLList.interruptIds || []
   const checkPointId = pendingSQLList.checkPointId || ''
+
+  // 获取选中项对应的 interruptIds
+  const selectedInterruptIds = []
+  for (let i = 0; i < allItems.length; i++) {
+    if (allItems[i].selected && allInterruptIds[i]) {
+      selectedInterruptIds.push(allInterruptIds[i])
+    }
+  }
+
   pendingSQLList.value = []
+  selectAllChecked.value = false
   loading.value = true
 
-  // 将所有 SQL 保留在聊天记录中
-  for (const item of items) {
+  // 将选中的 SQL 保留在聊天记录中
+  for (const item of selectedItems) {
     chatHistory.value.push({ role: 'assistant', content: `⏳ 正在执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
   }
   scrollToBottom()
 
-  // 一次性 Resume 所有 interruptId
-  await executeBatchResume(items, interruptIds, checkPointId)
+  // 一次性 Resume 所有选中的 interruptId
+  await executeBatchResume(selectedItems, selectedInterruptIds, checkPointId)
 
   loading.value = false
   scrollToBottom()
@@ -1422,8 +1462,9 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
       } else {
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, ...analysis }
+          return { sql: item.sql, ...analysis, selected: true }
         })
+        selectAllChecked.value = true
         pendingSQLList.interruptIds = ids
         pendingSQLList.checkPointId = cpId
       }
@@ -1437,6 +1478,7 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
 function handleCancelAllSQL() {
   const items = pendingSQLList.value
   pendingSQLList.value = []
+  selectAllChecked.value = false
   // 将每条 SQL 保留在聊天记录中
   for (const item of items) {
     chatHistory.value.push({ role: 'assistant', content: `已取消执行：\n\`\`\`sql\n${item.sql}\n\`\`\`` })
@@ -1540,8 +1582,9 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
       } else {
         pendingSQLList.value = collectedDangerSQLs.map(item => {
           const analysis = analyzeSQL(item.sql)
-          return { sql: item.sql, ...analysis }
+          return { sql: item.sql, ...analysis, selected: true }
         })
+        selectAllChecked.value = true
         pendingSQLList.interruptIds = ids
         pendingSQLList.checkPointId = cpId
       }

@@ -245,12 +245,12 @@
         </el-tab-pane>
 
         <el-tab-pane label="DDL" name="showCreate">
-            <el-icon style="margin-top: 5px;position: absolute;right: 0px;cursor: pointer;z-index: 9999999;" size="16" @click="copyCreateScript">
+            <el-icon style="margin-top: 0px;position: absolute;right: 18px;cursor: pointer;z-index: 9999999;" size="16" @click="copyCreateScript">
                 <CopyDocument />
             </el-icon>
-            <el-scrollbar style="font-size: 18px;width: 100%;">
+            <div style="font-size: 18px;width: 100%; max-height: 500px;overflow-y: auto;overflow-x: hidden;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
-            </el-scrollbar>
+            </div>
         </el-tab-pane>
     </el-tabs>
 
@@ -659,6 +659,8 @@ function copyCreateScript() {
 
 .col-table {
     width: 100%;
+    max-height: 500px;
+    overflow-y: auto;
 }
 
 .modify_icon {

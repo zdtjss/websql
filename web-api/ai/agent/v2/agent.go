@@ -130,8 +130,9 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&PermissionMiddleware{Scope: scope},
-			// 不再需要 SQLSecurityMiddleware — 危险 SQL 检测已移到 exec_sql 工具内部
-			// 使用 tool.StatefulInterrupt 实现，由 Runner 自动 checkpoint
+			// DangerousSQLApprovalMiddleware：统一拦截 exec_sql 工具，对危险SQL执行审批流程
+			// 这是 eino 标准 ApprovalMiddleware 模式，确保所有危险SQL必须经过用户确认
+			&DangerousSQLApprovalMiddleware{},
 			&ToolErrorRecoveryMiddleware{},
 			summarizationMW,
 		},
@@ -246,9 +247,10 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 	log.Printf("[Agent] resume - cpID=%s, targets=%v\n", checkPointID, targets)
 
 	// 将所有 interruptID 放入 Targets map，一次性恢复
+	// 使用 SQLApprovalResult 传递审批结果，支持拒绝原因
 	targetsAny := make(map[string]any, len(targets))
 	for id, approved := range targets {
-		targetsAny[id] = approved
+		targetsAny[id] = SQLApprovalResult{Approved: approved}
 	}
 
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{

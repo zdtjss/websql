@@ -53,7 +53,7 @@
           <template #header>
             <div style="display: flex; align-items: center; gap: 5px;">
               <span 
-                :title="col.comment" 
+                :title="col.comment || col.name" 
                 style="cursor: pointer;"
                 @click.stop="handleSort(col.name)"
               >
@@ -345,6 +345,7 @@ async function fetchTotal() {
   const params = new URLSearchParams()
   params.append('connId', props.connId)
   params.append('schema', props.schema)
+  params.append('tableName', props.tableName)
   params.append('sql', sql)
   const resp = await http.post('/execSQL', params)
   const data = resp.data.data
@@ -368,6 +369,7 @@ async function fetchData() {
   const params = new URLSearchParams()
   params.append('connId', props.connId)
   params.append('schema', props.schema)
+  params.append('tableName', props.tableName)
   params.append('sql', sql)
   const resp = await http.post('/execSQL', params)
   const data = resp.data.data
@@ -378,6 +380,7 @@ async function fetchData() {
       comment: col.comment || '',
       type: col.type || '',
     }))
+    console.log('[DataBrowser] columns:', dataColumns.value)
     // Capture primary key info from response
     if (data.keys && data.keys.length > 0) {
       pkColumns.value = data.keys

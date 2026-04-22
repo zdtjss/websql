@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -145,41 +144,8 @@ func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context
 			return nil, fmt.Errorf("SQL is empty")
 		}
 
-		// ── Interrupt/Resume 处理 ──
-		// 检查是否从中断恢复（用户确认了之前被拦截的危险 SQL）
-		wasInterrupted, hasState, savedSQL := tool.GetInterruptState[string](ctx)
-		if wasInterrupted && hasState {
-			isTarget, hasData, approved := tool.GetResumeContext[bool](ctx)
-			if isTarget {
-				// 本工具是恢复目标
-				if hasData && approved {
-					// 用户批准 → 使用服务端保存的 SQL（不是前端传来的）
-					log.Printf("[Tool:exec_sql] user approved saved SQL - sql=%s\n", savedSQL)
-					sql = savedSQL
-					// 直接执行，不再检查 isDangerousSQL（用户已确认）
-					goto doExec
-				}
-				// 用户拒绝
-				return &ExecOutput{AffectedRows: 0, Message: "cancelled by user"}, nil
-			}
-			// 不是恢复目标 → 重新中断以保持状态
-			return nil, tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-				SQL: savedSQL, RiskLevel: detectRiskLevel(savedSQL), SQLType: detectSQLType(savedSQL),
-			}, savedSQL)
-		}
-
-		// ── 首次执行 — 安全红线：所有危险 SQL 必须中断等待用户确认 ──
-		for _, line := range strings.Split(sql, ";") {
-			line = strings.TrimSpace(line)
-			if line != "" && isDangerousSQL(line) {
-				log.Printf("[Tool:exec_sql] DANGEROUS SQL INTERCEPTED - sql=%s\n", sql)
-				return nil, tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-					SQL: sql, RiskLevel: detectRiskLevel(sql), SQLType: detectSQLType(sql),
-				}, sql)
-			}
-		}
-
-	doExec:
+		// 注意：危险SQL检测已移到 DangerousSQLApprovalMiddleware 中统一处理
+		// 此处只负责执行，不重复检测
 		conn, _ := getConn(connId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connId)

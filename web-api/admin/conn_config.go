@@ -308,14 +308,14 @@ func ListTableNames(c *gin.Context) {
 func filterTablesByPermission(tables []*Table, connId, schema string, userPower *UserPower) []*Table {
 	// 如果用户没有权限限制（管理员），返回所有表
 	if userPower == nil || len(userPower.Power) == 0 {
-		log.Printf("filterTablesByPermission: no power 限制，返回所有表")
+		// log.Printf("filterTablesByPermission: no power 限制，返回所有表")
 		return tables
 	}
 
 	// 获取用户的所有权限详情
 	powerDetails := findUserPowerDetails(userPower.UserId)
-	log.Printf("filterTablesByPermission: powerDetails count=%d", len(powerDetails))
-	for i, p := range powerDetails {
+	// log.Printf("filterTablesByPermission: powerDetails count=%d", len(powerDetails))
+	/* for i, p := range powerDetails {
 		schemaName := ""
 		if p.SchemaName != nil {
 			schemaName = *p.SchemaName
@@ -326,7 +326,7 @@ func filterTablesByPermission(tables []*Table, connId, schema string, userPower 
 		}
 		log.Printf("filterTablesByPermission: power[%d] level=%s, connId=%s, schema=%s, table=%s",
 			i, p.Level, p.ConnId, schemaName, tableName)
-	}
+	} */
 	if len(powerDetails) == 0 {
 		return []*Table{}
 	}
@@ -342,7 +342,7 @@ func filterTablesByPermission(tables []*Table, connId, schema string, userPower 
 
 		// 使用 checkPower 检查是否有该表的访问权限
 		hasAccess := checkPowerByParam(powerDetails, param)
-		log.Printf("filterTablesByPermission: table=%s, hasAccess=%v", table.Name, hasAccess)
+		// log.Printf("filterTablesByPermission: table=%s, hasAccess=%v", table.Name, hasAccess)
 
 		if hasAccess {
 			filtered = append(filtered, table)
@@ -368,7 +368,7 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 		switch power.Level {
 		case "conn":
 			hasConnPermission = true
-			log.Printf("checkPowerByParam: 有 conn 权限 connId=%s", power.ConnId)
+			// log.Printf("checkPowerByParam: 有 conn 权限 connId=%s", power.ConnId)
 		case "schema":
 			if power.SchemaName != nil {
 				if param.SchemaName == "" || *power.SchemaName == param.SchemaName {
@@ -394,8 +394,8 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 		}
 	}
 
-	log.Printf("checkPowerByParam: hasConn=%v, hasSchema=%v, hasTable=%v, hasColumn=%v",
-		hasConnPermission, hasSchemaPermission, hasTablePermission, hasColumnPermission)
+	// log.Printf("checkPowerByParam: hasConn=%v, hasSchema=%v, hasTable=%v, hasColumn=%v",
+	// 	hasConnPermission, hasSchemaPermission, hasTablePermission, hasColumnPermission)
 
 	// 权限判断逻辑（上级权限无条件包含下级）
 
