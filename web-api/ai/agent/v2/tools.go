@@ -249,7 +249,10 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 		query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
 		args = []any{dbSchema, table}
 	case "sqlite":
-		query = fmt.Sprintf("PRAGMA table_info('%s')", table)
+		if !isValidTableName(table) {
+			return sb.String()
+		}
+		query = "PRAGMA table_info('" + strings.ReplaceAll(table, "'", "''") + "')"
 	default:
 		return sb.String()
 	}
@@ -280,13 +283,16 @@ type ImportDataOutput struct {
 
 func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
-		log.Printf("[Tool:import_data] fileId=%s, table=%s\n", input.FileID, input.TableName)
+		log.Printf("[Tool:import_data] fileId=%s, table=%s, mode=%s\n", input.FileID, input.TableName, input.Mode)
 		conn, _ := getConn(connID)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}
 		if input.FileID == "" {
 			return nil, fmt.Errorf("fileId is required")
+		}
+		if !isValidTableName(input.TableName) {
+			return nil, fmt.Errorf("invalid table name: %s", input.TableName)
 		}
 		mode := strings.ToLower(input.Mode)
 		if mode == "" {
@@ -322,41 +328,114 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 			return nil, fmt.Errorf("begin tx failed: %w", err)
 		}
 		defer tx.Rollback()
+
 		insertedRows, updatedRows := 0, 0
-		for rowNum, excelRow := range upload.Data {
-			row := make([]string, len(dbColumns))
-			for i, idx := range excelIndices {
-				if idx < len(excelRow) {
-					row[i] = excelRow[idx]
+
+		if mode == "insert" {
+			// 批量插入：每 200 行一批，使用 prepared statement
+			batchSize := 200
+			tableRef := quoteTableRef(dbType, dbSchema, input.TableName)
+			quotedCols := make([]string, len(dbColumns))
+			for i, col := range dbColumns {
+				quotedCols[i] = quoteIdent(dbType, col)
+			}
+			colList := strings.Join(quotedCols, ", ")
+
+			for batchStart := 0; batchStart < len(upload.Data); batchStart += batchSize {
+				batchEnd := batchStart + batchSize
+				if batchEnd > len(upload.Data) {
+					batchEnd = len(upload.Data)
+				}
+				batch := upload.Data[batchStart:batchEnd]
+
+				// 构建多行 VALUES
+				var valueParts []string
+				var allArgs []any
+				for _, excelRow := range batch {
+					row := make([]string, len(dbColumns))
+					for i, idx := range excelIndices {
+						if idx < len(excelRow) {
+							row[i] = excelRow[idx]
+						}
+					}
+					placeholders := make([]string, len(dbColumns))
+					for i := range dbColumns {
+						if dbType == "oracle" {
+							placeholders[i] = fmt.Sprintf(":%d", len(allArgs)+i+1)
+						} else {
+							placeholders[i] = "?"
+						}
+						allArgs = append(allArgs, row[i])
+					}
+					valueParts = append(valueParts, "("+strings.Join(placeholders, ", ")+")")
+				}
+
+				if dbType == "oracle" {
+					// Oracle 不支持多行 VALUES，逐行插入
+					for _, excelRow := range batch {
+						row := make([]string, len(dbColumns))
+						for i, idx := range excelIndices {
+							if idx < len(excelRow) {
+								row[i] = excelRow[idx]
+							}
+						}
+						if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
+							return nil, fmt.Errorf("row %d insert failed: %w", batchStart+insertedRows+2, err)
+						}
+						insertedRows++
+					}
+				} else {
+					query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableRef, colList, strings.Join(valueParts, ", "))
+					if _, err := tx.Exec(query, allArgs...); err != nil {
+						return nil, fmt.Errorf("batch insert failed at row %d: %w", batchStart+2, err)
+					}
+					insertedRows += len(batch)
 				}
 			}
-			if mode == "upsert" && len(primaryKeys) > 0 {
-				exists, err := checkRowExists(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys)
-				if err != nil {
-					return nil, fmt.Errorf("row %d check failed: %w", rowNum+2, err)
-				}
-				if exists {
-					if err := updateRow(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys); err != nil {
-						return nil, fmt.Errorf("row %d update failed: %w", rowNum+2, err)
+		} else {
+			// upsert 模式：逐行处理
+			for rowNum, excelRow := range upload.Data {
+				row := make([]string, len(dbColumns))
+				for i, idx := range excelIndices {
+					if idx < len(excelRow) {
+						row[i] = excelRow[idx]
 					}
-					updatedRows++
+				}
+				if len(primaryKeys) > 0 {
+					exists, err := checkRowExists(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys)
+					if err != nil {
+						return nil, fmt.Errorf("row %d check failed: %w", rowNum+2, err)
+					}
+					if exists {
+						if err := updateRow(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys); err != nil {
+							return nil, fmt.Errorf("row %d update failed: %w", rowNum+2, err)
+						}
+						updatedRows++
+					} else {
+						if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
+							return nil, fmt.Errorf("row %d insert failed: %w", rowNum+2, err)
+						}
+						insertedRows++
+					}
 				} else {
 					if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
 						return nil, fmt.Errorf("row %d insert failed: %w", rowNum+2, err)
 					}
 					insertedRows++
 				}
-			} else {
-				if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-					return nil, fmt.Errorf("row %d insert failed: %w", rowNum+2, err)
-				}
-				insertedRows++
 			}
 		}
+
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit failed: %w", err)
 		}
 		RemoveUploadedFile(input.FileID)
+
+		// 审计日志
+		auditID := utils.RandomStr()
+		auditSQL := fmt.Sprintf("IMPORT INTO %s (%d rows, mode=%s)", input.TableName, insertedRows+updatedRows, mode)
+		InsertSQLAudit(auditID, "", "", connID, "", auditSQL, "IMPORT", "medium", "success", insertedRows+updatedRows, "")
+
 		var mappingDesc strings.Builder
 		for i, idx := range excelIndices {
 			if i > 0 {
@@ -369,6 +448,7 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 			msg += fmt.Sprintf(", updated %d rows", updatedRows)
 		}
 		msg += fmt.Sprintf(". mapping: %s", mappingDesc.String())
+		log.Printf("[Tool:import_data] done - %s\n", msg)
 		return &ImportDataOutput{Message: msg, InsertedRows: insertedRows, UpdatedRows: updatedRows}, nil
 	}
 }
@@ -462,7 +542,10 @@ func getTableColumns(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]strin
 			args = []any{strings.ToUpper(tableName)}
 		}
 	case "sqlite":
-		query = fmt.Sprintf("PRAGMA table_info('%s')", tableName)
+		if !isValidTableName(tableName) {
+			return nil, fmt.Errorf("invalid table name: %s", tableName)
+		}
+		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
 	default:
 		if dbSchema != "" {
 			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
@@ -529,7 +612,10 @@ func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string
 			args = []any{strings.ToUpper(tableName)}
 		}
 	case "sqlite":
-		query = fmt.Sprintf("PRAGMA table_info('%s')", tableName)
+		if !isValidTableName(tableName) {
+			return nil, fmt.Errorf("invalid table name: %s", tableName)
+		}
+		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
 		rows, err := conn.Queryx(query)
 		if err != nil {
 			return nil, err
@@ -584,9 +670,9 @@ func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []s
 			if strings.EqualFold(col, pk) {
 				if dbType == "oracle" {
 					argIdx++
-					whereParts = append(whereParts, fmt.Sprintf("%s = :%d", pk, argIdx))
+					whereParts = append(whereParts, fmt.Sprintf("%s = :%d", quoteIdent(dbType, pk), argIdx))
 				} else {
-					whereParts = append(whereParts, fmt.Sprintf("%s = ?", pk))
+					whereParts = append(whereParts, fmt.Sprintf("%s = ?", quoteIdent(dbType, pk)))
 				}
 				args = append(args, row[i])
 				break
@@ -596,10 +682,7 @@ func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []s
 	if len(whereParts) == 0 {
 		return false, nil
 	}
-	tableRef := tableName
-	if dbSchema != "" {
-		tableRef = dbSchema + "." + tableName
-	}
+	tableRef := quoteTableRef(dbType, dbSchema, tableName)
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", tableRef, strings.Join(whereParts, " AND "))
 	var count int
 	err := tx.Get(&count, query, args...)
@@ -608,8 +691,10 @@ func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []s
 
 func insertRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string, row []string) error {
 	placeholders := make([]string, len(columns))
+	quotedCols := make([]string, len(columns))
 	args := make([]any, len(columns))
 	for i := range columns {
+		quotedCols[i] = quoteIdent(dbType, columns[i])
 		if dbType == "oracle" {
 			placeholders[i] = fmt.Sprintf(":%d", i+1)
 		} else {
@@ -617,11 +702,8 @@ func insertRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 		}
 		args[i] = row[i]
 	}
-	tableRef := tableName
-	if dbSchema != "" {
-		tableRef = dbSchema + "." + tableName
-	}
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableRef, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
+	tableRef := quoteTableRef(dbType, dbSchema, tableName)
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableRef, strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
 	_, err := tx.Exec(query, args...)
 	return err
 }
@@ -635,20 +717,21 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 	var setArgs, whereArgs []any
 	argIdx := 0
 	for i, col := range columns {
+		qCol := quoteIdent(dbType, col)
 		if pkSet[strings.ToUpper(col)] {
 			if dbType == "oracle" {
 				argIdx++
-				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", col, argIdx+len(columns)))
+				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", qCol, argIdx+len(columns)))
 			} else {
-				whereParts = append(whereParts, fmt.Sprintf("%s = ?", col))
+				whereParts = append(whereParts, fmt.Sprintf("%s = ?", qCol))
 			}
 			whereArgs = append(whereArgs, row[i])
 		} else {
 			if dbType == "oracle" {
 				argIdx++
-				setParts = append(setParts, fmt.Sprintf("%s = :%d", col, argIdx))
+				setParts = append(setParts, fmt.Sprintf("%s = :%d", qCol, argIdx))
 			} else {
-				setParts = append(setParts, fmt.Sprintf("%s = ?", col))
+				setParts = append(setParts, fmt.Sprintf("%s = ?", qCol))
 			}
 			setArgs = append(setArgs, row[i])
 		}
@@ -657,13 +740,28 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 		return fmt.Errorf("cannot build update: missing SET or WHERE")
 	}
 	args := append(setArgs, whereArgs...)
-	tableRef := tableName
-	if dbSchema != "" {
-		tableRef = dbSchema + "." + tableName
-	}
+	tableRef := quoteTableRef(dbType, dbSchema, tableName)
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s", tableRef, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
 	_, err := tx.Exec(query, args...)
 	return err
+}
+
+// quoteIdent 根据数据库类型对标识符加引号，防止保留字冲突
+func quoteIdent(dbType, name string) string {
+	switch dbType {
+	case "oracle":
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	default: // mysql, mariadb, sqlite
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	}
+}
+
+// quoteTableRef 构建带 schema 的表引用
+func quoteTableRef(dbType, dbSchema, tableName string) string {
+	if dbSchema != "" {
+		return quoteIdent(dbType, dbSchema) + "." + quoteIdent(dbType, tableName)
+	}
+	return quoteIdent(dbType, tableName)
 }
 
 func applyRowLimit(sql, driverName string, maxRows int) string {

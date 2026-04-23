@@ -110,9 +110,9 @@
               <el-button size="small" text type="danger" @click="clearUploadedExcel">✕</el-button>
             </div>
                <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" style="margin-left: 12px;" accept=".xlsx,.xls"
-                :on-change="handleExcelUpload">
-                <el-button class="toolbar-btn" size="small" title="上传 Excel 导入数据">
-                  <el-icon><Upload /></el-icon>
+                :on-change="handleExcelUpload" :disabled="excelUploading">
+                <el-button class="toolbar-btn" size="small" title="上传 Excel 导入数据" :loading="excelUploading">
+                  <el-icon v-if="!excelUploading"><Upload /></el-icon>
                 </el-button>
               </el-upload>
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible" 
@@ -627,6 +627,7 @@ const lastQuestion = ref('')
 // Excel 上传
 const uploadedExcel = ref(null) // { fileId, name, columns, rows, preview }
 const excelUploadRef = ref(null)
+const excelUploading = ref(false)
 
 function highlightSql(text) {
   if (!text) return ''
@@ -1667,6 +1668,13 @@ async function handleExcelUpload(file) {
   const formData = new FormData()
   formData.append('file', rawFile)
 
+  // 前端文件大小校验（20MB）
+  if (rawFile.size > 20 * 1024 * 1024) {
+    ElMessage.error('文件大小不能超过 20MB')
+    return
+  }
+
+  excelUploading.value = true
   try {
     const apiBase = import.meta.env.VITE_API_URL || ''
     const auth = sessionStorage.getItem('authentication') || ''
@@ -1758,6 +1766,8 @@ async function handleExcelUpload(file) {
   } catch (e) {
     console.error('[App] 上传 Excel 文件失败:', e)
     ElMessage.error('上传 Excel 文件失败，请检查文件格式')
+  } finally {
+    excelUploading.value = false
   }
 }
 

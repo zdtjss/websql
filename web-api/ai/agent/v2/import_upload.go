@@ -137,6 +137,20 @@ func HandleUploadExcel(c *gin.Context) {
 		return
 	}
 
+	// 文件大小限制（20MB）
+	const maxFileSize = 20 * 1024 * 1024
+	if fileHeader.Size > maxFileSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件大小不能超过 20MB"})
+		return
+	}
+
+	// 扩展名校验
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if ext != ".xlsx" && ext != ".xls" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅支持 .xlsx 和 .xls 格式的 Excel 文件"})
+		return
+	}
+
 	src, err := fileHeader.Open()
 	if err != nil {
 		log.Printf("[UploadExcel] 打开文件失败 - err=%v\n", err)
@@ -147,10 +161,6 @@ func HandleUploadExcel(c *gin.Context) {
 
 	// 保存到磁盘
 	fileID := utils.RandomStr()
-	ext := filepath.Ext(fileHeader.Filename)
-	if ext == "" {
-		ext = ".xlsx"
-	}
 	diskPath := filepath.Join(uploadDir, fileID+ext)
 
 	dst, err := os.Create(diskPath)
