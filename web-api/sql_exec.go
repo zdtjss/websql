@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"go-web/config"
 	"go-web/logutils"
@@ -25,6 +26,17 @@ func ExecSQL(c *gin.Context) {
 	sqlStr := c.PostForm("sql")
 	maxLine := c.PostForm("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
+
+	// SQL 长度限制（防止超大 SQL 攻击）
+	const maxSQLLength = 1024 * 1024 // 1MB
+	if len(sqlStr) > maxSQLLength {
+		c.JSON(200, gin.H{"code": 500, "msg": "SQL 语句过长，请拆分执行"})
+		return
+	}
+	if sqlStr == "" {
+		c.JSON(200, gin.H{"code": 500, "msg": "SQL 语句不能为空"})
+		return
+	}
 
 	authorization := c.GetHeader("Authorization")
 	conn := admin.GetConn(connId, authorization)
@@ -67,10 +79,14 @@ func ExecSQL(c *gin.Context) {
 		var rows *sqlx.Rows
 		var err2 error
 
+		// 查询超时控制（5 分钟）
+		queryCtx, queryCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+		defer queryCancel()
+
 		if len(params) > 0 {
-			rows, err2 = conn.Queryx(sqlStr, params...)
+			rows, err2 = conn.QueryxContext(queryCtx, sqlStr, params...)
 		} else {
-			rows, err2 = conn.Queryx(sqlStr)
+			rows, err2 = conn.QueryxContext(queryCtx, sqlStr)
 		}
 
 		if err2 != nil {

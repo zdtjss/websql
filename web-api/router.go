@@ -22,6 +22,7 @@ var destAddr string = "http://localhost:8083"
 func MainRegister(router *gin.Engine) {
 
 	router.Use(CustomRecovery())
+	router.Use(LoginRateLimitMiddleware())
 	router.Use(AuthMiddleware())
 
 	router.Use(hostCheck())
@@ -76,6 +77,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/delUser", admin.DelUser)
 
 	routerGroup.POST("/saveUserBio", admin.SaveUserBio)
+	routerGroup.POST("/changePassword", admin.ChangePassword)
 
 	routerGroup.GET("/listBackupData", admin.ListBackupData)
 	routerGroup.GET("/showBackupData", admin.ShowBackupData)
@@ -116,7 +118,18 @@ func MainRegister(router *gin.Engine) {
 	})
 
 	routerGroup.GET("/healthCheck", func(c *gin.Context) {
-		utils.WriteJson(c.Writer, "")
+		status := "ok"
+		dbStatus := "ok"
+		if config.Mngtdb != nil {
+			if err := config.Mngtdb.Ping(); err != nil {
+				dbStatus = "error"
+				status = "degraded"
+			}
+		}
+		utils.WriteJson(c.Writer, gin.H{
+			"status": status,
+			"db":     dbStatus,
+		})
 	})
 
 	routerGroup.Any("/ext/", proxy)
@@ -167,8 +180,25 @@ func proxy(c *gin.Context) {
 
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Headers", "Authorization")
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
+		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+		// 安全响应头
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Cache-Control", "no-store")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
 	}
 }
 
@@ -195,12 +225,8 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		// 获取认证信息：优先从 Authorization 头获取，其次从 URL 参数获取
+		// 仅从 Authorization 头获取认证信息（不再从 URL 参数获取，避免 token 泄露到日志）
 		authorization := c.GetHeader("Authorization")
-		if authorization == "" {
-			// 尝试从 URL 参数获取 token（用于支持 markdown 链接直接访问）
-			authorization = c.Query("token")
-		}
 
 		if authorization == "" {
 			c.Abort()
@@ -232,13 +258,15 @@ func AuthMiddleware() gin.HandlerFunc {
 // 应该是第一个引入
 func hostCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !config.Cfg.IsRemote && !slices.ContainsFunc(config.Cfg.AllowedIP, func(allowedIp string) bool {
-			return strings.HasPrefix(c.Request.RemoteAddr, allowedIp+":")
-		}) {
-			c.Writer.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
-			c.Header("content-type", "text/html; charset=utf-8")
-			log.Println("非法 IP:" + c.Request.RemoteAddr)
-			return
+		if !config.Cfg.IsRemote {
+			clientIP := c.ClientIP()
+			if len(config.Cfg.AllowedIP) > 0 && !slices.Contains(config.Cfg.AllowedIP, clientIP) {
+				c.Writer.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
+				c.Header("content-type", "text/html; charset=utf-8")
+				log.Println("非法 IP:" + clientIP)
+				c.Abort()
+				return
+			}
 		}
 	}
 }

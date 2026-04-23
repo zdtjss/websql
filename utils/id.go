@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -15,6 +17,17 @@ func RandomInt64() uint64 {
 
 func RandomStr() string {
 	return fmt.Sprint(node.NextId())
+}
+
+// SecureRandomToken 生成加密安全的随机 token（32 字节 = 64 个十六进制字符）
+func SecureRandomToken() string {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		// 降级到雪花 ID（不应发生）
+		return fmt.Sprint(node.NextId())
+	}
+	return hex.EncodeToString(b)
 }
 
 const (

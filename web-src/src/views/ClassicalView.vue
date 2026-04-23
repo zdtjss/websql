@@ -5,9 +5,30 @@
         <div class="sidebar-panel">
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
-            <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
-              <el-icon :size="14"><Refresh /></el-icon>
-            </el-button>
+            <div class="sidebar-header-actions">
+              <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
+                <el-icon :size="14"><Refresh /></el-icon>
+              </el-button>
+              <el-dropdown v-if="loginSucc" trigger="click" @command="handleUserCommand">
+                <el-button text size="small" class="sidebar-user-btn" :title="currentUser.name || '用户'">
+                  <el-icon :size="14"><User /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item disabled>
+                      <span style="color: #303133; font-weight: 500;">{{ currentUser.name || '用户' }}</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item divided command="changePassword">🔑 修改密码</el-dropdown-item>
+                    <el-dropdown-item v-if="currentUser.isAdmin" command="systemManagement">⚙️ 系统管理</el-dropdown-item>
+                    <el-dropdown-item command="registerBio">🖐️ 注册指纹</el-dropdown-item>
+                    <el-dropdown-item divided command="logout" style="color: #f56c6c;">🚪 退出登录</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
+                <el-icon :size="14"><User /></el-icon>
+              </el-button>
+            </div>
           </div>
           <div class="sidebar-tree">
             <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
@@ -105,6 +126,31 @@
         <el-button type="primary" @click="login" :loading="logining">登录</el-button>
       </template>
     </el-dialog>
+
+    <!-- 修改密码对话框 -->
+    <el-dialog v-model="changePwdDialogVisible" width="400px" @keyup.enter="submitChangePassword" class="login-dialog">
+      <template #header>
+        <div class="login-header">
+          <span class="login-icon">🔑</span>
+          <span>修改密码</span>
+        </div>
+      </template>
+      <el-form ref="changePwdFormRef" :model="changePwdForm" :rules="changePwdRules" label-width="90px">
+        <el-form-item label="旧密码" prop="oldPassword">
+          <el-input v-model="changePwdForm.oldPassword" type="password" placeholder="请输入旧密码" show-password />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input v-model="changePwdForm.newPassword" type="password" placeholder="请输入新密码（至少6位）" show-password />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input v-model="changePwdForm.confirmPassword" type="password" placeholder="请再次输入新密码" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="changePwdDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitChangePassword" :loading="changingPwd">确认修改</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -113,6 +159,7 @@ import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { Document, Grid, InfoFilled, Refresh, View } from '@element-plus/icons-vue'
+import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
@@ -163,6 +210,70 @@ const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
 
+// 修改密码
+const changePwdDialogVisible = ref(false)
+const changingPwd = ref(false)
+const changePwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const changePwdFormRef = ref()
+const changePwdRules = reactive({
+  oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '密码长度不能少于6位', trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请确认新密码', trigger: 'blur' },
+    {
+      validator: (rule, value, callback) => {
+        if (value !== changePwdForm.value.newPassword) {
+          callback(new Error('两次输入的密码不一致'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+})
+
+function handleUserCommand(command) {
+  switch (command) {
+    case 'changePassword':
+      changePwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
+      changePwdDialogVisible.value = true
+      break
+    case 'systemManagement':
+      sessionStorage.setItem('systemManagement_user', JSON.stringify(currentUser.value))
+      window.open('/system-management', '_blank')
+      break
+    case 'registerBio':
+      register()
+      break
+    case 'logout':
+      logout()
+      break
+  }
+}
+
+function submitChangePassword() {
+  changePwdFormRef.value.validate(isValid => {
+    if (isValid) {
+      changingPwd.value = true
+      const params = new URLSearchParams()
+      params.append('oldPassword', changePwdForm.value.oldPassword)
+      params.append('newPassword', changePwdForm.value.newPassword)
+      http.post('/changePassword', params).then((resp) => {
+        ElMessage.success('密码修改成功，请重新登录')
+        changePwdDialogVisible.value = false
+        // 修改密码后自动退出
+        logout()
+      }).finally(() => {
+        changingPwd.value = false
+      })
+    }
+  })
+}
+
 onMounted(() => {
   getSysModel()
   if (!treeLoading.value) {
@@ -183,6 +294,19 @@ onMounted(() => {
 
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
+
+  // 监听会话过期事件
+  window.addEventListener('session-expired', (e) => {
+    const msg = e.detail?.message
+    if (msg) {
+      ElMessage.warning(msg)
+    }
+    loginSucc.value = false
+    currentUser.value = {}
+    if (isRemote.value) {
+      loginDialogVisible.value = true
+    }
+  })
 })
 
 const addTab = (node) => {
@@ -565,6 +689,22 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   border-radius: 4px;
 }
 .sidebar-refresh-btn:hover {
+  color: #409eff;
+  background: #ecf5ff;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-user-btn {
+  color: #606266;
+  padding: 4px;
+  border-radius: 4px;
+}
+.sidebar-user-btn:hover {
   color: #409eff;
   background: #ecf5ff;
 }

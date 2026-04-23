@@ -35,9 +35,12 @@ func Login(c *gin.Context) {
 		if user == nil {
 			logutils.PanicErr(errors.New("传入的登录信息无效"))
 		}
+	default:
+		logutils.PanicErr(errors.New("不支持的登录方式"))
 	}
 	power := findUserPower(user.Id)
-	token := Md5sum(utils.RandomStr())
+	// 使用加密安全的随机 token
+	token := utils.SecureRandomToken()
 	if loginType == "token" {
 		token = key
 	}

@@ -520,7 +520,7 @@ function formatStatsValue(key, val) {
 
 // ========== 字段操作 ==========
 function modifyColumnName(seq, newName) {
-    const sql = "alter table " + props.tableMeta.tableName + " change " + columnListOrigin[seq].columnName + " " + newName + " " + columnListOrigin[seq].columnType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + columnListOrigin[seq].columnComment + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` change `" + columnListOrigin[seq].columnName + "` `" + newName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnName = newName
         columnList.value[seq].onColumnNameEdit = false
@@ -528,7 +528,7 @@ function modifyColumnName(seq, newName) {
 }
 
 function modifyColumnType(seq, newType) {
-    const sql = "alter table " + props.tableMeta.tableName + " modify " + columnListOrigin[seq].columnName + " " + newType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + columnListOrigin[seq].columnComment + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + newType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnType = newType
         columnList.value[seq].onColumnTypeEdit = false
@@ -536,8 +536,8 @@ function modifyColumnType(seq, newType) {
 }
 
 function modifyColumnDefault(seq, newDefault) {
-    const defaultVal = (newDefault === null || newDefault === undefined || newDefault === '') ? 'NULL' : "'" + newDefault + "'"
-    const sql = "alter table " + props.tableMeta.tableName + " modify " + columnListOrigin[seq].columnName + " " + columnListOrigin[seq].columnType + " DEFAULT " + defaultVal + " comment '" + columnListOrigin[seq].columnComment + "'";
+    const defaultVal = (newDefault === null || newDefault === undefined || newDefault === '') ? 'NULL' : "'" + newDefault.replace(/'/g, "''") + "'"
+    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + defaultVal + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnDefault = newDefault
         columnList.value[seq].onColumnDefaultEdit = false
@@ -545,7 +545,7 @@ function modifyColumnDefault(seq, newDefault) {
 }
 
 function modifyColumnComment(seq, newComment) {
-    const sql = "alter table " + props.tableMeta.tableName + " modify " + columnListOrigin[seq].columnName + " " + columnListOrigin[seq].columnType + " DEFAULT " + columnListOrigin[seq].columnDefault + " comment '" + newComment + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (newComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnComment = newComment
         columnList.value[seq].onColumnCommentEdit = false
@@ -572,21 +572,21 @@ function cancelAdd(targetIdx) {
 }
 
 function doColAdd(column) {
-    let sql = "alter table " + props.tableMeta.tableName + " add " + column.columnName + " " + column.columnType;
+    let sql = "alter table `" + props.tableMeta.tableName + "` add `" + column.columnName + "` " + column.columnType;
     if ("YES" === column.isNullable) {
         sql += " default null "
     } else {
         sql += " not null "
     }
     if (column.columnDefault) {
-        sql += " default '" + column.columnDefault + "' "
+        sql += " default '" + column.columnDefault.replace(/'/g, "''") + "' "
     }
-    sql += " comment '" + column.columnComment + "' after " + column.after;
+    sql += " comment '" + (column.columnComment || '').replace(/'/g, "''") + "' after `" + column.after + "`";
     execSql(sql, () => loadData('colums'))
 }
 
 function delCol(seq) {
-    const sql = "alter table " + props.tableMeta.tableName + " drop " + columnListOrigin[seq].columnName;
+    const sql = "alter table `" + props.tableMeta.tableName + "` drop `" + columnListOrigin[seq].columnName + "`";
     execSql(sql, () => loadData('colums'))
 }
 
@@ -602,7 +602,8 @@ function createIndex() {
         return
     }
     const prefix = newIndex.value.type === "UNIQUE" ? "CREATE UNIQUE INDEX" : "CREATE INDEX"
-    const sql = prefix + " " + newIndex.value.name + " ON " + props.tableMeta.tableName + " (" + newIndex.value.columns.join(", ") + ")"
+    const cols = newIndex.value.columns.map(c => '`' + c + '`').join(", ")
+    const sql = prefix + " `" + newIndex.value.name + "` ON `" + props.tableMeta.tableName + "` (" + cols + ")"
     execSql(sql, () => {
         addIndexDialogVisible.value = false
         loadIndexes()
@@ -614,9 +615,9 @@ function dropIndex(indexName) {
     const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
     let sql = ""
     if (dbType === "mysql") {
-        sql = "DROP INDEX " + indexName + " ON " + props.tableMeta.tableName
+        sql = "DROP INDEX `" + indexName + "` ON `" + props.tableMeta.tableName + "`"
     } else {
-        sql = "DROP INDEX " + indexName
+        sql = "DROP INDEX `" + indexName + "`"
     }
     execSql(sql, () => {
         loadIndexes()

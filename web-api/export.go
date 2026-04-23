@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -203,6 +204,13 @@ func handleExportDownload(c *gin.Context) {
 	// 防止路径穿越攻击
 	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件名"})
+		return
+	}
+
+	// 二次验证：确保清理后的路径仍在 exports 目录内
+	cleanPath := filepath.Clean("exports/" + fileName)
+	if !strings.HasPrefix(cleanPath, "exports") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件路径"})
 		return
 	}
 

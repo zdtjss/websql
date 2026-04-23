@@ -27,6 +27,7 @@
                     <el-divider direction="vertical" />
                     <el-button @click="listBackupData">备份</el-button>
                     <el-button @click="openTableManager">表管理</el-button>
+                    <el-button @click="showSqlHistory">历史</el-button>
                 </div>
                 <div class="toolbar-right">
                     <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom" :show-after="400">
@@ -106,6 +107,21 @@
         <template #default>
             <pre style="white-space: pre;">{{ backupData }}</pre>
         </template>
+    </el-drawer>
+    <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" size="520px">
+        <div style="margin-bottom: 12px;">
+            <el-input v-model="sqlHistorySearch" placeholder="搜索 SQL..." clearable size="small" />
+        </div>
+        <el-table :data="filteredSqlHistory" stripe size="small" style="width: 100%;" max-height="calc(100vh - 180px)">
+            <el-table-column prop="exec_time" label="时间" width="160" />
+            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip>
+                <template #default="scope">
+                    <span style="cursor: pointer; color: #409eff;" @click="applySqlFromHistory(scope.row.exec_sql)" title="点击填入编辑器">
+                        {{ scope.row.exec_sql }}
+                    </span>
+                </template>
+            </el-table-column>
+        </el-table>
     </el-drawer>
     <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
         style="height:650px;overflow-y: auto;">
@@ -225,6 +241,41 @@ const totalColumnWidth = computed(() => {
 
 const backupData = ref("")
 const backupDataDrawerShow = ref(false)
+
+// SQL 执行历史
+const sqlHistoryDrawerShow = ref(false)
+const sqlHistoryList = ref([])
+const sqlHistorySearch = ref('')
+
+const filteredSqlHistory = computed(() => {
+    const kw = sqlHistorySearch.value.trim().toLowerCase()
+    if (!kw) return sqlHistoryList.value
+    return sqlHistoryList.value.filter((item: any) => 
+        (item.exec_sql || '').toLowerCase().includes(kw)
+    )
+})
+
+function showSqlHistory() {
+    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: 1, pageSize: 200 } })
+        .then((resp: any) => {
+            sqlHistoryList.value = resp.data.data.data || []
+            sqlHistoryDrawerShow.value = true
+        })
+}
+
+function applySqlFromHistory(sql: string) {
+    if (!sql) return
+    const editorState = editorView.value?.state as EditorState
+    if (editorState) {
+        const doc = editorState.doc.toString()
+        const insertPos = doc.length
+        editorView.value?.dispatch({
+            changes: { from: insertPos, insert: '\n' + sql }
+        })
+    }
+    sqlHistoryDrawerShow.value = false
+    ElMessage({ message: '已填入编辑器', type: 'success' })
+}
 
 onMounted(() => {
     dbSchemaProxy.registLsn((schema: any) => {

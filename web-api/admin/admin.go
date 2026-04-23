@@ -268,7 +268,6 @@ func SaveUser(c *gin.Context) {
 }
 
 func SaveUserBio(c *gin.Context) {
-	CheckAdminPower(c)
 	bioKey := c.PostForm("bioKey")
 	authorization := c.GetHeader("Authorization")
 	user := GetUser(authorization)
@@ -276,6 +275,43 @@ func SaveUserBio(c *gin.Context) {
 	_, err := stmt.Exec(Md5sum(bioKey), user.Id)
 	logutils.PanicErrf("保存用户失败", err)
 	utils.WriteJson(c.Writer, "设置成功")
+}
+
+// ChangePassword 用户修改自己的密码
+func ChangePassword(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	user := GetUser(authorization)
+	if user == nil || user.Id == "" {
+		logutils.PanicErr(errors.New("未登录"))
+	}
+
+	oldPwd := c.PostForm("oldPassword")
+	newPwd := c.PostForm("newPassword")
+
+	if oldPwd == "" || newPwd == "" {
+		logutils.PanicErr(errors.New("旧密码和新密码不能为空"))
+	}
+	if len(newPwd) < 6 {
+		logutils.PanicErr(errors.New("新密码长度不能少于6位"))
+	}
+
+	// 验证旧密码
+	var currentPwd string
+	err := config.Mngtdb.Get(&currentPwd, "select pwd from t_user where id = ?", user.Id)
+	if err != nil {
+		logutils.PanicErr(errors.New("用户信息异常"))
+	}
+	if currentPwd != Md5sum(oldPwd) {
+		logutils.PanicErr(errors.New("旧密码不正确"))
+	}
+
+	// 更新密码
+	_, err = config.Mngtdb.Exec("update t_user set pwd = ? where id = ?", Md5sum(newPwd), user.Id)
+	if err != nil {
+		logutils.PanicErr(errors.New("修改密码失败"))
+	}
+
+	utils.WriteJson(c.Writer, "密码修改成功")
 }
 
 func checkUserExist(user *User, tx *sqlx.Tx) {
@@ -400,11 +436,14 @@ func FindUser(c *gin.Context) {
 	sql := bytes.Buffer{}
 	sql.WriteString("select * from t_user where 1 = 1")
 	if name != "" {
-		sql.WriteString(" and name like '%" + name + "%'")
+		sql.WriteString(" and name like ?")
+		param = append(param, "%"+name+"%")
 	} else if loginName != "" {
-		sql.WriteString(" and login_name like '%" + loginName + "%'")
+		sql.WriteString(" and login_name like ?")
+		param = append(param, "%"+loginName+"%")
 	} else if key != "" {
-		sql.WriteString(" and (login_name like '%" + key + "%' or name like '%" + key + "%')")
+		sql.WriteString(" and (login_name like ? or name like ?)")
+		param = append(param, "%"+key+"%", "%"+key+"%")
 	} else if len(userIdList) > 0 {
 		for _, userId := range userIdList {
 			param = append(param, userId)
