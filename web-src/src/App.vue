@@ -721,6 +721,13 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
         const { svg } = await mermaid.render(id, trimmed)
         const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
         el.innerHTML =
+          `<div class="mermaid-content-wrapper">` +
+            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
+            `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
+          `</div>` +
+          `<div class="mermaid-resize-handle" title="拖拽调整高度">` +
+            `<span class="mermaid-resize-dots">⋯</span>` +
+          `</div>` +
           `<div class="mermaid-toolbar">` +
             `<button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">` +
               `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
@@ -736,10 +743,6 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
             `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
               `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
             `</button>` +
-          `</div>` +
-          `<div class="mermaid-content-wrapper">` +
-            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
-            `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
           `</div>`
       } catch (e) {
         console.warn('Mermaid render error:', e)
@@ -862,6 +865,7 @@ function handleMermaidMouseDown(e) {
   const container = e.target.closest('.mermaid-container')
   if (!container) return
   if (e.target.closest('.mermaid-toolbar')) return
+  if (e.target.closest('.mermaid-resize-handle')) return
 
   // 处理工具栏按钮点击（事件委托）
   const btn = e.target.closest('.mermaid-tb-btn')
@@ -967,6 +971,60 @@ function handleMermaidKeyUp(e) {
   if (e.key === 'Control') {
     document.body.classList.remove('mermaid-ctrl-held')
   }
+}
+
+// ── Mermaid 容器高度拖拽调整 ──
+const mermaidResizeState = {
+  isResizing: false,
+  startY: 0,
+  startHeight: 0,
+  activeWrapper: null,
+  activeContainer: null,
+}
+
+function handleMermaidResizeDown(e) {
+  if (e.button !== 0) return
+  const handle = e.target.closest('.mermaid-resize-handle')
+  if (!handle) return
+  const container = handle.closest('.mermaid-container')
+  if (!container) return
+  const wrapper = container.querySelector('.mermaid-content-wrapper')
+  if (!wrapper) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  mermaidResizeState.isResizing = true
+  mermaidResizeState.startY = e.clientY
+  mermaidResizeState.startHeight = wrapper.offsetHeight
+  mermaidResizeState.activeWrapper = wrapper
+  mermaidResizeState.activeContainer = container
+
+  document.body.classList.add('mermaid-resizing')
+}
+
+function handleMermaidResizeMove(e) {
+  if (!mermaidResizeState.isResizing) return
+  const wrapper = mermaidResizeState.activeWrapper
+  if (!wrapper) return
+
+  const dy = e.clientY - mermaidResizeState.startY
+  const newHeight = Math.max(100, mermaidResizeState.startHeight + dy)
+  wrapper.style.maxHeight = newHeight + 'px'
+
+  // 同步更新容器的 max-height（wrapper + toolbar + padding）
+  const container = mermaidResizeState.activeContainer
+  if (container) {
+    container.style.maxHeight = (newHeight + 60) + 'px'
+  }
+}
+
+function handleMermaidResizeUp() {
+  if (!mermaidResizeState.isResizing) return
+  mermaidResizeState.isResizing = false
+  mermaidResizeState.activeWrapper = null
+  mermaidResizeState.activeContainer = null
+  document.body.classList.remove('mermaid-resizing')
 }
 
 function stopGeneration() {
@@ -2167,6 +2225,8 @@ onMounted(() => {
   document.addEventListener('keyup', handleMermaidKeyUp)
   document.addEventListener('mousemove', handleMermaidMouseMove)
   document.addEventListener('mouseup', handleMermaidMouseUp)
+  document.addEventListener('mousemove', handleMermaidResizeMove)
+  document.addEventListener('mouseup', handleMermaidResizeUp)
   window.addEventListener('session-expired', handleSessionExpiredEvent)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
@@ -2174,6 +2234,7 @@ onMounted(() => {
     if (msgContainer.value) {
       msgContainer.value.addEventListener('wheel', handleMermaidWheel, { passive: false })
       msgContainer.value.addEventListener('mousedown', handleMermaidMouseDown)
+      msgContainer.value.addEventListener('mousedown', handleMermaidResizeDown)
       msgContainer.value.addEventListener('click', handleMermaidToolbarClick)
     }
   })
@@ -2191,10 +2252,13 @@ onUnmounted(() => {
   document.removeEventListener('keyup', handleMermaidKeyUp)
   document.removeEventListener('mousemove', handleMermaidMouseMove)
   document.removeEventListener('mouseup', handleMermaidMouseUp)
+  document.removeEventListener('mousemove', handleMermaidResizeMove)
+  document.removeEventListener('mouseup', handleMermaidResizeUp)
   window.removeEventListener('session-expired', handleSessionExpiredEvent)
   if (msgContainer.value) {
     msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
     msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)
+    msgContainer.value.removeEventListener('mousedown', handleMermaidResizeDown)
     msgContainer.value.removeEventListener('click', handleMermaidToolbarClick)
   }
   document.body.classList.remove('mermaid-ctrl-held', 'mermaid-dragging')
@@ -3230,6 +3294,7 @@ body.mermaid-dragging .mermaid-container {
   max-height: 540px;
   overflow: auto;
   position: relative;
+  z-index: 0;
 }
 .mermaid-source-preview {
   margin: 0;
@@ -3337,5 +3402,35 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-svg-wrap svg {
   max-width: 100%;
   height: auto;
+}
+/* Mermaid 高度拖拽手柄 */
+.mermaid-resize-handle {
+  height: 12px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.mermaid-container:hover .mermaid-resize-handle {
+  opacity: 1;
+}
+.mermaid-resize-dots {
+  font-size: 14px;
+  color: #94a3b8;
+  letter-spacing: 2px;
+  line-height: 1;
+}
+.mermaid-resize-handle:hover .mermaid-resize-dots {
+  color: #1976d2;
+}
+body.mermaid-resizing,
+body.mermaid-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
 }
 </style>
