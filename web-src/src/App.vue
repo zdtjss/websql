@@ -3271,7 +3271,7 @@ onUnmounted(() => {
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  overflow: visible;
+  overflow: hidden;
   text-align: center;
   position: relative;
   max-height: 600px;
@@ -3337,6 +3337,8 @@ body.mermaid-dragging .mermaid-container {
   text-align: left;
   white-space: pre-wrap;
   word-break: break-all;
+  max-height: 300px;
+  overflow: auto;
 }
 .mermaid-toolbar {
   position: absolute;
