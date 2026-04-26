@@ -3,7 +3,7 @@ module go-web
 go 1.26.0
 
 require (
-	github.com/cloudwego/eino v0.8.9
+	github.com/cloudwego/eino v0.8.11
 	github.com/cloudwego/eino-ext/components/model/ollama v0.1.9
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/duke-git/lancet/v2 v2.3.9
@@ -16,7 +16,7 @@ require (
 	github.com/wcharczuk/go-chart/v2 v2.1.2
 	github.com/xuri/excelize/v2 v2.10.1
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
-	modernc.org/sqlite v1.48.2
+	modernc.org/sqlite v1.50.0
 )
 
 require (
@@ -83,7 +83,7 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	modernc.org/libc v1.72.0 // indirect
+	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
