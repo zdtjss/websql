@@ -42,6 +42,9 @@ func ExecSQL(c *gin.Context) {
 	conn := admin.GetConn(connId, authorization)
 	user := admin.GetUser(authorization)
 
+	analysis := admin.AnalyzeSQL(sqlStr, schema)
+	admin.CheckSQLPermission(analysis, connId, authorization)
+
 	blankIdx := strings.Index(sqlStr, " ")
 	nlIdx := strings.Index(sqlStr, "\n")
 	if nlIdx == -1 {
@@ -115,7 +118,7 @@ func ExecSQL(c *gin.Context) {
 		// 尝试从元数据中获取字段注释和主键信息
 		// 适用于单表查询场景
 		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
-			columnMap = admin.ColumnMap(strings.ToLower(realTableName), strings.ToLower(realSchema), conn)
+			columnMap = admin.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
 
 			tx, err := conn.Beginx()
 			if err == nil {
@@ -139,6 +142,10 @@ func ExecSQL(c *gin.Context) {
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
 
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
+
+		if analysis.OperationType == "SELECT" {
+			rspData = filterResultByPermission(rspData, connId, analysis, authorization)
+		}
 
 		utils.WriteJson(c.Writer, rspData)
 	}
@@ -334,4 +341,81 @@ type TableDataList struct {
 	Data    []map[string]any `json:"data"`
 	CanEdit bool             `json:"canEdit"`
 	Keys    []string         `json:"keys"`
+}
+
+func filterResultByPermission(data *TableDataList, connId string, analysis *admin.SQLAnalysis, authorization string) *TableDataList {
+	if !config.Cfg.IsRemote {
+		return data
+	}
+
+	userPower := admin.GetUserPower(authorization)
+	if userPower == nil {
+		return data
+	}
+	if userPower.UserId == config.AdminId {
+		return data
+	}
+
+	anyColumnLevel := false
+	for _, t := range analysis.ReadTables {
+		access := admin.GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
+		if access.Level == admin.AccessColumn {
+			anyColumnLevel = true
+			break
+		}
+	}
+
+	if !anyColumnLevel {
+		return data
+	}
+
+	allowedSet := make(map[string]bool)
+	for _, t := range analysis.ReadTables {
+		access := admin.GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
+		if access.Level == admin.AccessFull {
+			for _, col := range data.Columns {
+				allowedSet[col.Name] = true
+			}
+		} else if access.Level == admin.AccessColumn {
+			for _, col := range data.Columns {
+				if access.AllowedColumns[col.Name] {
+					allowedSet[col.Name] = true
+				}
+			}
+		}
+	}
+
+	var filteredColumns []Column
+	filteredKeys := make([]string, 0)
+	for _, col := range data.Columns {
+		if allowedSet[col.Name] {
+			filteredColumns = append(filteredColumns, col)
+		}
+	}
+
+	for _, k := range data.Keys {
+		if allowedSet[k] {
+			filteredKeys = append(filteredKeys, k)
+		}
+	}
+
+	filteredData := make([]map[string]any, 0, len(data.Data))
+	for _, row := range data.Data {
+		filteredRow := make(map[string]any, len(filteredColumns))
+		for k, v := range row {
+			if allowedSet[k] {
+				filteredRow[k] = v
+			}
+		}
+		filteredData = append(filteredData, filteredRow)
+	}
+
+	canEdit := len(filteredKeys) == len(data.Keys) && len(data.Keys) > 0
+
+	return &TableDataList{
+		Columns: filteredColumns,
+		Data:    filteredData,
+		CanEdit: canEdit,
+		Keys:    filteredKeys,
+	}
 }

@@ -184,7 +184,7 @@ const props = defineProps<{
     schemaPath: string,
 }>()
 
-const emit = defineEmits(['openTableManager'])
+const emit = defineEmits(['openTableManager', 'openDataBrowser'])
 
 const sqlAreaRef:any = ref(null)
 

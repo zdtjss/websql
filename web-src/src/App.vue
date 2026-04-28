@@ -1959,6 +1959,9 @@ function handleSessionExpired() {
 }
 
 function handleSessionExpiredEvent(event) {
+  if (window.location.pathname === '/classical') {
+    return
+  }
   const message = event.detail?.message || ''
   if (message) {
     ElMessage({ message: message, type: 'warning' })

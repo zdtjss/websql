@@ -210,11 +210,22 @@ function loadTree() {
 
   http.get('/permissionTree', { params }).then(resp => {
     treeData.value = resp.data.data || []
-    // 收集当前树所有节点 key
     currentTreeNodeKeys.clear()
     collectNodeKeys(treeData.value)
+    mergeCheckedFromApi(treeData.value)
     nextTick(() => syncTreeVisual())
   })
+}
+
+function mergeCheckedFromApi(nodes) {
+  for (const n of nodes) {
+    if (n.checked && !n.id.startsWith('dir::') && !explicitKeys.has(n.id)) {
+      explicitKeys.add(n.id)
+    }
+    if (n.children && n.children.length > 0) {
+      mergeCheckedFromApi(n.children)
+    }
+  }
 }
 
 function collectNodeKeys(nodes) {
@@ -419,13 +430,29 @@ function savePermissions() {
     })
   }
 
-  // 旧权限
+  const schemaKeysWithTableChildren = new Set()
+  for (const key of explicitKeys) {
+    if (key.startsWith('dir::')) continue
+    const parts = key.split('::')
+    if (parts.length >= 3 && parts[2]) {
+      schemaKeysWithTableChildren.add(parts[0] + '::' + parts[1])
+    }
+  }
+  const filteredPowers = currentPowers.filter(p => {
+    if (p.level === 'schema' && p.schemaName) {
+      const schemaKey = p.connId + '::' + p.schemaName
+      if (schemaKeysWithTableChildren.has(schemaKey)) {
+        return false
+      }
+    }
+    return true
+  })
+
   const oldPowers = currentRole.value.powerList || []
   const oldKeySet = new Set(oldPowers.map(permToKey))
-  const newKeySet = new Set([...explicitKeys].filter(k => !k.startsWith('dir::')))
+  const newKeySet = new Set(filteredPowers.map(permToKey))
 
-  // 增量计算
-  const addPowers = currentPowers.filter(p => !oldKeySet.has(permToKey(p)))
+  const addPowers = filteredPowers.filter(p => !oldKeySet.has(permToKey(p)))
   const delPowers = oldPowers.filter(p => !newKeySet.has(permToKey(p)))
 
   const roleData = {
@@ -438,7 +465,7 @@ function savePermissions() {
   http.post('/saveRole', roleData).then(() => {
     saving.value = false
     // 更新本地角色的 powerList
-    currentRole.value.powerList = currentPowers
+    currentRole.value.powerList = filteredPowers
     loadRoles()
     ElMessage.success('保存成功')
   }).catch(() => {

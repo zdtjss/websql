@@ -8,6 +8,19 @@ const http = axios.create({
     timeout: 1000 * 30 * 60
 });
 
+let sessionExpiredDispatched = false;
+
+function dispatchSessionExpired(detail) {
+    if (sessionExpiredDispatched) {
+        return;
+    }
+    sessionExpiredDispatched = true;
+    window.dispatchEvent(new CustomEvent('session-expired', detail));
+    setTimeout(() => {
+        sessionExpiredDispatched = false;
+    }, 3000);
+}
+
 http.interceptors.request.use((config) => {
     config.url = env.VITE_API_URL + config.url
     config.headers['Authorization'] = sessionStorage.getItem("authentication") || ""
@@ -25,11 +38,11 @@ http.interceptors.response.use(
             sessionStorage.removeItem('authentication');
             sessionStorage.removeItem('currentUser');
             sessionStorage.removeItem('isRemote');
-            window.dispatchEvent(new CustomEvent('session-expired', { 
+            dispatchSessionExpired({ 
                 detail: { 
                     message: isLoginExpired ? (msg || '登录已过期，请重新登录') : '' 
                 } 
-            }));
+            });
             return Promise.reject(new Error(''));
         }
         if (code === 500) {
@@ -45,11 +58,11 @@ http.interceptors.response.use(
             sessionStorage.removeItem('authentication');
             sessionStorage.removeItem('currentUser');
             sessionStorage.removeItem('isRemote');
-            window.dispatchEvent(new CustomEvent('session-expired', { 
+            dispatchSessionExpired({ 
                 detail: { 
                     message: isLoginExpired ? msg : '' 
                 } 
-            }));
+            });
             return Promise.reject(error);
         }
 

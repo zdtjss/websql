@@ -42,7 +42,7 @@ func (e *PermissionError) Error() string {
 
 // BuildPermissionScope 构建权限范围
 // 权限层级：conn → schema → table → column
-// 向上传播但不向下：有 conn 权限但无 schema 配置 = 全部可用
+// 最具体优先原则：当同一schema下存在table/column级权限时，schema级权限不生效
 func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 	scope := &PermissionScope{
 		UserID:         userId,
@@ -61,6 +61,7 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 
 	hasConnPerm := false
 	hasSchemaPerm := false
+	hasTableOrColumnForSchema := false
 
 	for _, power := range powerList {
 		if power.ConnId != connId {
@@ -90,9 +91,11 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		case "table":
 			if (schemaName == "" || pSchema == schemaName) && pTable != "" {
 				scope.AllowedTables[pTable] = true
+				hasTableOrColumnForSchema = true
 			}
 		case "column":
 			if (schemaName == "" || pSchema == schemaName) && pTable != "" && pColumn != "" {
+				hasTableOrColumnForSchema = true
 				if !scope.AllowedTables[pTable] {
 					if scope.AllowedColumns[pTable] == nil {
 						scope.AllowedColumns[pTable] = make(map[string]bool)
@@ -103,12 +106,11 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		}
 	}
 
-	// 向下继承规则：上级权限无条件包含下级所有权限
-	if hasConnPerm {
+	if hasConnPerm && !hasTableOrColumnForSchema {
 		scope.HasFullConnAccess = true
 		return scope
 	}
-	if hasSchemaPerm {
+	if hasSchemaPerm && !hasTableOrColumnForSchema {
 		scope.HasFullSchemaAccess = true
 		return scope
 	}
@@ -257,20 +259,20 @@ func extractTablesFromSQL(sql string) []string {
 		}
 	}
 
-	for _, match := range primaryRegex.FindAllStringSubmatch(sql, -1) {
-		if len(match) > 1 {
-			tableName := stripBackticks(match[1])
+	for _, idx := range primaryRegex.FindAllStringSubmatchIndex(sql, -1) {
+		if len(idx) >= 4 {
+			tableName := stripBackticks(sql[idx[2]:idx[3]])
 			if !isSQLKeyword(tableName) && !cteNames[strings.ToLower(tableName)] {
 				tables[tableName] = true
 			}
 
-			// 处理逗号分隔的表名
-			matchEnd := match[0]
-			afterMatch := sql[len(matchEnd):]
+			afterMatch := sql[idx[1]:]
 			stopRegex := regexp.MustCompile(`(?i)\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|VALUES|SET|ON)\b`)
 			if stopMatch := stopRegex.FindStringIndex(afterMatch); stopMatch != nil {
 				afterMatch = afterMatch[:stopMatch[0]]
 			}
+
+			afterMatch = skipTableAlias(afterMatch)
 
 			for {
 				trimmed := strings.TrimLeft(afterMatch, " \t\n\r")
@@ -288,7 +290,7 @@ func extractTablesFromSQL(sql string) []string {
 						tables[commaTableName] = true
 					}
 				}
-				afterMatch = trimmed[len(commaMatch[0]):]
+				afterMatch = skipTableAlias(trimmed[len(commaMatch[0]):])
 			}
 		}
 	}
@@ -307,6 +309,24 @@ func extractTablesFromSQL(sql string) []string {
 		result = append(result, table)
 	}
 	return result
+}
+
+func skipTableAlias(s string) string {
+	s = strings.TrimLeft(s, " \t\n\r")
+	asRegex := regexp.MustCompile(`(?i)^AS\s+\w+`)
+	if loc := asRegex.FindStringIndex(s); loc != nil {
+		return s[loc[1]:]
+	}
+	if len(s) > 0 && s[0] != ',' && s[0] != '(' && s[0] != ')' {
+		identRegex := regexp.MustCompile(`^\w+`)
+		if loc := identRegex.FindStringIndex(s); loc != nil {
+			word := s[:loc[1]]
+			if !isSQLKeyword(word) {
+				return s[loc[1]:]
+			}
+		}
+	}
+	return s
 }
 
 func stripBackticks(s string) string {

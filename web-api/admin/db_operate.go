@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	dbutils "go-web/utils/db"
@@ -33,7 +34,10 @@ func listSchema(key string, authorization string) []*Tree {
 func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []*Tree {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		return schemas
+		if userPower != nil && userPower.UserId == config.AdminId {
+			return schemas
+		}
+		return []*Tree{}
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
@@ -74,37 +78,44 @@ func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []
 func checkSchemaAccess(connId, schemaName, authorization string) {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		logutils.PanicErr(errors.New("无权访问此 Schema"))
+		if userPower == nil || userPower.UserId != config.AdminId {
+			logutils.PanicErr(errors.New("无权访问此 Schema"))
+			return
+		}
 		return
 	}
-	// 使用 powerDetails 进行更精确的层级检查
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		logutils.PanicErr(errors.New("无权访问此 Schema"))
+		if userPower.UserId != config.AdminId {
+			logutils.PanicErr(errors.New("无权访问此 Schema"))
+		}
 		return
 	}
+	hasConnLevel := false
+	hasSchemaLevel := false
+	hasTableOrColumnForSchema := false
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
 			continue
 		}
 		switch p.Level {
 		case "conn":
-			return // conn 级权限，可以访问所有 schema
+			hasConnLevel = true
 		case "schema":
 			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				return
+				hasSchemaLevel = true
 			}
-		case "table":
-			// 有 table 级权限意味着可以访问其所属 schema
+		case "table", "column":
 			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				return
-			}
-		case "column":
-			// 有 column 级权限意味着可以访问其所属 schema
-			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				return
+				hasTableOrColumnForSchema = true
 			}
 		}
+	}
+	if hasConnLevel && !hasTableOrColumnForSchema {
+		return
+	}
+	if hasSchemaLevel || hasTableOrColumnForSchema {
+		return
 	}
 	logutils.PanicErr(errors.New("无权访问此 Schema"))
 }
@@ -165,35 +176,47 @@ func listTable(key string, schema, authorization string) []*Tree {
 func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization string) []*Tree {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		return tables
+		if userPower != nil && userPower.UserId == config.AdminId {
+			return tables
+		}
+		return []*Tree{}
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
 		return []*Tree{}
 	}
 	allowedTables := make(map[string]bool)
+	hasConnLevel := false
+	hasSchemaLevel := false
+	hasTableOrColumnLevel := false
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
 			continue
 		}
 		switch p.Level {
 		case "conn":
-			// conn 级权限 → 全部表可用
-			return tables
+			hasConnLevel = true
 		case "schema":
 			if p.SchemaName != nil && *p.SchemaName == schema {
-				// schema 级权限 → 该 schema 下全部表可用
-				return tables
+				hasSchemaLevel = true
 			}
 		case "table":
 			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
 				allowedTables[*p.TableName] = true
+				hasTableOrColumnLevel = true
 			}
 		case "column":
 			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
 				allowedTables[*p.TableName] = true
+				hasTableOrColumnLevel = true
 			}
 		}
+	}
+	if hasConnLevel && !hasTableOrColumnLevel {
+		return tables
+	}
+	if hasSchemaLevel && !hasTableOrColumnLevel {
+		return tables
 	}
 	filtered := make([]*Tree, 0)
 	for _, t := range tables {
@@ -207,39 +230,61 @@ func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization 
 func checkTableAccess(connId, schemaName, tableName, authorization string) {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		logutils.PanicErr(errors.New("无权访问此表"))
+		if userPower == nil || userPower.UserId != config.AdminId {
+			logutils.PanicErr(errors.New("无权访问此表"))
+			return
+		}
 		return
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		logutils.PanicErr(errors.New("无权访问此表"))
+		if userPower.UserId != config.AdminId {
+			logutils.PanicErr(errors.New("无权访问此表"))
+		}
 		return
 	}
+	hasConnLevel := false
+	hasSchemaLevel := false
+	hasTableOrColumnForSchema := false
+	hasTableMatch := false
 	for _, p := range powerDetails {
 		if p.ConnId != connId {
 			continue
 		}
 		switch p.Level {
 		case "conn":
-			return // conn 级权限 → 全部表可用
+			hasConnLevel = true
 		case "schema":
 			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				return // schema 级权限 → 该 schema 下全部表可用
+				hasSchemaLevel = true
 			}
 		case "table":
-			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
-				return
+			if p.SchemaName != nil && *p.SchemaName == schemaName {
+				hasTableOrColumnForSchema = true
+				if p.TableName != nil && *p.TableName == tableName {
+					hasTableMatch = true
+				}
 			}
 		case "column":
 			if p.SchemaName != nil && *p.SchemaName == schemaName && p.TableName != nil && *p.TableName == tableName {
-				return
+				hasTableOrColumnForSchema = true
+				hasTableMatch = true
 			}
 		}
+	}
+	if hasConnLevel && !hasTableOrColumnForSchema {
+		return
+	}
+	if hasSchemaLevel && !hasTableOrColumnForSchema {
+		return
+	}
+	if hasTableMatch {
+		return
 	}
 	logutils.PanicErr(errors.New("无权访问此表"))
 }
 
-func listColumns(key string, table, authorization string) []*Tree {
+func listColumns(key string, table, schema, authorization string) []*Tree {
 	columnName, columnComment := "", ""
 	dc := GetConn(key, authorization)
 	row, err := dc.Query(dbutils.SQL_DIALECT[dc.DriverName()]["listColumns"], table)
@@ -249,7 +294,45 @@ func listColumns(key string, table, authorization string) []*Tree {
 		row.Scan(&columnName, &columnComment)
 		tree = append(tree, &Tree{Label: columnName, Data: map[string]any{"text": columnComment}, Type: TREE_NODE_TYPE_COLUMN})
 	}
-	return tree
+
+	connId := key
+	if schema == "" {
+		schema = getCurrentSchema(dc)
+	}
+	access := GetTableColumnAccess(connId, schema, table, authorization)
+	if access.Level == AccessFull {
+		return tree
+	}
+	if access.Level == AccessNone {
+		return []*Tree{}
+	}
+
+	filtered := make([]*Tree, 0, len(tree))
+	for _, t := range tree {
+		colName := strings.SplitN(t.Label, " ", 2)[0]
+		if access.AllowedColumns[colName] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+func getCurrentSchema(dc *sqlx.DB) string {
+	var schema string
+	switch dc.DriverName() {
+	case "mysql", "mariadb":
+		row := dc.QueryRow("SELECT DATABASE()")
+		row.Scan(&schema)
+	case "oracle":
+		row := dc.QueryRow("SELECT USER FROM DUAL")
+		row.Scan(&schema)
+		schema = strings.ToUpper(schema)
+	case "sqlite":
+		schema = "main"
+	default:
+		schema = ""
+	}
+	return schema
 }
 
 func checkColumnAccess(connId, schemaName, tableName, columnName, authorization string) {
@@ -283,13 +366,37 @@ func listTableColumns(connId, tableName, schema, authorization string) []map[str
 	dc := GetConn(connId, authorization)
 	rows, err := dc.Queryx(dbutils.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
 	logutils.PanicErr(err)
-	return dbutils.GetResultRows(dc.DriverName(), rows)
+	result := dbutils.GetResultRows(dc.DriverName(), rows)
+
+	access := GetTableColumnAccess(connId, schema, tableName, authorization)
+	if access.Level == AccessFull {
+		return result
+	}
+	if access.Level == AccessNone {
+		return []map[string]any{}
+	}
+
+	filtered := make([]map[string]any, 0, len(result))
+	for _, row := range result {
+		colName, _ := row["COLUMN_NAME"].(string)
+		if colName == "" {
+			colName, _ = row["column_name"].(string)
+		}
+		if colName != "" && access.AllowedColumns[colName] {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func ListTableFat(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
-	tables := queryTableInfo(c.Query("connId"), c.Query("schema"), authorization)
-	c.JSON(http.StatusOK, tables)
+	connId := c.Query("connId")
+	schema := c.Query("schema")
+	tables := queryTableInfo(connId, schema, authorization)
+	userPower := GetUserPower(authorization)
+	filteredTables := filterTablesByPermission(tables, connId, schema, userPower)
+	c.JSON(http.StatusOK, filteredTables)
 }
 
 func queryTableInfo(key string, schema, authorization string) []*Table {
@@ -366,6 +473,26 @@ func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 	return columnMap
 }
 
+func ColumnMapFiltered(table, schema, connId, authorization string, conn *sqlx.DB) map[string]string {
+	fullMap := ColumnMap(table, schema, conn)
+
+	access := GetTableColumnAccess(connId, schema, table, authorization)
+	if access.Level == AccessFull {
+		return fullMap
+	}
+	if access.Level == AccessNone {
+		return map[string]string{}
+	}
+
+	filtered := make(map[string]string)
+	for name, comment := range fullMap {
+		if access.AllowedColumns[name] {
+			filtered[name] = comment
+		}
+	}
+	return filtered
+}
+
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare(dbutils.SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
@@ -415,6 +542,7 @@ func TableOptions(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	param := ColumnsQuery{}
 	c.ShouldBindJSON(&param)
+	CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := GetConn(param.ConnId, authorization)
 	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := dialect["tableOptions"]
@@ -442,6 +570,7 @@ func TableStatistics(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	param := ColumnsQuery{}
 	c.ShouldBindJSON(&param)
+	CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := GetConn(param.ConnId, authorization)
 	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := dialect["tableStatistics"]
@@ -469,6 +598,7 @@ func ListIndexes(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	param := ColumnsQuery{}
 	c.ShouldBindJSON(&param)
+	CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := GetConn(param.ConnId, authorization)
 	dialect := dbutils.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := dialect["listIndexes"]
@@ -487,3 +617,5 @@ func ListIndexes(c *gin.Context) {
 	data := dbutils.GetResultRows(dc.DriverName(), rows)
 	utils.WriteJson(c.Writer, data)
 }
+
+

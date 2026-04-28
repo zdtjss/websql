@@ -31,6 +31,8 @@ func ImportXlsx(c *gin.Context) {
 
 	log.Println("收到新增/更新请求，正在准备导入" + table)
 
+	admin.CheckTableWritePermission(connId, schema, table, nil, authorization)
+
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		log.Printf("[ImportXlsx] 文件上传失败 - err=%v\n", err)

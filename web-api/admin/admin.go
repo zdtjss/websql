@@ -551,7 +551,7 @@ func findByToken(token string) *User {
 
 func findUserPower(userId string) []string {
 	resIds := []string{}
-	rows, err := config.Mngtdb.Query("select p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
+	rows, err := config.Mngtdb.Query("select distinct p.conn_id from t_power p left join t_user_role ur on ur.role_id = p.role_id where ur.user_id = ?", userId)
 	logutils.PrintErr(err)
 	var resId string
 	for rows.Next() {
@@ -594,8 +594,8 @@ func checkPower(userPower *UserPower, param *PowerCheckParam) bool {
 	hasConnLevel := false
 	hasSchemaLevel := false
 	hasTableLevel := false
+	hasTableOrColumnForSchema := false
 
-	// 第一遍：检查是否有上级权限
 	for _, power := range powerDetails {
 		if power.ConnId != param.ConnId {
 			continue
@@ -609,29 +609,31 @@ func checkPower(userPower *UserPower, param *PowerCheckParam) bool {
 				hasSchemaLevel = true
 			}
 		case "table":
-			if power.SchemaName != nil && *power.SchemaName == param.SchemaName &&
-				power.TableName != nil && *power.TableName == param.TableName {
-				hasTableLevel = true
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName {
+				hasTableOrColumnForSchema = true
+				if power.TableName != nil && *power.TableName == param.TableName {
+					hasTableLevel = true
+				}
+			}
+		case "column":
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName {
+				hasTableOrColumnForSchema = true
 			}
 		}
 	}
 
-	// 如果有 conn 级权限，直接通过
-	if hasConnLevel {
+	if hasConnLevel && !hasTableOrColumnForSchema {
 		return true
 	}
 
-	// 如果有 schema 级权限，检查是否匹配
-	if hasSchemaLevel {
+	if hasSchemaLevel && !hasTableOrColumnForSchema {
 		return true
 	}
 
-	// 如果有 table 级权限，默认包含所有字段
 	if hasTableLevel {
 		return true
 	}
 
-	// 第二遍：检查 column 级权限（只有明确授权了字段才通过）
 	for _, power := range powerDetails {
 		if power.ConnId != param.ConnId {
 			continue
@@ -643,6 +645,31 @@ func checkPower(userPower *UserPower, param *PowerCheckParam) bool {
 				power.ColumnName != nil && *power.ColumnName == param.ColumnName {
 				return true
 			}
+		}
+	}
+
+	return false
+}
+
+// checkConnAccess 检查用户是否有权限访问指定连接
+// 向上传播：拥有该连接下任何 schema/table/column 级权限，都应允许访问该连接
+// userPower.Power 包含了用户所有权限记录的 conn_id（由 findUserPower 查询得到），
+// 因此只需检查 connId 是否在 Power 列表中即可，无需额外查询数据库
+func checkConnAccess(userPower *UserPower, connId string) bool {
+	if config.Cfg == nil || !config.Cfg.IsRemote {
+		return true
+	}
+
+	if userPower == nil || len(userPower.Power) == 0 {
+		if userPower != nil && userPower.UserId == config.AdminId {
+			return true
+		}
+		return false
+	}
+
+	for _, powerConnId := range userPower.Power {
+		if powerConnId == connId {
+			return true
 		}
 	}
 
@@ -678,8 +705,7 @@ func findConnByRole(roleIdList []any) map[string][]*PowerDto {
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, c.name conn_name from t_conn c left join t_power p on c.id = p.conn_id where ")
-	sqlBuf.WriteString("role_id in ( ")
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, c.name conn_name from t_power p left join t_conn c on p.conn_id = c.id where p.role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") ")
 	powerList := []*PowerDto{}
@@ -705,8 +731,7 @@ func findPowerDetails(roleIdList []any) map[string][]*PowerDetail {
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name from t_conn c left join t_power p on c.id = p.conn_id where ")
-	sqlBuf.WriteString("role_id in ( ")
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name from t_power p left join t_conn c on p.conn_id = c.id where p.role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") order by p.power_level, p.schema_name, p.table_name, p.column_name")
 	powerList := []*PowerDetail{}

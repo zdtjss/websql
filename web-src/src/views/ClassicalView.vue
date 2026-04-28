@@ -192,7 +192,7 @@ const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
 
-const isRemote = ref(null)
+const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
 
 const logining = ref(false)
 const loginRules = reactive({
@@ -275,7 +275,9 @@ function submitChangePassword() {
 }
 
 onMounted(() => {
-  getSysModel()
+  if (sessionStorage.getItem("isRemote") === null) {
+    getSysModel()
+  }
   if (!treeLoading.value) {
     refreshTree()
   }
@@ -304,7 +306,7 @@ onMounted(() => {
     loginSucc.value = false
     currentUser.value = {}
     if (isRemote.value) {
-      loginDialogVisible.value = true
+      toLogin()
     }
   })
 })
@@ -358,12 +360,17 @@ function restoreTab() {
 
 function loadTree(node, resolve) {
 
-  if ((Object.keys(node.data).length === 0 && !loginSucc.value && isRemote.value) || node.data.type === 'table' || node.data.type === 'view') {
+  if (node.level === 0) {
+    resolve([])
+    return
+  }
+  if (node.data.type === 'table' || node.data.type === 'view') {
     resolve([])
     return
   }
   const conn = findConn(node)
-  http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level } })
+  const schema = node.data.type === 'table' ? node.parent?.data?.label || '' : ''
+  http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level, schema } })
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)

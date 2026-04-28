@@ -114,6 +114,7 @@ func ShowTree(c *gin.Context) {
 	key := c.Query("key")
 	curType := c.Query("type")
 	level := c.Query("level")
+	schema := c.Query("schema")
 	authorization := c.GetHeader("Authorization")
 	userPower := GetUserPower(authorization)
 
@@ -123,24 +124,24 @@ func ShowTree(c *gin.Context) {
 	switch nextType {
 	case TREE_NODE_TYPE_DIR:
 		if !strings.EqualFold(curType, TREE_NODE_TYPE_COLUMN) {
-			// 第一层级：目录 + 顶层链接
-			// 目录需要特殊处理：只显示包含用户有权限链接的目录
-			data = findByParentWithPermission(key, userPower)
-			if len(data) == 0 || data[0] == nil {
-				data = listConn(key, userPower)
-			}
 			if level == "0" {
-				data = append(data, listConn("noneParent", userPower)...)
+				data = filterDirTreeWithPermission(key, userPower)
+				data = append(data, filterConnsWithPermission("noneParent", userPower)...)
+			} else {
+				data = filterDirTreeWithPermission(key, userPower)
+				if len(data) == 0 || data[0] == nil {
+					data = filterConnsWithPermission(key, userPower)
+				}
 			}
 		}
 	case TREE_NODE_TYPE_CONN:
-		data = listConn(key, userPower)
+		data = filterConnsWithPermission(key, userPower)
 	case TREE_NODE_TYPE_SCHEMA:
-		data = listSchema(connId, authorization)
+		data = filterSchemasWithPermission(connId, authorization)
 	case TREE_NODE_TYPE_TABLE:
-		data = listTable(connId, key, authorization)
+		data = filterTablesWithPermission(connId, key, authorization)
 	case TREE_NODE_TYPE_COLUMN:
-		data = listColumns(connId, key, authorization)
+		data = listColumns(connId, key, schema, authorization)
 	case TREE_NODE_TYPE_ALLCOLUMN:
 		data = listAllColumns(connId, key, authorization)
 	}
@@ -306,10 +307,11 @@ func ListTableNames(c *gin.Context) {
 
 // filterTablesByPermission 根据用户权限过滤表列表
 func filterTablesByPermission(tables []*Table, connId, schema string, userPower *UserPower) []*Table {
-	// 如果用户没有权限限制（管理员），返回所有表
 	if userPower == nil || len(userPower.Power) == 0 {
-		// log.Printf("filterTablesByPermission: no power 限制，返回所有表")
-		return tables
+		if userPower != nil && userPower.UserId == config.AdminId {
+			return tables
+		}
+		return []*Table{}
 	}
 
 	// 获取用户的所有权限详情
@@ -353,12 +355,23 @@ func filterTablesByPermission(tables []*Table, connId, schema string, userPower 
 }
 
 // checkPowerByParam 根据权限详情检查是否有访问权限
+// 数据安全红线：最具体优先原则 - 当同一schema下存在table/column级权限时，
+// schema级权限不生效，必须精确匹配table/column级记录
 func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool {
-	// 收集各级权限
+	if param.SchemaName == "" {
+		for _, power := range powerDetails {
+			if power.ConnId == param.ConnId && power.Level == "conn" {
+				return true
+			}
+		}
+		return false
+	}
+
 	hasConnPermission := false
 	hasSchemaPermission := false
 	hasTablePermission := false
 	hasColumnPermission := false
+	hasTableOrColumnForSchema := false
 
 	for _, power := range powerDetails {
 		if power.ConnId != param.ConnId {
@@ -368,25 +381,24 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 		switch power.Level {
 		case "conn":
 			hasConnPermission = true
-			// log.Printf("checkPowerByParam: 有 conn 权限 connId=%s", power.ConnId)
 		case "schema":
-			if power.SchemaName != nil {
-				if param.SchemaName == "" || *power.SchemaName == param.SchemaName {
-					hasSchemaPermission = true
-				}
+			if power.SchemaName != nil && *power.SchemaName == param.SchemaName {
+				hasSchemaPermission = true
 			}
 		case "table":
 			if power.SchemaName != nil && power.TableName != nil {
-				if param.SchemaName == "" || *power.SchemaName == param.SchemaName {
-					if param.TableName == "" || *power.TableName == param.TableName {
+				if *power.SchemaName == param.SchemaName {
+					hasTableOrColumnForSchema = true
+					if *power.TableName == param.TableName {
 						hasTablePermission = true
 					}
 				}
 			}
 		case "column":
 			if power.SchemaName != nil && power.TableName != nil && power.ColumnName != nil {
-				if param.SchemaName == "" || (*power.SchemaName == param.SchemaName && *power.TableName == param.TableName) {
-					if *power.ColumnName != "" {
+				if *power.SchemaName == param.SchemaName {
+					hasTableOrColumnForSchema = true
+					if *power.TableName == param.TableName {
 						hasColumnPermission = true
 					}
 				}
@@ -394,36 +406,22 @@ func checkPowerByParam(powerDetails []*PowerDetail, param *PowerCheckParam) bool
 		}
 	}
 
-	// log.Printf("checkPowerByParam: hasConn=%v, hasSchema=%v, hasTable=%v, hasColumn=%v",
-	// 	hasConnPermission, hasSchemaPermission, hasTablePermission, hasColumnPermission)
-
-	// 权限判断逻辑（上级权限无条件包含下级）
-
-	// 1. conn 级权限 → 直接通过
-	if hasConnPermission {
-		log.Printf("checkPowerByParam: conn 级通过")
+	if hasConnPermission && !hasTableOrColumnForSchema {
 		return true
 	}
 
-	// 2. schema 级权限 → 直接通过
-	if hasSchemaPermission {
-		log.Printf("checkPowerByParam: schema 级通过")
+	if hasSchemaPermission && !hasTableOrColumnForSchema {
 		return true
 	}
 
-	// 3. table 级权限 → 直接通过
 	if hasTablePermission {
-		log.Printf("checkPowerByParam: table 级通过")
 		return true
 	}
 
-	// 4. column 级权限 → 通过（表示至少可以访问该表的部分字段）
 	if hasColumnPermission {
-		log.Printf("checkPowerByParam: column 级通过")
 		return true
 	}
 
-	log.Printf("checkPowerByParam: 拒绝访问")
 	return false
 }
 
@@ -463,10 +461,7 @@ func getNextType(curType string) string {
 func GetConn(id string, authorization string) *sqlx.DB {
 	userPower := GetUserPower(authorization)
 	if config.Cfg.IsRemote {
-		param := &PowerCheckParam{
-			ConnId: id,
-		}
-		if !checkPower(userPower, param) {
+		if !checkConnAccess(userPower, id) {
 			logutils.PanicErr(errors.New("无权访问"))
 		}
 	}
