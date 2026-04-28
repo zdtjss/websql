@@ -150,7 +150,11 @@ func ExportXlsxBySql(c *gin.Context) {
 	}
 
 	analysis := admin.AnalyzeSQL(sqlStr, schema)
-	admin.CheckSQLPermission(analysis, connId, authorization)
+	permResult := admin.CheckAnalysisPermission(analysis, connId, authorization)
+	if !permResult.Allowed {
+		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+		return
+	}
 
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

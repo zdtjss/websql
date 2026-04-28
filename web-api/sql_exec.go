@@ -43,7 +43,27 @@ func ExecSQL(c *gin.Context) {
 	user := admin.GetUser(authorization)
 
 	analysis := admin.AnalyzeSQL(sqlStr, schema)
-	admin.CheckSQLPermission(analysis, connId, authorization)
+	permResult := admin.CheckAnalysisPermission(analysis, connId, authorization)
+	if !permResult.Allowed {
+		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+		return
+	}
+
+	// 多条 SQL（分号分隔）时，逐条检查权限
+	if strings.Contains(sqlStr, ";") {
+		for _, singleSQL := range strings.Split(sqlStr, ";") {
+			singleSQL = strings.TrimSpace(singleSQL)
+			if singleSQL == "" {
+				continue
+			}
+			subAnalysis := admin.AnalyzeSQL(singleSQL, schema)
+			subResult := admin.CheckAnalysisPermission(subAnalysis, connId, authorization)
+			if !subResult.Allowed {
+				c.JSON(200, gin.H{"code": 500, "msg": subResult.Message})
+				return
+			}
+		}
+	}
 
 	blankIdx := strings.Index(sqlStr, " ")
 	nlIdx := strings.Index(sqlStr, "\n")

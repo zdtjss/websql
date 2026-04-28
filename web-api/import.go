@@ -103,6 +103,20 @@ func ImportXlsx(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, "解析列映射失败，请检查参数格式")
 			return
 		}
+
+		// 列级权限检查：验证映射的目标列是否有写权限
+		if len(columnMapping) > 0 {
+			mappedDbCols := make([]string, 0, len(columnMapping))
+			for _, dbCol := range columnMapping {
+				mappedDbCols = append(mappedDbCols, dbCol)
+			}
+			admin.CheckTableWritePermission(connId, schema, table, mappedDbCols, authorization)
+		}
+	} else {
+		// 旧模式（无 mapping）：header 就是要写入的列名，检查列级权限
+		if len(header) > 0 {
+			admin.CheckTableWritePermission(connId, schema, table, header, authorization)
+		}
 	}
 
 	// 解析起始行（前端传入的是从 1 开始的行号，需要转换为从 0 开始的索引）
@@ -182,16 +196,16 @@ func ImportXlsx(c *gin.Context) {
 		if count+1 >= maxLines {
 			if strings.EqualFold(operType, "insert") {
 				if err := insertToDb(schema, table, columns, totalValues, tx); err != nil {
-				log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
-				c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
-				return
-			}
-		} else {
+					log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
+					c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
+					return
+				}
+			} else {
 				if err := UpdateToDb(schema, table, columns, totalValues, tx); err != nil {
-				log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
-				c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
-				return
-			}
+					log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
+					c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
+					return
+				}
 			}
 			count = -1
 		}
@@ -200,16 +214,16 @@ func ImportXlsx(c *gin.Context) {
 	if count != -1 {
 		if strings.EqualFold(operType, "insert") {
 			if err := insertToDb(schema, table, columns, totalValues[:count+1], tx); err != nil {
-			log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
-			c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
-			return
-		}
-	} else {
+				log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
+				c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
+				return
+			}
+		} else {
 			if err := UpdateToDb(schema, table, columns, totalValues[:count+1], tx); err != nil {
-			log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
-			c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
-			return
-		}
+				log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
+				c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
+				return
+			}
 		}
 	}
 

@@ -436,7 +436,39 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 
 	input.Tables = filtered
 	newArgs, _ := json.Marshal(input)
-	return endpoint(ctx, string(newArgs), opts...)
+	result, err := endpoint(ctx, string(newArgs), opts...)
+	if err != nil {
+		return "", err
+	}
+
+	// 对返回的 DDL 按列级权限过滤
+	hasColumnRestrictions := false
+	for _, table := range filtered {
+		if m.Scope.GetTableAccessLevel(table) == "column" {
+			hasColumnRestrictions = true
+			break
+		}
+	}
+
+	if !hasColumnRestrictions {
+		return result, nil
+	}
+
+	var output SchemaOutput
+	if err := json.Unmarshal([]byte(result), &output); err != nil {
+		return result, nil
+	}
+
+	if output.Schema != "" {
+		filteredSchema := filterDDLByScope(output.Schema, filtered, m.Scope)
+		if filteredSchema != "" {
+			output.Schema = filteredSchema
+			outputJSON, _ := json.Marshal(output)
+			return string(outputJSON), nil
+		}
+	}
+
+	return result, nil
 }
 
 func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
@@ -445,10 +477,47 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return "", err
 	}
 
+	// 表级权限检查
 	tables := extractTablesFromSQL(input.SQL)
 	for _, table := range tables {
 		if !m.Scope.IsTableAllowed(table) {
 			return "", &PermissionError{Message: "无权访问表", Objects: []string{table}}
+		}
+	}
+
+	// 列级权限检查（SELECT 中显式引用的列）
+	selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(input.SQL)))
+	if len(selectCols) > 0 {
+		for _, sc := range selectCols {
+			if sc.IsStar {
+				continue // SELECT * 由结果集过滤兜底
+			}
+			colName := sc.ColumnName
+			// 检查所有有列级限制的表
+			// 策略：只有当所有有列级限制的表都不允许该列时才拒绝
+			// 原因：无法可靠地将别名映射到真实表名，且结果集过滤是最终兜底
+			allDenied := false
+			hasColumnLevelTable := false
+			for _, table := range tables {
+				if m.Scope.GetTableAccessLevel(table) == "column" {
+					hasColumnLevelTable = true
+					if m.Scope.IsColumnAllowed(table, colName) {
+						allDenied = false
+						break // 至少有一个表允许，放行
+					}
+					allDenied = true
+				}
+			}
+			if hasColumnLevelTable && allDenied {
+				displayName := colName
+				if sc.TableAlias != "" {
+					displayName = sc.TableAlias + "." + colName
+				}
+				return "", &PermissionError{
+					Message: fmt.Sprintf("无权访问字段 %s", displayName),
+					Objects: []string{displayName},
+				}
+			}
 		}
 	}
 
@@ -457,7 +526,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return "", err
 	}
 
-	// 列级过滤
+	// 列级过滤（结果集兜底保护）
 	var output QueryOutput
 	if err := json.Unmarshal([]byte(result), &output); err != nil {
 		return result, nil
@@ -486,9 +555,26 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 		return "", err
 	}
 
+	// 表级权限检查
 	for _, table := range extractTablesFromSQL(input.SQL) {
 		if !m.Scope.IsTableAllowed(table) {
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
+		}
+	}
+
+	// 列级权限检查（INSERT/UPDATE 中操作的列）
+	analysis := admin.AnalyzeSQL(input.SQL, m.Scope.SchemaName)
+	if len(analysis.WriteColumns) > 0 && len(analysis.WriteTables) > 0 {
+		writeTableName := analysis.WriteTables[0].Name
+		if m.Scope.GetTableAccessLevel(writeTableName) == "column" {
+			for _, col := range analysis.WriteColumns {
+				if !m.Scope.IsColumnAllowed(writeTableName, col.ColumnName) {
+					return "", &PermissionError{
+						Message: fmt.Sprintf("无权操作字段 %s.%s", writeTableName, col.ColumnName),
+						Objects: []string{writeTableName + "." + col.ColumnName},
+					}
+				}
+			}
 		}
 	}
 
@@ -501,9 +587,39 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		return "", err
 	}
 
-	for _, table := range extractTablesFromSQL(input.SQL) {
+	tables := extractTablesFromSQL(input.SQL)
+	for _, table := range tables {
 		if !m.Scope.IsTableAllowed(table) {
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
+		}
+	}
+
+	// 列级权限检查（SELECT 中显式引用的列）
+	selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(input.SQL)))
+	if len(selectCols) > 0 {
+		for _, sc := range selectCols {
+			if sc.IsStar {
+				continue
+			}
+			colName := sc.ColumnName
+			allDenied := false
+			hasColumnLevelTable := false
+			for _, table := range tables {
+				if m.Scope.GetTableAccessLevel(table) == "column" {
+					hasColumnLevelTable = true
+					if m.Scope.IsColumnAllowed(table, colName) {
+						allDenied = false
+						break
+					}
+					allDenied = true
+				}
+			}
+			if hasColumnLevelTable && allDenied {
+				return "", &PermissionError{
+					Message: fmt.Sprintf("无权导出字段 %s", colName),
+					Objects: []string{colName},
+				}
+			}
 		}
 	}
 
@@ -520,7 +636,88 @@ func (m *PermissionMiddleware) checkImportAccess(ctx context.Context, args strin
 		return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", input.TableName), Objects: []string{input.TableName}}
 	}
 
+	// 列级权限检查：如果有映射，检查目标列是否有写权限
+	if input.TableName != "" && m.Scope.GetTableAccessLevel(input.TableName) == "column" {
+		if len(input.Mapping) > 0 {
+			for _, dbCol := range input.Mapping {
+				if !m.Scope.IsColumnAllowed(input.TableName, dbCol) {
+					return "", &PermissionError{
+						Message: fmt.Sprintf("无权写入字段 %s.%s", input.TableName, dbCol),
+						Objects: []string{input.TableName + "." + dbCol},
+					}
+				}
+			}
+		}
+	}
+
 	return endpoint(ctx, args, opts...)
+}
+
+// filterDDLByScope 根据 PermissionScope 过滤 DDL 中的未授权列
+func filterDDLByScope(ddl string, tables []string, scope *PermissionScope) string {
+	lines := strings.Split(ddl, "\n")
+	var filtered []string
+	columnDefRegex := regexp.MustCompile("(?i)^\\s+[`\"']?(\\w+)[`\"']?\\s+")
+	createTableRegex := regexp.MustCompile("(?i)CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[`\"']?(\\w+)[`\"']?")
+
+	currentTable := ""
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		upperTrimmed := strings.ToUpper(trimmed)
+
+		// 检测 CREATE TABLE 行，更新当前表名
+		if strings.HasPrefix(upperTrimmed, "CREATE ") {
+			if match := createTableRegex.FindStringSubmatch(line); len(match) >= 2 {
+				currentTable = match[1]
+			}
+			filtered = append(filtered, line)
+			continue
+		}
+
+		// 保留非列定义行
+		if strings.HasPrefix(upperTrimmed, ")") ||
+			strings.HasPrefix(upperTrimmed, "PRIMARY KEY") ||
+			strings.HasPrefix(upperTrimmed, "KEY ") ||
+			strings.HasPrefix(upperTrimmed, "INDEX ") ||
+			strings.HasPrefix(upperTrimmed, "UNIQUE ") ||
+			strings.HasPrefix(upperTrimmed, "CONSTRAINT ") ||
+			strings.HasPrefix(upperTrimmed, "ENGINE") ||
+			strings.HasPrefix(upperTrimmed, "DEFAULT CHARSET") ||
+			strings.HasPrefix(upperTrimmed, "COMMENT") ||
+			strings.HasPrefix(upperTrimmed, "AUTO_INCREMENT") ||
+			trimmed == "" || trimmed == ";" {
+			filtered = append(filtered, line)
+			continue
+		}
+
+		// 尝试提取列名
+		match := columnDefRegex.FindStringSubmatch(line)
+		if len(match) >= 2 {
+			colName := match[1]
+			// 根据当前表名检查列权限
+			if currentTable != "" {
+				accessLevel := scope.GetTableAccessLevel(currentTable)
+				if accessLevel == "full" {
+					filtered = append(filtered, line)
+				} else if accessLevel == "column" {
+					if scope.IsColumnAllowed(currentTable, colName) {
+						filtered = append(filtered, line)
+					}
+					// 未授权列：跳过
+				}
+				// accessLevel == "none"：跳过
+			} else {
+				// 无法确定当前表，保守保留
+				filtered = append(filtered, line)
+			}
+		} else {
+			// 无法解析的行保留
+			filtered = append(filtered, line)
+		}
+	}
+
+	return strings.Join(filtered, "\n")
 }
 
 func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
@@ -545,7 +742,44 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 
 	input.Tables = filtered
 	newArgs, _ := json.Marshal(input)
-	return endpoint(ctx, string(newArgs), opts...)
+
+	// 检查是否有列级限制
+	hasColumnRestrictions := false
+	for _, table := range filtered {
+		if m.Scope.GetTableAccessLevel(table) == "column" {
+			hasColumnRestrictions = true
+			break
+		}
+	}
+
+	if !hasColumnRestrictions {
+		return endpoint(ctx, string(newArgs), opts...)
+	}
+
+	// 有列级限制时，需要消费流式结果并过滤 DDL
+	reader, err := endpoint(ctx, string(newArgs), opts...)
+	if err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr != nil {
+			break
+		}
+		sb.WriteString(chunk)
+	}
+	rawResult := sb.String()
+
+	var output SchemaOutput
+	if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
+		return schema.StreamReaderFromArray([]string{rawResult}), nil
+	}
+	if output.Schema != "" {
+		output.Schema = filterDDLByScope(output.Schema, filtered, m.Scope)
+	}
+	outputJSON, _ := json.Marshal(output)
+	return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
 }
 
 func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
@@ -557,11 +791,39 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 
 	sqlStr, _ := raw["sql"].(string)
 	if sqlStr != "" {
-		for _, table := range extractTablesFromSQL(sqlStr) {
+		tables := extractTablesFromSQL(sqlStr)
+		for _, table := range tables {
 			if !m.Scope.IsTableAllowed(table) {
 				log.Printf("[PermissionMiddleware:Stream] 表权限检查失败 - tool=%s, table=%s\n", toolName, table)
 				sr, sw := schema.Pipe[string](1)
 				sw.Send(fmt.Sprintf("无权访问表：%s", table), nil)
+				sw.Close()
+				return sr, nil
+			}
+		}
+
+		// 列级权限检查
+		selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(sqlStr)))
+		for _, sc := range selectCols {
+			if sc.IsStar {
+				continue
+			}
+			allDenied := false
+			hasColumnLevelTable := false
+			for _, table := range tables {
+				if m.Scope.GetTableAccessLevel(table) == "column" {
+					hasColumnLevelTable = true
+					if m.Scope.IsColumnAllowed(table, sc.ColumnName) {
+						allDenied = false
+						break
+					}
+					allDenied = true
+				}
+			}
+			if hasColumnLevelTable && allDenied {
+				log.Printf("[PermissionMiddleware:Stream] 列权限检查失败 - tool=%s, column=%s\n", toolName, sc.ColumnName)
+				sr, sw := schema.Pipe[string](1)
+				sw.Send(fmt.Sprintf("无权访问字段：%s", sc.ColumnName), nil)
 				sw.Close()
 				return sr, nil
 			}

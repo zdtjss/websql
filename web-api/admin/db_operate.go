@@ -169,7 +169,29 @@ func listTable(key string, schema, authorization string) []*Tree {
 		allTables = append(allTables, treeNode)
 	}
 	// 权限过滤：只返回用户有权限访问的表
-	return filterTreeTablesByPermission(allTables, key, schema, authorization)
+	filteredTables := filterTreeTablesByPermission(allTables, key, schema, authorization)
+
+	// 列级权限过滤：过滤表数据中的列信息
+	if config.Cfg.IsRemote {
+		for _, t := range filteredTables {
+			if cols, ok := t.Data["columns"].([]Column); ok {
+				access := GetTableColumnAccess(key, schema, t.Label, authorization)
+				if access.Level == AccessColumn {
+					filteredCols := make([]Column, 0, len(cols))
+					for _, col := range cols {
+						if access.AllowedColumns[col.Name] {
+							filteredCols = append(filteredCols, col)
+						}
+					}
+					t.Data["columns"] = filteredCols
+				} else if access.Level == AccessNone {
+					t.Data["columns"] = []Column{}
+				}
+			}
+		}
+	}
+
+	return filteredTables
 }
 
 // filterTreeTablesByPermission 根据用户权限过滤树中的表列表
@@ -617,5 +639,3 @@ func ListIndexes(c *gin.Context) {
 	data := dbutils.GetResultRows(dc.DriverName(), rows)
 	utils.WriteJson(c.Writer, data)
 }
-
-

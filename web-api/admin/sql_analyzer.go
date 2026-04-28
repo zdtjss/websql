@@ -11,6 +11,7 @@ type SQLAnalysis struct {
 	ReadTables    []TableRef
 	WriteTables   []TableRef
 	WriteColumns  []ColumnRef
+	OriginalSQL   string // 原始 SQL（供列级权限检查使用）
 }
 
 type TableRef struct {
@@ -32,14 +33,15 @@ const (
 )
 
 type TableColumnAccess struct {
-	Level           ColumnAccessLevel
-	AllowedColumns  map[string]bool
+	Level          ColumnAccessLevel
+	AllowedColumns map[string]bool
 }
 
 func AnalyzeSQL(sqlStr string, defaultSchema string) *SQLAnalysis {
 	trimmed := strings.TrimSpace(sqlStr)
 	analysis := &SQLAnalysis{
 		OperationType: extractOperationType(trimmed),
+		OriginalSQL:   trimmed,
 	}
 
 	allTables := ExtractTablesFromSQL(trimmed)
@@ -253,6 +255,8 @@ func extractDDLTarget(sql string, defaultSchema string) *TableRef {
 	return nil
 }
 
+// CheckSQLPermission 旧版权限检查（仅表级 + 写列级）
+// Deprecated: 请使用 CheckAnalysisPermission 进行完整的表+列权限校验
 func CheckSQLPermission(analysis *SQLAnalysis, connId, authorization string) {
 	if !config.Cfg.IsRemote {
 		return

@@ -215,6 +215,25 @@ func filterTablesWithPermission(key string, schema, authorization string) []*Tre
 			filtered = append(filtered, table)
 		}
 	}
+
+	// 列级权限过滤：过滤表数据中的列信息
+	for _, t := range filtered {
+		if cols, ok := t.Data["columns"].([]Column); ok {
+			access := GetTableColumnAccess(key, schema, t.Label, authorization)
+			if access.Level == AccessColumn {
+				filteredCols := make([]Column, 0, len(cols))
+				for _, col := range cols {
+					if access.AllowedColumns[col.Name] {
+						filteredCols = append(filteredCols, col)
+					}
+				}
+				t.Data["columns"] = filteredCols
+			} else if access.Level == AccessNone {
+				t.Data["columns"] = []Column{}
+			}
+		}
+	}
+
 	return filtered
 }
 
