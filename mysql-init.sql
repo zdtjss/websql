@@ -17,7 +17,8 @@ create table if not exists t_power (
 	schema_name varchar(128),
 	table_name varchar(128),
 	column_name varchar(128),
-	power_level varchar(32)
+	power_level varchar(32),
+	tree_visible integer default 0
 );
 
 create table if not exists t_role (

@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS t_power (
 	schema_name TEXT,
 	table_name TEXT,
 	column_name TEXT,
-	power_level TEXT
+	power_level TEXT,
+	tree_visible INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS t_role (

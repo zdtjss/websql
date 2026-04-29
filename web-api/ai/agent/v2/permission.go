@@ -783,15 +783,15 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 }
 
 func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-	// 提取 SQL 字段
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(args), &raw); err != nil {
 		return nil, err
 	}
 
 	sqlStr, _ := raw["sql"].(string)
+	tables := []string{}
 	if sqlStr != "" {
-		tables := extractTablesFromSQL(sqlStr)
+		tables = extractTablesFromSQL(sqlStr)
 		for _, table := range tables {
 			if !m.Scope.IsTableAllowed(table) {
 				log.Printf("[PermissionMiddleware:Stream] 表权限检查失败 - tool=%s, table=%s\n", toolName, table)
@@ -802,7 +802,6 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 			}
 		}
 
-		// 列级权限检查
 		selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(sqlStr)))
 		for _, sc := range selectCols {
 			if sc.IsStar {
@@ -828,6 +827,43 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 				return sr, nil
 			}
 		}
+	}
+
+	// query_data 需要消费流式结果并做列级过滤
+	if toolName == "query_data" {
+		hasColumnRestrictions := false
+		for _, table := range tables {
+			if m.Scope.GetTableAccessLevel(table) == "column" {
+				hasColumnRestrictions = true
+				break
+			}
+		}
+		if !hasColumnRestrictions {
+			return endpoint(ctx, args, opts...)
+		}
+
+		reader, err := endpoint(ctx, args, opts...)
+		if err != nil {
+			return nil, err
+		}
+		var sb strings.Builder
+		for {
+			chunk, recvErr := reader.Recv()
+			if recvErr != nil {
+				break
+			}
+			sb.WriteString(chunk)
+		}
+		rawResult := sb.String()
+
+		var output QueryOutput
+		if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
+			return schema.StreamReaderFromArray([]string{rawResult}), nil
+		}
+		output.Columns, output.Data = m.Scope.FilterResultColumns(output.Columns, output.Data, tables)
+		output.Count = len(output.Data)
+		outputJSON, _ := json.Marshal(output)
+		return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
 	}
 
 	return endpoint(ctx, args, opts...)

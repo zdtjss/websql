@@ -66,6 +66,12 @@
                       <span class="node-label" :class="{ 'node-clickable': data.level !== 'column' && data.level !== 'dir' }">{{ node.label }}</span>
                       <el-tag v-if="isImplicitNode(data.id)" size="small" type="warning" class="implicit-tag">子级已选</el-tag>
                       <span v-if="data.data && data.data.comment" class="node-comment">{{ data.data.comment }}</span>
+                      <el-tooltip v-if="data.level !== 'column' && data.level !== 'dir'" :content="treeVisibleKeys.has(data.id) ? '在树中可见' : '在树中隐藏'" placement="top">
+                        <el-icon class="tree-vis-toggle" :class="{ 'tree-vis-on': treeVisibleKeys.has(data.id) }" @click.stop="toggleTreeVisible(data)">
+                          <View v-if="treeVisibleKeys.has(data.id)" />
+                          <Hide v-else />
+                        </el-icon>
+                      </el-tooltip>
                     </span>
                   </template>
                 </el-tree>
@@ -112,6 +118,9 @@ const implicitKeys = reactive(new Set())
 
 // 当前树中所有节点的 key（用于增量保存时判断范围）
 const currentTreeNodeKeys = reactive(new Set())
+
+// treeVisibleKeys: 树可见性标记（仅 conn/schema/table 层级）
+const treeVisibleKeys = reactive(new Set())
 
 // 防止程序设置 checkbox 时触发 handleCheck
 let isProgrammatic = false
@@ -165,9 +174,13 @@ function deleteRole(role) {
 function initExplicitKeysFromRole(role) {
   explicitKeys.clear()
   implicitKeys.clear()
+  treeVisibleKeys.clear()
   const powers = role.powerList || []
   for (const p of powers) {
     explicitKeys.add(permToKey(p))
+    if (p.treeVisible) {
+      treeVisibleKeys.add(permToKey(p))
+    }
   }
 }
 
@@ -221,6 +234,9 @@ function mergeCheckedFromApi(nodes) {
   for (const n of nodes) {
     if (n.checked && !n.id.startsWith('dir::') && !explicitKeys.has(n.id)) {
       explicitKeys.add(n.id)
+    }
+    if (n.treeVisible && !treeVisibleKeys.has(n.id)) {
+      treeVisibleKeys.add(n.id)
     }
     if (n.children && n.children.length > 0) {
       mergeCheckedFromApi(n.children)
@@ -330,6 +346,14 @@ function isImplicitNode(nodeId) {
   return implicitKeys.has(nodeId)
 }
 
+function toggleTreeVisible(nodeData) {
+  if (treeVisibleKeys.has(nodeData.id)) {
+    treeVisibleKeys.delete(nodeData.id)
+  } else {
+    treeVisibleKeys.add(nodeData.id)
+  }
+}
+
 // ─── 处理用户勾选 ───
 function handleCheck(nodeData, checkState) {
   if (isProgrammatic) return
@@ -427,6 +451,7 @@ function savePermissions() {
       tableName: table || null,
       columnName: column || null,
       level,
+      treeVisible: treeVisibleKeys.has(key) ? 1 : 0,
     })
   }
 
@@ -452,8 +477,29 @@ function savePermissions() {
   const oldKeySet = new Set(oldPowers.map(permToKey))
   const newKeySet = new Set(filteredPowers.map(permToKey))
 
-  const addPowers = filteredPowers.filter(p => !oldKeySet.has(permToKey(p)))
-  const delPowers = oldPowers.filter(p => !newKeySet.has(permToKey(p)))
+  const storedKeys = new Set()
+
+  const addPowers = filteredPowers.filter(p => {
+    const key = permToKey(p)
+    storedKeys.add(key)
+    if (!oldKeySet.has(key)) return true
+    // tree_visible 变更：需要删旧插新
+    const oldP = oldPowers.find(op => permToKey(op) === key)
+    if (oldP && (oldP.treeVisible ? 1 : 0) !== (p.treeVisible ? 1 : 0)) {
+      return true
+    }
+    return false
+  })
+  const delPowers = []
+  for (const p of oldPowers) {
+    const key = permToKey(p)
+    if (!newKeySet.has(key)) {
+      delPowers.push(p)
+    } else if (storedKeys.has(key)) {
+      // key 在 add 中已处理（tree_visible 变更），需要删除旧的
+      delPowers.push(p)
+    }
+  }
 
   const roleData = {
     id: currentRole.value.id,
@@ -578,6 +624,18 @@ function cancelEdit() {
 .implicit-tag {
   margin-left: 8px;
   font-size: 11px;
+}
+.tree-vis-toggle {
+  margin-left: 8px;
+  cursor: pointer;
+  color: #909399;
+  font-size: 16px;
+}
+.tree-vis-toggle:hover {
+  color: #409eff;
+}
+.tree-vis-toggle.tree-vis-on {
+  color: #409eff;
 }
 /* implicit 节点的 checkbox 用半选样式区分 */
 :deep(.el-tree) .is-checked .el-checkbox__inner {

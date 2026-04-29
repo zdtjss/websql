@@ -60,11 +60,11 @@ func insertPowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 
 	// 构建批量插入 SQL：VALUES (...), (...), (...)
 	values := make([]string, 0, len(powers))
-	args := make([]interface{}, 0, len(powers)*7)
+	args := make([]interface{}, 0, len(powers)*8)
 
 	for _, power := range powers {
 		id := utils.RandomStr()
-		values = append(values, "(?, ?, ?, ?, ?, ?, ?)")
+		values = append(values, "(?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			id,
 			roleId,
@@ -73,10 +73,11 @@ func insertPowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 			ptrToString(power.TableName),
 			ptrToString(power.ColumnName),
 			power.Level,
+			power.TreeVisible,
 		)
 	}
 
-	sql := "insert into t_power (id, role_id, conn_id, schema_name, table_name, column_name, power_level) values " + strings.Join(values, ", ")
+	sql := "insert into t_power (id, role_id, conn_id, schema_name, table_name, column_name, power_level, tree_visible) values " + strings.Join(values, ", ")
 	_, err := tx.Exec(sql, args...)
 	logutils.PanicErr(err)
 }
@@ -124,7 +125,7 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 	for connId, schemas := range schemaPowers {
 		if len(schemas) == 1 {
 			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'schema'",
-				roleId, connId, schemas[0], "schema")
+				roleId, connId, schemas[0])
 		} else {
 			placeholders := make([]string, len(schemas))
 			for i := range placeholders {
@@ -132,7 +133,6 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 			}
 			sql := fmt.Sprintf("delete from t_power where role_id = ? and conn_id = ? and schema_name in (%s) and power_level = 'schema'", strings.Join(placeholders, ","))
 			args := append([]interface{}{roleId, connId}, schemasToInterfaces(schemas)...)
-			args = append(args, "schema")
 			_, err := tx.Exec(sql, args...)
 			logutils.PanicErr(err)
 		}
@@ -564,7 +564,7 @@ func findUserPower(userId string) []string {
 func findUserPowerDetails(userId string) []*PowerDetail {
 	powerList := []*PowerDetail{}
 	sql := `
-		select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name 
+		select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, p.tree_visible, c.name conn_name 
 		from t_power p 
 		left join t_user_role ur on ur.role_id = p.role_id 
 		left join t_conn c on p.conn_id = c.id
@@ -579,6 +579,37 @@ func findUserPowerDetails(userId string) []*PowerDetail {
 // FindUserPowerDetails 导出权限查询接口（供 AI agent 使用）
 func FindUserPowerDetails(userId string) []*PowerDetail {
 	return findUserPowerDetails(userId)
+}
+
+// GetUserTreeVisibility 获取用户在 showTree 中的可见资源（跨角色聚合，向上传播）
+// 返回三个 set：可见的 connId、connId::schemaName、connId::schemaName::tableName
+func GetUserTreeVisibility(userId string) (conns map[string]bool, schemas map[string]bool, tables map[string]bool) {
+	conns = make(map[string]bool)
+	schemas = make(map[string]bool)
+	tables = make(map[string]bool)
+
+	powerList := findUserPowerDetails(userId)
+	if len(powerList) == 0 || userId == config.AdminId {
+		return conns, schemas, tables
+	}
+
+	for _, p := range powerList {
+		if p.TreeVisible <= 0 {
+			continue
+		}
+		// 向上传播：只要有 tree_visible 的子资源，父资源也可见
+		conns[p.ConnId] = true
+		if p.SchemaName != nil && *p.SchemaName != "" {
+			key := p.ConnId + "::" + *p.SchemaName
+			schemas[key] = true
+		}
+		if p.TableName != nil && *p.TableName != "" && p.SchemaName != nil && *p.SchemaName != "" {
+			key := p.ConnId + "::" + *p.SchemaName + "::" + *p.TableName
+			tables[key] = true
+		}
+	}
+
+	return conns, schemas, tables
 }
 
 func checkPower(userPower *UserPower, param *PowerCheckParam) bool {
@@ -731,7 +762,7 @@ func findPowerDetails(roleIdList []any) map[string][]*PowerDetail {
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, c.name conn_name from t_power p left join t_conn c on p.conn_id = c.id where p.role_id in ( ")
+	sqlBuf.WriteString("select p.id, p.role_id, p.conn_id, p.schema_name, p.table_name, p.column_name, p.power_level, p.tree_visible, c.name conn_name from t_power p left join t_conn c on p.conn_id = c.id where p.role_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", roleCount)[0 : roleCount*2-1])
 	sqlBuf.WriteString(") order by p.power_level, p.schema_name, p.table_name, p.column_name")
 	powerList := []*PowerDetail{}
@@ -843,7 +874,7 @@ func getConnTree(roleId string) []*PermissionNode {
 	logutils.PanicErr(err)
 
 	// 如果提供了 roleId，获取该角色的权限
-	var roleConnIds map[string]bool
+	var roleConnIds map[string]int
 	if roleId != "" {
 		roleConnIds = getRoleConnPermissions(roleId)
 	}
@@ -882,9 +913,11 @@ func getConnTree(roleId string) []*PermissionNode {
 		}
 
 		for _, conn := range conns {
+			treeVis, exists := 0, false
 			checked := false
-			if roleId != "" && roleConnIds[conn.Id] {
-				checked = true
+			if roleId != "" {
+				treeVis, exists = roleConnIds[conn.Id]
+				checked = exists
 			}
 
 			name := ""
@@ -893,17 +926,18 @@ func getConnTree(roleId string) []*PermissionNode {
 			}
 
 			dirNode.Children = append(dirNode.Children, &PermissionNode{
-				Id:       conn.Id,
-				Label:    name,
-				Type:     "conn",
-				Level:    "conn",
-				ParentId: dirNode.Id,
-				Checked:  checked,
+				Id:          conn.Id,
+				Label:       name,
+				Type:        "conn",
+				Level:       "conn",
+				ParentId:    dirNode.Id,
+				Checked:     checked,
+				TreeVisible: treeVis > 0,
 				Data: map[string]any{
 					"connId":     conn.Id,
 					"parentName": conn.ParentName,
 				},
-				Children: nil, // 使用 nil 而不是空数组，避免前端误判为有子节点
+				Children: nil,
 			})
 		}
 
@@ -912,9 +946,11 @@ func getConnTree(roleId string) []*PermissionNode {
 
 	// 添加没有目录的连接
 	for _, conn := range noParentConns {
+		treeVis, exists := 0, false
 		checked := false
-		if roleId != "" && roleConnIds[conn.Id] {
-			checked = true
+		if roleId != "" {
+			treeVis, exists = roleConnIds[conn.Id]
+			checked = exists
 		}
 
 		name := ""
@@ -923,31 +959,45 @@ func getConnTree(roleId string) []*PermissionNode {
 		}
 
 		nodes = append(nodes, &PermissionNode{
-			Id:       conn.Id,
-			Label:    name,
-			Type:     "conn",
-			Level:    "conn",
-			ParentId: conn.ParentId,
-			Checked:  checked,
+			Id:          conn.Id,
+			Label:       name,
+			Type:        "conn",
+			Level:       "conn",
+			ParentId:    conn.ParentId,
+			Checked:     checked,
+			TreeVisible: treeVis > 0,
 			Data: map[string]any{
 				"connId":     conn.Id,
 				"parentName": conn.ParentName,
 			},
-			Children: nil, // 使用 nil 而不是空数组，避免前端误判为有子节点
+			Children: nil,
 		})
 	}
 
 	return nodes
 }
 
-// getRoleConnPermissions 获取角色在连接级别的权限
-func getRoleConnPermissions(roleId string) map[string]bool {
-	connIds := make(map[string]bool)
+// getRoleConnPermissions 获取角色在连接级别的权限，返回 connId -> treeVisible
+func getRoleConnPermissions(roleId string) map[string]int {
+	connIds := make(map[string]int)
 	powerList := []*PowerDetail{}
-	err := config.Mngtdb.Select(&powerList, "select conn_id from t_power where role_id = ? and power_level = 'conn'", roleId)
+	err := config.Mngtdb.Select(&powerList, "select conn_id, tree_visible from t_power where role_id = ? and power_level = 'conn'", roleId)
 	logutils.PrintErr(err)
 	for _, power := range powerList {
-		connIds[power.ConnId] = true
+		if _, ok := connIds[power.ConnId]; !ok || power.TreeVisible > connIds[power.ConnId] {
+			connIds[power.ConnId] = power.TreeVisible
+		}
+	}
+	// 同时检查 schema/table/column 级别的权限，实现向上传播
+	schemaPowers := []*PowerDetail{}
+	err2 := config.Mngtdb.Select(&schemaPowers, "select conn_id, tree_visible from t_power where role_id = ? and power_level in ('schema','table','column')", roleId)
+	logutils.PrintErr(err2)
+	for _, power := range schemaPowers {
+		if _, ok := connIds[power.ConnId]; !ok {
+			connIds[power.ConnId] = power.TreeVisible
+		} else if power.TreeVisible > connIds[power.ConnId] {
+			connIds[power.ConnId] = power.TreeVisible
+		}
 	}
 	return connIds
 }
@@ -959,7 +1009,7 @@ func getSchemaTree(connId, authorization string, roleId string) []*PermissionNod
 	}
 
 	// 获取角色的 schema 级权限
-	var roleSchemaMap map[string]bool
+	var roleSchemaMap map[string]int
 	if roleId != "" {
 		roleSchemaMap = getRoleSchemaPermissions(roleId, connId)
 	}
@@ -975,18 +1025,21 @@ func getSchemaTree(connId, authorization string, roleId string) []*PermissionNod
 	nodes := make([]*PermissionNode, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
+		treeVis, exists := 0, false
 		checked := false
-		if roleId != "" && roleSchemaMap[schemaName] {
-			checked = true
+		if roleId != "" {
+			treeVis, exists = roleSchemaMap[schemaName]
+			checked = exists
 		}
 
 		nodes = append(nodes, &PermissionNode{
-			Id:       connId + "::" + schemaName,
-			Label:    schemaName,
-			Type:     "schema",
-			Level:    "schema",
-			ParentId: connId,
-			Checked:  checked,
+			Id:          connId + "::" + schemaName,
+			Label:       schemaName,
+			Type:        "schema",
+			Level:       "schema",
+			ParentId:    connId,
+			Checked:     checked,
+			TreeVisible: treeVis > 0,
 			Data: map[string]any{
 				"connId":     connId,
 				"schema":     schemaName,
@@ -998,15 +1051,33 @@ func getSchemaTree(connId, authorization string, roleId string) []*PermissionNod
 	return nodes
 }
 
-// getRoleSchemaPermissions 获取角色在 schema 级别的权限
-func getRoleSchemaPermissions(roleId, connId string) map[string]bool {
-	schemas := make(map[string]bool)
+// getRoleSchemaPermissions 获取角色在 schema 级别的权限，返回 schemaName -> treeVisible
+// 同时向上传播：如果有 table/column 级权限在该 schema 下，也标记为有权限
+func getRoleSchemaPermissions(roleId, connId string) map[string]int {
+	schemas := make(map[string]int)
 	powerList := []*PowerDetail{}
-	err := config.Mngtdb.Select(&powerList, "select schema_name from t_power where role_id = ? and conn_id = ? and power_level = 'schema'", roleId, connId)
+	err := config.Mngtdb.Select(&powerList,
+		"select schema_name, tree_visible from t_power where role_id = ? and conn_id = ? and power_level = 'schema'", roleId, connId)
 	logutils.PrintErr(err)
 	for _, power := range powerList {
 		if power.SchemaName != nil {
-			schemas[*power.SchemaName] = true
+			if _, ok := schemas[*power.SchemaName]; !ok || power.TreeVisible > schemas[*power.SchemaName] {
+				schemas[*power.SchemaName] = power.TreeVisible
+			}
+		}
+	}
+	// 向上传播：检查 table/column 级权限
+	subPowers := []*PowerDetail{}
+	err2 := config.Mngtdb.Select(&subPowers,
+		"select schema_name, tree_visible from t_power where role_id = ? and conn_id = ? and power_level in ('table','column')", roleId, connId)
+	logutils.PrintErr(err2)
+	for _, power := range subPowers {
+		if power.SchemaName != nil {
+			if _, ok := schemas[*power.SchemaName]; !ok {
+				schemas[*power.SchemaName] = power.TreeVisible
+			} else if power.TreeVisible > schemas[*power.SchemaName] {
+				schemas[*power.SchemaName] = power.TreeVisible
+			}
 		}
 	}
 	return schemas
@@ -1028,7 +1099,7 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 	}
 
 	// 获取角色的 table 级权限
-	var roleTableMap map[string]bool
+	var roleTableMap map[string]int
 	if roleId != "" {
 		roleTableMap = getRoleTablePermissions(roleId, connId, schemaName)
 	}
@@ -1081,18 +1152,21 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 			nodeType = strings.ToLower(tableType)
 		}
 
+		treeVis, exists := 0, false
 		checked := false
-		if roleId != "" && roleTableMap[tableName] {
-			checked = true
+		if roleId != "" {
+			treeVis, exists = roleTableMap[tableName]
+			checked = exists
 		}
 
 		nodes = append(nodes, &PermissionNode{
-			Id:       connId + "::" + schemaName + "::" + tableName,
-			Label:    tableName,
-			Type:     nodeType,
-			Level:    "table",
-			ParentId: connId + "::" + schemaName,
-			Checked:  checked,
+			Id:          connId + "::" + schemaName + "::" + tableName,
+			Label:       tableName,
+			Type:        nodeType,
+			Level:       "table",
+			ParentId:    connId + "::" + schemaName,
+			Checked:     checked,
+			TreeVisible: treeVis > 0,
 			Data: map[string]any{
 				"connId":     connId,
 				"schema":     schemaName,
@@ -1107,15 +1181,32 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 	return nodes
 }
 
-// getRoleTablePermissions 获取角色在 table 级别的权限
-func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool {
-	tables := make(map[string]bool)
+// getRoleTablePermissions 获取角色在 table 级别的权限，返回 tableName -> treeVisible
+func getRoleTablePermissions(roleId, connId, schemaName string) map[string]int {
+	tables := make(map[string]int)
 	powerList := []*PowerDetail{}
-	err := config.Mngtdb.Select(&powerList, "select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'table'", roleId, connId, schemaName)
+	err := config.Mngtdb.Select(&powerList,
+		"select table_name, tree_visible from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'table'", roleId, connId, schemaName)
 	logutils.PrintErr(err)
 	for _, power := range powerList {
 		if power.TableName != nil {
-			tables[*power.TableName] = true
+			if _, ok := tables[*power.TableName]; !ok || power.TreeVisible > tables[*power.TableName] {
+				tables[*power.TableName] = power.TreeVisible
+			}
+		}
+	}
+	// 向上传播：检查 column 级权限
+	subPowers := []*PowerDetail{}
+	err2 := config.Mngtdb.Select(&subPowers,
+		"select table_name, tree_visible from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'column'", roleId, connId, schemaName)
+	logutils.PrintErr(err2)
+	for _, power := range subPowers {
+		if power.TableName != nil {
+			if _, ok := tables[*power.TableName]; !ok {
+				tables[*power.TableName] = power.TreeVisible
+			} else if power.TreeVisible > tables[*power.TableName] {
+				tables[*power.TableName] = power.TreeVisible
+			}
 		}
 	}
 	return tables
@@ -1253,6 +1344,7 @@ type User struct {
 	Bio       string    `json:"bio"`
 }
 
+// UserPower 用户权限摘要
 type UserPower struct {
 	UserId string
 	Power  []string
@@ -1299,25 +1391,27 @@ type PowerDto struct {
 }
 
 type PowerDetail struct {
-	Id         string  `json:"id"`
-	RoleId     string  `json:"roleId" db:"role_id"`
-	ConnId     string  `json:"connId" db:"conn_id"`
-	ConnName   *string `json:"connName" db:"conn_name"`
-	SchemaName *string `json:"schemaName,omitempty" db:"schema_name"`
-	TableName  *string `json:"tableName,omitempty" db:"table_name"`
-	ColumnName *string `json:"columnName,omitempty" db:"column_name"`
-	Level      string  `json:"level" db:"power_level"`
+	Id          string  `json:"id"`
+	RoleId      string  `json:"roleId" db:"role_id"`
+	ConnId      string  `json:"connId" db:"conn_id"`
+	ConnName    *string `json:"connName" db:"conn_name"`
+	SchemaName  *string `json:"schemaName,omitempty" db:"schema_name"`
+	TableName   *string `json:"tableName,omitempty" db:"table_name"`
+	ColumnName  *string `json:"columnName,omitempty" db:"column_name"`
+	Level       string  `json:"level" db:"power_level"`
+	TreeVisible int     `json:"treeVisible" db:"tree_visible"`
 }
 
 type PermissionNode struct {
-	Id       string            `json:"id"`
-	Label    string            `json:"label"`
-	Type     string            `json:"type"`
-	Level    string            `json:"level"`
-	ParentId string            `json:"parentId,omitempty"`
-	Checked  bool              `json:"checked,omitempty"`
-	Data     map[string]any    `json:"data,omitempty"`
-	Children []*PermissionNode `json:"children"`
+	Id          string            `json:"id"`
+	Label       string            `json:"label"`
+	Type        string            `json:"type"`
+	Level       string            `json:"level"`
+	ParentId    string            `json:"parentId,omitempty"`
+	Checked     bool              `json:"checked,omitempty"`
+	TreeVisible bool              `json:"treeVisible,omitempty"`
+	Data        map[string]any    `json:"data,omitempty"`
+	Children    []*PermissionNode `json:"children"`
 }
 
 type AIConfig struct {
