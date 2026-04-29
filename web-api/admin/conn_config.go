@@ -283,6 +283,20 @@ func ListTableNames(c *gin.Context) {
 		return
 	}
 
+	// 当 schema 为空时，从数据库连接获取实际 schema
+	// 确保权限检查使用的 schema 与实际查询的 schema 一致
+	if schema == "" {
+		dc := GetConn(connId, authorization)
+		switch dc.DriverName() {
+		case "mysql", "mariadb":
+			dc.Get(&schema, "SELECT DATABASE()")
+		case "oracle":
+			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+		case "sqlite":
+			schema = "main"
+		}
+	}
+
 	// 获取用户权限
 	userPower := GetUserPower(authorization)
 

@@ -415,6 +415,20 @@ func ListTableFat(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	connId := c.Query("connId")
 	schema := c.Query("schema")
+
+	// 当 schema 为空时，从数据库连接获取实际 schema
+	if schema == "" && connId != "" {
+		dc := GetConn(connId, authorization)
+		switch dc.DriverName() {
+		case "mysql", "mariadb":
+			dc.Get(&schema, "SELECT DATABASE()")
+		case "oracle":
+			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+		case "sqlite":
+			schema = "main"
+		}
+	}
+
 	tables := queryTableInfo(connId, schema, authorization)
 	userPower := GetUserPower(authorization)
 	filteredTables := filterTablesByPermission(tables, connId, schema, userPower)

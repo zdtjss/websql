@@ -149,6 +149,19 @@ func ExportXlsxBySql(c *gin.Context) {
 		filename = "export"
 	}
 
+	// 当 schema 为空时，从数据库连接获取实际 schema
+	if schema == "" && connId != "" {
+		dc := admin.GetConn(connId, authorization)
+		switch dc.DriverName() {
+		case "mysql", "mariadb":
+			dc.Get(&schema, "SELECT DATABASE()")
+		case "oracle":
+			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+		case "sqlite":
+			schema = "main"
+		}
+	}
+
 	analysis := admin.AnalyzeSQL(sqlStr, schema)
 	permResult := admin.CheckAnalysisPermission(analysis, connId, authorization)
 	if !permResult.Allowed {

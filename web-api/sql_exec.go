@@ -42,6 +42,19 @@ func ExecSQL(c *gin.Context) {
 	conn := admin.GetConn(connId, authorization)
 	user := admin.GetUser(authorization)
 
+	// 当 schema 为空时，从数据库连接获取实际 schema
+	// 确保权限检查使用的 schema 与实际查询的 schema 一致
+	if schema == "" {
+		switch conn.DriverName() {
+		case "mysql", "mariadb":
+			conn.Get(&schema, "SELECT DATABASE()")
+		case "oracle":
+			conn.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+		case "sqlite":
+			schema = "main"
+		}
+	}
+
 	analysis := admin.AnalyzeSQL(sqlStr, schema)
 	permResult := admin.CheckAnalysisPermission(analysis, connId, authorization)
 	if !permResult.Allowed {

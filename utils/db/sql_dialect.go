@@ -13,8 +13,8 @@ import (
 
 var SQL_DIALECT = map[string]map[string]string{
 	"mysql": {
-		"listSchema":       "select schema_name from information_schema.schemata",
-		"listTable":        "select TABLE_NAME,TABLE_TYPE,table_comment from information_schema.tables WHERE table_schema = ?",
+		"listSchema":       "select schema_name from information_schema.schemata order by schema_name",
+		"listTable":        "select TABLE_NAME,TABLE_TYPE,table_comment from information_schema.tables WHERE table_schema = ? order by TABLE_NAME",
 		"listColumns":      "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
 		"listAllColumns":   "select TABLE_NAME, column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ? order by TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION",
 		"listTableColumns": "select * from information_schema.COLUMNS where table_schema = ? and table_name = ?",
@@ -26,8 +26,8 @@ var SQL_DIALECT = map[string]map[string]string{
 		"listIndexes":      "SELECT INDEX_NAME,COLUMN_NAME,NON_UNIQUE,SEQ_IN_INDEX,INDEX_TYPE,NULLABLE,COMMENT,INDEX_COMMENT FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME,SEQ_IN_INDEX",
 	},
 	"oracle": {
-		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual",
-		"listTable":  "select TABLE_NAME, table_type, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1",
+		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual order by schema_name",
+		"listTable":  "select TABLE_NAME, table_type, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1 order by TABLE_NAME",
 		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
