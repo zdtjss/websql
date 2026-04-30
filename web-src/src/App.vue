@@ -310,12 +310,8 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
       token.attrs[hrefIndex][1] = href
     }
 
-    // 自动添加登录 token：如果是导出链接，添加认证参数
-    const authToken = sessionStorage.getItem('authentication')
-    if (authToken && href && href.includes('/exports/')) {
-      // 检查 URL 是否已有查询参数
-      const separator = href.includes('?') ? '&' : '?'
-      token.attrs[hrefIndex][1] = href + separator + 'token=' + encodeURIComponent(authToken)
+    if (href && href.includes('/exports/')) {
+      token.attrPush(['data-export-link', 'true'])
     }
 
     // 所有链接都添加 target="_blank"
@@ -669,14 +665,12 @@ function renderMarkdown(text) {
         fullUrl = apiBase + url
       }
 
-      // 自动添加登录 token：如果是导出链接
-      const authToken = sessionStorage.getItem('authentication')
-      if (authToken && fullUrl && fullUrl.includes('/exports/')) {
-        const separator = fullUrl.includes('?') ? '&' : '?'
-        fullUrl = fullUrl + separator + 'token=' + encodeURIComponent(authToken)
+      let exportAttr = ''
+      if (fullUrl && fullUrl.includes('/exports/')) {
+        exportAttr = ' data-export-link="true"'
       }
 
-      return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>`
+      return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer"${exportAttr}>${linkText}</a>`
     })
 
     return md.render(processed)
@@ -2220,6 +2214,18 @@ async function loadSession(id) {
   }
 }
 
+function handleExportLinkClick(e) {
+  const link = e.target.closest('a[data-export-link]')
+  if (!link) return
+  const authToken = sessionStorage.getItem('authentication')
+  if (!authToken) return
+  e.preventDefault()
+  let href = link.getAttribute('href')
+  const separator = href.includes('?') ? '&' : '?'
+  href = href + separator + 'token=' + encodeURIComponent(authToken)
+  window.open(href, '_blank')
+}
+
 onMounted(() => {
   loadConnList()
   getSysModel()
@@ -2231,6 +2237,7 @@ onMounted(() => {
   document.addEventListener('mousemove', handleMermaidResizeMove)
   document.addEventListener('mouseup', handleMermaidResizeUp)
   window.addEventListener('session-expired', handleSessionExpiredEvent)
+  document.addEventListener('click', handleExportLinkClick)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
   nextTick(() => {
@@ -2258,6 +2265,7 @@ onUnmounted(() => {
   document.removeEventListener('mousemove', handleMermaidResizeMove)
   document.removeEventListener('mouseup', handleMermaidResizeUp)
   window.removeEventListener('session-expired', handleSessionExpiredEvent)
+  document.removeEventListener('click', handleExportLinkClick)
   if (msgContainer.value) {
     msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
     msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)

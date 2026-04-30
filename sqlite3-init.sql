@@ -18,13 +18,13 @@ CREATE TABLE IF NOT EXISTS t_power (
 	schema_name TEXT,
 	table_name TEXT,
 	column_name TEXT,
-	power_level TEXT,
-	tree_visible INTEGER DEFAULT 0
+	power_level TEXT
 );
 
 CREATE TABLE IF NOT EXISTS t_role (
 	id TEXT PRIMARY KEY,
-	name TEXT
+	name TEXT,
+	view_classic INTEGER DEFAULT 0
 );
 
 insert into t_role (id, name) values ('825683877266722816', 'admin');

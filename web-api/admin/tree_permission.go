@@ -33,15 +33,8 @@ func filterConnsWithPermission(parentId string, userPower *UserPower) []*Tree {
 	err := config.Mngtdb.Select(&cfgList, sql.String(), param...)
 	logutils.PanicErr(err)
 
-	// tree_visible 过滤
-	treeVisConn, _, _ := GetUserTreeVisibility(userPower.UserId)
-	hasAnyTreeVis := len(treeVisConn) > 0
-
 	tree := make([]*Tree, 0, len(cfgList))
 	for _, cfg := range cfgList {
-		if hasAnyTreeVis && !treeVisConn[cfg.Id] {
-			continue
-		}
 		label := ""
 		if cfg.Name != nil {
 			label = *cfg.Name
@@ -106,19 +99,12 @@ func filterSchemasWithPermission(connId, authorization string) []*Tree {
 	}
 
 	if hasConnLevel && !hasSchemaOrLowerLevel {
-		return filterAllByTreeVis(allSchemas, connId, userPower.UserId)
+		return allSchemas
 	}
-
-	// tree_visible 过滤
-	_, treeVisSchemas, _ := GetUserTreeVisibility(userPower.UserId)
-	hasAnyTreeVis := len(treeVisSchemas) > 0
 
 	filtered := make([]*Tree, 0, len(allSchemas))
 	for _, schema := range allSchemas {
 		if allowedSchemas[schema.Label] {
-			if hasAnyTreeVis && !treeVisSchemas[connId+"::"+schema.Label] {
-				continue
-			}
 			filtered = append(filtered, schema)
 		}
 	}
@@ -216,22 +202,15 @@ func filterTablesWithPermission(key string, schema, authorization string) []*Tre
 	}
 
 	if hasConnLevel && !hasTableOrColumnLevel {
-		return filterTablesByTreeVis(allTables, key, schema, userPower.UserId)
+		return allTables
 	}
 	if hasSchemaLevel && !hasTableOrColumnLevel {
-		return filterTablesByTreeVis(allTables, key, schema, userPower.UserId)
+		return allTables
 	}
-
-	// tree_visible 过滤
-	_, treeVisSchemas, treeVisTables := GetUserTreeVisibility(userPower.UserId)
-	hasAnyTreeVis := len(treeVisSchemas) > 0 || len(treeVisTables) > 0
 
 	filtered := make([]*Tree, 0, len(allTables))
 	for _, table := range allTables {
 		if allowedTables[table.Label] {
-			if hasAnyTreeVis && !treeVisTables[key+"::"+schema+"::"+table.Label] {
-				continue
-			}
 			filtered = append(filtered, table)
 		}
 	}
@@ -287,15 +266,8 @@ func filterDirTreeWithPermission(parentId string, userPower *UserPower) []*Tree 
 	err := config.Mngtdb.Select(&connList, connSQL.String(), connParam...)
 	logutils.PanicErr(err)
 
-	// tree_visible 过滤：只保留有树可见性的连接
-	treeVisConn, _, _ := GetUserTreeVisibility(userPower.UserId)
-	hasAnyTreeVis := len(treeVisConn) > 0
-
 	dirsWithConn := make(map[string]bool)
 	for _, conn := range connList {
-		if hasAnyTreeVis && !treeVisConn[conn.Id] {
-			continue
-		}
 		if conn.ParentId != "" {
 			dirsWithConn[conn.ParentId] = true
 		}
@@ -327,52 +299,6 @@ func filterDirTreeWithPermission(parentId string, userPower *UserPower) []*Tree 
 		if dirsWithConn[dir.Id] {
 			filtered = append(filtered, dir)
 		}
-	}
-	return filtered
-}
-
-// filterAllByTreeVis 对全部资源的列表按 tree_visible 过滤
-func filterAllByTreeVis(allItems []*Tree, connId string, userId string) []*Tree {
-	conns, schemas, _ := GetUserTreeVisibility(userId)
-	hasAnyTreeVis := len(conns) > 0 || len(schemas) > 0
-	if !hasAnyTreeVis {
-		return allItems
-	}
-
-	filtered := make([]*Tree, 0, len(allItems))
-	for _, item := range allItems {
-		key := connId + "::" + item.Label
-		if schemas[key] {
-			filtered = append(filtered, item)
-		}
-	}
-	if len(filtered) == 0 {
-		filtered = allItems
-	}
-	return filtered
-}
-
-// filterTablesByTreeVis 对全部表的列表按 tree_visible 过滤
-func filterTablesByTreeVis(allTables []*Tree, connId, schema, userId string) []*Tree {
-	_, _, tables := GetUserTreeVisibility(userId)
-	hasAnyTreeVis := false
-	for range tables {
-		hasAnyTreeVis = true
-		break
-	}
-	if !hasAnyTreeVis {
-		return allTables
-	}
-
-	filtered := make([]*Tree, 0, len(allTables))
-	for _, table := range allTables {
-		key := connId + "::" + schema + "::" + table.Label
-		if tables[key] {
-			filtered = append(filtered, table)
-		}
-	}
-	if len(filtered) == 0 {
-		filtered = allTables
 	}
 	return filtered
 }

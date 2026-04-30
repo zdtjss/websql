@@ -235,52 +235,23 @@ func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization 
 		}
 	}
 	if hasConnLevel && !hasTableOrColumnLevel {
-		return filterTablesByTreeVisLocal(tables, connId, schema, userPower.UserId)
+		return tables
 	}
 	if hasSchemaLevel && !hasTableOrColumnLevel {
-		return filterTablesByTreeVisLocal(tables, connId, schema, userPower.UserId)
-	}
-	// tree_visible 过滤
-	_, _, treeVisTables := GetUserTreeVisibility(userPower.UserId)
-	hasAnyTreeVis := false
-	for range treeVisTables {
-		hasAnyTreeVis = true
-		break
+		return tables
 	}
 	filtered := make([]*Tree, 0)
 	for _, t := range tables {
 		if allowedTables[t.Label] {
-			if hasAnyTreeVis && !treeVisTables[connId+"::"+schema+"::"+t.Label] {
-				continue
-			}
 			filtered = append(filtered, t)
 		}
 	}
 	return filtered
 }
 
-// filterTablesByTreeVisLocal 本地版的表树可见性过滤
+// filterTablesByTreeVisLocal 本地版的表树可见性过滤（已废弃）
 func filterTablesByTreeVisLocal(tables []*Tree, connId, schema, userId string) []*Tree {
-	_, _, treeVisTables := GetUserTreeVisibility(userId)
-	hasAnyTreeVis := false
-	for range treeVisTables {
-		hasAnyTreeVis = true
-		break
-	}
-	if !hasAnyTreeVis {
-		return tables
-	}
-	filtered := make([]*Tree, 0, len(tables))
-	for _, table := range tables {
-		key := connId + "::" + schema + "::" + table.Label
-		if treeVisTables[key] {
-			filtered = append(filtered, table)
-		}
-	}
-	if len(filtered) == 0 {
-		return tables
-	}
-	return filtered
+	return tables
 }
 
 func checkTableAccess(connId, schemaName, tableName, authorization string) {

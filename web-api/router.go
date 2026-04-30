@@ -64,6 +64,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/roleBaseList", admin.RoleBaseList)
 	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
 	routerGroup.GET("/permissionTree", admin.GetPermissionTree)
+	routerGroup.GET("/canUseClassicView", admin.CanUseClassicView)
 
 	routerGroup.GET("/promptList", admin.PromptList)
 	routerGroup.GET("/promptListByRole", admin.PromptListByRole)
@@ -225,8 +226,11 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		// 仅从 Authorization 头获取认证信息（不再从 URL 参数获取，避免 token 泄露到日志）
 		authorization := c.GetHeader("Authorization")
+
+		if authorization == "" && strings.HasPrefix(path, "/api/exports/") {
+			authorization = c.Query("token")
+		}
 
 		if authorization == "" {
 			c.Abort()

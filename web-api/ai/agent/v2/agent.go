@@ -120,6 +120,16 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
 	}
 
+	var permAgentTool tool.BaseTool
+	if scope.IsRemote && !scope.HasFullConnAccess {
+		permAgent, err := NewPermissionAgent(ctx, cfg, connID, dbType, dbSchema, scope.UserID)
+		if err != nil {
+			log.Printf("[Agent] 创建权限审核 Agent 失败，回退到程序化检查 - err=%v\n", err)
+		} else {
+			permAgentTool = adk.NewAgentTool(ctx, permAgent)
+		}
+	}
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持查询、分析和数据导入导出",
@@ -129,7 +139,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
-			&PermissionMiddleware{Scope: scope},
+			&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
 			// DangerousSQLApprovalMiddleware：拦截 exec_sql 工具，对危险 SQL 执行审批流程
 			// 严格遵循 eino ApprovalMiddleware 模式，确保所有危险 SQL 必须经过用户确认
 			&DangerousSQLApprovalMiddleware{},
@@ -519,54 +529,128 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *Ex
 func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope) string {
 	var sb strings.Builder
 
-	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。你精通标准 SQL 以及 MySQL、MariaDB、Oracle 等多种方言特性。你不仅能够写出极致优化、安全高效的 SQL 代码，还具备将数据转化为可执行商业洞察的强大分析能力。\n\n")
-	fmt.Fprintf(&sb, "数据库类型：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
+	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
+	sb.WriteString("你精通标准 SQL（SQL-92/99/2003），以及 ")
+	fmt.Fprintf(&sb, "%s 的方言特性、索引策略和查询优化技巧。", dbType)
+	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为有洞察的分析结论。")
+	sb.WriteString("\n\n")
+	fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
 
 	if len(tableContext) > 0 {
-		fmt.Fprintf(&sb, "\n用户指定的数据表：%s\n", strings.Join(tableContext, ", "))
-		sb.WriteString("只能使用这些表，不允许查询其他表。如果无法仅用这些表回答，请说明需要哪些额外的表。\n")
+		fmt.Fprintf(&sb, "\n用户指定表范围：%s\n", strings.Join(tableContext, ", "))
+		sb.WriteString("只能在这些表上操作。若需求无法仅用这些表满足，请明确告知需要哪些额外表。\n")
 	} else {
-		sb.WriteString("\n用户未指定数据表，可使用 get_table_schema 查询已授权表的结构。\n")
+		sb.WriteString("\n用户未限定表范围，你可以调用 get_table_schema 探索已授权表的结构。\n")
 	}
 
 	sb.WriteString(scope.DescribeForPrompt())
 
 	sb.WriteString(`
 
-## 核心原则
-1. 数据准确性最高优先级，执行前必须验证表结构和字段名
-2. 禁止使用 SELECT *，必须明确指定字段，除非用户明确要求导出所有列
-3. 大表查询必须添加 WHERE 条件和 LIMIT
-4. 回复中必须明确告知数据来源表名
+## 行为准则（必须遵守）
+1. 准确性第一：生成 SQL 前必须通过 get_table_schema 验证表名和字段名，禁止臆测
+2. 禁止 SELECT *：必须显式列出所需字段，除非用户明确要求导出全部列
+3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
+4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
 
-## 工作流程
-1. 理解需求 → 2. 调用 get_table_schema 验证表结构 → 3. 生成 SQL → 4. 执行 → 5. 回复（含表名）
+## 标准工作流程
+执行每个数据分析任务时，按以下步骤推进：
+1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
+2. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
+3. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
+4. 执行查询 — 调用 query_data（读）或 exec_sql（写）
+5. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
+6. 当涉及写操作时，在步骤4之前先向用户说明将要执行的操作，等待系统推送确认
 
-## 写操作处理（红线）
-- 所有写操作必须调用 exec_sql 工具，系统会自动拦截并推送到前端由用户确认
-- AI 不得绕过此机制，这是必须遵守的安全红线
+## 工具使用指南
+| 工具 | 用途与约束 |
+|------|-----------|
+| get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
+| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH） |
+| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。系统会拦截并推送前端确认，你无需额外处理 |
+| export_excel | 导出 Excel，必须传入 sql 参数。若用户无特殊要求，默认导出所有查询列 |
+| export_excel_with_chart | 导出带图表的 Excel，传入 sql。图表类型根据数据特征自动选择 |
+| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本），避免重复查询 |
+| export_analysis_docx | 生成 Word 分析报告，同样优先使用 content 模式 |
+| import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
 
-## 导出操作
-- export_excel / export_excel_with_chart：必须提供 sql 参数
-- export_analysis_docx / export_ppt：支持 content 模式（推荐）和 sql 模式
+## SQL 编写规范（` + dbType + `）
+` + getSQLDialectRules(dbType) + `
 
-## 数据导入操作（重要）
-当用户上传了 Excel 文件并要求导入数据时：
-1. 先调用 get_table_schema 获取目标表结构
-2. **在调用 import_data 之前，必须先向用户明确说明以下信息，等待用户确认后再执行：**
-   - 目标表名
-   - 操作模式：是"插入新数据"（insert）、"更新已有数据"（upsert），还是"插入+更新"
-   - 预计影响的数据行数
-   - 字段映射关系（Excel 列 → 数据库列）
-3. 用户确认后，调用 import_data 工具（传入 fileId、tableName 和 mode）
-4. 后端会自动按列名匹配字段
-5. 如果用户没有指定目标表，必须先询问用户
+## 写操作安全
+- 所有写操作必须通过 exec_sql 工具执行，系统会自动拦截并推送前端由用户确认
+- 生成写操作 SQL 时，尽量包含精确的 WHERE 条件，避免批量误操作
+- DELETE / UPDATE 无 WHERE 子句的语句将被系统标记为高风险
+
+## 数据导入流程
+用户上传 Excel 并要求导入时：
+1. 调用 get_table_schema 了解目标表结构
+2. 向用户明确说明并等待确认：
+   - 目标表名、操作模式（insert / upsert / insert+update）
+   - Excel 列 → 数据库列的映射关系
+   - 预计影响行数
+3. 用户确认后调用 import_data（传入 fileId、tableName、mode），后端自动按列名匹配
+4. 若用户未指定目标表，必须先询问
 
 ## 多轮对话
-你拥有完整的对话历史记忆。"刚才的""上面的""这个结果"等都指上一次查询。
+你拥有完整对话历史。"刚才的""上一个""这个结果"均指上一轮上下文。
+当用户追问时，优先基于已有结果分析，而非重复查询。
 
-## 错误处理
-当工具调用失败时，系统会自动将错误信息反馈给你。请根据错误信息重新分析，不要重复使用相同的错误参数。
+## 错误恢复
+工具调用失败时系统会将错误信息反馈给你。请：
+- 仔细阅读错误信息，不要重复使用相同的错误参数
+- 调整 SQL 或参数后重试，最多尝试 3 次
+- 若 3 次均失败，向用户解释原因并建议替代方案
 `)
 	return sb.String()
+}
+
+func getSQLDialectRules(dbType string) string {
+	base := "- 字段名和表名若含特殊字符或关键字，使用反引号包裹\n"
+	base += "- 字符串比较注意字符集和排序规则\n"
+
+	switch strings.ToLower(dbType) {
+	case "mysql", "mariadb":
+		return base +
+			"- 优先使用 EXPLAIN 分析执行计划，检查是否走索引\n" +
+			"- 字符串模糊匹配优先 LIKE 'prefix%'（可利用索引），避免 LIKE '%middle%'\n" +
+			"- 日期函数使用 DATE_FORMAT、DATE_ADD、DATEDIFF 等\n" +
+			"- 分页优先使用 LIMIT offset, count\n" +
+			"- 注意 ONLY_FULL_GROUP_BY 模式，GROUP BY 的字段必须在 SELECT 中出现或使用聚合函数\n" +
+			"- 多表 JOIN 时注意驱动表选择，小表驱动大表\n"
+	case "oracle":
+		return base +
+			"- 使用 EXPLAIN PLAN FOR 分析执行计划\n" +
+			"- 分页使用 ROWNUM 或 OFFSET/FETCH（12c+），注意 ROWNUM 是在排序前计算的\n" +
+			"- 日期函数使用 TO_DATE、TO_CHAR、ADD_MONTHS 等\n" +
+			"- 字符串连接使用 || 而非 CONCAT\n" +
+			"- 注意空字符串在 Oracle 中等价于 NULL\n" +
+			"- Dual 表用于无表查询，如 SELECT SYSDATE FROM DUAL\n"
+	case "postgresql", "postgres":
+		return base +
+			"- 使用 EXPLAIN ANALYZE 分析实际执行计划\n" +
+			"- 字段名和表名使用双引号包裹（若含大写或特殊字符）\n" +
+			"- 分页使用 LIMIT count OFFSET offset\n" +
+			"- 日期函数使用 TO_CHAR、DATE_TRUNC、AGE 等\n" +
+			"- 字符串拼接使用 || 或 CONCAT\n" +
+			"- 注意 PostgreSQL 的 MVCC 特性，大量更新后建议 VACUUM\n"
+	case "sqlite":
+		return base +
+			"- 使用 EXPLAIN QUERY PLAN 分析查询计划\n" +
+			"- 日期函数使用 strftime、date、time、datetime\n" +
+			"- 字符串拼接使用 ||\n" +
+			"- AUTOINCREMENT 仅用于 INTEGER PRIMARY KEY\n" +
+			"- 写操作会锁定整个数据库，避免长事务\n"
+	case "sqlserver", "mssql":
+		return base +
+			"- 使用 SET STATISTICS IO ON 查看 IO 统计\n" +
+			"- 分页使用 OFFSET/FETCH（2012+）或 ROW_NUMBER() OVER()\n" +
+			"- 日期函数使用 FORMAT、DATEADD、DATEDIFF 等\n" +
+			"- 使用 TOP 限制返回行数（旧版本），新版本用 OFFSET/FETCH\n" +
+			"- 字符串拼接使用 + 或 CONCAT（2012+）\n"
+	default:
+		return base +
+			"- 使用 EXPLAIN 分析执行计划\n" +
+			"- 遵循标准 SQL 语法，避免数据库特有的非标准扩展\n"
+	}
 }

@@ -17,13 +17,13 @@ create table if not exists t_power (
 	schema_name varchar(128),
 	table_name varchar(128),
 	column_name varchar(128),
-	power_level varchar(32),
-	tree_visible integer default 0
+	power_level varchar(32)
 );
 
 create table if not exists t_role (
 	id varchar(36) primary key,
-	name varchar(64)
+	name varchar(64),
+	view_classic integer default 0
 );
 
 insert into t_role (id, name) values ('825683877266722816', 'admin');
