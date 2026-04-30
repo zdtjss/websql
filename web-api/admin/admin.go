@@ -60,7 +60,7 @@ func insertPowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 
 	// 构建批量插入 SQL：VALUES (...), (...), (...)
 	values := make([]string, 0, len(powers))
-	args := make([]interface{}, 0, len(powers)*7)
+	args := make([]any, 0, len(powers)*7)
 
 	for _, power := range powers {
 		id := utils.RandomStr()
@@ -96,7 +96,7 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 	}
 
 	// 连接级权限批量删除
-	connIds := make([]interface{}, 0)
+	connIds := make([]any, 0)
 	for _, p := range powers {
 		if p.Level == "conn" {
 			connIds = append(connIds, p.ConnId)
@@ -108,7 +108,7 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 			placeholders[i] = "?"
 		}
 		sql := fmt.Sprintf("delete from t_power where role_id = ? and conn_id in (%s) and power_level = 'conn'", strings.Join(placeholders, ","))
-		args := append([]interface{}{roleId}, connIds...)
+		args := append([]any{roleId}, connIds...)
 		_, err := tx.Exec(sql, args...)
 		logutils.PanicErr(err)
 	}
@@ -131,7 +131,7 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 				placeholders[i] = "?"
 			}
 			sql := fmt.Sprintf("delete from t_power where role_id = ? and conn_id = ? and schema_name in (%s) and power_level = 'schema'", strings.Join(placeholders, ","))
-			args := append([]interface{}{roleId, connId}, schemasToInterfaces(schemas)...)
+			args := append([]any{roleId, connId}, schemasToInterfaces(schemas)...)
 			_, err := tx.Exec(sql, args...)
 			logutils.PanicErr(err)
 		}
@@ -155,8 +155,8 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 }
 
 // schemasToInterfaces 将字符串切片转为 interface 切片
-func schemasToInterfaces(schemas []string) []interface{} {
-	result := make([]interface{}, len(schemas))
+func schemasToInterfaces(schemas []string) []any {
+	result := make([]any, len(schemas))
 	for i, v := range schemas {
 		result[i] = v
 	}
@@ -164,7 +164,7 @@ func schemasToInterfaces(schemas []string) []interface{} {
 }
 
 // ptrToString 将字符串指针转为字符串
-func ptrToString(s *string) interface{} {
+func ptrToString(s *string) any {
 	if s == nil {
 		return nil
 	}
@@ -192,7 +192,7 @@ func DelRole(c *gin.Context) {
 }
 
 // nullIfEmpty 空字符串转 nil
-func nullIfEmpty(s string) interface{} {
+func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil
 	}
