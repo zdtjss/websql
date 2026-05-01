@@ -84,7 +84,7 @@ func callOllama(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 
 func callOpenAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 	body, _ := json.Marshal(map[string]any{"model": cfg.Model, "messages": messages})
-	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, cfg.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %w", err)
 	}
