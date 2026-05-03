@@ -53,8 +53,10 @@ type ExportOutput struct {
 	RowCount    int    `json:"rowCount"`
 	DownloadURL string `json:"downloadUrl"`
 }
-type CurrentDateTimeInput struct{}
-type CurrentDateTimeOutput struct {
+type CurrentDateInfoInput struct{}
+type CurrentDateInfoOutput struct {
+	Date     string `json:"date"`
+	Weekday  string `json:"weekday"`
 	DateTime string `json:"dateTime"`
 }
 
@@ -85,9 +87,16 @@ func getConn(connId string) (*sqlx.DB, string) {
 	return conn, cfg.DbType
 }
 
-func GetCurrentDateTime() func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
-	return func(ctx context.Context, input *CurrentDateTimeInput) (*CurrentDateTimeOutput, error) {
-		return &CurrentDateTimeOutput{DateTime: time.Now().Format("2006-01-02 15:04:05")}, nil
+func GetCurrentDateInfo() func(ctx context.Context, input *CurrentDateInfoInput) (*CurrentDateInfoOutput, error) {
+	return func(ctx context.Context, input *CurrentDateInfoInput) (*CurrentDateInfoOutput, error) {
+		now := time.Now()
+		weekdayNames := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
+		weekday := weekdayNames[now.Weekday()]
+		return &CurrentDateInfoOutput{
+			Date:     now.Format("2006-01-02"),
+			Weekday:  weekday,
+			DateTime: now.Format("2006-01-02 15:04:05"),
+		}, nil
 	}
 }
 

@@ -510,8 +510,10 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *Ex
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", NewExportPPTFunc(connID))
 	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", NewExportAnalysisDocxFunc(connID))
 	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema))
+	// 获取当前日期、星期几和时间  不是所有模型都支持正确使用SQL获取当前日期信息
+	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 
-	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool}
+	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool, currentDateInfoTool}
 	// 过滤掉 nil（InferTool 失败时）
 	var validTools []tool.BaseTool
 	for _, t := range allTools {
