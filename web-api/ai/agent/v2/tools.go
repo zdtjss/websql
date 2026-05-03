@@ -777,14 +777,18 @@ func applyRowLimit(sql, driverName string, maxRows int) string {
 	upper := strings.ToUpper(sql)
 	switch driverName {
 	case "oracle":
-		if strings.Contains(upper, "ROWNUM") || strings.Contains(upper, "FETCH ") {
+		if strings.Contains(upper, "ROWNUM") ||
+			strings.Contains(upper, "FETCH NEXT") ||
+			strings.Contains(upper, "FETCH FIRST") {
 			return sql
 		}
 		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", sql, maxRows)
 	default:
-		if strings.Contains(upper, " LIMIT ") {
+		if reLimit.MatchString(upper) {
 			return sql
 		}
 		return fmt.Sprintf("%s LIMIT %d", sql, maxRows)
 	}
 }
+
+var reLimit = regexp.MustCompile(`(?i)\bLIMIT\s+\d+`)

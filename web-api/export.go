@@ -364,6 +364,6 @@ func handleExportDownload(c *gin.Context) {
 	file.Close()
 
 	// 下载后删除
-	os.Remove(filePath)
-	log.Printf("导出文件已删除：%s", filePath)
+	// os.Remove(filePath)
+	// log.Printf("导出文件已删除：%s", filePath)
 }

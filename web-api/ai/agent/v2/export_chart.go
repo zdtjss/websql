@@ -10,26 +10,144 @@ import (
 	"github.com/wcharczuk/go-chart/v2/drawing"
 )
 
-// renderChartPNG 使用 go-chart 渲染 PNG 图表
-func renderChartPNG(qr *queryResult, xIdx, yIdx int, title, chartType, filePath string) error {
-	if len(qr.Data) == 0 {
-		return fmt.Errorf("无数据可绘制")
+var chartBrandColors = []drawing.Color{
+	drawing.ColorFromHex("1A237E"),
+	drawing.ColorFromHex("00BCD4"),
+	drawing.ColorFromHex("4CAF50"),
+	drawing.ColorFromHex("FF9800"),
+	drawing.ColorFromHex("E91E63"),
+	drawing.ColorFromHex("5B9BD5"),
+	drawing.ColorFromHex("9C27B0"),
+	drawing.ColorFromHex("00897B"),
+}
+
+var chartLightGrid = chart.Style{
+	StrokeColor: drawing.ColorFromHex("E8ECF1"),
+	StrokeWidth: 0.5,
+}
+
+type chartSeries struct {
+	Name    string
+	XValues []float64
+	YValues []float64
+	XLabels []string
+}
+
+func renderMultiChartPNG(seriesList []chartSeries, title, chartType, filePath string) error {
+	switch strings.ToLower(chartType) {
+	case "pie", "doughnut", "donut":
+		if len(seriesList) > 0 {
+			return renderPieChartFile(filePath, seriesList[0].XLabels, seriesList[0].YValues, title)
+		}
+		return fmt.Errorf("pie chart requires at least one series")
+	case "bar", "column":
+		return renderBarChartFile(filePath, seriesList, title)
+	default:
+		return renderLineChartFile(filePath, seriesList, title)
+	}
+}
+
+func renderLineChartFile(filePath string, seriesList []chartSeries, title string) error {
+	if len(seriesList) == 0 {
+		return fmt.Errorf("no series data")
 	}
 
-	// 提取 X/Y 值
-	xLabels := make([]string, 0, len(qr.Data))
-	yValues := make([]float64, 0, len(qr.Data))
+	var allSeries []chart.Series
+	graph := chart.Chart{
+		Title:      title,
+		TitleStyle: chartTitleStyle(),
+		Width:      960,
+		Height:     540,
+		Background: chartBackStyle(),
+		Canvas: chart.Style{
+			FillColor: drawing.ColorFromHex("FFFFFF"),
+		},
+		XAxis: chart.XAxis{
+			Ticks: buildXTicks(seriesList[0].XLabels, seriesList[0].XValues),
+			Style: chartAxisStyle(),
+		},
+		YAxis: chart.YAxis{
+			Style: chartAxisStyle(),
+			GridMajorStyle: chartLightGrid,
+			GridMinorStyle: chart.Style{Hidden: true},
+			ValueFormatter: numberFormatter,
+		},
+	}
 
-	for _, row := range qr.Data {
-		xVal := fmt.Sprintf("%v", row[qr.Columns[xIdx]])
-		xLabels = append(xLabels, xVal)
-
-		yRaw := row[qr.Columns[yIdx]]
-		yFloat, err := toFloat64(yRaw)
-		if err != nil {
-			yFloat = 0
+	for i, s := range seriesList {
+		name := s.Name
+		if name == "" {
+			if len(seriesList) > 1 {
+				name = fmt.Sprintf("系列 %d", i+1)
+			}
 		}
-		yValues = append(yValues, yFloat)
+		color := chartBrandColors[i%len(chartBrandColors)]
+		allSeries = append(allSeries, chart.ContinuousSeries{
+			Name:    name,
+			XValues: s.XValues,
+			YValues: s.YValues,
+			Style: chart.Style{
+				StrokeColor: color,
+				StrokeWidth: 2.5,
+				DotColor:    color,
+				DotWidth:    3,
+			},
+		})
+	}
+
+	graph.Series = allSeries
+
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("创建文件失败：%w", err)
+	}
+	defer f.Close()
+	return graph.Render(chart.PNG, f)
+}
+
+func renderBarChartFile(filePath string, seriesList []chartSeries, title string) error {
+	if len(seriesList) == 0 {
+		return fmt.Errorf("no series data")
+	}
+
+	if len(seriesList) > 1 {
+		return renderMultiBarChart(filePath, seriesList, title)
+	}
+
+	s := seriesList[0]
+	bars := make([]chart.Value, 0, len(s.YValues))
+	for i, v := range s.YValues {
+		label := s.XLabels[i]
+		if len([]rune(label)) > 12 {
+			label = string([]rune(label)[:12]) + "\u2026"
+		}
+		bars = append(bars, chart.Value{
+			Label: label,
+			Value: v,
+			Style: chart.Style{
+				FillColor: chartBrandColors[i%len(chartBrandColors)],
+				FontSize:  9,
+			},
+		})
+	}
+
+	graph := chart.BarChart{
+		Title:      title,
+		TitleStyle: chartTitleStyle(),
+		Width:      960,
+		Height:     540,
+		Background: chartBackStyle(),
+		Canvas: chart.Style{
+			FillColor: drawing.ColorFromHex("FFFFFF"),
+		},
+		BarWidth: 40,
+		Bars:     bars,
+		YAxis: chart.YAxis{
+			Style: chartAxisStyle(),
+			GridMajorStyle: chartLightGrid,
+			GridMinorStyle: chart.Style{Hidden: true},
+			ValueFormatter: numberFormatter,
+		},
 	}
 
 	f, err := os.Create(filePath)
@@ -37,144 +155,100 @@ func renderChartPNG(qr *queryResult, xIdx, yIdx int, title, chartType, filePath 
 		return fmt.Errorf("创建文件失败：%w", err)
 	}
 	defer f.Close()
-
-	switch strings.ToLower(chartType) {
-	case "pie":
-		return renderPieChart(f, xLabels, yValues, title)
-	case "bar":
-		return renderBarChart(f, xLabels, yValues, title)
-	default: // line
-		return renderLineChart(f, xLabels, yValues, title)
-	}
-}
-
-// renderLineChart 折线图
-func renderLineChart(f *os.File, xLabels []string, yValues []float64, title string) error {
-	xFloats := make([]float64, len(yValues))
-	for i := range xFloats {
-		xFloats[i] = float64(i)
-	}
-
-	// 生成刻度
-	ticks := makeTicks(xLabels)
-
-	graph := chart.Chart{
-		Title:  title,
-		Width:  960,
-		Height: 540,
-		TitleStyle: chart.Style{
-			FontSize: 16,
-		},
-		XAxis: chart.XAxis{
-			Ticks: ticks,
-			Style: chart.Style{
-				FontSize: 9,
-			},
-		},
-		YAxis: chart.YAxis{
-			Style: chart.Style{
-				FontSize: 10,
-			},
-		},
-		Series: []chart.Series{
-			chart.ContinuousSeries{
-				XValues: xFloats,
-				YValues: yValues,
-				Style: chart.Style{
-					StrokeColor: drawing.ColorFromHex("1976d2"),
-					StrokeWidth: 2.5,
-				},
-			},
-		},
-	}
-
 	return graph.Render(chart.PNG, f)
 }
 
-// renderBarChart 柱状图
-func renderBarChart(f *os.File, xLabels []string, yValues []float64, title string) error {
-	bars := make([]chart.Value, 0, len(yValues))
-	colors := []drawing.Color{
-		drawing.ColorFromHex("1976d2"),
-		drawing.ColorFromHex("388e3c"),
-		drawing.ColorFromHex("f57c00"),
-		drawing.ColorFromHex("d32f2f"),
-		drawing.ColorFromHex("7b1fa2"),
-		drawing.ColorFromHex("0097a7"),
+func renderMultiBarChart(filePath string, seriesList []chartSeries, title string) error {
+	var allSeries []chart.Series
+	graph := chart.Chart{
+		Title:      title,
+		TitleStyle: chartTitleStyle(),
+		Width:      960,
+		Height:     540,
+		Background: chartBackStyle(),
+		Canvas: chart.Style{
+			FillColor: drawing.ColorFromHex("FFFFFF"),
+		},
+		XAxis: chart.XAxis{
+			Ticks: buildXTicks(seriesList[0].XLabels, seriesList[0].XValues),
+			Style: chartAxisStyle(),
+		},
+		YAxis: chart.YAxis{
+			Style: chartAxisStyle(),
+			GridMajorStyle: chartLightGrid,
+			GridMinorStyle: chart.Style{Hidden: true},
+			ValueFormatter: numberFormatter,
+		},
 	}
 
-	for i, v := range yValues {
-		label := xLabels[i]
-		if len([]rune(label)) > 12 {
-			label = string([]rune(label)[:12]) + "…"
+	for i, s := range seriesList {
+		name := s.Name
+		if name == "" {
+			name = fmt.Sprintf("系列 %d", i+1)
 		}
-		bars = append(bars, chart.Value{
-			Label: label,
-			Value: v,
+		color := chartBrandColors[i%len(chartBrandColors)]
+		allSeries = append(allSeries, chart.ContinuousSeries{
+			Name:    name,
+			XValues: s.XValues,
+			YValues: s.YValues,
 			Style: chart.Style{
-				FillColor: colors[i%len(colors)],
+				StrokeColor: color,
+				StrokeWidth: 35,
+				DotColor:    color,
+				FillColor:   color,
 			},
 		})
 	}
 
-	graph := chart.BarChart{
-		Title:  title,
-		Width:  960,
-		Height: 540,
-		TitleStyle: chart.Style{
-			FontSize: 16,
-		},
-		BarWidth: 40,
-		Bars:     bars,
-	}
+	graph.Series = allSeries
 
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("创建文件失败：%w", err)
+	}
+	defer f.Close()
 	return graph.Render(chart.PNG, f)
 }
 
-// renderPieChart 饼图
-func renderPieChart(f *os.File, xLabels []string, yValues []float64, title string) error {
+func renderPieChartFile(filePath string, xLabels []string, yValues []float64, title string) error {
 	values := make([]chart.Value, 0, len(yValues))
-	colors := []drawing.Color{
-		drawing.ColorFromHex("1976d2"),
-		drawing.ColorFromHex("388e3c"),
-		drawing.ColorFromHex("f57c00"),
-		drawing.ColorFromHex("d32f2f"),
-		drawing.ColorFromHex("7b1fa2"),
-		drawing.ColorFromHex("0097a7"),
-		drawing.ColorFromHex("c2185b"),
-		drawing.ColorFromHex("455a64"),
-	}
-
 	for i, v := range yValues {
 		label := xLabels[i]
 		if len([]rune(label)) > 15 {
-			label = string([]rune(label)[:15]) + "…"
+			label = string([]rune(label)[:15]) + "\u2026"
 		}
 		values = append(values, chart.Value{
-			Label: fmt.Sprintf("%s (%.0f)", label, v),
+			Label: fmt.Sprintf("%s (%.1f)", label, v),
 			Value: v,
 			Style: chart.Style{
-				FillColor: colors[i%len(colors)],
+				FillColor: chartBrandColors[i%len(chartBrandColors)],
 				FontSize:  10,
+				FontColor: drawing.ColorFromHex("424242"),
 			},
 		})
 	}
 
 	graph := chart.PieChart{
-		Title:  title,
-		Width:  720,
-		Height: 540,
-		TitleStyle: chart.Style{
-			FontSize: 16,
+		Title:      title,
+		TitleStyle: chartTitleStyle(),
+		Width:      720,
+		Height:     540,
+		Background: chartBackStyle(),
+		Canvas: chart.Style{
+			FillColor: drawing.ColorFromHex("FFFFFF"),
 		},
 		Values: values,
 	}
 
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("创建文件失败：%w", err)
+	}
+	defer f.Close()
 	return graph.Render(chart.PNG, f)
 }
 
-// makeTicks 生成 X 轴刻度（最多显示 20 个标签避免重叠）
-func makeTicks(labels []string) []chart.Tick {
+func buildXTicks(labels []string, xFloats []float64) []chart.Tick {
 	n := len(labels)
 	step := 1
 	if n > 20 {
@@ -182,17 +256,43 @@ func makeTicks(labels []string) []chart.Tick {
 	}
 
 	ticks := make([]chart.Tick, 0)
-	for i := 0; i < n; i += step {
+	for i := 0; i < n && len(ticks) < 20; i += step {
 		label := labels[i]
 		if len([]rune(label)) > 10 {
-			label = string([]rune(label)[:10]) + "…"
+			label = string([]rune(label)[:10]) + "\u2026"
 		}
-		ticks = append(ticks, chart.Tick{Value: float64(i), Label: label})
+		ticks = append(ticks, chart.Tick{Value: xFloats[i], Label: label})
 	}
 	return ticks
 }
 
-// toFloat64 尝试将 any 转为 float64
+func chartTitleStyle() chart.Style {
+	return chart.Style{
+		FontColor: drawing.ColorFromHex("1A237E"),
+		FontSize:  16,
+	}
+}
+
+func chartBackStyle() chart.Style {
+	return chart.Style{
+		FillColor: drawing.ColorFromHex("FAFAFA"),
+		Padding: chart.Box{
+			Top:    40,
+			Left:   20,
+			Right:  20,
+			Bottom: 20,
+		},
+	}
+}
+
+func chartAxisStyle() chart.Style {
+	return chart.Style{
+		StrokeColor: drawing.ColorFromHex("757575"),
+		FontColor:   drawing.ColorFromHex("757575"),
+		FontSize:    9,
+	}
+}
+
 func toFloat64(v any) (float64, error) {
 	switch val := v.(type) {
 	case float64:
@@ -213,4 +313,17 @@ func toFloat64(v any) (float64, error) {
 		s := fmt.Sprintf("%v", v)
 		return strconv.ParseFloat(s, 64)
 	}
+}
+
+func numberFormatter(v any) string {
+	if f, ok := v.(float64); ok {
+		if f >= 1e7 {
+			return fmt.Sprintf("%.1fM", f/1e6)
+		}
+		if f >= 1e4 {
+			return fmt.Sprintf("%.1fK", f/1e3)
+		}
+		return fmt.Sprintf("%.0f", f)
+	}
+	return fmt.Sprintf("%v", v)
 }

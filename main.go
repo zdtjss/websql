@@ -62,6 +62,9 @@ func main() {
 	// 检测是否启动成功
 	go listenStartStatus()
 
+	// 启动导出文件定时清理
+	webapi.StartCleanupScheduler()
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, os.Interrupt)
 	s := <-c

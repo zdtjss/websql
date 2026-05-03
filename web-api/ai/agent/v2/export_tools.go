@@ -41,12 +41,27 @@ type ExportExcelOutput struct {
 	FileType    string `json:"fileType"`
 }
 
-type ExportExcelWithChartInput struct {
-	SQL        string `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
-	FileName   string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
-	ChartType  string `json:"chartType" jsonschema_description:"图表类型: line, bar, pie, scatter"`
-	XAxisField string `json:"xAxisField" jsonschema:"required" jsonschema_description:"X 轴字段名"`
+type ExcelChartSeriesDef struct {
 	YAxisField string `json:"yAxisField" jsonschema:"required" jsonschema_description:"Y 轴字段名"`
+	Name       string `json:"name" jsonschema_description:"系列名称，用于图例显示"`
+}
+
+type ExcelChart struct {
+	ChartType  string                `json:"chartType" jsonschema:"required" jsonschema_description:"图表类型: line, bar, pie, scatter, area, stackedBar, doughnut, radar"`
+	XAxisField string                `json:"xAxisField" jsonschema:"required" jsonschema_description:"X 轴字段名"`
+	Series     []ExcelChartSeriesDef `json:"series" jsonschema:"required" jsonschema_description:"Y 轴系列，可指定多个字段生成多系列图表"`
+	ChartTitle string                `json:"chartTitle" jsonschema_description:"图表标题"`
+	SheetName  string                `json:"sheetName" jsonschema_description:"图表所在 Sheet 名称，为空则自动分配"`
+}
+
+type ExportExcelWithChartInput struct {
+	SQL      string       `json:"sql" jsonschema:"required" jsonschema_description:"用于导出的 SELECT SQL"`
+	FileName string       `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
+	Charts   []ExcelChart `json:"charts" jsonschema_description:"图表定义列表，每个元素会在独立 Sheet 中生成一个图表。支持多条折线/柱状（通过 series 指定多个 Y 字段）"`
+	// 兼容旧版调用
+	ChartType  string `json:"chartType" jsonschema_description:"图表类型: line, bar, pie, scatter, area, stackedBar, doughnut, radar"`
+	XAxisField string `json:"xAxisField" jsonschema_description:"X 轴字段名"`
+	YAxisField string `json:"yAxisField" jsonschema_description:"Y 轴字段名"`
 	ChartTitle string `json:"chartTitle" jsonschema_description:"图表标题"`
 }
 
@@ -244,62 +259,97 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 			return nil, err
 		}
 
+		rowCount := len(qr.Data)
+		headerRow := 4
+		dataStartRow := 5
+		dataEndRow := rowCount + 4
+
+		charts := normalizeCharts(input)
+
 		f := excelize.NewFile()
 		defer f.Close()
 
-		// 写数据到 Sheet1（使用普通模式以支持图表数据引用）
-		writeExcelSheetMode(f, "Sheet1", qr, false)
+		dataSheet := "数据概览"
+		f.SetSheetName("Sheet1", dataSheet)
 
-		// 查找 X/Y 轴列索引
-		xIdx := colIndex(qr.Columns, input.XAxisField)
-		yIdx := colIndex(qr.Columns, input.YAxisField)
-		if xIdx == -1 || yIdx == -1 {
-			// 如果找不到精确匹配，尝试模糊匹配
-			for i, c := range qr.Columns {
-				cl := strings.ToLower(c)
-				if xIdx == -1 && strings.Contains(cl, strings.ToLower(input.XAxisField)) {
-					xIdx = i
+		reportTitle := "数据分析报告"
+		if len(charts) > 0 && charts[0].ChartTitle != "" {
+			reportTitle = charts[0].ChartTitle
+		}
+		excelSetTitleArea(f, dataSheet, reportTitle, len(qr.Columns))
+		excelWriteStyledTable(f, dataSheet, qr, 4)
+
+		dashSheet := "分析总览"
+		_, _ = f.NewSheet(dashSheet)
+		excelDashboardSheet(f, dashSheet, qr)
+
+		chartCount := 0
+		for _, chart := range charts {
+			xIdx := findFieldIndex(qr.Columns, chart.XAxisField)
+			if xIdx == -1 {
+				continue
+			}
+			xCol := colLetter(xIdx)
+
+			var chartSeries []excelize.ChartSeries
+			for _, series := range chart.Series {
+				yIdx := findFieldIndex(qr.Columns, series.YAxisField)
+				if yIdx == -1 {
+					continue
 				}
-				if yIdx == -1 && strings.Contains(cl, strings.ToLower(input.YAxisField)) {
-					yIdx = i
+				yCol := colLetter(yIdx)
+				name := series.Name
+				if name == "" {
+					name = series.YAxisField
 				}
+				chartSeries = append(chartSeries, excelize.ChartSeries{
+					Name:       fmt.Sprintf("'%s'!$%s$%d", dataSheet, yCol, headerRow),
+					Categories: fmt.Sprintf("'%s'!$%s$%d:$%s$%d", dataSheet, xCol, dataStartRow, xCol, dataEndRow),
+					Values:     fmt.Sprintf("'%s'!$%s$%d:$%s$%d", dataSheet, yCol, dataStartRow, yCol, dataEndRow),
+				})
+			}
+
+			if len(chartSeries) == 0 {
+				continue
+			}
+
+			sheetName := chart.SheetName
+			if sheetName == "" {
+				chartCount++
+				sheetName = fmt.Sprintf("图表%d", chartCount)
+			}
+			_, _ = f.NewSheet(sheetName)
+
+			chartTitle := chart.ChartTitle
+			if chartTitle == "" {
+				chartTitle = chart.XAxisField
+			}
+
+			excelChart := &excelize.Chart{
+				Type:   getChartType(chart.ChartType),
+				Series: chartSeries,
+				Format: excelize.GraphicOptions{
+					ScaleX: 2.0,
+					ScaleY: 2.0,
+				},
+				Title: []excelize.RichTextRun{
+					{Text: chartTitle, Font: &excelize.Font{Size: 18, Bold: true, Color: "#1A237E"}},
+				},
+				Legend: excelize.ChartLegend{
+					Position:      "bottom",
+					ShowLegendKey: false,
+				},
+				PlotArea: excelize.ChartPlotArea{
+					ShowVal: true,
+				},
+			}
+
+			if err := f.AddChart(sheetName, "B2", excelChart); err != nil {
+				log.Printf("[Tool:export_excel_chart] 添加图表 [%s] 失败 - err=%v\n", sheetName, err)
 			}
 		}
-		if xIdx == -1 || yIdx == -1 {
-			return nil, fmt.Errorf("未找到 X 轴字段 '%s' 或 Y 轴字段 '%s'，可用列：%s",
-				input.XAxisField, input.YAxisField, strings.Join(qr.Columns, ", "))
-		}
 
-		rowCount := len(qr.Data)
-		xCol := colLetter(xIdx)
-		yCol := colLetter(yIdx)
-
-		chartTitle := input.ChartTitle
-		if chartTitle == "" {
-			chartTitle = fmt.Sprintf("%s vs %s", input.XAxisField, input.YAxisField)
-		}
-
-		chart := &excelize.Chart{
-			Type: getChartType(input.ChartType),
-			Series: []excelize.ChartSeries{
-				{
-					Name:       fmt.Sprintf("Sheet1!$%s$1", yCol),
-					Categories: fmt.Sprintf("Sheet1!$%s$2:$%s$%d", xCol, xCol, rowCount+1),
-					Values:     fmt.Sprintf("Sheet1!$%s$2:$%s$%d", yCol, yCol, rowCount+1),
-				},
-			},
-			Title: []excelize.RichTextRun{{Text: chartTitle}},
-			PlotArea: excelize.ChartPlotArea{
-				ShowVal: true,
-			},
-		}
-
-		// 图表放在数据右侧
-		chartCell := fmt.Sprintf("%s1", colLetter(len(qr.Columns)+1))
-		if err := f.AddChart("Sheet1", chartCell, chart); err != nil {
-			log.Printf("[Tool:export_excel_chart] 添加图表失败 - err=%v\n", err)
-			// 图表失败不影响数据导出
-		}
+		f.SetActiveSheet(0)
 
 		fileName := sanitizeFileName(input.FileName, "chart")
 		ensureExportsDir()
@@ -309,10 +359,19 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 		}
 
 		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
-		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, url=%s\n", rowCount, url)
+		totalCharts := chartCount
+		if totalCharts == 0 {
+			totalCharts = len(charts)
+		}
+		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", rowCount, totalCharts, url)
+
+		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", totalCharts, rowCount, url)
+		if totalCharts == 1 && len(charts[0].Series) > 1 {
+			msg = fmt.Sprintf("已生成含 %d 条折线/柱状图表的 Excel（%d 条数据），[点击下载](%s)", len(charts[0].Series), rowCount, url)
+		}
 
 		return &ExportExcelWithChartOutput{
-			Message:     fmt.Sprintf("已生成带 %s 图表的 Excel（%d 条数据），[点击下载](%s)", input.ChartType, rowCount, url),
+			Message:     msg,
 			RowCount:    rowCount,
 			DownloadURL: url,
 			FileType:    "excel_with_chart",
@@ -320,17 +379,418 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 	}
 }
 
+func normalizeCharts(input *ExportExcelWithChartInput) []ExcelChart {
+	if len(input.Charts) > 0 {
+		return input.Charts
+	}
+	chartType := input.ChartType
+	if chartType == "" {
+		chartType = "bar"
+	}
+	chartTitle := input.ChartTitle
+	if chartTitle == "" {
+		chartTitle = fmt.Sprintf("%s vs %s", input.XAxisField, input.YAxisField)
+	}
+	return []ExcelChart{{
+		ChartType:  chartType,
+		XAxisField: input.XAxisField,
+		ChartTitle: chartTitle,
+		Series: []ExcelChartSeriesDef{{
+			YAxisField: input.YAxisField,
+			Name:       input.YAxisField,
+		}},
+	}}
+}
+
+func findFieldIndex(columns []string, field string) int {
+	idx := colIndex(columns, field)
+	if idx >= 0 {
+		return idx
+	}
+	lower := strings.ToLower(field)
+	for i, c := range columns {
+		if strings.Contains(strings.ToLower(c), lower) {
+			return i
+		}
+	}
+	return -1
+}
+
+func excelSetTitleArea(f *excelize.File, sheet, title string, colCount int) {
+	titleStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 16, Bold: true, Color: "#1A237E", Family: "Microsoft YaHei"},
+	})
+	subStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 10, Color: "#757575", Family: "Microsoft YaHei"},
+	})
+	barStyle, _ := f.NewStyle(&excelize.Style{
+		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#1A237E"}},
+	})
+
+	startCell, _ := excelize.CoordinatesToCellName(1, 1)
+	endCell, _ := excelize.CoordinatesToCellName(colCount, 1)
+	f.MergeCell(sheet, startCell, endCell)
+	f.SetCellValue(sheet, startCell, title)
+	f.SetCellStyle(sheet, startCell, endCell, titleStyle)
+
+	startCell, _ = excelize.CoordinatesToCellName(1, 2)
+	endCell, _ = excelize.CoordinatesToCellName(colCount, 2)
+	f.MergeCell(sheet, startCell, endCell)
+	f.SetCellValue(sheet, startCell, fmt.Sprintf("生成时间：%s  |  数据行数：%d", time.Now().Format("2006-01-02 15:04:05"), 0))
+	f.SetCellStyle(sheet, startCell, endCell, subStyle)
+
+	for i := 0; i < colCount; i++ {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
+		f.SetCellStyle(sheet, cell, cell, barStyle)
+	}
+	f.SetRowHeight(sheet, 1, 32)
+	f.SetRowHeight(sheet, 2, 20)
+	f.SetRowHeight(sheet, 3, 3)
+}
+
+func excelWriteStyledTable(f *excelize.File, sheet string, qr *queryResult, startRow int) {
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 11, Bold: true, Color: "#FFFFFF", Family: "Microsoft YaHei"},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#1A237E"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "top", Color: "#1A237E", Style: 1},
+			{Type: "bottom", Color: "#1A237E", Style: 1},
+			{Type: "left", Color: "#1A237E", Style: 1},
+			{Type: "right", Color: "#1A237E", Style: 1},
+		},
+	})
+	rowEvenStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 10, Color: "#212121", Family: "Microsoft YaHei"},
+		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#F5F7FA"}},
+		Border: []excelize.Border{
+			{Type: "top", Color: "#E8ECF1", Style: 1},
+			{Type: "bottom", Color: "#E8ECF1", Style: 1},
+			{Type: "left", Color: "#E8ECF1", Style: 1},
+			{Type: "right", Color: "#E8ECF1", Style: 1},
+		},
+	})
+	rowOddStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 10, Color: "#212121", Family: "Microsoft YaHei"},
+		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#FFFFFF"}},
+		Border: []excelize.Border{
+			{Type: "top", Color: "#E8ECF1", Style: 1},
+			{Type: "bottom", Color: "#E8ECF1", Style: 1},
+			{Type: "left", Color: "#E8ECF1", Style: 1},
+			{Type: "right", Color: "#E8ECF1", Style: 1},
+		},
+	})
+
+	for i, c := range qr.Columns {
+		cell, _ := excelize.CoordinatesToCellName(i+1, startRow)
+		f.SetCellValue(sheet, cell, c)
+		f.SetCellStyle(sheet, cell, cell, headerStyle)
+	}
+	f.SetRowHeight(sheet, startRow, 28)
+
+	for rowIdx, row := range qr.Data {
+		currentRow := startRow + 1 + rowIdx
+		for colIdx, col := range qr.Columns {
+			cell, _ := excelize.CoordinatesToCellName(colIdx+1, currentRow)
+			if v, ok := row[col]; ok {
+				setCellAuto(f, sheet, cell, v)
+			}
+			if rowIdx%2 == 0 {
+				f.SetCellStyle(sheet, cell, cell, rowEvenStyle)
+			} else {
+				f.SetCellStyle(sheet, cell, cell, rowOddStyle)
+			}
+		}
+		f.SetRowHeight(sheet, currentRow, 22)
+	}
+
+	for i := range qr.Columns {
+		colName, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth(sheet, colName, colName, excelAutoWidth(qr, i))
+	}
+}
+
+func excelAutoWidth(qr *queryResult, colIdx int) float64 {
+	maxW := float64(len([]rune(qr.Columns[colIdx]))) * 1.5
+	for _, row := range qr.Data {
+		val := fmt.Sprintf("%v", row[qr.Columns[colIdx]])
+		w := float64(len([]rune(val))) * 1.2
+		if w > maxW {
+			maxW = w
+		}
+	}
+	if maxW < 8 {
+		return 8
+	}
+	if maxW > 36 {
+		return 36
+	}
+	return maxW + 2
+}
+
+func excelDashboardSheet(f *excelize.File, sheet string, qr *queryResult) {
+	dashTitleStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 18, Bold: true, Color: "#1A237E", Family: "Microsoft YaHei"},
+		Alignment: &excelize.Alignment{Horizontal: "left", Vertical: "center"},
+	})
+	dashSubStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Size: 10, Color: "#757575", Family: "Microsoft YaHei"},
+	})
+	dashSectionStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 13, Bold: true, Color: "#1A237E", Family: "Microsoft YaHei"},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#EDEFF7"}},
+		Alignment: &excelize.Alignment{Horizontal: "left", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "bottom", Color: "#1A237E", Style: 1},
+		},
+	})
+	kpiLabelStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 9, Color: "#757575", Family: "Microsoft YaHei"},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	kpiValueStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 22, Bold: true, Color: "#1A237E", Family: "Microsoft YaHei"},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	kpiAccentStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Size: 22, Bold: true, Color: "#00BCD4", Family: "Microsoft YaHei"},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	kpiBorderStyle, _ := f.NewStyle(&excelize.Style{
+		Border: []excelize.Border{
+			{Type: "left", Color: "#EDEFF7", Style: 1},
+			{Type: "right", Color: "#EDEFF7", Style: 1},
+			{Type: "top", Color: "#EDEFF7", Style: 1},
+			{Type: "bottom", Color: "#EDEFF7", Style: 1},
+		},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#FFFFFF"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+
+	f.SetCellStyle(sheet, "A1", "H1", dashTitleStyle)
+	f.SetCellValue(sheet, "A1", "数据分析仪表盘")
+	f.SetRowHeight(sheet, 1, 36)
+	f.SetCellStyle(sheet, "A2", "H2", dashSubStyle)
+	f.SetCellValue(sheet, "A2", fmt.Sprintf("生成时间：%s  |  数据行数：%d  |  字段数：%d", time.Now().Format("2006-01-02 15:04:05"), len(qr.Data), len(qr.Columns)))
+	f.SetRowHeight(sheet, 2, 22)
+
+	f.SetCellStyle(sheet, "A4", "H4", dashSectionStyle)
+	f.SetCellValue(sheet, "A4", "▎核心指标")
+	f.MergeCell(sheet, "A4", "H4")
+	f.SetRowHeight(sheet, 4, 28)
+
+	numericCols := detectNumericCols(qr)
+	col := 1
+	for _, nc := range numericCols {
+		if col > 6 {
+			break
+		}
+		_, max, avg, count := calcNumericStats(qr, nc)
+		if count == 0 {
+			continue
+		}
+
+		cellLabel, _ := excelize.CoordinatesToCellName(col, 6)
+		cellValue, _ := excelize.CoordinatesToCellName(col, 7)
+		f.SetCellStyle(sheet, cellLabel, cellLabel, kpiLabelStyle)
+		f.SetCellValue(sheet, cellLabel, nc)
+		f.SetRowHeight(sheet, 6, 20)
+
+		valueStyle := kpiValueStyle
+		if col%3 == 0 {
+			valueStyle = kpiAccentStyle
+		}
+		f.SetCellStyle(sheet, cellValue, cellValue, valueStyle)
+		f.SetCellValue(sheet, cellValue, fmt.Sprintf("%.1f", avg))
+		f.SetRowHeight(sheet, 7, 38)
+
+		detailCell, _ := excelize.CoordinatesToCellName(col, 8)
+		f.SetCellStyle(sheet, detailCell, detailCell, kpiLabelStyle)
+		f.SetCellValue(sheet, detailCell, fmt.Sprintf("最高 %.1f  ·  总计 %.1f", max, avg*float64(count)))
+		f.SetRowHeight(sheet, 8, 18)
+
+		for r := 5; r <= 9; r++ {
+			for c := col; c <= col; c++ {
+				cell, _ := excelize.CoordinatesToCellName(c, r)
+				f.SetCellStyle(sheet, cell, cell, kpiBorderStyle)
+			}
+		}
+		f.SetColWidth(sheet, colLetter(col-1), colLetter(col-1), 22)
+
+		col++
+	}
+
+	infoRow := 11
+	f.SetCellStyle(sheet, fmt.Sprintf("A%d", infoRow), fmt.Sprintf("H%d", infoRow), dashSectionStyle)
+	f.SetCellValue(sheet, fmt.Sprintf("A%d", infoRow), "▎字段统计")
+	f.MergeCell(sheet, fmt.Sprintf("A%d", infoRow), fmt.Sprintf("H%d", infoRow))
+	f.SetRowHeight(sheet, infoRow, 28)
+
+	infoRow += 2
+	for i, nc := range numericCols {
+		if i >= 8 {
+			break
+		}
+		min, max, avg, count := calcNumericStats(qr, nc)
+		if count == 0 {
+			continue
+		}
+		cell, _ := excelize.CoordinatesToCellName(1, infoRow)
+		f.SetCellStyle(sheet, cell, cell, dashSubStyle)
+		f.SetCellValue(sheet, cell, fmt.Sprintf("%s：均值 %.2f  最小 %.2f  最大 %.2f", nc, avg, min, max))
+		f.SetRowHeight(sheet, infoRow, 20)
+		infoRow++
+	}
+}
+
 func getChartType(t string) excelize.ChartType {
 	switch strings.ToLower(t) {
-	case "bar":
+	case "bar", "column":
 		return excelize.Col
+	case "stackedbar", "stacked_bar":
+		return excelize.ColStacked
 	case "pie":
 		return excelize.Pie
+	case "doughnut", "donut":
+		return excelize.Doughnut
 	case "scatter":
 		return excelize.Scatter
+	case "area":
+		return excelize.Area
+	case "stackedarea", "stacked_area":
+		return excelize.AreaStacked
+	case "radar":
+		return excelize.Radar
+	case "line", "":
+		fallthrough
 	default:
 		return excelize.Line
 	}
+}
+
+func generateDocxCharts(qr *queryResult, title, fileName string) []string {
+	numericCols := detectNumericCols(qr)
+	if len(numericCols) == 0 {
+		return nil
+	}
+
+	if len(qr.Data) == 0 || len(qr.Columns) < 2 {
+		return nil
+	}
+
+	xCol := qr.Columns[0]
+	var paths []string
+
+	if len(numericCols) > 1 {
+		seriesNames := numericCols
+		if len(seriesNames) > 4 {
+			seriesNames = seriesNames[:4]
+		}
+
+		var seriesList []chartSeries
+		for _, col := range seriesNames {
+			xVals, yVals, labels := extractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, chartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		if len(seriesList) > 1 {
+			linePath := fmt.Sprintf("exports/%s_chart_multi.png", fileName)
+			if err := renderMultiChartPNG(seriesList, title+" · 趋势对比", "line", linePath); err != nil {
+				log.Printf("[Tool:export_docx] 多系列图表生成失败: %v\n", err)
+			} else {
+				paths = append(paths, linePath)
+			}
+		}
+	}
+
+	if len(numericCols) >= 1 {
+		var seriesList []chartSeries
+		for _, col := range numericCols {
+			if len(seriesList) >= 3 {
+				break
+			}
+			xVals, yVals, labels := extractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, chartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		barPath := fmt.Sprintf("exports/%s_chart_bar.png", fileName)
+		if err := renderMultiChartPNG(seriesList, title+" · 指标对比", "bar", barPath); err != nil {
+			log.Printf("[Tool:export_docx] 柱状图生成失败: %v\n", err)
+		} else {
+			paths = append(paths, barPath)
+		}
+	}
+
+	return paths
+}
+
+func generatePptCharts(qr *queryResult, title, fileName string) []string {
+	numericCols := detectNumericCols(qr)
+	if len(numericCols) == 0 || len(qr.Data) == 0 || len(qr.Columns) < 2 {
+		return nil
+	}
+
+	xCol := qr.Columns[0]
+	var paths []string
+
+	if len(numericCols) > 1 {
+		seriesNames := numericCols
+		if len(seriesNames) > 3 {
+			seriesNames = seriesNames[:3]
+		}
+
+		var seriesList []chartSeries
+		for _, col := range seriesNames {
+			xVals, yVals, labels := extractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, chartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		if len(seriesList) > 0 {
+			chartPath := fmt.Sprintf("exports/%s_ppt_chart.png", fileName)
+			chartType := "line"
+			if len(seriesList) == 1 {
+				chartType = "bar"
+			}
+			if err := renderMultiChartPNG(seriesList, title+" · 关键指标", chartType, chartPath); err != nil {
+				log.Printf("[Tool:export_ppt] 图表生成失败: %v\n", err)
+			} else {
+				paths = append(paths, chartPath)
+			}
+		}
+	}
+
+	return paths
+}
+
+func extractXYSeries(qr *queryResult, xCol, yCol string) (xVals, yVals []float64, labels []string) {
+	xIdx := colIndex(qr.Columns, xCol)
+	yIdx := colIndex(qr.Columns, yCol)
+	if xIdx < 0 || yIdx < 0 {
+		return nil, nil, nil
+	}
+
+	for i, row := range qr.Data {
+		yVal, err := toFloat64(row[qr.Columns[yIdx]])
+		if err != nil {
+			yVal = 0
+		}
+		xVals = append(xVals, float64(i))
+		yVals = append(yVals, yVal)
+		labels = append(labels, fmt.Sprintf("%v", row[qr.Columns[xIdx]]))
+	}
+	return
 }
 
 // ──────────────────────────────────────────────
@@ -371,26 +831,17 @@ func NewExportAnalysisDocxFunc(connID string) func(ctx context.Context, input *E
 			return nil, err
 		}
 
-		var chartImagePath string
+		var chartImagePaths []string
 		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
-			chartImagePath = fmt.Sprintf("exports/%s_chart.png", fileName)
-			if err := renderChartPNG(qr, 0, 1, title, "bar", chartImagePath); err != nil {
-				log.Printf("[Tool:export_docx] 生成图表失败 - err=%v\n", err)
-				chartImagePath = ""
-			}
-			if chartImagePath != "" {
-				if _, statErr := os.Stat(chartImagePath); os.IsNotExist(statErr) {
-					chartImagePath = ""
-				}
-			}
+			chartImagePaths = generateDocxCharts(qr, title, fileName)
 		}
 
-		if err := generateDocx(qr, title, chartImagePath, filePath); err != nil {
+		if err := generateDocx(qr, title, chartImagePaths, filePath); err != nil {
 			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
 		}
 
-		if chartImagePath != "" {
-			os.Remove(chartImagePath)
+		for _, p := range chartImagePaths {
+			os.Remove(p)
 		}
 
 		url := fmt.Sprintf("/exports/%s.docx", fileName)
@@ -444,9 +895,15 @@ func NewExportPPTFunc(connID string) func(ctx context.Context, input *ExportPPTI
 			return nil, err
 		}
 
-		slideCount, err := generatePptx(qr, title, filePath)
+		chartPaths := generatePptCharts(qr, title, fileName)
+
+		slideCount, err := generatePptx(qr, title, chartPaths, filePath)
 		if err != nil {
 			return nil, fmt.Errorf("生成 PPT 失败：%w", err)
+		}
+
+		for _, p := range chartPaths {
+			os.Remove(p)
 		}
 
 		url := fmt.Sprintf("/exports/%s.pptx", fileName)
@@ -687,7 +1144,7 @@ func stripMarkdownFormatting(s string) string {
 }
 
 func isTableSeparator(line string) bool {
-	trimmed := strings.Trim(strings.TrimSpace(line), "|")
+	trimmed := strings.ReplaceAll(strings.TrimSpace(line), "|", "")
 	trimmed = strings.TrimSpace(trimmed)
 	if trimmed == "" {
 		return false
