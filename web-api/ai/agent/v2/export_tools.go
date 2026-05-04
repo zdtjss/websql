@@ -276,7 +276,7 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 		if len(charts) > 0 && charts[0].ChartTitle != "" {
 			reportTitle = charts[0].ChartTitle
 		}
-		excelSetTitleArea(f, dataSheet, reportTitle, len(qr.Columns))
+		excelSetTitleArea(f, dataSheet, reportTitle, len(qr.Columns), rowCount)
 		excelWriteStyledTable(f, dataSheet, qr, 4)
 
 		dashSheet := "分析总览"
@@ -313,9 +313,9 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 				continue
 			}
 
+			chartCount++
 			sheetName := chart.SheetName
 			if sheetName == "" {
-				chartCount++
 				sheetName = fmt.Sprintf("图表%d", chartCount)
 			}
 			_, _ = f.NewSheet(sheetName)
@@ -359,14 +359,10 @@ func NewExportExcelWithChartFunc(connID string) func(ctx context.Context, input 
 		}
 
 		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
-		totalCharts := chartCount
-		if totalCharts == 0 {
-			totalCharts = len(charts)
-		}
-		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", rowCount, totalCharts, url)
+		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", rowCount, chartCount, url)
 
-		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", totalCharts, rowCount, url)
-		if totalCharts == 1 && len(charts[0].Series) > 1 {
+		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", chartCount, rowCount, url)
+		if chartCount == 1 && len(charts) > 0 && len(charts[0].Series) > 1 {
 			msg = fmt.Sprintf("已生成含 %d 条折线/柱状图表的 Excel（%d 条数据），[点击下载](%s)", len(charts[0].Series), rowCount, url)
 		}
 
@@ -416,7 +412,7 @@ func findFieldIndex(columns []string, field string) int {
 	return -1
 }
 
-func excelSetTitleArea(f *excelize.File, sheet, title string, colCount int) {
+func excelSetTitleArea(f *excelize.File, sheet, title string, colCount, rowCount int) {
 	titleStyle, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Size: 16, Bold: true, Color: "#1A237E", Family: "Microsoft YaHei"},
 	})
@@ -436,7 +432,7 @@ func excelSetTitleArea(f *excelize.File, sheet, title string, colCount int) {
 	startCell, _ = excelize.CoordinatesToCellName(1, 2)
 	endCell, _ = excelize.CoordinatesToCellName(colCount, 2)
 	f.MergeCell(sheet, startCell, endCell)
-	f.SetCellValue(sheet, startCell, fmt.Sprintf("生成时间：%s  |  数据行数：%d", time.Now().Format("2006-01-02 15:04:05"), 0))
+	f.SetCellValue(sheet, startCell, fmt.Sprintf("生成时间：%s  |  数据行数：%d", time.Now().Format("2006-01-02 15:04:05"), rowCount))
 	f.SetCellStyle(sheet, startCell, endCell, subStyle)
 
 	for i := 0; i < colCount; i++ {
@@ -610,10 +606,8 @@ func excelDashboardSheet(f *excelize.File, sheet string, qr *queryResult) {
 		f.SetRowHeight(sheet, 8, 18)
 
 		for r := 5; r <= 9; r++ {
-			for c := col; c <= col; c++ {
-				cell, _ := excelize.CoordinatesToCellName(c, r)
-				f.SetCellStyle(sheet, cell, cell, kpiBorderStyle)
-			}
+			cell, _ := excelize.CoordinatesToCellName(col, r)
+			f.SetCellStyle(sheet, cell, cell, kpiBorderStyle)
 		}
 		f.SetColWidth(sheet, colLetter(col-1), colLetter(col-1), 22)
 
@@ -1091,6 +1085,29 @@ func parseMarkdownBlocks(content string) []mdBlock {
 			continue
 		}
 
+		if matched, _ := regexp.MatchString(`^[-*_]{3,}\s*$`, trimmed); matched {
+			i++
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "> ") {
+			var items []string
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(t, "> ") {
+					items = append(items, strings.TrimPrefix(t, "> "))
+					i++
+				} else if t == "" {
+					i++
+					break
+				} else {
+					break
+				}
+			}
+			blocks = append(blocks, mdBlock{Type: "paragraph", Content: strings.Join(items, "\n")})
+			continue
+		}
+
 		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "1) ") {
 			var items []string
 			for i < len(lines) {
@@ -1114,7 +1131,8 @@ func parseMarkdownBlocks(content string) []mdBlock {
 		for i < len(lines) {
 			t := strings.TrimSpace(lines[i])
 			if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```") ||
-				strings.HasPrefix(t, "|") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") {
+				strings.HasPrefix(t, "|") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") ||
+				strings.HasPrefix(t, "> ") {
 				break
 			}
 			if matched, _ := regexp.MatchString(`^\d+[.)]\s`, t); matched {
@@ -1124,7 +1142,7 @@ func parseMarkdownBlocks(content string) []mdBlock {
 			i++
 		}
 		if len(paraLines) > 0 {
-			blocks = append(blocks, mdBlock{Type: "paragraph", Content: strings.Join(paraLines, " ")})
+			blocks = append(blocks, mdBlock{Type: "paragraph", Content: strings.Join(paraLines, "\n")})
 		}
 	}
 	return blocks
@@ -1134,12 +1152,16 @@ var reMarkdownBold = regexp.MustCompile(`\*\*(.+?)\*\*`)
 var reMarkdownItalic = regexp.MustCompile(`\*(.+?)\*`)
 var reMarkdownCode = regexp.MustCompile("`(.+?)`")
 var reMarkdownLink = regexp.MustCompile(`\[(.+?)\]\(.+?\)`)
+var reBlockquote = regexp.MustCompile(`(?m)^>\s?`)
+var reHorizontalRule = regexp.MustCompile(`(?m)^[-*_]{3,}\s*$`)
 
 func stripMarkdownFormatting(s string) string {
 	s = reMarkdownBold.ReplaceAllString(s, "$1")
 	s = reMarkdownItalic.ReplaceAllString(s, "$1")
 	s = reMarkdownCode.ReplaceAllString(s, "$1")
 	s = reMarkdownLink.ReplaceAllString(s, "$1")
+	s = reBlockquote.ReplaceAllString(s, "")
+	s = reHorizontalRule.ReplaceAllString(s, "")
 	return s
 }
 

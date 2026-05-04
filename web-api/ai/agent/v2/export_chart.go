@@ -67,7 +67,7 @@ func renderLineChartFile(filePath string, seriesList []chartSeries, title string
 			Style: chartAxisStyle(),
 		},
 		YAxis: chart.YAxis{
-			Style: chartAxisStyle(),
+			Style:          chartAxisStyle(),
 			GridMajorStyle: chartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
 			ValueFormatter: numberFormatter,
@@ -143,7 +143,7 @@ func renderBarChartFile(filePath string, seriesList []chartSeries, title string)
 		BarWidth: 40,
 		Bars:     bars,
 		YAxis: chart.YAxis{
-			Style: chartAxisStyle(),
+			Style:          chartAxisStyle(),
 			GridMajorStyle: chartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
 			ValueFormatter: numberFormatter,
@@ -174,7 +174,7 @@ func renderMultiBarChart(filePath string, seriesList []chartSeries, title string
 			Style: chartAxisStyle(),
 		},
 		YAxis: chart.YAxis{
-			Style: chartAxisStyle(),
+			Style:          chartAxisStyle(),
 			GridMajorStyle: chartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
 			ValueFormatter: numberFormatter,

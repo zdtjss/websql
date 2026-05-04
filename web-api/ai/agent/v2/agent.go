@@ -3,6 +3,7 @@ package agentv2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	admin "go-web/web-api/admin"
 	"log"
@@ -230,23 +231,13 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
 
-	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
-
-	// 如果被中断，将 checkPointID 存入会话以便恢复
-	if interrupted {
-		// checkPointID 已通过 flush 推送给前端
-		log.Printf("[Agent] 执行被中断 - checkPointID=%s\n", checkPointID)
-	}
+	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
 
 	if fullResponse.Len() > 0 {
 		if err := sess.Append("assistant", fullResponse.String()); err != nil {
 			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
 		}
 	}
-
-	// 无论是否中断都发 done，让前端结束 loading 状态
-	// 中断场景下前端已通过 danger_confirm 事件知道需要用户确认
-	flush(StreamChunk{Type: "done"})
 
 	return sessionID, nil
 }
@@ -270,7 +261,7 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 		return fmt.Errorf("resume failed: %w", err)
 	}
 
-	fullResponse, interrupted := a.processEvents(iter, flush, sess, checkPointID)
+	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
 
 	if fullResponse.Len() > 0 {
 		if err := sess.Append("assistant", fullResponse.String()); err != nil {
@@ -278,14 +269,6 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 		}
 	}
 
-	// 关键安全逻辑：仅在未被再次中断时发送 done
-	// 如果被中断（LLM 又生成了新的危险 SQL），前端已收到 danger_confirm 事件，
-	// 此时不能发送 done，否则前端会提前结束 loading，忽略新的确认请求
-	if !interrupted {
-		flush(StreamChunk{Type: "done"})
-	} else {
-		log.Printf("[Agent] resume 后再次被中断，不发送 done - cpID=%s\n", checkPointID)
-	}
 	return nil
 }
 
@@ -301,6 +284,9 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		}
 		if event.Err != nil {
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
+			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
+				break
+			}
 			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 			break
 		}

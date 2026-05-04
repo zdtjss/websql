@@ -113,19 +113,21 @@ func generateDocx(qr *queryResult, title string, chartImagePaths []string, outpu
 		}
 	}
 
-	statsItems = append(statsItems, "")
-	statsItems = append(statsItems, "**核心发现**:")
+	body.WriteString(docxBulletList(statsItems))
+	body.WriteString(docxParagraph("", false, 12, ""))
+
+	body.WriteString(docxHeading("核心发现", 3))
+	var insights []string
 	for _, col := range numericCols {
 		_, max, avg, count := calcNumericStats(qr, col)
 		if count > 1 {
-			statsItems = append(statsItems, fmt.Sprintf("· `%s` 均值为 %.2f，峰值为 %.2f", col, avg, max))
-			if len(statsItems) > 8 {
+			insights = append(insights, fmt.Sprintf("`%s` 均值为 **%.2f**，峰值为 **%.2f**", col, avg, max))
+			if len(insights) >= 5 {
 				break
 			}
 		}
 	}
-
-	body.WriteString(docxBulletList(statsItems))
+	body.WriteString(docxBulletList(insights))
 	body.WriteString(docxParagraph("", false, 12, ""))
 
 	if len(qr.Data) > 0 {

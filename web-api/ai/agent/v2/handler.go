@@ -1,12 +1,15 @@
 package agentv2
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go-web/config"
@@ -18,6 +21,27 @@ import (
 // Handler v2 版本的 HTTP Handler
 type Handler struct {
 	sessions *SessionStore
+}
+
+type writeGuard struct {
+	mu   sync.Mutex
+	dead bool
+}
+
+func (g *writeGuard) markDead() {
+	g.mu.Lock()
+	g.dead = true
+	g.mu.Unlock()
+}
+
+func (g *writeGuard) tryWrite(fn func()) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.dead {
+		return false
+	}
+	fn()
+	return true
 }
 
 func NewHandler() (*Handler, error) {
@@ -74,6 +98,8 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	defer c.Writer.Flush()
 
+	wg := &writeGuard{}
+
 	kaStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -83,19 +109,42 @@ func (h *Handler) ChatStream(c *gin.Context) {
 			case <-kaStop:
 				return
 			case <-ticker.C:
-				c.Writer.WriteString("data: \n\n")
-				c.Writer.Flush()
+				wg.tryWrite(func() {
+					c.Writer.WriteString("data: \n\n")
+					c.Writer.Flush()
+				})
 			}
 		}
 	}()
 
 	flush := func(chunk StreamChunk) {
-		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
-		c.Writer.Flush()
+		wg.tryWrite(func() {
+			data, _ := json.Marshal(chunk)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
+			c.Writer.Flush()
+		})
 	}
 
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer runnerCancel()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			wg.markDead()
+			runnerCancel()
+		case <-runnerCtx.Done():
+		}
+	}()
+
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+	}
+	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
+	sess.SetCancel(runnerCancel)
+
+	agent, err := NewSQLAgent(runnerCtx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
 		ConnID: req.ConnID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
 	})
 	if err != nil {
@@ -106,13 +155,21 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	_, runErr := agent.RunStream(ctx, req, flush)
+	var runErr error
+	sessionID, runErr = agent.RunStream(runnerCtx, req, flush)
 	close(kaStop)
+	sess.ClearCancel()
 
 	if runErr != nil {
 		log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
-		flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
-		flush(StreamChunk{Type: "done"})
+		if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
+			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
+		}
+	}
+
+	flush(StreamChunk{Type: "done"})
+	if sessionID != "" {
+		_ = sessionID
 	}
 }
 
@@ -131,6 +188,10 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		return
 	}
 
+	if req.UserID == "" {
+		req.UserID = user.Id
+	}
+
 	ctx := c.Request.Context()
 
 	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
@@ -142,7 +203,8 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	c.Header("Connection", "keep-alive")
 	defer c.Writer.Flush()
 
-	// keep-alive 心跳机制，防止连接超时
+	wg := &writeGuard{}
+
 	kaStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -152,20 +214,42 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 			case <-kaStop:
 				return
 			case <-ticker.C:
-				c.Writer.WriteString("data: \n\n")
-				c.Writer.Flush()
+				wg.tryWrite(func() {
+					c.Writer.WriteString("data: \n\n")
+					c.Writer.Flush()
+				})
 			}
 		}
 	}()
 
 	flush := func(chunk StreamChunk) {
-		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
-		c.Writer.Flush()
+		wg.tryWrite(func() {
+			data, _ := json.Marshal(chunk)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
+			c.Writer.Flush()
+		})
 	}
 
-	// 创建 Agent（需要与原始执行使用相同的 CheckPointStore）
-	agent, err := NewSQLAgent(ctx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer runnerCancel()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			wg.markDead()
+			runnerCancel()
+		case <-runnerCtx.Done():
+		}
+	}()
+
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+	}
+	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
+	sess.SetCancel(runnerCancel)
+
+	agent, err := NewSQLAgent(runnerCtx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
 		ConnID:    req.ConnID,
 		UserID:    user.Id,
 		UserName:  user.Name,
@@ -177,26 +261,20 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
 		flush(StreamChunk{Type: "done"})
 		return
+
 	}
 
-	// 获取会话
-	var sess *Session
-	if req.SessionID != "" {
-		sess, _ = h.sessions.GetOrCreate(req.SessionID, user.Id)
-	}
-
-	// 构建 targets map：所有 interruptID 标记为 approved/rejected
 	targets := make(map[string]bool, len(req.InterruptIDs))
 	for _, id := range req.InterruptIDs {
 		targets[id] = req.Confirmed
 	}
 
-	// 通过 Runner 恢复执行（审计日志在 exec_sql 工具内部记录，包含真实 SQL）
-	if err := agent.ResumeStream(ctx, req.CheckPointID, targets, flush, sess); err != nil {
+	if err := agent.ResumeStream(runnerCtx, req.CheckPointID, targets, flush, sess); err != nil {
 		log.Printf("[Handler] resume failed - err=%v\n", err)
 		flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
-		flush(StreamChunk{Type: "done"})
 	}
+	sess.ClearCancel()
+	flush(StreamChunk{Type: "done"})
 	close(kaStop)
 }
 

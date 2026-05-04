@@ -51,7 +51,7 @@ func generatePptx(qr *queryResult, title string, chartPaths []string, outputPath
 	writeZipEntry(zw, "ppt/slideLayouts/_rels/slideLayout1.xml.rels", pptxSlideLayoutRels())
 
 	writeZipEntry(zw, "ppt/slides/slide1.xml", pptxTitleSlide(title))
-	writeZipEntry(zw, "ppt/slides/_rels/slide1.xml.rels", pptxSlideRelsWithImage(hasChart, 0))
+	writeZipEntry(zw, "ppt/slides/_rels/slide1.xml.rels", pptxSlideRels())
 
 	currentSlide := 2
 
@@ -61,16 +61,16 @@ func generatePptx(qr *queryResult, title string, chartPaths []string, outputPath
 		currentSlide++
 	}
 
-	writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxSummarySlide(qr))
+	writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxSummarySlide(qr, currentSlide))
 	writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
 	currentSlide++
 
-	writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxTableSlide(qr))
+	writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxTableSlide(qr, currentSlide))
 	writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
 	currentSlide++
 
 	if slideCount > currentSlide-1 {
-		writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxHighlightSlide(qr))
+		writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxHighlightSlide(qr, currentSlide))
 		writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
 	}
 
@@ -315,14 +315,14 @@ func pptxTitleSlide(title string) string {
   %s
 </p:spTree></p:cSld>
 </p:sld>`,
-		pptxTitleDecoLine(2, 1400000, 2800000, 400000, 4, "00BCD4"),
+		pptxTitleDecoLine(2, 1400000, 2800000, 400000, 50000, "00BCD4"),
 		pptxTextBox(3, 1400000, 2000000, 9400000, 2000000, title, 4000, true, "FFFFFF"),
 		pptxTextBox(4, 1400000, 3900000, 9400000, 500000, "数据分析演示报告", 2000, false, "80CBC4"),
 		pptxTextBox(5, 1400000, 4500000, 9400000, 400000, "生成时间："+now, 1400, false, "78909C"),
 	)
 }
 
-func pptxSummarySlide(qr *queryResult) string {
+func pptxSummarySlide(qr *queryResult, pageNum int) string {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("总记录数：%d 条", len(qr.Data)))
 	lines = append(lines, fmt.Sprintf("数据列数：%d 列", len(qr.Columns)))
@@ -373,11 +373,11 @@ func pptxSummarySlide(qr *queryResult) string {
 		pptxColorBar(5, 0, 0, 12192000, 60000, "00BCD4"),
 		pptxTextBox(2, 800000, 300000, 10500000, 700000, "数据摘要", 2800, true, "1A237E"),
 		pptxContentTextBox(3, 800000, 1200000, 10500000, 5200000, content),
-		pptxSlideNumber(20, 2),
+		pptxSlideNumber(20, pageNum),
 	)
 }
 
-func pptxTableSlide(qr *queryResult) string {
+func pptxTableSlide(qr *queryResult, pageNum int) string {
 	maxRows := len(qr.Data)
 	if maxRows > 15 {
 		maxRows = 15
@@ -457,13 +457,13 @@ func pptxTableSlide(qr *queryResult) string {
 		sb.WriteString(pptxTextBox(21, 800000, tableCy+1100000, tableWidth, 400000, hint, 1200, false, "757575"))
 	}
 
-	sb.WriteString(pptxSlideNumber(22, 3))
+	sb.WriteString(pptxSlideNumber(22, pageNum))
 
 	sb.WriteString("</p:spTree></p:cSld>\n</p:sld>")
 	return sb.String()
 }
 
-func pptxHighlightSlide(qr *queryResult) string {
+func pptxHighlightSlide(qr *queryResult, pageNum int) string {
 	var highlights []string
 	highlights = append(highlights, fmt.Sprintf("\u25B6 \u6570\u636e\u96c6\u5305\u542b %d \u6761\u8bb0\u5f55\uff0c%d \u4e2a\u5b57\u6bb5", len(qr.Data), len(qr.Columns)))
 
@@ -519,7 +519,7 @@ func pptxHighlightSlide(qr *queryResult) string {
 		pptxColorBar(5, 0, 0, 12192000, 60000, "00BCD4"),
 		pptxTextBox(2, 800000, 300000, 10500000, 700000, "\u6570\u636e\u4eae\u70b9", 2800, true, "1A237E"),
 		pptxContentTextBox(3, 800000, 1200000, 10500000, 5200000, content),
-		pptxSlideNumber(20, 4),
+		pptxSlideNumber(20, pageNum),
 	)
 }
 
