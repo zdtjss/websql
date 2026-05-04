@@ -1851,6 +1851,7 @@ function handlePromptSaved() {
 }
 
 function clearSession(showMsg) {
+  stopGeneration()
   chatHistory.value = []
   sessionId.value = ''
   thinkingText.value = ''

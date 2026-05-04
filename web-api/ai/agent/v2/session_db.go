@@ -1,6 +1,7 @@
 package agentv2
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -41,6 +42,7 @@ type Session struct {
 	CreatedAt time.Time
 	mu        sync.Mutex
 	messages  []SessionMessage
+	cancelFn  context.CancelFunc
 }
 
 // Append 追加消息并持久化到数据库
@@ -59,6 +61,27 @@ func (s *Session) GetMessages() []SessionMessage {
 	result := make([]SessionMessage, len(s.messages))
 	copy(result, s.messages)
 	return result
+}
+
+func (s *Session) SetCancel(cancel context.CancelFunc) {
+	s.mu.Lock()
+	s.cancelFn = cancel
+	s.mu.Unlock()
+}
+
+func (s *Session) Cancel() {
+	s.mu.Lock()
+	if s.cancelFn != nil {
+		s.cancelFn()
+		s.cancelFn = nil
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) ClearCancel() {
+	s.mu.Lock()
+	s.cancelFn = nil
+	s.mu.Unlock()
 }
 
 // Title 取第一条用户消息的前60个字符作为标题
@@ -107,12 +130,13 @@ func (s *Session) saveToDB() error {
 // ──────────────────────────────────────────────
 
 type SessionStore struct {
-	mu    sync.Mutex
-	cache map[string]*Session
+	mu      sync.Mutex
+	cache   map[string]*Session
+	cancels map[string]context.CancelFunc
 }
 
 func NewSessionStore() (*SessionStore, error) {
-	return &SessionStore{cache: make(map[string]*Session)}, nil
+	return &SessionStore{cache: make(map[string]*Session), cancels: make(map[string]context.CancelFunc)}, nil
 }
 
 // GetOrCreate 获取或创建会话
@@ -163,9 +187,33 @@ func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
 // Delete 删除会话
 func (s *SessionStore) Delete(id string) error {
 	s.mu.Lock()
+	if sess, ok := s.cache[id]; ok {
+		sess.Cancel()
+	}
 	delete(s.cache, id)
 	s.mu.Unlock()
 	return deleteSessionInDB(id)
+}
+
+func (s *SessionStore) RegisterCancel(id string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	s.cancels[id] = cancel
+	s.mu.Unlock()
+}
+
+func (s *SessionStore) Cancel(id string) {
+	s.mu.Lock()
+	if cancel, ok := s.cancels[id]; ok {
+		cancel()
+		delete(s.cancels, id)
+	}
+	s.mu.Unlock()
+}
+
+func (s *SessionStore) UnregisterCancel(id string) {
+	s.mu.Lock()
+	delete(s.cancels, id)
+	s.mu.Unlock()
 }
 
 // GetDetail 获取会话详情（含完整消息）
