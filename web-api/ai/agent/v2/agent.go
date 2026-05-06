@@ -5,15 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	admin "go-web/web-api/admin"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
+
+	admin "go-web/web-api/admin"
+	"go-web/web-api/ai/agent/v2/export"
 
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/filesystem"
+	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -96,6 +101,8 @@ type SQLAgent struct {
 const maxHistoryRounds = 20
 
 func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
+	export.InitSkillEnv()
+
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
@@ -113,12 +120,41 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	summarizationMW, err := summarization.New(ctx, &summarization.Config{
 		Model: cm,
 		Trigger: &summarization.TriggerCondition{
-			ContextTokens: 100000,
+			ContextTokens: 10000000,
 		},
 	})
 	if err != nil {
 		log.Printf("[Agent] 创建摘要中间件失败 - err=%v\n", err)
 		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
+	}
+
+	osfsBackend := export.NewOSFilesystemBackend()
+	skillsDir := filepath.Join(export.GetSkillScriptsBaseDir(), "skills")
+
+	fsm, err := filesystem.New(ctx, &filesystem.MiddlewareConfig{
+		Backend:        osfsBackend,
+		StreamingShell: osfsBackend,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Filesystem 中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建文件系统中间件失败：%w", err)
+	}
+
+	skillBackend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
+		Backend: osfsBackend,
+		BaseDir: skillsDir,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Skill Backend 失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建 Skill Backend 失败：%w", err)
+	}
+
+	sm, err := skill.NewMiddleware(ctx, &skill.Config{
+		Backend: skillBackend,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Skill 中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建 Skill 中间件失败：%w", err)
 	}
 
 	var permAgentTool tool.BaseTool
@@ -140,12 +176,13 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
 		Handlers: []adk.ChatModelAgentMiddleware{
+			&ToolCallLoggingMiddleware{},
 			&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
-			// DangerousSQLApprovalMiddleware：拦截 exec_sql 工具，对危险 SQL 执行审批流程
-			// 严格遵循 eino ApprovalMiddleware 模式，确保所有危险 SQL 必须经过用户确认
 			&DangerousSQLApprovalMiddleware{},
 			&ToolErrorRecoveryMiddleware{},
 			summarizationMW,
+			fsm,
+			sm,
 		},
 		MaxIterations: 20,
 	})
@@ -488,13 +525,14 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *ExecAuditCtx) ([]tool.BaseTool, error) {
+	conn, _ := GetConn(connID)
 	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
 	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, auditCtx))
 	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", NewExportExcelFunc(connID))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", NewExportExcelWithChartFunc(connID))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", NewExportPPTFunc(connID))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", NewExportAnalysisDocxFunc(connID))
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", export.NewExportAnalysisDocxFunc(conn))
 	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema))
 	// 获取当前日期、星期几和时间  不是所有模型都支持正确使用SQL获取当前日期信息
 	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
@@ -520,7 +558,7 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
 	sb.WriteString("你精通标准 SQL（SQL-92/99/2003），以及 ")
 	fmt.Fprintf(&sb, "%s 的方言特性、索引策略和查询优化技巧。", dbType)
-	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为有洞察的分析结论。")
+	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为富有洞察且具有中国特色的分析结论。")
 	sb.WriteString("\n\n")
 	fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
 

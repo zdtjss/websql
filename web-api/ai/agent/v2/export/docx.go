@@ -1,18 +1,4 @@
-// DOCX 生成器 — 直接构建 Office Open XML
-//
-// DOCX 文件本质是 ZIP 包，包含以下核心 XML：
-//   - [Content_Types].xml  — 内容类型声明
-//   - _rels/.rels          — 顶层关系
-//   - word/document.xml    — 文档主体
-//   - word/_rels/document.xml.rels — 文档关系（图片等）
-//
-// 设计理念：
-//   - 封面页：居中标题 + 装饰线 + 副标题 + 日期
-//   - 正文：适当页边距，清晰的标题层次
-//   - 表格：深色表头 + 交替行色 + 细边框
-//   - 富文本：保留 Markdown 中的粗体、斜体、行内代码
-//   - 统一品牌色系 (Navy #1A237E + Cyan #00BCD4)
-package agentv2
+package export
 
 import (
 	"archive/zip"
@@ -24,7 +10,16 @@ import (
 	"time"
 )
 
-func generateDocx(qr *queryResult, title string, chartImagePaths []string, outputPath string) error {
+const (
+	DocxPrimaryColor = "1A237E"
+	DocxAccentColor  = "00BCD4"
+	DocxSuccessColor = "4CAF50"
+	DocxWarningColor = "FF9800"
+	DocxLightGray    = "757575"
+	DocxBgColor      = "F5F7FA"
+)
+
+func GenerateDocx(qr *QueryResult, title string, chartImagePaths []string, outputPath string) error {
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return err
@@ -70,74 +65,81 @@ func generateDocx(qr *queryResult, title string, chartImagePaths []string, outpu
 
 	var body strings.Builder
 	body.WriteString(docxDocumentHeader())
-
-	coverPageTitle := title
-	body.WriteString(docxCoverPage(coverPageTitle, "数据分析报告"))
+	body.WriteString(DocxCoverPageEnhanced(title, "专业数据分析报告"))
 	body.WriteString(docxSectionBreak())
 
-	body.WriteString(docxHeading("执行摘要", 1))
-	body.WriteString(docxParagraph(
-		fmt.Sprintf("本报告基于数据库查询生成，共包含 %d 条记录、%d 个字段。生成时间：%s。",
-			len(qr.Data), len(qr.Columns), time.Now().Format("2006-01-02 15:04:05")),
+	body.WriteString(docxHeadingEnhanced("执行摘要", 1))
+	body.WriteString(docxParagraphEnhanced(
+		fmt.Sprintf("本报告基于数据库查询生成，共包含 %d 条记录、%d 个字段。生成时间：%s。报告通过多维度统计分析，深入挖掘数据价值，为决策提供数据支撑。",
+			len(qr.Data), len(qr.Columns), time.Now().Format("2006年01月02日 15:04:05")),
 		false, 22, ""))
+	body.WriteString(docxSpacing(8))
 
 	if hasImages {
-		body.WriteString(docxHeading("数据可视化", 2))
+		body.WriteString(docxHeadingEnhanced("数据可视化", 2))
+		body.WriteString(docxParagraphEnhanced("以下图表直观展示了数据的关键指标趋势与对比情况，帮助快速洞察数据特征。", false, 20, ""))
+		body.WriteString(docxSpacing(6))
 		for i, rid := range imageRIDs {
-			if i > 0 {
-				body.WriteString(docxParagraph("", false, 12, ""))
-			}
+			body.WriteString(docxParagraph("", false, 8, ""))
 			body.WriteString(docxImage(rid, 5400000, 3240000))
 			body.WriteString(docxParagraph(
 				fmt.Sprintf("图 %d. 数据指标可视化分析", i+1),
 				false, 18, "center"))
+			body.WriteString(docxSpacing(4))
 		}
-		body.WriteString(docxParagraph("", false, 12, ""))
 	}
 
-	body.WriteString(docxHeading("统计摘要", 2))
+	body.WriteString(docxPageBreak())
+	body.WriteString(docxHeadingEnhanced("统计摘要", 2))
+	body.WriteString(docxParagraphEnhanced("对数据集的核心统计指标进行汇总，覆盖整体规模、数值分布等关键维度。", false, 20, ""))
 
 	var statsItems []string
 	statsItems = append(statsItems, fmt.Sprintf("总记录数：**%d** 条", len(qr.Data)))
 	statsItems = append(statsItems, fmt.Sprintf("数据列数：**%d** 列", len(qr.Columns)))
 
-	numericCols := detectNumericCols(qr)
+	numericCols := DetectNumericCols(qr)
 	if len(numericCols) > 0 {
 		statsItems = append(statsItems, fmt.Sprintf("数值字段：**%d** 个（%s）", len(numericCols), strings.Join(numericCols, "、")))
-
 		for _, col := range numericCols {
-			min, max, avg, count := calcNumericStats(qr, col)
+			min, max, avg, count := CalcNumericStats(qr, col)
 			if count > 0 && count > 1 {
 				statsItems = append(statsItems, fmt.Sprintf("`%s` — 最小值：%.2f，最大值：%.2f，平均值：%.2f，总计：%.2f", col, min, max, avg, avg*float64(count)))
 			}
 		}
 	}
-
 	body.WriteString(docxBulletList(statsItems))
-	body.WriteString(docxParagraph("", false, 12, ""))
+	body.WriteString(docxSpacing(8))
 
-	body.WriteString(docxHeading("核心发现", 3))
+	body.WriteString(docxHeadingEnhanced("核心发现", 2))
 	var insights []string
 	for _, col := range numericCols {
-		_, max, avg, count := calcNumericStats(qr, col)
+		_, max, avg, count := CalcNumericStats(qr, col)
 		if count > 1 {
-			insights = append(insights, fmt.Sprintf("`%s` 均值为 **%.2f**，峰值为 **%.2f**", col, avg, max))
+			insights = append(insights, fmt.Sprintf("`%s` 的平均值为 **%.2f**，峰值为 **%.2f**，表明该指标存在较大波动空间", col, avg, max))
 			if len(insights) >= 5 {
 				break
 			}
 		}
 	}
+	if len(insights) == 0 {
+		insights = append(insights, "针对现有字段的分析显示数据质量良好，建议进一步细化分析维度")
+	}
 	body.WriteString(docxBulletList(insights))
-	body.WriteString(docxParagraph("", false, 12, ""))
+	body.WriteString(docxSpacing(8))
 
 	if len(qr.Data) > 0 {
-		body.WriteString(docxHeading("数据明细", 2))
-		body.WriteString(docxParagraph("", false, 12, ""))
-		body.WriteString(docxTable(qr))
-		body.WriteString(docxParagraph("", false, 12, ""))
+		body.WriteString(docxPageBreak())
+		body.WriteString(docxHeadingEnhanced("数据明细", 2))
+		body.WriteString(docxParagraphEnhanced(fmt.Sprintf("以下表格展示了数据集的前 %d 条记录，包含所有字段的完整信息。", minInt(len(qr.Data), 500)), false, 20, ""))
+		body.WriteString(docxSpacing(4))
+		body.WriteString(docxTableEnhanced(qr))
+		body.WriteString(docxSpacing(8))
 	}
 
-	body.WriteString(docxHeading("字段说明", 2))
+	body.WriteString(docxPageBreak())
+	body.WriteString(docxHeadingEnhanced("字段说明", 2))
+	body.WriteString(docxParagraphEnhanced("对各字段的数据类型和含义进行说明，便于理解数据结构和后续分析。", false, 20, ""))
+	body.WriteString(docxSpacing(4))
 	var colItems []string
 	for i, col := range qr.Columns {
 		isNum := false
@@ -147,22 +149,25 @@ func generateDocx(qr *queryResult, title string, chartImagePaths []string, outpu
 				break
 			}
 		}
-		typeTag := "（文本）"
+		typeTag := "文本类型"
+		typeColor := DocxLightGray
 		if isNum {
-			typeTag = "（数值）"
+			typeTag = "数值类型"
+			typeColor = DocxSuccessColor
 		}
-		colItems = append(colItems, fmt.Sprintf("**%d. `%s`** %s", i+1, col, typeTag))
+		colItems = append(colItems, fmt.Sprintf("**`%s`** — `%s`（第 %d 列）", col, typeTag, i+1))
+		_ = typeColor
 	}
 	body.WriteString(docxBulletList(colItems))
 
 	body.WriteString(docxParagraph("", false, 16, ""))
-	body.WriteString(docxDecoLine("00BCD4"))
-	body.WriteString(docxParagraph("", false, 12, ""))
-	body.WriteString(docxParagraph(
-		"* 本报告由 WebSQL AI 智能数据分析平台自动生成，数据来源为实时数据库查询。",
+	body.WriteString(docxDecoLine(DocxAccentColor))
+	body.WriteString(docxParagraph("", false, 10, ""))
+	body.WriteString(docxParagraphEnhanced(
+		"* 本报告由 WebSQL AI 智能数据分析平台自动生成，数据来源为实时数据库查询，分析结果仅供参考。",
 		false, 18, "center"))
-	body.WriteString(docxParagraph(
-		fmt.Sprintf("* 报告生成时间：%s", time.Now().Format("2006-01-02 15:04:05")),
+	body.WriteString(docxParagraphEnhanced(
+		fmt.Sprintf("* 报告生成时间：%s  |  版本：v2.0", time.Now().Format("2006-01-02 15:04:05")),
 		false, 18, "center"))
 
 	body.WriteString(docxSectionBreakFooter())
@@ -177,31 +182,193 @@ func generateDocx(qr *queryResult, title string, chartImagePaths []string, outpu
 	return nil
 }
 
-func calcNumericStats(qr *queryResult, col string) (min, max, avg float64, count int) {
-	min = 1e18
-	max = -1e18
-	var sum float64
-	for _, row := range qr.Data {
-		if v, err := toFloat64(row[col]); err == nil {
-			sum += v
-			if v < min {
-				min = v
-			}
-			if v > max {
-				max = v
-			}
-			count++
-		}
+func minInt(a, b int) int {
+	if a < b {
+		return a
 	}
-	if count > 0 {
-		avg = sum / float64(count)
-	}
-	return
+	return b
 }
 
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 文档结构
-// ──────────────────────────────────────────────
+func DocxCoverPageEnhanced(title, subtitle string) string {
+	var sb strings.Builder
+
+	for i := 0; i < 8; i++ {
+		sb.WriteString(docxParagraph("", false, 24, ""))
+	}
+
+	sb.WriteString(docxDecoLine(DocxPrimaryColor))
+	sb.WriteString(docxParagraph("", false, 8, ""))
+
+	sb.WriteString(docxParagraph(title, true, 44, "center"))
+	sb.WriteString(docxParagraph("", false, 12, ""))
+
+	sb.WriteString(docxParagraph(subtitle, false, 28, "center"))
+	sb.WriteString(docxParagraph("", false, 16, ""))
+
+	sb.WriteString(docxDecoLine(DocxAccentColor))
+	sb.WriteString(docxParagraph("", false, 16, ""))
+
+	sb.WriteString(docxParagraph(chr(9472)+" WebSQL AI \u00b7 智能数据分析平台 "+chr(9472), false, 18, "center"))
+	sb.WriteString(docxParagraph(
+		fmt.Sprintf("生成日期：%s", time.Now().Format("2006-01-02")),
+		false, 18, "center"))
+	sb.WriteString(docxParagraph(
+		fmt.Sprintf("文档编号：WS-REPORT-%s", time.Now().Format("20060102")),
+		false, 16, "center"))
+	return sb.String()
+}
+
+func chr(r rune) string {
+	return string(r)
+}
+
+func docxHeadingEnhanced(text string, level int) string {
+	fontSize := 28
+	switch level {
+	case 1:
+		fontSize = 32
+	case 2:
+		fontSize = 26
+	case 3:
+		fontSize = 22
+	}
+	var sb strings.Builder
+
+	sb.WriteString(docxParagraph("", false, 10, ""))
+
+	sb.WriteString("<w:p>")
+	sb.WriteString("<w:pPr><w:spacing w:before=\"300\" w:after=\"120\"/></w:pPr>")
+
+	sb.WriteString("<w:r>")
+	sb.WriteString("<w:rPr>")
+	fmt.Fprintf(&sb, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, fontSize, fontSize)
+	barColor := DocxPrimaryColor
+	if level == 2 {
+		barColor = DocxAccentColor
+	}
+	sb.WriteString(fmt.Sprintf(`<w:color w:val="%s"/>`, barColor))
+	sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
+	sb.WriteString("</w:rPr>")
+	if level == 1 {
+		sb.WriteString("<w:t xml:space=\"preserve\">\u2503 </w:t>")
+	} else {
+		sb.WriteString("<w:t xml:space=\"preserve\">\u2502 </w:t>")
+	}
+	sb.WriteString("</w:r>")
+
+	sb.WriteString("<w:r>")
+	sb.WriteString("<w:rPr><w:b/><w:bCs/>")
+	fmt.Fprintf(&sb, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, fontSize, fontSize)
+	sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
+	sb.WriteString("</w:rPr>")
+	sb.WriteString("<w:t xml:space=\"preserve\">")
+	sb.WriteString(xmlEscape(text))
+	sb.WriteString("</w:t>")
+	sb.WriteString("</w:r>")
+	sb.WriteString("</w:p>\n")
+
+	if level == 1 {
+		sb.WriteString(docxDecoLine(DocxAccentColor))
+	}
+	sb.WriteString(docxParagraph("", false, 4, ""))
+
+	return sb.String()
+}
+
+func docxParagraphEnhanced(text string, bold bool, fontSize int, align string) string {
+	return docxRichParagraph(text, bold, fontSize, align, false)
+}
+
+func docxSpacing(points int) string {
+	return docxParagraph("", false, points, "")
+}
+
+func docxPageBreak() string {
+	return `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`
+}
+
+func docxTableEnhanced(qr *QueryResult) string {
+	var sb strings.Builder
+
+	numCols := len(qr.Columns)
+	if numCols > 10 {
+		numCols = 10
+	}
+
+	sb.WriteString(`<w:tbl>
+<w:tblPr>
+  <w:tblStyle w:val="TableGrid"/>
+  <w:tblW w:w="5000" w:type="pct"/>
+  <w:jc w:val="center"/>
+  <w:tblBorders>
+    <w:top w:val="single" w:sz="6" w:space="0" w:color="BDBDBD"/>
+    <w:left w:val="single" w:sz="6" w:space="0" w:color="BDBDBD"/>
+    <w:bottom w:val="single" w:sz="6" w:space="0" w:color="BDBDBD"/>
+    <w:right w:val="single" w:sz="6" w:space="0" w:color="BDBDBD"/>
+    <w:insideH w:val="single" w:sz="4" w:space="0" w:color="E0E0E0"/>
+    <w:insideV w:val="single" w:sz="4" w:space="0" w:color="E0E0E0"/>
+  </w:tblBorders>
+</w:tblPr>
+`)
+
+	sb.WriteString(`<w:tblGrid>`)
+	for i := 0; i < numCols; i++ {
+		sb.WriteString(fmt.Sprintf(`<w:gridCol w:w="%d"/>`, 9000/numCols))
+	}
+	sb.WriteString(`</w:tblGrid>`)
+
+	sb.WriteString("<w:tr>")
+	for i := 0; i < numCols; i++ {
+		sb.WriteString(`<w:tc><w:tcPr>
+  <w:shd w:val="clear" w:color="auto" w:fill="1A237E"/>
+  <w:tcW w:w="1000" w:type="pct"/>
+</w:tcPr>`)
+		sb.WriteString("<w:p><w:pPr><w:jc w:val=\"center\"/><w:spacing w:before=\"40\" w:after=\"40\"/></w:pPr>")
+		sb.WriteString("<w:r><w:rPr><w:b/><w:bCs/>")
+		sb.WriteString(`<w:sz w:val="20"/><w:szCs w:val="20"/><w:color w:val="FFFFFF"/>`)
+		sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
+		sb.WriteString("</w:rPr><w:t xml:space=\"preserve\">")
+		sb.WriteString(xmlEscape(qr.Columns[i]))
+		sb.WriteString("</w:t></w:r></w:p></w:tc>")
+	}
+	sb.WriteString("</w:tr>\n")
+
+	maxRows := len(qr.Data)
+	if maxRows > 500 {
+		maxRows = 500
+	}
+	for i := 0; i < maxRows; i++ {
+		row := qr.Data[i]
+		fillColor := "FFFFFF"
+		if i%2 == 1 {
+			fillColor = "F0F4FF"
+		}
+		sb.WriteString("<w:tr>")
+		for j := 0; j < numCols; j++ {
+			sb.WriteString(fmt.Sprintf(`<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="%s"/></w:tcPr>`, fillColor))
+			sb.WriteString("<w:p><w:pPr><w:spacing w:before=\"20\" w:after=\"20\"/></w:pPr>")
+			sb.WriteString("<w:r><w:rPr>")
+			sb.WriteString(`<w:sz w:val="20"/><w:szCs w:val="20"/>`)
+			sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
+			sb.WriteString("</w:rPr><w:t xml:space=\"preserve\">")
+			if v, ok := row[qr.Columns[j]]; ok {
+				sb.WriteString(xmlEscape(fmt.Sprintf("%v", v)))
+			}
+			sb.WriteString("</w:t></w:r></w:p></w:tc>")
+		}
+		sb.WriteString("</w:tr>\n")
+	}
+
+	if len(qr.Data) > 500 {
+		sb.WriteString("<w:tr><w:tc>")
+		sb.WriteString("<w:tcPr><w:gridSpan w:val=\"" + fmt.Sprintf("%d", numCols) + "\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"FFF3E0\"/></w:tcPr>")
+		sb.WriteString(fmt.Sprintf("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr><w:i/><w:sz w:val=\"20\"/><w:color w:val=\"E65100\"/></w:rPr><w:t>... 共 %d 行，仅显示前 500 行</w:t></w:r></w:p>", len(qr.Data)))
+		sb.WriteString("</w:tc></w:tr>\n")
+	}
+
+	sb.WriteString("</w:tbl>\n")
+	return sb.String()
+}
 
 func docxDocumentHeader() string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -230,47 +397,10 @@ func docxSectionBreakFooter() string {
 	return `  <w:sectPr>
     <w:pgSz w:w="11906" w:h="16838"/>
     <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
-    <w:footerReference r:id="rId99" w:type="default"/>
   </w:sectPr>
 </w:body>
 </w:document>`
 }
-
-func docxCoverPage(title, subtitle string) string {
-	var sb strings.Builder
-
-	// 顶部留白
-	for i := 0; i < 6; i++ {
-		sb.WriteString(docxParagraph("", false, 24, ""))
-	}
-
-	// 装饰线
-	sb.WriteString(docxDecoLine("1A237E"))
-
-	// 主标题
-	sb.WriteString(docxParagraph(title, true, 40, "center"))
-	sb.WriteString(docxParagraph("", false, 16, ""))
-
-	// 副标题
-	sb.WriteString(docxParagraph(subtitle, false, 26, "center"))
-	sb.WriteString(docxParagraph("", false, 20, ""))
-
-	// 装饰线
-	sb.WriteString(docxDecoLine("00BCD4"))
-
-	// 生成信息
-	sb.WriteString(docxParagraph("", false, 20, ""))
-	sb.WriteString(docxParagraph("WebSQL AI · 智能数据分析平台", false, 20, "center"))
-	sb.WriteString(docxParagraph(
-		fmt.Sprintf("生成日期：%s", time.Now().Format("2006-01-02")),
-		false, 20, "center"))
-
-	return sb.String()
-}
-
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 段落
-// ──────────────────────────────────────────────
 
 func docxParagraph(text string, bold bool, fontSize int, align string) string {
 	return docxRichParagraph(text, bold, fontSize, align, false)
@@ -469,146 +599,11 @@ func findStr(runes []rune, s string) int {
 	return -1
 }
 
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 标题
-// ──────────────────────────────────────────────
-
-func docxHeading(text string, level int) string {
-	fontSize := 28
-	switch level {
-	case 1:
-		fontSize = 30
-	case 2:
-		fontSize = 26
-	case 3:
-		fontSize = 22
-	}
-	var sb strings.Builder
-
-	// 标题上方间距
-	sb.WriteString(docxParagraph("", false, 8, ""))
-
-	// 左侧色条 + 标题
-	sb.WriteString("<w:p>")
-	sb.WriteString("<w:pPr><w:spacing w:before=\"200\" w:after=\"100\"/></w:pPr>")
-
-	// 色条标记
-	sb.WriteString("<w:r>")
-	sb.WriteString("<w:rPr>")
-	fmt.Fprintf(&sb, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, fontSize, fontSize)
-	barColor := "1A237E"
-	if level == 2 {
-		barColor = "00BCD4"
-	}
-	sb.WriteString(fmt.Sprintf(`<w:color w:val="%s"/>`, barColor))
-	sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
-	sb.WriteString("</w:rPr>")
-	if level == 1 {
-		sb.WriteString("<w:t xml:space=\"preserve\">\u2503 </w:t>")
-	} else {
-		sb.WriteString("<w:t xml:space=\"preserve\">\u2502 </w:t>")
-	}
-	sb.WriteString("</w:r>")
-
-	// 标题文本
-	sb.WriteString("<w:r>")
-	sb.WriteString("<w:rPr><w:b/><w:bCs/>")
-	fmt.Fprintf(&sb, `<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, fontSize, fontSize)
-	sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
-	sb.WriteString("</w:rPr>")
-	sb.WriteString("<w:t xml:space=\"preserve\">")
-	sb.WriteString(xmlEscape(text))
-	sb.WriteString("</w:t>")
-	sb.WriteString("</w:r>")
-	sb.WriteString("</w:p>\n")
-
-	sb.WriteString(docxParagraph("", false, 6, ""))
-
-	return sb.String()
-}
-
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 表格
-// ──────────────────────────────────────────────
-
-func docxTable(qr *queryResult) string {
-	var sb strings.Builder
-
-	sb.WriteString(`<w:tbl>
-<w:tblPr>
-  <w:tblStyle w:val="TableGrid"/>
-  <w:tblW w:w="5000" w:type="pct"/>
-  <w:tblBorders>
-    <w:top w:val="single" w:sz="4" w:space="0" w:color="BDBDBD"/>
-    <w:left w:val="single" w:sz="4" w:space="0" w:color="BDBDBD"/>
-    <w:bottom w:val="single" w:sz="4" w:space="0" w:color="BDBDBD"/>
-    <w:right w:val="single" w:sz="4" w:space="0" w:color="BDBDBD"/>
-    <w:insideH w:val="single" w:sz="4" w:space="0" w:color="E0E0E0"/>
-    <w:insideV w:val="single" w:sz="4" w:space="0" w:color="E0E0E0"/>
-  </w:tblBorders>
-</w:tblPr>
-`)
-
-	// 表头行
-	sb.WriteString("<w:tr>")
-	for _, col := range qr.Columns {
-		sb.WriteString(`<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="1A237E"/></w:tcPr>`)
-		sb.WriteString("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>")
-		sb.WriteString("<w:r><w:rPr><w:b/><w:bCs/>")
-		sb.WriteString(`<w:sz w:val="20"/><w:szCs w:val="20"/><w:color w:val="FFFFFF"/>`)
-		sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
-		sb.WriteString("</w:rPr><w:t xml:space=\"preserve\">")
-		sb.WriteString(xmlEscape(col))
-		sb.WriteString("</w:t></w:r></w:p></w:tc>")
-	}
-	sb.WriteString("</w:tr>\n")
-
-	// 数据行（最多 500 行）
-	maxRows := len(qr.Data)
-	if maxRows > 500 {
-		maxRows = 500
-	}
-	for i := 0; i < maxRows; i++ {
-		row := qr.Data[i]
-		fillColor := "FFFFFF"
-		if i%2 == 1 {
-			fillColor = "F5F7FA"
-		}
-		sb.WriteString("<w:tr>")
-		for _, col := range qr.Columns {
-			fmt.Fprintf(&sb, `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="%s"/></w:tcPr>`, fillColor)
-			sb.WriteString("<w:p>")
-			sb.WriteString("<w:r><w:rPr>")
-			sb.WriteString(`<w:sz w:val="20"/><w:szCs w:val="20"/>`)
-			sb.WriteString(`<w:rFonts w:ascii="Microsoft YaHei" w:hAnsi="Microsoft YaHei" w:eastAsia="Microsoft YaHei"/>`)
-			sb.WriteString("</w:rPr><w:t xml:space=\"preserve\">")
-			if v, ok := row[col]; ok {
-				sb.WriteString(xmlEscape(fmt.Sprintf("%v", v)))
-			}
-			sb.WriteString("</w:t></w:r></w:p></w:tc>")
-		}
-		sb.WriteString("</w:tr>\n")
-	}
-
-	if len(qr.Data) > 500 {
-		sb.WriteString("<w:tr><w:tc>")
-		sb.WriteString("<w:tcPr><w:gridSpan w:val=\"" + fmt.Sprintf("%d", len(qr.Columns)) + "\"/></w:tcPr>")
-		sb.WriteString(fmt.Sprintf("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r><w:rPr><w:i/><w:sz w:val=\"20\"/><w:color w:val=\"757575\"/></w:rPr><w:t>... 共 %d 行，仅显示前 500 行</w:t></w:r></w:p>", len(qr.Data)))
-		sb.WriteString("</w:tc></w:tr>\n")
-	}
-
-	sb.WriteString("</w:tbl>\n")
-	return sb.String()
-}
-
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 列表 & 装饰
-// ──────────────────────────────────────────────
-
 func docxBulletList(items []string) string {
 	var sb strings.Builder
 	for _, item := range items {
-		sb.WriteString(docxRichParagraph("\u2022 "+item, false, 20, "", true))
+		sb.WriteString(docxRichParagraph("\u25B8 "+item, false, 20, "", true))
+		sb.WriteString(docxParagraph("", false, 4, ""))
 	}
 	return sb.String()
 }
@@ -620,10 +615,6 @@ func docxDecoLine(color string) string {
 	sb.WriteString(`</w:pBdr></w:pPr></w:p>`)
 	return sb.String()
 }
-
-// ──────────────────────────────────────────────
-// DOCX XML 构建 — 图片
-// ──────────────────────────────────────────────
 
 func docxImage(rID string, cx, cy int64) string {
 	return fmt.Sprintf(`<w:p><w:pPr><w:jc w:val="center"/></w:pPr>
@@ -663,10 +654,6 @@ func docxImage(rID string, cx, cy int64) string {
 </w:p>`, cx, cy, rID, cx, cy)
 }
 
-// ──────────────────────────────────────────────
-// ZIP 写入辅助
-// ──────────────────────────────────────────────
-
 func writeZipEntry(zw *zip.Writer, name, content string) error {
 	w, err := zw.Create(name)
 	if err != nil {
@@ -697,12 +684,8 @@ func xmlEscape(s string) string {
 	return b.String()
 }
 
-// ──────────────────────────────────────────────
-// 基于 Markdown 内容生成 DOCX
-// ──────────────────────────────────────────────
-
-func generateDocxFromContent(content, title, outputPath string) error {
-	blocks := parseMarkdownBlocks(content)
+func GenerateDocxFromContent(content, title, outputPath string) error {
+	blocks := ParseMarkdownBlocks(content)
 
 	f, err := os.Create(outputPath)
 	if err != nil {
@@ -732,34 +715,34 @@ func generateDocxFromContent(content, title, outputPath string) error {
 	var body strings.Builder
 	body.WriteString(docxDocumentHeader())
 
-	// 封面
-	body.WriteString(docxCoverPage(title, "数据分析报告"))
+	body.WriteString(DocxCoverPageEnhanced(title, "专业数据分析报告"))
 	body.WriteString(docxSectionBreak())
 
-	// 正文内容
 	for _, block := range blocks {
 		switch block.Type {
 		case "h1":
-			body.WriteString(docxHeading(stripMarkdownFormatting(block.Content), 1))
+			body.WriteString(docxHeadingEnhanced(StripMarkdownFormatting(block.Content), 1))
 		case "h2":
-			body.WriteString(docxHeading(stripMarkdownFormatting(block.Content), 2))
+			body.WriteString(docxHeadingEnhanced(StripMarkdownFormatting(block.Content), 2))
 		case "h3":
-			body.WriteString(docxHeading(stripMarkdownFormatting(block.Content), 3))
+			body.WriteString(docxHeadingEnhanced(StripMarkdownFormatting(block.Content), 3))
 		case "paragraph":
 			body.WriteString(docxRichParagraph(block.Content, false, 22, "", true))
+			body.WriteString(docxSpacing(4))
 		case "list":
 			for _, item := range strings.Split(block.Content, "\n") {
-				body.WriteString(docxRichParagraph("\u2022 "+item, false, 22, "", true))
+				body.WriteString(docxRichParagraph("\u25B8 "+item, false, 22, "", true))
 			}
+			body.WriteString(docxSpacing(4))
 		case "code":
-			body.WriteString(docxParagraph("", false, 10, ""))
+			body.WriteString(docxParagraph("", false, 8, ""))
 			for _, line := range strings.Split(block.Content, "\n") {
 				body.WriteString(docxRichParagraph("  "+line, false, 18, "", false))
 			}
-			body.WriteString(docxParagraph("", false, 10, ""))
+			body.WriteString(docxParagraph("", false, 8, ""))
 		case "table":
 			body.WriteString(docxMarkdownTable(block.Content))
-			body.WriteString(docxParagraph("", false, 10, ""))
+			body.WriteString(docxSpacing(8))
 		}
 	}
 
@@ -774,7 +757,7 @@ func docxMarkdownTable(mdTable string) string {
 	var dataLines []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || isTableSeparator(trimmed) {
+		if trimmed == "" || IsTableSeparator(trimmed) {
 			continue
 		}
 		dataLines = append(dataLines, trimmed)
@@ -788,7 +771,7 @@ func docxMarkdownTable(mdTable string) string {
 		line = strings.Trim(line, "|")
 		cells := strings.Split(line, "|")
 		for i := range cells {
-			cells[i] = strings.TrimSpace(stripMarkdownFormatting(cells[i]))
+			cells[i] = strings.TrimSpace(StripMarkdownFormatting(cells[i]))
 		}
 		rows = append(rows, cells)
 	}
@@ -798,7 +781,7 @@ func docxMarkdownTable(mdTable string) string {
 	}
 
 	cols := rows[0]
-	qr := &queryResult{
+	qr := &QueryResult{
 		Columns: cols,
 		Data:    make([]map[string]any, 0, len(rows)-1),
 	}
@@ -813,5 +796,5 @@ func docxMarkdownTable(mdTable string) string {
 		}
 		qr.Data = append(qr.Data, m)
 	}
-	return docxTable(qr)
+	return docxTableEnhanced(qr)
 }

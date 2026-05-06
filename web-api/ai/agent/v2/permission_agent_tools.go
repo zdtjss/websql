@@ -49,7 +49,7 @@ type PermTableAccess struct {
 func newGetTableStructureFunc(connID string) func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 	return func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 		log.Printf("[PermAgent:get_table_structure] tables=%v\n", input.Tables)
-		conn, _ := getConn(connID)
+		conn, _ := GetConn(connID)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}

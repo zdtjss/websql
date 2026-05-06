@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -308,4 +309,80 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 		}
 		return result, nil
 	}, nil
+}
+
+// ──────────────────────────────────────────────
+// ToolCallLoggingMiddleware
+// ──────────────────────────────────────────────
+//
+// 统一记录所有工具（含 Skill）的调用日志，包括入参、出参和执行耗时。
+
+type ToolCallLoggingMiddleware struct {
+	*adk.BaseChatModelAgentMiddleware
+}
+
+func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
+	_ context.Context,
+	endpoint adk.InvokableToolCallEndpoint,
+	tCtx *adk.ToolContext,
+) (adk.InvokableToolCallEndpoint, error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		startTime := time.Now()
+		log.Printf("[ToolCall] 开始调用 - name=%s, args=%s\n", tCtx.Name, truncateStr(argumentsInJSON, 500))
+
+		result, err := endpoint(ctx, argumentsInJSON, opts...)
+
+		elapsed := time.Since(startTime)
+		if err != nil {
+			log.Printf("[ToolCall] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
+		} else {
+			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, truncateStr(result, 500))
+		}
+
+		return result, err
+	}, nil
+}
+
+func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
+	_ context.Context,
+	endpoint adk.StreamableToolCallEndpoint,
+	tCtx *adk.ToolContext,
+) (adk.StreamableToolCallEndpoint, error) {
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+		startTime := time.Now()
+		log.Printf("[ToolCall:Stream] 开始调用 - name=%s, args=%s\n", tCtx.Name, truncateStr(argumentsInJSON, 500))
+
+		reader, err := endpoint(ctx, argumentsInJSON, opts...)
+		if err != nil {
+			elapsed := time.Since(startTime)
+			log.Printf("[ToolCall:Stream] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
+			return nil, err
+		}
+
+		// 包装流式读取器，在流结束时记录日志
+		wrapped := schema.StreamReaderWithConvert(reader, func(s string) (string, error) {
+			return s, nil
+		})
+		
+		go func() {
+			for {
+				_, err := wrapped.Recv()
+				if err != nil {
+					elapsed := time.Since(startTime)
+					log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v\n", tCtx.Name, elapsed)
+					return
+				}
+			}
+		}()
+
+		return reader, nil
+	}, nil
+}
+
+// truncateStr 截断过长的字符串，避免日志输出过多
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

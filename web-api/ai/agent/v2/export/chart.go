@@ -1,16 +1,15 @@
-package agentv2
+package export
 
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/wcharczuk/go-chart/v2"
 	"github.com/wcharczuk/go-chart/v2/drawing"
 )
 
-var chartBrandColors = []drawing.Color{
+var ChartBrandColors = []drawing.Color{
 	drawing.ColorFromHex("1A237E"),
 	drawing.ColorFromHex("00BCD4"),
 	drawing.ColorFromHex("4CAF50"),
@@ -19,21 +18,23 @@ var chartBrandColors = []drawing.Color{
 	drawing.ColorFromHex("5B9BD5"),
 	drawing.ColorFromHex("9C27B0"),
 	drawing.ColorFromHex("00897B"),
+	drawing.ColorFromHex("F44336"),
+	drawing.ColorFromHex("795548"),
 }
 
-var chartLightGrid = chart.Style{
+var ChartLightGrid = chart.Style{
 	StrokeColor: drawing.ColorFromHex("E8ECF1"),
 	StrokeWidth: 0.5,
 }
 
-type chartSeries struct {
+type ChartSeries struct {
 	Name    string
 	XValues []float64
 	YValues []float64
 	XLabels []string
 }
 
-func renderMultiChartPNG(seriesList []chartSeries, title, chartType, filePath string) error {
+func RenderMultiChartPNG(seriesList []ChartSeries, title, chartType, filePath string) error {
 	switch strings.ToLower(chartType) {
 	case "pie", "doughnut", "donut":
 		if len(seriesList) > 0 {
@@ -47,7 +48,7 @@ func renderMultiChartPNG(seriesList []chartSeries, title, chartType, filePath st
 	}
 }
 
-func renderLineChartFile(filePath string, seriesList []chartSeries, title string) error {
+func renderLineChartFile(filePath string, seriesList []ChartSeries, title string) error {
 	if len(seriesList) == 0 {
 		return fmt.Errorf("no series data")
 	}
@@ -61,6 +62,8 @@ func renderLineChartFile(filePath string, seriesList []chartSeries, title string
 		Background: chartBackStyle(),
 		Canvas: chart.Style{
 			FillColor: drawing.ColorFromHex("FFFFFF"),
+			StrokeColor: drawing.ColorFromHex("E8ECF1"),
+			StrokeWidth: 1.0,
 		},
 		XAxis: chart.XAxis{
 			Ticks: buildXTicks(seriesList[0].XLabels, seriesList[0].XValues),
@@ -68,9 +71,9 @@ func renderLineChartFile(filePath string, seriesList []chartSeries, title string
 		},
 		YAxis: chart.YAxis{
 			Style:          chartAxisStyle(),
-			GridMajorStyle: chartLightGrid,
+			GridMajorStyle: ChartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
-			ValueFormatter: numberFormatter,
+			ValueFormatter: NumberFormatter,
 		},
 	}
 
@@ -81,7 +84,7 @@ func renderLineChartFile(filePath string, seriesList []chartSeries, title string
 				name = fmt.Sprintf("系列 %d", i+1)
 			}
 		}
-		color := chartBrandColors[i%len(chartBrandColors)]
+		color := ChartBrandColors[i%len(ChartBrandColors)]
 		allSeries = append(allSeries, chart.ContinuousSeries{
 			Name:    name,
 			XValues: s.XValues,
@@ -105,7 +108,7 @@ func renderLineChartFile(filePath string, seriesList []chartSeries, title string
 	return graph.Render(chart.PNG, f)
 }
 
-func renderBarChartFile(filePath string, seriesList []chartSeries, title string) error {
+func renderBarChartFile(filePath string, seriesList []ChartSeries, title string) error {
 	if len(seriesList) == 0 {
 		return fmt.Errorf("no series data")
 	}
@@ -125,7 +128,7 @@ func renderBarChartFile(filePath string, seriesList []chartSeries, title string)
 			Label: label,
 			Value: v,
 			Style: chart.Style{
-				FillColor: chartBrandColors[i%len(chartBrandColors)],
+				FillColor: ChartBrandColors[i%len(ChartBrandColors)],
 				FontSize:  9,
 			},
 		})
@@ -144,9 +147,9 @@ func renderBarChartFile(filePath string, seriesList []chartSeries, title string)
 		Bars:     bars,
 		YAxis: chart.YAxis{
 			Style:          chartAxisStyle(),
-			GridMajorStyle: chartLightGrid,
+			GridMajorStyle: ChartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
-			ValueFormatter: numberFormatter,
+			ValueFormatter: NumberFormatter,
 		},
 	}
 
@@ -158,7 +161,7 @@ func renderBarChartFile(filePath string, seriesList []chartSeries, title string)
 	return graph.Render(chart.PNG, f)
 }
 
-func renderMultiBarChart(filePath string, seriesList []chartSeries, title string) error {
+func renderMultiBarChart(filePath string, seriesList []ChartSeries, title string) error {
 	var allSeries []chart.Series
 	graph := chart.Chart{
 		Title:      title,
@@ -175,9 +178,9 @@ func renderMultiBarChart(filePath string, seriesList []chartSeries, title string
 		},
 		YAxis: chart.YAxis{
 			Style:          chartAxisStyle(),
-			GridMajorStyle: chartLightGrid,
+			GridMajorStyle: ChartLightGrid,
 			GridMinorStyle: chart.Style{Hidden: true},
-			ValueFormatter: numberFormatter,
+			ValueFormatter: NumberFormatter,
 		},
 	}
 
@@ -186,7 +189,7 @@ func renderMultiBarChart(filePath string, seriesList []chartSeries, title string
 		if name == "" {
 			name = fmt.Sprintf("系列 %d", i+1)
 		}
-		color := chartBrandColors[i%len(chartBrandColors)]
+		color := ChartBrandColors[i%len(ChartBrandColors)]
 		allSeries = append(allSeries, chart.ContinuousSeries{
 			Name:    name,
 			XValues: s.XValues,
@@ -221,7 +224,7 @@ func renderPieChartFile(filePath string, xLabels []string, yValues []float64, ti
 			Label: fmt.Sprintf("%s (%.1f)", label, v),
 			Value: v,
 			Style: chart.Style{
-				FillColor: chartBrandColors[i%len(chartBrandColors)],
+				FillColor: ChartBrandColors[i%len(ChartBrandColors)],
 				FontSize:  10,
 				FontColor: drawing.ColorFromHex("424242"),
 			},
@@ -293,37 +296,108 @@ func chartAxisStyle() chart.Style {
 	}
 }
 
-func toFloat64(v any) (float64, error) {
-	switch val := v.(type) {
-	case float64:
-		return val, nil
-	case float32:
-		return float64(val), nil
-	case int:
-		return float64(val), nil
-	case int64:
-		return float64(val), nil
-	case int32:
-		return float64(val), nil
-	case string:
-		return strconv.ParseFloat(val, 64)
-	case []byte:
-		return strconv.ParseFloat(string(val), 64)
-	default:
-		s := fmt.Sprintf("%v", v)
-		return strconv.ParseFloat(s, 64)
+func GeneratePptCharts(qr *QueryResult, title, fileName string) []string {
+	numericCols := DetectNumericCols(qr)
+	if len(numericCols) == 0 || len(qr.Data) == 0 || len(qr.Columns) < 2 {
+		return nil
 	}
+
+	xCol := qr.Columns[0]
+	var paths []string
+
+	if len(numericCols) > 1 {
+		seriesNames := numericCols
+		if len(seriesNames) > 3 {
+			seriesNames = seriesNames[:3]
+		}
+
+		var seriesList []ChartSeries
+		for _, col := range seriesNames {
+			xVals, yVals, labels := ExtractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, ChartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		if len(seriesList) > 0 {
+			chartPath := fmt.Sprintf("exports/%s_ppt_chart.png", fileName)
+			chartType := "line"
+			if len(seriesList) == 1 {
+				chartType = "bar"
+			}
+			if err := RenderMultiChartPNG(seriesList, title+" · 关键指标", chartType, chartPath); err != nil {
+				fmt.Printf("[export_ppt] 图表生成失败: %v\n", err)
+			} else {
+				paths = append(paths, chartPath)
+			}
+		}
+	}
+
+	return paths
 }
 
-func numberFormatter(v any) string {
-	if f, ok := v.(float64); ok {
-		if f >= 1e7 {
-			return fmt.Sprintf("%.1fM", f/1e6)
-		}
-		if f >= 1e4 {
-			return fmt.Sprintf("%.1fK", f/1e3)
-		}
-		return fmt.Sprintf("%.0f", f)
+func GenerateDocxCharts(qr *QueryResult, title, fileName string) []string {
+	numericCols := DetectNumericCols(qr)
+	if len(numericCols) == 0 {
+		return nil
 	}
-	return fmt.Sprintf("%v", v)
+
+	if len(qr.Data) == 0 || len(qr.Columns) < 2 {
+		return nil
+	}
+
+	xCol := qr.Columns[0]
+	var paths []string
+
+	if len(numericCols) > 1 {
+		seriesNames := numericCols
+		if len(seriesNames) > 4 {
+			seriesNames = seriesNames[:4]
+		}
+
+		var seriesList []ChartSeries
+		for _, col := range seriesNames {
+			xVals, yVals, labels := ExtractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, ChartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		if len(seriesList) > 1 {
+			linePath := fmt.Sprintf("exports/%s_chart_multi.png", fileName)
+			if err := RenderMultiChartPNG(seriesList, title+" · 趋势对比", "line", linePath); err != nil {
+				fmt.Printf("[export_docx] 多系列图表生成失败: %v\n", err)
+			} else {
+				paths = append(paths, linePath)
+			}
+		}
+	}
+
+	if len(numericCols) >= 1 {
+		var seriesList []ChartSeries
+		for _, col := range numericCols {
+			if len(seriesList) >= 3 {
+				break
+			}
+			xVals, yVals, labels := ExtractXYSeries(qr, xCol, col)
+			seriesList = append(seriesList, ChartSeries{
+				Name:    col,
+				XValues: xVals,
+				YValues: yVals,
+				XLabels: labels,
+			})
+		}
+		barPath := fmt.Sprintf("exports/%s_chart_bar.png", fileName)
+		if err := RenderMultiChartPNG(seriesList, title+" · 指标对比", "bar", barPath); err != nil {
+			fmt.Printf("[export_docx] 柱状图生成失败: %v\n", err)
+		} else {
+			paths = append(paths, barPath)
+		}
+	}
+
+	return paths
 }

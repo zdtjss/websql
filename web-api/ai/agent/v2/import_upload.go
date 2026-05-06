@@ -278,7 +278,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 	}
 
 	// 获取数据库连接和表列名
-	conn, dbType := getConn(req.ConnID)
+	conn, dbType := GetConn(req.ConnID)
 	if conn == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "数据库连接不存在"})
 		return

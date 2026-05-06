@@ -60,7 +60,7 @@ type CurrentDateInfoOutput struct {
 	DateTime string `json:"dateTime"`
 }
 
-func getConn(connId string) (*sqlx.DB, string) {
+func GetConn(connId string) (*sqlx.DB, string) {
 	if connId == "" {
 		return nil, ""
 	}
@@ -103,7 +103,7 @@ func GetCurrentDateInfo() func(ctx context.Context, input *CurrentDateInfoInput)
 func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 		log.Printf("[Tool:query_data] sql=%s\n", input.SQL)
-		conn, _ := getConn(connId)
+		conn, _ := GetConn(connId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connId)
 		}
@@ -155,7 +155,7 @@ func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context
 
 		// 注意：危险SQL检测已移到 DangerousSQLApprovalMiddleware 中统一处理
 		// 此处只负责执行，不重复检测
-		conn, _ := getConn(connId)
+		conn, _ := GetConn(connId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connId)
 		}
@@ -184,7 +184,7 @@ func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context
 func NewSchemaFunc(connId, dbType, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 		log.Printf("[Tool:get_table_schema] tables=%v\n", input.Tables)
-		conn, actualDBType := getConn(connId)
+		conn, actualDBType := GetConn(connId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connId)
 		}
@@ -293,7 +293,7 @@ type ImportDataOutput struct {
 func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 		log.Printf("[Tool:import_data] fileId=%s, table=%s, mode=%s\n", input.FileID, input.TableName, input.Mode)
-		conn, _ := getConn(connID)
+		conn, _ := GetConn(connID)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}
@@ -774,7 +774,8 @@ func quoteTableRef(dbType, dbSchema, tableName string) string {
 }
 
 func applyRowLimit(sql, driverName string, maxRows int) string {
-	upper := strings.ToUpper(sql)
+	trimmed := strings.TrimRight(sql, "; \t\r\n")
+	upper := strings.ToUpper(trimmed)
 	switch driverName {
 	case "oracle":
 		if strings.Contains(upper, "ROWNUM") ||
@@ -782,12 +783,12 @@ func applyRowLimit(sql, driverName string, maxRows int) string {
 			strings.Contains(upper, "FETCH FIRST") {
 			return sql
 		}
-		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", sql, maxRows)
+		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", trimmed, maxRows)
 	default:
 		if reLimit.MatchString(upper) {
 			return sql
 		}
-		return fmt.Sprintf("%s LIMIT %d", sql, maxRows)
+		return fmt.Sprintf("%s LIMIT %d", trimmed, maxRows)
 	}
 }
 
