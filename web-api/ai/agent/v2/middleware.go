@@ -328,7 +328,7 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 ) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 		startTime := time.Now()
-		log.Printf("[ToolCall] 开始调用 - name=%s, args=%s\n", tCtx.Name, truncateStr(argumentsInJSON, 500))
+		log.Printf("[ToolCall] 开始调用 - name=%s, args=%s\n", tCtx.Name, argumentsInJSON)
 
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 
@@ -336,7 +336,7 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 		if err != nil {
 			log.Printf("[ToolCall] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
 		} else {
-			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, truncateStr(result, 500))
+			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, truncateStr(result, 300))
 		}
 
 		return result, err
@@ -363,7 +363,7 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 		wrapped := schema.StreamReaderWithConvert(reader, func(s string) (string, error) {
 			return s, nil
 		})
-		
+
 		go func() {
 			for {
 				_, err := wrapped.Recv()

@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -251,16 +252,37 @@ func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (
 
 	cmd := exec.CommandContext(ctx, pythonPath, scriptPath)
 	cmd.Stdin = strings.NewReader(inputJSON)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("Python 脚本执行超时")
 		}
-		return "", fmt.Errorf("Python 脚本执行失败: %v\n%s", err, string(output))
+		stderrStr := strings.TrimSpace(stderr.String())
+		if stderrStr != "" {
+			return "", fmt.Errorf("Python 脚本执行失败: %v\n%s", err, stderrStr)
+		}
+		return "", fmt.Errorf("Python 脚本执行失败: %v", err)
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	result := strings.TrimSpace(stdout.String())
+	if result == "" {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if stderrStr != "" {
+			if len(stderrStr) > 200 {
+				stderrStr = stderrStr[:200] + "..."
+			}
+			return "", fmt.Errorf("Python 脚本未输出 JSON 结果（stderr: %s）", stderrStr)
+		}
+		return "", fmt.Errorf("Python 脚本输出为空")
+	}
+
+	return result, nil
 }
 
 func fileExists(path string) bool {

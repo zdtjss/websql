@@ -115,6 +115,76 @@
                   <el-icon v-if="!excelUploading"><Upload /></el-icon>
                 </el-button>
               </el-upload>
+              <el-popover placement="top" :width="380" trigger="click" v-model:visible="promptPopoverVisible"
+                @show="loadPrompts()">
+                <div class="prompt-popover-body">
+                  <el-tabs v-model="activeTab" class="prompt-tabs">
+                    <el-tab-pane name="mine">
+                      <template #label>
+                        <span style="display: inline-flex; align-items: center; gap: 6px; width: 100%;">
+                          我的
+                          <el-icon v-if="promptLoading" class="is-loading" size="14"><Loading /></el-icon>
+                          <el-icon :size="10" style="top: -10px;" @click="handlePromptAdd"><Plus /></el-icon>
+                        </span>
+                      </template>
+                      <div class="prompt-list">
+                        <div v-if="myPrompts.length === 0" class="prompt-empty">暂无提示词</div>
+                        <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content)">
+                          <div class="prompt-item-info">
+                            <div class="prompt-item-title">{{ prompt.title }}</div>
+                            <div v-if="prompt.isShared" class="prompt-item-sub">
+                              <el-icon size="12"><Share /></el-icon>
+                              {{ prompt.sharedByName || '他人分享' }}
+                            </div>
+                          </div>
+                          <div class="prompt-item-actions">
+                            <el-button text type="primary">
+                              <el-icon v-if="!prompt.isShared" @click.stop="handlePromptEdit(prompt.id)" title="编辑"><Edit /></el-icon>
+                            </el-button>
+                            <el-button v-if="!prompt.isShared" style="margin-left: -10px;" text type="danger" @click.stop="handleDeletePrompt(prompt)" title="删除">
+                              <el-icon><Delete /></el-icon>
+                            </el-button>
+                          </div>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+                    <el-tab-pane label="系统" name="system">
+                      <div class="prompt-list">
+                        <div v-if="promptLoading" style="text-align: center; padding: 10px;">
+                          <el-icon class="is-loading"><Loading /></el-icon>
+                        </div>
+                        <div v-else-if="systemPrompts.length === 0" class="prompt-empty">暂无系统提示词</div>
+                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content)">
+                          <div class="prompt-item-info">
+                            <div class="prompt-item-title">{{ prompt.title }}</div>
+                          </div>
+                          <div class="prompt-item-actions">
+                            <el-button size="small" text type="info" @click.stop="handleViewPromptDetail(prompt)" title="查看">
+                              <el-icon><View /></el-icon>
+                            </el-button>
+                          </div>
+                        </div>
+                      </div>
+                    </el-tab-pane>
+                  </el-tabs>
+                </div>
+                <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" @saved="handlePromptSaved" @send-to-AI="handlePromptSendToAI" />
+                <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="600px" append-to-body>
+                  <div v-if="promptDetail" class="prompt-detail-content markdown-body" v-html="md.render(promptDetail.content)"></div>
+                  <template #footer>
+                    <el-button @click="promptDetailVisible = false">关闭</el-button>
+                    <el-button type="primary" @click="handleSendFromDetail">
+                      <el-icon><Promotion /></el-icon>
+                      发送给大模型
+                    </el-button>
+                  </template>
+                </el-dialog>
+                <template #reference>
+                  <el-button class="toolbar-btn" circle size="small" title="常用提示词" style="margin-left: 12px;">
+                    <el-icon><ChatLineRound /></el-icon>
+                  </el-button>
+                </template>
+              </el-popover>
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible" 
                 @show="loadSessionList()">
                 <div style="max-height: 400px; overflow-y: auto;">
@@ -166,29 +236,41 @@
             <div class="table-selector-container" v-if="connList.length > 1">
               <label class="table-selector-label">数据库</label>
               <el-tree-select
-                v-model="connId"
+                v-model="selectedSchemas"
                 :data="processedConnList"
-                :props="{ label: 'label', value: 'value', children: 'children', disabled: 'isDir' }"
-                placeholder="选择数据库"
+                :props="{ label: 'label', value: 'value', children: 'children', disabled: 'disabled' }"
+                placeholder="选择数据库（可多选schema）"
                 class="table-selector"
-                @change="handleConnChange"
+                @change="handleSchemaChange"
                 filterable
-                check-strictly
-                :check-on-click-node="false"
+                multiple
+                :check-on-click-node="true"
+                collapse-tags
               />
             </div>
             <div class="table-selector-container" :class="{ 'full-width': connList.length <= 1 }">
               <label class="table-selector-label">相关表</label>
               <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
-                <el-option v-for="table in tableList" :key="table.name"
-                  :label="table.comment ? table.name + '（' + table.comment + '）' : table.name"
-                  :value="table.name" />
+                <el-option v-for="table in tableList" :key="table.name + (table.schema || '')"
+                  :label="table.label || (table.comment ? table.name + '（' + table.comment + '）' : table.name)"
+                  :value="table.label || table.name" />
               </el-select>
             </div>
           </div>
 
           <div class="input-action-row">
             <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+              <div v-if="extractedSchemaHints.length > 0" class="schema-hints">
+                <span class="schema-hints-label">检测到跨库引用：</span>
+                <template v-for="hint in extractedSchemaHints" :key="hint.schema">
+                  <el-tag :type="hint.validated ? 'success' : 'danger'" size="small" effect="plain">
+                    {{ hint.schema }}.{{ hint.tables.join(', ') }}
+                  </el-tag>
+                </template>
+                <span v-if="extractedSchemaHints.some(h => !h.validated)" class="schema-hints-warn">
+                  {{ extractedSchemaHints.filter(h => !h.validated).map(h => h.schema).join(', ') }} 不在授权中
+                </span>
+              </div>
               <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
                 :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
             </div>
@@ -224,11 +306,6 @@
     </div>
     <div class="login-button-container">
         <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-          <el-button v-if="loginSucc" circle size="small" @click="promptDrawerVisible = true" title="常用提示词">
-            <el-icon>
-              <ChatLineRound />
-            </el-icon>
-          </el-button>
           <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
             <el-icon>
               <Setting />
@@ -248,26 +325,26 @@
     </div>
     </div>
     <LoginDialog ref="loginDialogRef" v-model="loginDialogVisible" @login-success="handleLoginSuccess" />
-    <PromptDrawer ref="promptDrawerRef" v-model="promptDrawerVisible" @add="handlePromptAdd" @edit="handlePromptEdit" @send-to-AI="handleSendPromptToAI" />
-    <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" @saved="handlePromptSaved" @send-to-AI="handleSendPromptToAI" />
   </div>
 </template>
 
 <script setup>
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
-import PromptDrawer from '@/components/PromptDrawer.vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
 import LoginDialog from '@/components/LoginDialog.vue'
 import http from '@/js/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
-import { ChatLineRound, Clock, Delete, Document, DocumentAdd, Microphone, Promotion, Setting, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
 import MarkdownIt from 'markdown-it'
+import texmath from 'markdown-it-texmath'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -293,6 +370,13 @@ const md = new MarkdownIt({
   breaks: true,
   linkify: true,
   typographer: false,
+})
+
+// 使用 markdown-it-texmath 启用 KaTeX LaTeX 渲染
+md.use(texmath, {
+  engine: katex,
+  delimiters: 'dollars',
+  katexOptions: { throwOnError: false, strict: false },
 })
 
 // 自定义链接渲染
@@ -383,10 +467,23 @@ let speechRecognition = null
 
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
 
-const promptDrawerVisible = ref(false)
 const promptEditDialogVisible = ref(false)
 const editingPromptId = ref('')
-const promptDrawerRef = ref(null)
+const promptPopoverVisible = ref(false)
+
+const prompts = ref([])
+const promptLoading = ref(false)
+const activeTab = ref('mine')
+const promptDetailVisible = ref(false)
+const promptDetail = ref(null)
+
+const myPrompts = computed(() =>
+  prompts.value.filter(p => !p.isRolePrompt)
+)
+
+const systemPrompts = computed(() =>
+  prompts.value.filter(p => p.isRolePrompt)
+)
 
 const showLoginBtn = ref(true)
 const loginDialogVisible = ref(false)
@@ -408,139 +505,191 @@ const loginRules = reactive({
   ],
 })
 
-// 数据库连接配置 - 需要根据实际情况设置
-const connId = ref('')
-const schema = ref('')
+// 数据库连接配置 - 多 schema 选择模式
+const selectedSchemas = ref([])
 const tableList = ref([])
 const connList = ref([])
+const connSchemaList = ref([]) // 原始连接+schema数据列表
 
-// 递归查找第一个可选的连接节点
-function findFirstSelectableConn(nodes) {
-  for (const node of nodes) {
-    if (!node.isDir) {
-      return node
-    }
-    if (node.children && node.children.length > 0) {
-      const found = findFirstSelectableConn(node.children)
-      if (found) return found
-    }
-  }
-  return null
-}
-
-// 根据 connId 递归查找连接节点
-function findConnById(nodes, id) {
-  for (const node of nodes) {
-    if (!node.isDir && node.value === id) {
-      return node
-    }
-    if (node.children && node.children.length > 0) {
-      const found = findConnById(node.children, id)
-      if (found) return found
-    }
-  }
-  return null
-}
-
-// 递归查找节点的父目录名称
-function findParentDirName(nodes, connId) {
-  for (const node of nodes) {
-    if (node.isDir) {
-      // 检查该目录下是否有目标连接
-      const foundChild = node.children?.find(child => !child.isDir && child.value === connId)
-      if (foundChild) {
-        return node.label
-      }
-      // 递归检查子目录
-      if (node.children) {
-        const found = findParentDirName(node.children, connId)
-        if (found) return found
-      }
-    }
-  }
-  return null
-}
-
-// 递归处理树节点，为选中的连接添加目录名
-function processTreeNodes(nodes) {
-  return nodes.map(node => {
-    const newNode = { ...node }
-    if (node.isDir) {
-      // 目录节点，递归处理子节点
-      if (node.children) {
-        newNode.children = processTreeNodes(node.children)
-      }
-    } else {
-      // 连接节点，如果被选中则添加目录名
-      if (node.value === connId.value) {
-        const parentDirName = findParentDirName(connList.value, node.value)
-        if (parentDirName) {
-          newNode.label = node.label + '（' + parentDirName + '）'
-        }
-      }
-    }
-    return newNode
-  })
-}
-
-// 计算属性：处理后的连接列表（选中的连接显示目录名）
+// 计算属性：处理后的 schema 级树结构
 const processedConnList = computed(() => {
-  return processTreeNodes(connList.value)
+  return buildSchemaTree(connSchemaList.value)
 })
 
-async function loadConnList() {
-  try {
-    const resp = await http.get('/listUserConn')
-    const rawList = resp.data.data || []
+// 将 [{connId, name, dbSchema, dirName, schemas: [{name}]}] 转为 el-tree-select 支持的 schema 级树
+function buildSchemaTree(rawList) {
+  const dirMap = new Map()
+  const noDir = []
 
-    // 将扁平的 [{connId, name, dbSchema, dirName}] 转为 el-tree-select 需要的树形结构
-    const dirMap = new Map() // dirName -> children[]
-    const noDir = []         // 没有目录的连接
-
-    for (const item of rawList) {
+  for (const item of rawList) {
+    const schemas = item.schemas || []
+    // 连接不可用时，创建禁用的叶子节点
+    if (item.available === false) {
       const node = {
         label: item.name,
-        value: item.connId,
-        dbSchema: item.dbSchema || '',
-        isDir: false,
+        value: item.connId + '::',
+        connId: item.connId,
+        schemaName: '',
+        disabled: true,
+        isSchemaLeaf: false,
       }
       const dir = item.dirName
       if (dir) {
-        if (!dirMap.has(dir)) {
-          dirMap.set(dir, [])
-        }
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
         dirMap.get(dir).push(node)
       } else {
         noDir.push(node)
       }
+      continue
     }
-
-    const tree = []
-    // 有目录的连接，按目录分组
-    for (const [dirName, children] of dirMap) {
-      tree.push({
-        label: dirName,
-        value: '__dir__' + dirName,
-        isDir: true,
-        children,
-      })
+    // 如果连接只有一个 schema，折叠到连接名下
+    if (schemas.length <= 1) {
+      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || 'default')
+      const node = {
+        label: item.name,
+        value: item.connId + '::' + singleSchema,
+        connId: item.connId,
+        schemaName: singleSchema,
+        disabled: false,
+        isSchemaLeaf: true,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
+        dirMap.get(dir).push(node)
+      } else {
+        noDir.push(node)
+      }
+    } else {
+      // 多个 schema：连接作为目录，schema 作为可选子节点
+      const schemaChildren = schemas.map(s => ({
+        label: s.name,
+        value: item.connId + '::' + s.name,
+        connId: item.connId,
+        schemaName: s.name,
+        disabled: false,
+        isSchemaLeaf: true,
+      }))
+      const connNode = {
+        label: item.name,
+        value: '__conn__' + item.connId,
+        disabled: true,
+        children: schemaChildren,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
+        dirMap.get(dir).push(connNode)
+      } else {
+        noDir.push(connNode)
+      }
     }
-    // 没有目录的连接放在顶层
-    tree.push(...noDir)
+  }
 
-    connList.value = tree
+  const tree = []
+  for (const [dirName, children] of dirMap) {
+    tree.push({ label: dirName, value: '__dir__' + dirName, disabled: true, children })
+  }
+  tree.push(...noDir)
+  return tree
+}
+
+async function loadConnList() {
+  try {
+    const resp = await http.get('/listUserConnSchemas')
+    const rawList = resp.data.data || []
+    connSchemaList.value = rawList
+    connList.value = buildSchemaTree(rawList)
 
     // 如果有连接且当前未选择，自动选择第一个
-    if (connList.value.length > 0 && !connId.value) {
-      const firstConn = findFirstSelectableConn(connList.value)
-      if (firstConn) {
-        connId.value = firstConn.value
-        schema.value = firstConn.dbSchema || ''
-        handleConnChange()
+    if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
+      const first = findFirstSelectableSchema(connList.value)
+      if (first) {
+        selectedSchemas.value = [first.value]
+        loadTableListForSchemas()
       }
     }
   } catch (e) {
-    console.error('加载连接列表失败:', e)
+    // 降级：使用旧接口
+    try {
+      const resp = await http.get('/listUserConn')
+      const rawList = resp.data.data || []
+      const converted = rawList.map(item => ({
+        connId: item.connId,
+        name: item.name,
+        dbSchema: item.dbSchema || '',
+        dirName: item.dirName,
+        dbType: item.dbType || '',
+        schemas: item.dbSchema ? [{ name: item.dbSchema }] : [],
+      }))
+      connSchemaList.value = converted
+      connList.value = buildSchemaTree(converted)
+      if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
+        const first = findFirstSelectableSchema(connList.value)
+        if (first) {
+          selectedSchemas.value = [first.value]
+          loadTableListForSchemas()
+        }
+      }
+    } catch (e2) {
+      console.error('加载连接列表失败:', e2)
+    }
+  }
+}
+
+function findFirstSelectableSchema(nodes) {
+  for (const node of nodes) {
+    if (!node.disabled && node.isSchemaLeaf) return node
+    if (node.children) {
+      const found = findFirstSelectableSchema(node.children)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function parseSchemaValue(value) {
+  const idx = value.indexOf('::')
+  if (idx === -1) return null
+  return { connId: value.substring(0, idx), schema: value.substring(idx + 2) }
+}
+
+async function loadTableListForSchemas() {
+  if (selectedSchemas.value.length === 0) {
+    tableList.value = []
+    return
+  }
+  try {
+    const schemaRefs = selectedSchemas.value
+      .map(v => parseSchemaValue(v))
+      .filter(Boolean)
+    const resp = await http.get('/listTableNames', {
+      params: { schemas: JSON.stringify(schemaRefs) }
+    })
+    const newTableList = resp.data.data || []
+
+    if (selectedTables.value.length > 0) {
+      const newValues = newTableList.map(t => {
+        if (typeof t === 'string') return t
+        const hasSchema = t.schema && selectedSchemas.value.length > 1
+        return hasSchema ? t.schema + '.' + t.name : t.name
+      })
+      selectedTables.value = selectedTables.value.filter(name => newValues.includes(name))
+    }
+
+    tableList.value = newTableList.map(t => {
+      if (typeof t === 'string') return { name: t, comment: '', schema: '' }
+      const hasSchema = t.schema && selectedSchemas.value.length > 1
+      return {
+        name: t.name,
+        comment: t.comment || '',
+        schema: t.schema || '',
+        label: hasSchema ? t.schema + '.' + t.name : t.name,
+      }
+    })
+  } catch (e) {
+    console.error('加载表列表失败:', e)
+    tableList.value = []
   }
 }
 
@@ -554,29 +703,91 @@ async function loadTableList(connId, schema) {
       params: { connId, schema: schema || '' }
     })
     const newTableList = resp.data.data || []
-    
-    // 保留已选择的表中在新表列表中仍然存在的部分
+
     if (selectedTables.value.length > 0) {
       const newNames = newTableList.map(t => typeof t === 'string' ? t : t.name)
       selectedTables.value = selectedTables.value.filter(name => newNames.includes(name))
     }
-    
-    // 兼容：如果后端返回字符串数组则转为对象
-    tableList.value = newTableList.map(t => typeof t === 'string' ? { name: t, comment: '' } : t)
+
+    tableList.value = newTableList.map(t => typeof t === 'string' ? { name: t, comment: '', schema: '' } : t)
   } catch (e) {
     console.error('加载表列表失败:', e)
     tableList.value = []
   }
 }
 
+function handleSchemaChange() {
+  loadTableListForSchemas()
+}
+
 function handleConnChange() {
-  // 当连接改变时，更新 schema 信息
-  const selectedConn = findConnById(connList.value, connId.value)
-  if (selectedConn) {
-    schema.value = selectedConn.dbSchema || ''
+  const firstSchema = selectedSchemas.value[0]
+  if (firstSchema) {
+    const parsed = parseSchemaValue(firstSchema)
+    if (parsed) {
+      loadTableList(parsed.connId, parsed.schema)
+    }
   }
-  // 加载表列表（会自动过滤保留已选择的表）
-  loadTableList(connId.value, schema.value)
+}
+
+// 从 selectedSchemas 获取主连接的 connId（向后兼容）
+function getPrimaryConnId() {
+  if (selectedSchemas.value.length > 0) {
+    const parsed = parseSchemaValue(selectedSchemas.value[0])
+    if (parsed) return parsed.connId
+  }
+  return ''
+}
+
+// 构建发送给后端的 schema 引用数组
+function buildRequestSchemas() {
+  return selectedSchemas.value
+    .map(v => parseSchemaValue(v))
+    .filter(Boolean)
+    .map(p => ({ connId: p.connId, schema: p.schema }))
+}
+
+// 从用户输入中自动提取 schema.表名 引用（数据权限验证辅助）
+const extractedSchemaHints = computed(() => {
+  const text = question.value || ''
+  const hints = []
+  // 匹配 schema.table 模式，排除 URL（http/https）、文件路径、版本号
+  const regex = /(?:^|[^/\w])([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)(?=[^a-zA-Z0-9_]|$)/g
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    const schemaName = match[1]
+    const tableName = match[2]
+    // 排除常见非数据关键词
+    const excluded = ['www', 'http', 'https', 'ftp', 'com', 'org', 'net', 'io', 'cn', 'js', 'ts', 'vue', 'py', 'go', 'java']
+    if (excluded.includes(schemaName.toLowerCase()) || excluded.includes(tableName.toLowerCase())) {
+      continue
+    }
+    const existing = hints.find(h => h.schema === schemaName)
+    if (existing) {
+      if (!existing.tables.includes(tableName)) {
+        existing.tables.push(tableName)
+      }
+    } else {
+      // 验证 schema 是否在已授权连接中存在
+      const schemaExists = connSchemaList.value.some(c =>
+        (c.schemas || []).some(s => s.name === schemaName) ||
+        (c.dbSchema === schemaName)
+      )
+      hints.push({ schema: schemaName, tables: [tableName], validated: schemaExists })
+    }
+  }
+  return hints
+})
+
+function validateExtractedSchemas() {
+  const hints = extractedSchemaHints.value
+  const unvalidated = hints.filter(h => !h.validated)
+  if (unvalidated.length > 0) {
+    const names = unvalidated.map(h => h.schema).join(', ')
+    ElMessage.warning(`Schema [${names}] 不在您授权的连接中，将无法访问相关表`)
+    return false
+  }
+  return true
 }
 
 // 历史会话相关
@@ -638,6 +849,17 @@ function renderMarkdown(text) {
   if (!text) return ''
   try {
     let processed = text
+
+    // 预处理 0：处理 LaTeX \text{...} 公式，提取纯文本标题
+    // 大模型有时会用 $\text{标题}$ 或 $\textbf{标题}$ 作为文字格式输出
+    processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
+      return inner
+    })
+    // 同时处理 $\bm{...}$、$\mathit{...}$ 等常见 LaTeX 文本命令
+    processed = processed.replace(/\$\\(?:bm|mathit|mathrm|mathsf|mathtt)\{([^}]+)\}\$/g, (match, inner) => {
+      return inner
+    })
+    // 其余 LaTeX 数学公式（$\rightarrow$、$\times$、$\frac{1}{2}$ 等）由 markdown-it-texmath + KaTeX 渲染
 
     // 预处理 1：修复 **text** 包裹链接的情况
     // 将 **[text](url)** 转换为 [text](url)
@@ -1072,11 +1294,26 @@ async function sendMessage() {
   const controller = new AbortController()
   abortController.value = controller
 
+  const schemas = buildRequestSchemas()
+  if (schemas.length === 0) {
+    ElMessage.warning('请先选择至少一个数据库 schema')
+    loading.value = false
+    chatHistory.value.pop()
+    return
+  }
+
+  if (!validateExtractedSchemas()) {
+    // 不阻止发送，但已给出警告
+  }
+
   try {
+    const primaryConnId = getPrimaryConnId()
+    const primarySchema = schemas.length > 0 ? schemas[0].schema : ''
     const body = {
       sessionId: sessionId.value,
-      connId: connId.value,
-      schema: schema.value,
+      connId: primaryConnId,
+      schema: primarySchema,
+      schemas,
       question: messageContent,
       tableContext: selectedTables.value,
     }
@@ -1269,13 +1506,17 @@ async function handleConfirmExec(confirmedSql) {
     const controller = new AbortController()
     abortController.value = controller
 
+    const schemas = buildRequestSchemas()
+    const primaryConnId = getPrimaryConnId()
+    const primarySchema = schemas.length > 0 ? schemas[0].schema : ''
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
       body: JSON.stringify({
         sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
+        connId: primaryConnId,
+        schema: primarySchema,
+        schemas,
         question: '执行已确认的 SQL',
         confirmed: true,
         interruptIds: confirmInterruptIds.value,
@@ -1400,8 +1641,9 @@ async function handleConfirmCancel() {
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
       body: JSON.stringify({
         sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
+        connId: getPrimaryConnId(),
+        schema: buildRequestSchemas().length > 0 ? buildRequestSchemas()[0].schema : '',
+        schemas: buildRequestSchemas(),
         question: '取消执行',
         confirmed: false,
         interruptIds: confirmInterruptIds.value,
@@ -1457,13 +1699,17 @@ async function executeBatchResume(sqlItems, interruptIds, checkPointId) {
   const auth = sessionStorage.getItem('authentication') || ''
 
   try {
+    const schemas = buildRequestSchemas()
+    const primaryConnId = getPrimaryConnId()
+    const primarySchema = schemas.length > 0 ? schemas[0].schema : ''
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
       body: JSON.stringify({
         sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
+        connId: primaryConnId,
+        schema: primarySchema,
+        schemas,
         question: 'resume confirmed SQL',
         confirmed: true,
         interruptIds: interruptIds,
@@ -1573,8 +1819,9 @@ async function handleCancelAllSQL() {
         headers: { 'Content-Type': 'application/json', 'Authorization': auth },
         body: JSON.stringify({
           sessionId: sessionId.value,
-          connId: connId.value,
-          schema: schema.value,
+          connId: getPrimaryConnId(),
+          schema: buildRequestSchemas().length > 0 ? buildRequestSchemas()[0].schema : '',
+          schemas: buildRequestSchemas(),
           question: '取消执行',
           confirmed: false,
           interruptIds: allInterruptIds,
@@ -1597,13 +1844,17 @@ async function executeConfirmedSQL(sqlText, interruptId, checkPointId) {
   const auth = sessionStorage.getItem('authentication') || ''
 
   try {
+    const schemas = buildRequestSchemas()
+    const primaryConnId = getPrimaryConnId()
+    const primarySchema = schemas.length > 0 ? schemas[0].schema : ''
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': auth },
       body: JSON.stringify({
         sessionId: sessionId.value,
-        connId: connId.value,
-        schema: schema.value,
+        connId: primaryConnId,
+        schema: primarySchema,
+        schemas,
         question: 'resume confirmed SQL',
         confirmed: true,
         interruptIds: [interruptId],
@@ -1781,14 +2032,15 @@ async function handleExcelUpload(file) {
     }
 
     // 如果已选择了相关表，自动预匹配字段
-    if (connId.value && selectedTables.value.length === 1) {
+    const primaryConnId = getPrimaryConnId()
+    if (primaryConnId && selectedTables.value.length === 1) {
       try {
         const matchResp = await fetch(apiBase + '/ai/agent/preMatchColumns', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': auth },
           body: JSON.stringify({
             fileId: data.fileId,
-            connId: connId.value,
+            connId: primaryConnId,
             tableName: selectedTables.value[0],
           }),
         })
@@ -1828,7 +2080,14 @@ function clearUploadedExcel() {
 }
 
 function handleSendPromptToAI(content) {
-  promptDrawerVisible.value = false
+  promptPopoverVisible.value = false
+  promptEditDialogVisible.value = false
+  question.value = content
+  nextTick(() => sendMessage())
+}
+
+function handlePromptSendToAI(content) {
+  promptPopoverVisible.value = false
   promptEditDialogVisible.value = false
   question.value = content
   nextTick(() => sendMessage())
@@ -1845,8 +2104,49 @@ function handlePromptEdit(promptId) {
 }
 
 function handlePromptSaved() {
-  if (promptDrawerRef.value) {
-    promptDrawerRef.value.loadPrompts()
+  loadPrompts()
+}
+
+async function loadPrompts() {
+  promptLoading.value = true
+  try {
+    const resp = await http.get('/promptList')
+    prompts.value = (resp.data.data || []).map(p => ({
+      ...p,
+      isShared: p.createdBy !== p.currentUserId && !p.isRolePrompt,
+    }))
+  } catch (e) {
+    console.error('加载提示词列表失败:', e)
+  } finally {
+    promptLoading.value = false
+  }
+}
+
+function handleDeletePrompt(prompt) {
+  ElMessageBox.confirm(
+    `确定要删除提示词 "${prompt.title}" 吗？`,
+    '确认删除',
+    { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+  ).then(async () => {
+    try {
+      await http.get('/delPrompt', { params: { id: prompt.id } })
+      ElMessage.success('删除成功')
+      loadPrompts()
+    } catch (e) {
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {})
+}
+
+function handleViewPromptDetail(prompt) {
+  promptDetail.value = prompt
+  promptDetailVisible.value = true
+}
+
+function handleSendFromDetail() {
+  if (promptDetail.value) {
+    handlePromptSendToAI(promptDetail.value.content)
+    promptDetailVisible.value = false
   }
 }
 
@@ -1972,9 +2272,7 @@ function handleLoginSuccess(userData) {
 }
 
 function loadPromptList() {
-  if (promptDrawerRef.value) {
-    promptDrawerRef.value.loadPrompts()
-  }
+  loadPrompts()
 }
 
 function openSystemManagement() {
@@ -2815,6 +3113,24 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.schema-hints {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.schema-hints-label {
+  font-size: 12px;
+  color: #909399;
+}
+
+.schema-hints-warn {
+  font-size: 12px;
+  color: #f56c6c;
+}
+
 .question-input {
   flex: 1;
 }
@@ -3073,6 +3389,106 @@ onUnmounted(() => {
   border-radius: 6px;
   font-size: 13px;
   color: #409eff;
+}
+
+/* 提示词弹窗 */
+.prompt-popover-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.prompt-popover-body .prompt-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.prompt-popover-body .el-tabs__content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.prompt-popover-body .el-tab-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.prompt-popover-body .prompt-toolbar {
+  flex-shrink: 0;
+}
+
+.prompt-popover-body .prompt-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.prompt-popover-body .prompt-empty {
+  text-align: center;
+  color: #909399;
+  padding: 40px 0;
+  font-size: 14px;
+}
+
+.prompt-popover-body .prompt-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 2px;
+}
+
+.prompt-popover-body .prompt-item:hover {
+  background: #f5f7fa;
+}
+
+.prompt-popover-body .prompt-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.prompt-popover-body .prompt-item-title {
+  font-size: 14px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.prompt-popover-body .prompt-item-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #909399;
+  margin-top: 2px;
+}
+
+.prompt-popover-body .prompt-item-actions {
+  display: flex;
+  gap: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+}
+
+.prompt-popover-body .prompt-item:hover .prompt-item-actions {
+  opacity: 1;
+}
+
+.prompt-detail-content {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 </style>
 

@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -162,14 +161,14 @@ func SkillExportWordFromContent(ctx context.Context, content, title, fileName st
 	EnsureExportsDir()
 	outputPath := filepath.Join("exports", fileName+".docx")
 
+	blocks := ParseMarkdownBlocks(content)
+	sections := buildSections(blocks)
+
 	input := map[string]interface{}{
-		"title":         title,
-		"columns":       []string{},
-		"data":          []map[string]interface{}{},
-		"chartPaths":    []string{},
-		"findings":      strings.Split(content, "\n\n"),
-		"outputPath":    outputPath,
-		"includeCharts": false,
+		"mode":       "content",
+		"title":      title,
+		"sections":   sections,
+		"outputPath": outputPath,
 	}
 
 	inputJSON, err := json.Marshal(input)

@@ -86,7 +86,14 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
-	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
+	if len(req.Schemas) > 0 {
+		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
+	}
+	permConnID := req.ConnID
+	if permConnID == "" && len(req.Schemas) > 0 {
+		permConnID = req.Schemas[0].ConnID
+	}
+	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
 	if scope.IsRemote && !scope.HasAnyAccess() {
 		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
 		return
@@ -144,8 +151,12 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
 
-	agent, err := NewSQLAgent(runnerCtx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
-		ConnID: req.ConnID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
+	connID := req.ConnID
+	if connID == "" && len(req.Schemas) > 0 {
+		connID = req.Schemas[0].ConnID
+	}
+	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+		ConnID: connID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
 	})
 	if err != nil {
 		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
@@ -195,7 +206,14 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	ctx := c.Request.Context()
 
 	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
-	scope := BuildPermissionScope(user.Id, req.ConnID, dbSchema)
+	if len(req.Schemas) > 0 {
+		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
+	}
+	permConnID := req.ConnID
+	if permConnID == "" && len(req.Schemas) > 0 {
+		permConnID = req.Schemas[0].ConnID
+	}
+	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
 
 	// SSE 设置
 	c.Header("Content-Type", "text/event-stream")
@@ -249,8 +267,12 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
 
-	agent, err := NewSQLAgent(runnerCtx, cfg, req.ConnID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
-		ConnID:    req.ConnID,
+	connID := req.ConnID
+	if connID == "" && len(req.Schemas) > 0 {
+		connID = req.Schemas[0].ConnID
+	}
+	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+		ConnID:    connID,
 		UserID:    user.Id,
 		UserName:  user.Name,
 		SessionID: req.SessionID,

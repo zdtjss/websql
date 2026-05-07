@@ -42,16 +42,23 @@ type StreamChunk struct {
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	SessionID    string     `json:"sessionId"`
-	UserID       string     `json:"userId"`
-	ConnID       string     `json:"connId"`
-	Schema       string     `json:"schema"`
-	Question     string     `json:"question"`
-	TableContext []string   `json:"tableContext"`
-	Confirmed    bool       `json:"confirmed,omitempty"`
-	InterruptIDs []string   `json:"interruptIds,omitempty"` // 确认时回传（支持多条）
-	CheckPointID string     `json:"checkPointId,omitempty"` // 确认时回传
-	ExcelData    *ExcelData `json:"excelData,omitempty"`
+	SessionID    string      `json:"sessionId"`
+	UserID       string      `json:"userId"`
+	ConnID       string      `json:"connId"`
+	Schema       string      `json:"schema"`
+	Schemas      []SchemaRef `json:"schemas,omitempty"` // 多 schema 模式
+	Question     string      `json:"question"`
+	TableContext []string    `json:"tableContext"`
+	Confirmed    bool        `json:"confirmed,omitempty"`
+	InterruptIDs []string    `json:"interruptIds,omitempty"` // 确认时回传（支持多条）
+	CheckPointID string      `json:"checkPointId,omitempty"` // 确认时回传
+	ExcelData    *ExcelData  `json:"excelData,omitempty"`
+}
+
+// SchemaRef 单个 schema 引用
+type SchemaRef struct {
+	ConnID string `json:"connId"`
+	Schema string `json:"schema"`
 }
 
 // ExcelData 前端上传的 Excel 文件信息
@@ -169,8 +176,8 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
-		Description: "专业 SQL 助手，支持查询、分析和数据导入导出",
-		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil, scope),
+		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
+		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil, scope, nil),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
@@ -184,7 +191,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			fsm,
 			sm,
 		},
-		MaxIterations: 20,
+		MaxIterations: 200,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)
@@ -236,7 +243,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		return sessionID, nil
 	}
 
-	sysPrompt := buildSystemPrompt(a.dbType, a.dbSchema, "", req.TableContext, a.scope)
+	sysPrompt := buildSystemPrompt(a.dbType, a.dbSchema, "", req.TableContext, a.scope, req.Schemas)
 
 	if isExportRequest(req.Question) {
 		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
@@ -275,6 +282,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
 		}
 	}
+
+	log.Printf("[Agent] 执行完毕 - sessionID=%s\n", sessionID)
 
 	return sessionID, nil
 }
@@ -322,6 +331,10 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		if event.Err != nil {
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
 			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
+				break
+			}
+			if errors.Is(event.Err, adk.ErrExceedMaxIterations) || strings.Contains(event.Err.Error(), "exceeds max iterations") {
+				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效，请检查数据或精简问题后重试。"})
 				break
 			}
 			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
@@ -552,7 +565,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *Ex
 // 系统提示词
 // ──────────────────────────────────────────────
 
-func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope) string {
+func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef) string {
 	var sb strings.Builder
 
 	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
@@ -560,7 +573,16 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 	fmt.Fprintf(&sb, "%s 的方言特性、索引策略和查询优化技巧。", dbType)
 	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为富有洞察且具有中国特色的分析结论。")
 	sb.WriteString("\n\n")
-	fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
+
+	if len(schemas) > 1 {
+		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s\n", dbType, dbVersion)
+		sb.WriteString("**多 Schema 上下文**：用户选择了以下 schema，你可以进行跨库查询与数据组合：\n")
+		for i, s := range schemas {
+			fmt.Fprintf(&sb, "  [%d] 连接ID=%s, Schema=%s\n", i+1, s.ConnID, s.Schema)
+		}
+	} else {
+		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
+	}
 
 	if len(tableContext) > 0 {
 		fmt.Fprintf(&sb, "\n用户指定表范围：%s\n", strings.Join(tableContext, ", "))
@@ -578,8 +600,32 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 2. 禁止 SELECT *：必须显式列出所需字段，除非用户明确要求导出全部列
 3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
 4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
+5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
+`)
 
-## 标准工作流程
+	if len(schemas) > 1 {
+		sb.WriteString(`
+## 跨库查询与数据组合
+你被授权访问多个 schema，可以进行跨库数据关联和分析。请注意：
+
+1. **跨库 JOIN / UNION**：使用 ` + dbType + ` 支持的跨库语法链接不同 schema 的表数据
+2. **大数据量防范**：跨库组合可能导致结果集非常大，**务必使用 LIMIT 或聚合函数控制返回行数**
+3. **上下文溢出保护**：如果一次查询返回几万行数据，会超出大模型的上下文窗口，导致分析中断
+   - 优先使用聚合查询（SUM、COUNT、AVG 等）返回统计结果
+   - 对明细数据，如果需要导出完整数据集，请调用 export_excel 工具
+   - 对多表关联产生的大结果集，先分析数据量（COUNT），再分页查询
+4. **Python 脚本分析**：当需要进行复杂的跨库大数据量统计分析时，系统已预置 ` + "`cross-db-analysis`" + ` Python 脚本工具
+   - 脚本可直接连接各数据库，在数据库中完成聚合计算，只返回分析结论
+   - 适用于跨库数据量大于 10 万行或需要进行复杂统计模型计算的场景
+   - 触发时机：用户要求"分析"、"对比"、"统计"多个库的数据时，优先考虑使用脚本
+
+## 标准工作流程`)
+	} else {
+		sb.WriteString(`
+## 标准工作流程`)
+	}
+
+	sb.WriteString(`
 执行每个数据分析任务时，按以下步骤推进：
 1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
 2. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
@@ -594,10 +640,10 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 | get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
 | query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH） |
 | exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。系统会拦截并推送前端确认，你无需额外处理 |
-| export_excel | 导出 Excel，必须传入 sql 参数。若用户无特殊要求，默认导出所有查询列 |
-| export_excel_with_chart | 导出带图表的 Excel，传入 sql。图表类型根据数据特征自动选择 |
-| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本），避免重复查询 |
-| export_analysis_docx | 生成 Word 分析报告，同样优先使用 content 模式 |
+| export_excel | 导出 Excel，必须传入 sql 参数。必须实际调用此工具，禁止仅文字描述 |
+| export_excel_with_chart | 导出带图表的 Excel，传入 sql。必须实际调用此工具。图表类型根据数据特征自动选择 |
+| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本）避免重复查询。必须实际调用此工具才能生成文件 |
+| export_analysis_docx | 生成 Word 分析报告，优先使用 content 模式。必须实际调用此工具才能生成文件 |
 | import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
 
 ## SQL 编写规范（` + dbType + `）
@@ -627,6 +673,13 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 - 仔细阅读错误信息，不要重复使用相同的错误参数
 - 调整 SQL 或参数后重试，最多尝试 3 次
 - 若 3 次均失败，向用户解释原因并建议替代方案
+
+## 迭代次数限制（重要）
+你的每次思考与工具调用都会消耗 1 次迭代，你有 20 次迭代上限。请高效利用：
+- 当 query_data 连续 2 次返回空结果（如不同 schema 下都查不到表），立即停止尝试，直接告知用户该表不存在
+- 不要在同一个问题上反复尝试不同变体（如猜不同的 schema 名、表名变体），这会在几次内耗尽迭代上限
+- 优先使用一次聚合查询获取概况，而非多次明细查询
+- 如果发现在重复踩同一个错误，停下来思考替代方案，而不是继续硬试
 `)
 	return sb.String()
 }

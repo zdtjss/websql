@@ -52,13 +52,14 @@ func QueryForExport(conn *sqlx.DB, sql string) (*QueryResult, error) {
 }
 
 func SanitizeFileName(name, defaultPrefix string) string {
+	timestamp := time.Now().Format("20060102_150405")
 	if name == "" {
-		return fmt.Sprintf("%s_%s", defaultPrefix, time.Now().Format("20060102_150405"))
+		return fmt.Sprintf("%s_%s", defaultPrefix, timestamp)
 	}
 	for _, ext := range []string{".xlsx", ".xls", ".csv", ".docx", ".pptx", ".png", ".jpg"} {
 		name = strings.TrimSuffix(name, ext)
 	}
-	return name
+	return fmt.Sprintf("%s_%s", name, timestamp)
 }
 
 func EnsureExportsDir() {

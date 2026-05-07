@@ -23,3 +23,7 @@ static/
 nway.sqlite3.db
 web-src/auto-imports.d.ts
 web-src/components.d.ts
+exports/
+__pycache__/
+data/
+docs/

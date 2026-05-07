@@ -1,187 +1,159 @@
 ---
 name: export-ppt
-description: 导出专业 PowerPoint（PPTX）演示文稿。支持 SQL 查询结果模式（数据模式）和 Markdown 内容模式。生成视觉精美的幻灯片，含封面→目录（TOC）→过渡页→内容页→结束页（感谢聆听）的完整演示流，配备渐变背景、中国红装饰条、专业表格、嵌入式图表和页码。当用户请求生成 PPT、演示文稿或 PowerPoint 导出时必须使用此技能。
+description: 生成专业 PowerPoint（PPTX）演示文稿。支持四种工作流：1) HTML-to-PPTX 快速转换 2) 模板目录提取+重排+替换 3) 数据驱动编程创建（数据/内容/演示三种模式） 4) OOXML 级别拆包编辑打包。配备中国商务经典+科技现代两套模板，支持 8 种图表类型。当用户请求生成 PPT、演示文稿或 PowerPoint 导出时必须使用此技能。
 ---
 
-# 专业 PPT 演示文稿导出技能
+# 专业 PPT 演示文稿导出技能 v3.0
 
-本技能使用 `python-pptx` 库生成符合中国商务审美标准的专业 PowerPoint 演示文稿。完整复制了中国商务路演的标准幻灯片流程：封面 → 目录 → 过渡页 → 内容 → 结束页，相比 Go 原生 OOXML 字符串拼接方式，视觉呈现效果显著提升。
+基于 Anthropic pptx skill 架构思想重构，融合 OOXML 直接操作 + HTML 快速生成 + 编程控制三层能力。
 
-## 适用场景
+## 架构概览
 
-以下情况必须使用本技能：
-- 用户请求导出 PowerPoint 演示文稿
-- 用户要求生成"幻灯片"、"演示文稿"、"PPT"
-- 用户需要以可视化方式展示数据分析结果
-- 用户需要在幻灯片中包含图表和表格
+```
+export-ppt/
+├── SKILL.md
+└── scripts/
+    ├── export_ppt.py          # 主入口 — PPTExporter 类（3模式）
+    ├── html2pptx.py           # HTML → PPTX 快速转换
+    ├── inventory.py           # 模板结构提取
+    ├── rearrange.py           # 模板重排
+    ├── replace.py             # 模板文字替换
+    ├── thumbnail.py           # 缩略图生成
+    ├── chart_generator.py     # 图表生成（→ shared/）
+    ├── ppt_templates/         # 3 套模板
+    └── ppt_builders/          # 7 个构建器
 
-## 工作方式
+shared/
+├── ooxml/scripts/
+│   ├── unpack.py              # OOXML 解包
+│   ├── pack.py                # OOXML 打包
+│   └── validate.py            # OOXML 验证
+```
 
-通过标准输入向 `scripts/export_ppt.py` 传入 JSON 数据，脚本使用 `python-pptx` 生成专业设计幻灯片。
+## 四种工作流
 
-## 幻灯片结构总览
-
-本技能的完整幻灯片流程（按出场顺序）：
-
-| 序号 | 幻灯片类型 | 说明 |
-|------|-----------|------|
-| 1 | 封面 | 渐变背景 + 中国红装饰条 + 标题/汇报人/日期 |
-| 2 | 目录（TOC） | 分区编号 + 中文标题 + 简要说明 |
-| 3+ | 过渡页 | PART 0X / 第X部分 + 分区标题 |
-| 4+ | 内容页 | 图表 / 表格 / 亮点分析 |
-| N | 结束页 | "感谢聆听" + 日期 + 平台标识 |
-
-### 数据模式（默认）
-
-当输入 `mode: "data"` 时，生成以下幻灯片：
-
-1. **封面** — 深蓝渐变背景（#0D2137 → #1A3C6D → #283593），中国红水平装饰条，44pt 白色标题，副标题，汇报人/日期/平台信息，保密提示语
-2. **数据洞察**（如有 chartPaths）— 中国红顶部装饰线，标题，全宽图表图片展示
-3. **数据全景** — 记录数/维度数概况，核心指标列表，各项指标统计详情（均值/区间）
-4. **数据明细**（如有原始数据）— 中国红装饰线 + 深蓝表头白字 + 斑马纹交替行的专业表格（最多 7 列 × 12 行）
-5. **核心发现与建议**（数据 > 5 行时）— ▶ 前缀的要点分析
-6. **结束页** — "感谢聆听" 48pt 白色居中 + 中国红细装饰线 + 标题/日期/平台
-
-### 内容模式
-
-当输入 `mode: "content"` 时：
-
-1. **封面** — 同上专业设计
-2. **目录（TOC）** — 01/02/03 编号 + 各章节标题 + 简要说明
-3. **过渡页** — `PART 0X` + `第X部分` + 章节标题
-4. **内容页** — 对每个过渡页跟随一页内容，支持 h3/paragraph/list/code/mermaid/table 等块类型渲染
-5. **结束页** — "感谢聆听"
-
-## 使用方法
-
-### 数据模式
+### 工作流 1：HTML-to-PPTX 快速转换
+将 HTML 内容直接转为 PPTX，适合 AI 生成幻灯片。
 
 ```bash
-python3 <skill目录>/scripts/export_ppt.py < input.json
+python html2pptx.py --stdin -o output.pptx < slides.html
 ```
 
-输入 JSON：
-```json
-{
-  "mode": "data",
-  "title": "2024年上半年度销售运营分析",
-  "subtitle": "基于全渠道业务数据的综合分析",
-  "presenter": "张明远",
-  "columns": ["产品名称", "销售收入", "销售数量", "毛利率"],
-  "data": [
-    {"产品名称": "精密部件A型", "销售收入": 15000, "销售数量": 300, "毛利率": 0.35},
-    {"产品名称": "精密部件B型", "销售收入": 22000, "销售数量": 450, "毛利率": 0.42}
-  ],
-  "summary": {
-    "totalRows": 120,
-    "totalCols": 8,
-    "columns": ["产品名称", "销售收入", "销售数量", "毛利率", "区域", "日期", "客户类型", "渠道"],
-    "stats": {
-      "销售收入": {"min": 5000, "max": 50000, "avg": 18500},
-      "销售数量": {"min": 100, "max": 800, "avg": 375},
-      "毛利率": {"min": 0.18, "max": 0.55, "avg": 0.36}
-    }
-  },
-  "numericColumns": ["销售收入", "销售数量", "毛利率"],
-  "chartPaths": ["exports/chart_line.png"],
-  "highlights": [
-    "精密部件B型总销售收入最高，贡献率达全系列的36%",
-    "销售收入持续增长，月均增幅约8%"
-  ],
-  "outputPath": "exports/slides.pptx"
-}
+HTML 结构示例：
+```html
+<section class="cover">
+  <h1>2024年度销售运营分析报告</h1>
+  <h2>基于全渠道业务数据的综合分析</h2>
+</section>
+
+<section>
+  <h1>市场概览</h1>
+  <p>全年累计销售额达到 3.8亿元，同比增长 23.5%。</p>
+  <div class="kpi" data-label="年度销售额" data-value="3.8亿" data-trend="↑ 23.5%"></div>
+  <table>
+    <tr><th>季度</th><th>销售额</th></tr>
+    <tr><td>Q1</td><td>0.85亿</td></tr>
+    <tr><td>Q2</td><td>0.92亿</td></tr>
+  </table>
+</section>
+
+<section class="ending">
+  <h1>感谢聆听</h1>
+</section>
 ```
 
-### 内容模式
+支持的幻灯片类型：`cover` / `section` / `ending` / 普通内容页
+支持的内容元素：h1-h3, p, ul/li, img, table, KPI div
 
-```json
-{
-  "mode": "content",
-  "title": "市场分析报告",
-  "subtitle": "专业市场数据分析",
-  "presenter": "李明远",
-  "sections": [
-    {
-      "title": "市场概览",
-      "desc": "行业趋势与竞争格局",
-      "blocks": [
-        {"type": "paragraph", "content": "市场呈现强劲增长态势……"},
-        {"type": "list", "content": "- 关键趋势一\n- 关键趋势二"},
-        {"type": "table", "content": "| Q1 | Q2 | Q3 |\n|---|---|---|\n|100|200|300|"}
-      ]
-    }
-  ],
-  "outputPath": "exports/slides.pptx"
-}
+### 工作流 2：模板工作流（inventory → rearrange → replace）
+
+**Step 1: 提取模板结构**
+```bash
+python inventory.py template.pptx inventory.json
 ```
+输出每张幻灯片中所有形状的位置、字体、占位符类型等。
+
+**Step 2: 重排幻灯片**
+```bash
+python rearrange.py template.pptx output.pptx 0,3,3,5
+```
+按索引选取幻灯片生成新文件（支持重复）。
+
+**Step 3: 替换文字**
+```bash
+python replace.py template.pptx replacement.json output.pptx
+```
+输入 JSON 格式的替换映射，保留原有格式。
+
+### 工作流 3：数据驱动编程创建
+
+```bash
+python export_ppt.py < input.json
+```
+
+三种模式：
+- **data** — 数据报告流（封面→图表→数据全景→明细→核心发现→结束页）
+- **content** — 结构化内容流（封面→目录→过渡页+内容页循环→结束页），14种块类型
+- **demo** — 产品演示流（封面→步骤页（支持嵌入图表）→结束页）
+
+### 工作流 4：OOXML 级别操作
+
+```bash
+# 解包
+python shared/ooxml/scripts/unpack.py input.pptx unpacked/
+
+# 手动编辑 XML...
+
+# 验证
+python shared/ooxml/scripts/validate.py unpacked/ --original input.pptx
+
+# 打包
+python shared/ooxml/scripts/pack.py unpacked/ output.pptx
+```
+
+适合需要精确控制 OOXML 的高级场景。
 
 ## 图表生成
 
-在生成 PPT 之前，先使用 `chart_generator.py` 生成 PNG 图表，再将路径传入 `export_ppt.py`：
+支持 8 种图表类型，通过 stdin JSON：
 
 ```bash
-python3 <skill目录>/scripts/chart_generator.py < chart_input.json
+python chart_generator.py < chart_input.json
 ```
 
-图表输入 JSON 格式：
-```json
-{
-  "chartType": "line",
-  "title": "销售收入月度趋势",
-  "outputPath": "exports/chart_line.png",
-  "series": [
-    {
-      "name": "销售收入",
-      "xLabels": ["1月", "2月", "3月", "4月", "5月", "6月"],
-      "yValues": [12000, 15000, 18000, 22000, 25000, 28000]
-    }
-  ]
-}
+| 类型 | chartType | 说明 |
+|------|-----------|------|
+| 折线图 | `line` | 数据趋势（带数据标签） |
+| 柱状图 | `bar` | 分类对比（支持分组） |
+| 饼图 | `pie` | 占比分布 |
+| 环形图 | `doughnut` | 带总计中心 |
+| 雷达图 | `radar` | 多维度综合评估 |
+| 散点图 | `scatter` | 相关性分析 |
+| 面积图 | `area` | 累积趋势 |
+| 横向柱状图 | `hbar` | 长标签排行 |
+
+## 缩略图预览
+
+```bash
+python thumbnail.py presentation.pptx thumbnails --cols 4
 ```
+生成拼接缩略图网格（需 LibreOffice + poppler-utils）。
 
-支持的图表类型：`line`（折线图）、`bar`（柱状图）、`pie`（饼图）、`radar`（雷达图）
+## 配色方案
 
-## 配色方案（中国商务审美体系）
-
-| 用途 | 颜色值 | 说明 |
-|------|--------|------|
-| 封面渐变背景 | #0D2137 → #1A3C6D → #283593 | 深海蓝 → 藏蓝 → 宝蓝 |
-| 内容幻灯片背景 | #F7F8FA | 淡蓝灰，阅读舒适 |
-| 装饰条/强调色 | #C0392B | 中国红 — 视觉焦点 |
-| 主文字 | #1A3C6D / #2C2C2C | 藏蓝/碳灰 |
-| 次要文字 | #666666 / #999999 | 中灰/浅灰 |
-| 白色文字 | #FFFFFF | 封面标题/表头用 |
-| 表格表头 | #1A3C6D + 白字 | 藏蓝底白字 |
-| 斑马纹 | #FFFFFF / #F2F4F8 | 纯白/淡蓝灰交替 |
-| 页码 | #999999 | 浅灰，不干扰阅读 |
-| 中国红浅色 | #E8C5C4 | 副标题柔和版 |
-
-## 字体与排版规范
-
-| 元素 | 字体 | 字号 | 加粗 | 颜色 |
-|------|------|------|------|------|
-| 封面主标题 | Microsoft YaHei | 44pt | 是 | 白色 |
-| 封面副标题 | Microsoft YaHei | 22pt | 否 | 浅中国红 |
-| 目录标题 | Microsoft YaHei | 32pt | 是 | 藏蓝 |
-| 目录编号 (01/02) | Calibri | 28pt | 是 | 中国红 |
-| 目录章节标题 | Microsoft YaHei | 20pt | 是 | 碳灰 |
-| 过渡页 PART 标识 | Calibri | 40pt | 是 | 中国红 |
-| 过渡页标题 | Microsoft YaHei | 32pt | 是 | 白色 |
-| 内容页标题 | Microsoft YaHei | 26-30pt | 是 | 藏蓝 |
-| 正文 | Microsoft YaHei | 16-18pt | 否 | 碳灰 |
-| 表格表头 | Microsoft YaHei | 10pt | 是 | 白色 |
-| 表格内容 | Microsoft YaHei | 9.5pt | 否 | 碳灰 |
-| 页码 | Microsoft YaHei | 9pt | 否 | 浅灰 |
+| 方案 | 主色 | 强调色 | 场景 |
+|------|------|--------|------|
+| chinese_business | #1A3C6D | #C0392B | 政府/国企/正式场合 |
+| tech_modern | #1565C0 | #00ACC1 | 互联网/科技企业 |
+| warm_elegant | #8B4513 | #B22222 | 文化/教育/艺术 |
 
 ## 幻灯片尺寸
 
-- 宽度：13.333 英寸（标准 16:9 宽屏）
-- 高度：7.5 英寸
-- 装饰线高度：0.05-0.06 英寸
+- 16:9 宽屏：13.333 × 7.5 英寸
 
 ## 依赖
 
-运行时自动安装的 Python 包：
 - python-pptx>=0.6.21
-- matplotlib>=3.7.0
-- numpy>=1.24.0
+- matplotlib>=3.7.0, numpy>=1.24.0
+- lxml>=4.9.0, Pillow>=9.0.0
+- LibreOffice + poppler-utils (thumbnail 可选)

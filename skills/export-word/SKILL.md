@@ -1,176 +1,143 @@
 ---
 name: export-word
-description: 导出专业 Word（DOCX）数据分析报告。支持 SQL 查询结果模式和 Markdown 内容模式。生成包含封面页（编制单位/编制日期/报告编号/密级）、报告摘要、数据概览与质量评估、统计分析与核心指标、数据可视化图表、关键发现与建议及附录数据明细的专业排版文档。当用户请求生成 Word 文档、数据分析报告或 DOCX 导出时必须使用此技能。
+description: 生成专业 Word（DOCX）数据分析报告。支持四种工作流：1) 数据驱动编程创建（数据/内容两种模式，含智能统计解读） 2) OOXML 直接文本替换 3) 模板组装多章节拼接 4) OOXML 拆包/编辑/打包+修订追踪。生成包含封面（编制单位/日期/编号/密级）、摘要与指标速览、数据概览、统计分析、可视化、发现与建议、附录及页眉页脚的完整报告。当用户请求生成 Word 文档或数据分析报告时必须使用此技能。
 ---
 
-# 专业 Word 报告导出技能
+# 专业 Word 数据分析报告导出技能 v3.0
 
-本技能使用 `python-docx` 库生成符合中国商务审美标准的专业 Word 分析报告。相比 Go 原生 OOXML 字符串拼接方式，深度利用 python-docx 的排版能力，实现页眉页脚、章节编号、首行缩进等专业排版效果。
+基于 Anthropic docx skill 架构思想重构，融合 OOXML 直接操作 + 模板组装 + 修订追踪 + 编程控制四层能力。
 
-## 适用场景
+## 架构概览
 
-以下情况必须使用本技能：
-- 用户请求导出 Word 文档
-- 用户要求生成"分析报告"、"数据报告"、"报告"
-- 用户需要将查询结果以专业排版导出
-- 用户需要在 Word 中包含图表、统计表格和格式化数据展示
+```
+export-word/
+├── SKILL.md
+└── scripts/
+    ├── export_word.py         # 主入口 — WordExporter 类（2模式）
+    ├── inventory.py           # 模板结构清单
+    ├── ooxml_replace.py       # OOXML 文本精确替换
+    ├── assemble.py            # 多章节模板组装
+    ├── track_changes.py       # 修订追踪启用
+    ├── chart_generator.py     # 图表生成（→ shared/）
+    ├── word_templates/        # 模板
+    └── word_builders/         # 8 个构建器
 
-## 工作方式
-
-通过标准输入向 `scripts/export_word.py` 传入 JSON 数据，脚本使用 `python-docx` 生成专业排版文档。
-
-### 数据输入模式
-
-```bash
-python3 <skill目录>/scripts/export_word.py < input.json
+shared/
+├── ooxml/scripts/
+│   ├── unpack.py              # OOXML 解包
+│   ├── pack.py                # OOXML 打包
+│   └── validate.py            # OOXML 验证
 ```
 
-输入 JSON 格式：
+## 四种工作流
+
+### 工作流 1：数据驱动编程创建
+
+```bash
+python export_word.py < input.json
+```
+
+两种模式：
+- **data** — 完整分析报告（封面→摘要→指标速览→数据概览→统计分析→可视化→发现与建议→附录→页眉页脚）
+- **content** — 结构化文档（封面→自定义章节，支持 heading1-3/paragraph/list/table/image 块类型）
+
+报告包含智能数据特征解读（3层分析：离散程度→集中趋势→稳定性评估）。
+
+### 工作流 2：OOXML 精确文本替换
+
+直接操作 OOXML XML，保留所有格式（rPr），仅替换文本：
+
+```bash
+python ooxml_replace.py template.docx replacements.json output.docx
+```
+
+replacements.json：
 ```json
 {
-  "title": "2024年上半年度销售运营分析报告",
-  "subtitle": "基于全渠道业务数据的综合分析",
-  "dept": "销售运营中心",
-  "columns": ["产品名称", "销售收入", "销售数量", "毛利率"],
-  "data": [
-    {"产品名称": "精密部件A型", "销售收入": 15000, "销售数量": 300, "毛利率": 0.35},
-    {"产品名称": "精密部件B型", "销售收入": 22000, "销售数量": 450, "毛利率": 0.42}
-  ],
-  "chartPaths": ["exports/chart_line.png", "exports/chart_bar.png"],
-  "findings": [
-    "精密部件B型总销售收入最高，贡献率达全系列的36%",
-    "销售收入在本季度呈现持续上升趋势，月均增幅约8%"
-  ],
-  "numericColumns": ["销售收入", "销售数量", "毛利率"],
-  "numericStats": [
-    {"column": "销售收入", "count": 120, "min": 5000, "max": 50000, "avg": 18500, "stddev": 5200},
-    {"column": "销售数量", "count": 120, "min": 100, "max": 800, "avg": 375, "stddev": 125},
-    {"column": "毛利率", "count": 120, "min": 0.18, "max": 0.55, "avg": 0.36, "stddev": 0.09}
-  ],
-  "outputPath": "exports/report.docx",
-  "includeCharts": true
+  "{{TITLE}}": "2024年销售报告",
+  "{{AUTHOR}}": "张明远",
+  "{{DATE}}": "2024年12月31日"
 }
 ```
 
-## 生成文档结构
+自动处理 document.xml 和 header/footer XML。
 
-文档采用中国商务报告标准的章节编号体系，整体结构如下：
+### 工作流 3：模板组装多章节拼接
+
+将多个独立章节 .docx 文件拼接为最终文档：
+
+```bash
+python assemble.py master.docx output.docx chapter1.docx chapter2.docx chapter3.docx
+```
+
+在章节之间自动添加分节符。
+
+### 工作流 4：OOXML 拆包/编辑/打包 + 修订追踪
+
+```bash
+# 拆包
+python shared/ooxml/scripts/unpack.py input.docx unpacked/
+
+# 启用修订追踪
+python track_changes.py input.docx tracked.docx "审核人姓名"
+
+# 手动编辑 XML...
+
+# 验证
+python shared/ooxml/scripts/validate.py unpacked/ --original input.docx
+
+# 打包
+python shared/ooxml/scripts/pack.py unpacked/ output.docx
+```
+
+## 生成文档结构（data 模式）
 
 ### 封面页
-- 顶部品牌标识：`WebSQL AI · 智能数据分析平台`
-- 中国红（#C0392B）装饰分隔线
-- 报告标题 30pt 藏蓝色加粗
-- 副标题 15pt 中灰色
-- 封面元信息（居中对齐）：
-  - 编制单位（可自定义，默认 WebSQL AI 数据分析中心）
-  - 编制日期（自动生成为 `YYYY年MM月DD日` 格式）
-  - 报告编号（自动生成的唯一编号：`WS-RPT-YYYYMMDD-XXXX`）
-  - 密级标注（固定为"内部资料"）
+- 品牌标识：`WebSQL AI · 智能数据分析平台`
+- 中国红装饰分隔线（#C0392B）
+- 双语标题（中英文 30pt 深蓝加粗）
+- 元信息：编制单位、编制日期（`YYYY年MM月DD日`）、报告编号（`WS-RPT-YYYYMMDD-XXXX`）、密级"内部资料"
 
 ### 第一章 · 报告摘要
-- 章节标题格式：`█  第一章  报告摘要`，带中国红装饰色块
-- 数据全景描述：字段维度数、记录条数
-- 数值字段自动识别与说明
-- 核心指标速览表：指标名称、样本量、最小值、最大值、均值
-- 深蓝表头白字、斑马纹交替行背景
+- █ + 章标题，中国红装饰块
+- 数据全景描述（字段维度、记录条数）
+- 核心指标速览表（指标名称/样本量/最小值/最大值/均值）
 
 ### 数据概览与质量评估
-- 二级标题：`┃  数据概览与质量评估`
-- 数据总量与字段覆盖度描述
-- 数据样例预览表（最多展示 6 列 × 5 行）
-- 深蓝表头 + 斑马纹交替行
+- 次级标题（┃ 前缀）
+- 数据样例预览表（最大6列×5行）
 
 ### 统计分析与核心指标
-- 二级标题：`┃  统计分析与核心指标`
-- 描述性统计分析方法论说明
-- 表 1：数值字段描述性统计汇总（字段名称、有效样本、最小值、最大值、均值、标准差）
-- 数据特征解读：自动识别离散程度最大的字段、集中趋势最强的字段，生成分析评语
+- 表1：数值字段描述性统计汇总（字段/有效样本/最小值/最大值/均值/标准差）
+- 智能解读（离散程度→集中趋势→稳定性 → 综合评语）
 
-### 第三章 · 数据可视化分析
-- 章节标题格式：`█  第三章  数据可视化分析`
-- 图表统一配色说明段
-- 嵌入式图表展示（图 1、图 2…），附数据来源与生成时间标注
+### 数据可视化分析
+- 嵌入式图表（图1、图2…）+ 数据来源标注
 
-### 第四章 · 关键发现与建议
-- 章节标题格式：`█  第四章  关键发现与建议`
-- 基于统计与可视化结果提炼的分析发现
-- 每条发现以"发现 N："中国红加粗前缀标注
+### 关键发现与建议
+- 发现N：中国红前缀 + └ 建议：
+- 支持结构化发现与简单文本发现
 
 ### 附录：数据明细
-- 数据来源说明段
-- 原始数据明细表（最多展示 8 列 × 20 行）
-- 超出展示范围时的截断提示（`※ 限于篇幅，仅展示前 N 条记录…`）
+- 原始数据表（最大8列×20行）+ 截断提示
 
 ### 页眉页脚
-- 页眉：`WebSQL · {报告标题}` 右对齐，底部浅色分隔线
-- 页脚：`— 第 X 页 —` 居中对齐，使用 Word OOXML 域代码自动页码
+- 页眉：`WebSQL · 报告标题` 右对齐
+- 页脚：`— 第 {PAGE} 页 —` Word域代码自动页码
+
+## 模板结构清单
+
+```bash
+python inventory.py template.docx structure.json
+```
+提取段落样式（对齐、行距、字体信息）和表格结构。
 
 ## 图表生成
 
-在生成 Word 之前，先使用 `chart_generator.py` 生成 PNG 图表，再将路径传入 `export_word.py`：
-
-```bash
-python3 <skill目录>/scripts/chart_generator.py < chart_input.json
-```
-
-图表输入 JSON 格式：
-```json
-{
-  "chartType": "line",
-  "title": "销售收入月度趋势",
-  "outputPath": "exports/chart_line.png",
-  "series": [
-    {
-      "name": "销售收入",
-      "xLabels": ["1月", "2月", "3月", "4月", "5月", "6月"],
-      "yValues": [12000, 15000, 18000, 22000, 25000, 28000]
-    }
-  ]
-}
-```
-
-支持的图表类型：
-| 类型 | chartType | 说明 |
-|------|-----------|------|
-| 折线图 | `line` | 数据趋势分析 |
-| 柱状图 | `bar` | 分类对比分析 |
-| 饼图 | `pie` | 占比分布分析 |
-| 雷达图 | `radar` | 多维度综合评估 |
-
-## 配色方案（中国商务审美体系）
-
-| 用途 | 颜色值 | 说明 |
-|------|--------|------|
-| 主色 | #1A3C6D | 藏蓝 — 庄重专业的商务主色调 |
-| 强调色 | #C0392B | 中国红 — 报告中的视觉焦点 |
-| 金色点缀 | #8B6914 | 古朴金 — 点睛之笔 |
-| 标题色 | #0D2137 | 深海蓝 — 沉稳有力 |
-| 正文色 | #2C2C2C | 碳灰 — 阅读舒适 |
-| 辅助文 | #666666 / #999999 | 中灰/浅灰 |
-| 分区背景 | #F0F3F7 | 淡蓝灰 |
-| 表格表头 | #1A3C6D + 白字 | 藏蓝底白字，权威感 |
-| 表格斑马纹 | #FFFFFF / #F4F6FA | 纯白/淡蓝灰交替 |
-
-## 字体与排版规范
-
-| 元素 | 字体 | 字号 | 加粗 | 颜色 |
-|------|------|------|------|------|
-| 一级标题（章） | Microsoft YaHei | 22pt | 是 | 藏蓝 + 深蓝 |
-| 二级标题（节） | Microsoft YaHei | 16pt | 是 | 藏蓝 |
-| 三级标题 | Microsoft YaHei | 14pt | 是 | 碳灰 |
-| 正文段落 | Microsoft YaHei | 11pt | 否 | 碳灰 |
-| 表格表头 | Microsoft YaHei | 9pt | 是 | 白色 |
-| 表格内容 | Microsoft YaHei | 9pt | 否 | 碳灰 |
-| 英文/数字 | Calibri | — | — | — |
-
-正文排版规则：
-- 首行缩进：0.74cm（约两字符）
-- 行距：1.6 倍行距
-- 段前：2pt，段后：4pt
+支持 8 种图表类型，与 PPT 技能共用 `shared/chart_generator.py`。
 
 ## 依赖
 
-运行时自动安装的 Python 包：
 - python-docx>=1.0.0
-- matplotlib>=3.7.0
-- numpy>=1.24.0
+- matplotlib>=3.7.0, numpy>=1.24.0
+- lxml>=4.9.0
