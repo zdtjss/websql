@@ -233,27 +233,48 @@
             </div>
           </div>
           <div class="table-selector-row">
-            <div class="table-selector-container" v-if="connList.length > 1">
-              <label class="table-selector-label">数据库</label>
-              <el-tree-select
+            <div class="table-selector-container" v-if="schemasLoading || connList.length > 1">
+              <div class="selector-header">
+                <label class="table-selector-label">数据库 / Schema</label>
+                <span v-if="schemasLoading" class="selector-badge loading">加载中...</span>
+                <span v-else-if="selectedSchemas.length" class="selector-badge">{{ selectedSchemas.length }} 已选</span>
+              </div>
+              <div v-if="schemasLoading" class="selector-skeleton">
+                <div class="skeleton-shimmer"></div>
+              </div>
+              <el-tree-select v-else
                 v-model="selectedSchemas"
                 :data="processedConnList"
                 :props="{ label: 'label', value: 'value', children: 'children', disabled: 'disabled' }"
-                placeholder="选择数据库（可多选schema）"
-                class="table-selector"
+                placeholder="搜索数据库 / Schema..."
+                class="modern-tree-select"
                 @change="handleSchemaChange"
                 filterable
                 multiple
                 :check-on-click-node="true"
                 collapse-tags
+                collapse-tags-tooltip
               />
             </div>
-            <div class="table-selector-container" :class="{ 'full-width': connList.length <= 1 }">
-              <label class="table-selector-label">相关表</label>
-              <el-select v-model="selectedTables" multiple filterable placeholder="选择相关表（可多选）" class="table-selector">
+            <div class="table-selector-container" :class="{ 'full-width': !schemasLoading && connList.length <= 1 }">
+              <div class="selector-header">
+                <label class="table-selector-label" style="padding-top: 2px;">相关表</label>
+                <span v-if="tablesLoading" class="selector-badge loading">加载中...</span>
+                <span v-else-if="selectedTables.length" class="selector-badge">{{ selectedTables.length }} 已选</span>
+              </div>
+              <div v-if="tablesLoading" class="selector-skeleton">
+                <div class="skeleton-shimmer"></div>
+              </div>
+              <el-select v-else v-model="selectedTables" multiple filterable placeholder="搜索表名..." class="modern-select">
                 <el-option v-for="table in tableList" :key="table.name + (table.schema || '')"
-                  :label="table.label || (table.comment ? table.name + '（' + table.comment + '）' : table.name)"
-                  :value="table.label || table.name" />
+                  :label="table.label || table.name"
+                  :value="table.label || table.name">
+                  <div class="table-option-content">
+                    <span class="table-option-name">{{ table.name }}</span>
+                    <span v-if="table.comment" class="table-option-comment">{{ table.comment }}</span>
+                    <span v-if="table.schema && selectedSchemas.length > 1" class="table-option-schema">{{ table.schema }}</span>
+                  </div>
+                </el-option>
               </el-select>
             </div>
           </div>
@@ -346,7 +367,7 @@ import texmath from 'markdown-it-texmath'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 hljs.registerLanguage('sql', hljsSql)
@@ -510,6 +531,8 @@ const selectedSchemas = ref([])
 const tableList = ref([])
 const connList = ref([])
 const connSchemaList = ref([]) // 原始连接+schema数据列表
+const schemasLoading = ref(false)
+const tablesLoading = ref(false)
 
 // 计算属性：处理后的 schema 级树结构
 const processedConnList = computed(() => {
@@ -523,6 +546,7 @@ function buildSchemaTree(rawList) {
 
   for (const item of rawList) {
     const schemas = item.schemas || []
+    const dbType = item.dbType || ''
     // 连接不可用时，创建禁用的叶子节点
     if (item.available === false) {
       const node = {
@@ -532,6 +556,7 @@ function buildSchemaTree(rawList) {
         schemaName: '',
         disabled: true,
         isSchemaLeaf: false,
+        dbType,
       }
       const dir = item.dirName
       if (dir) {
@@ -552,6 +577,7 @@ function buildSchemaTree(rawList) {
         schemaName: singleSchema,
         disabled: false,
         isSchemaLeaf: true,
+        dbType,
       }
       const dir = item.dirName
       if (dir) {
@@ -569,12 +595,14 @@ function buildSchemaTree(rawList) {
         schemaName: s.name,
         disabled: false,
         isSchemaLeaf: true,
+        dbType,
       }))
       const connNode = {
         label: item.name,
         value: '__conn__' + item.connId,
         disabled: true,
         children: schemaChildren,
+        dbType,
       }
       const dir = item.dirName
       if (dir) {
@@ -595,18 +623,30 @@ function buildSchemaTree(rawList) {
 }
 
 async function loadConnList() {
+  schemasLoading.value = true
   try {
     const resp = await http.get('/listUserConnSchemas')
     const rawList = resp.data.data || []
     connSchemaList.value = rawList
     connList.value = buildSchemaTree(rawList)
 
-    // 如果有连接且当前未选择，自动选择第一个
+    // 如果有连接且当前未选择，自动选择第一个（但检查 sessionStorage 中是否有保存的选项）
     if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
-      const first = findFirstSelectableSchema(connList.value)
-      if (first) {
-        selectedSchemas.value = [first.value]
+      const savedSchemas = (() => {
+        try {
+          const v = sessionStorage.getItem('lastSelectedSchemas')
+          return v ? JSON.parse(v) : null
+        } catch { return null }
+      })()
+      if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
+        selectedSchemas.value = savedSchemas
         loadTableListForSchemas()
+      } else {
+        const first = findFirstSelectableSchema(connList.value)
+        if (first) {
+          selectedSchemas.value = [first.value]
+          loadTableListForSchemas()
+        }
       }
     }
   } catch (e) {
@@ -625,15 +665,28 @@ async function loadConnList() {
       connSchemaList.value = converted
       connList.value = buildSchemaTree(converted)
       if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
-        const first = findFirstSelectableSchema(connList.value)
-        if (first) {
-          selectedSchemas.value = [first.value]
+        const savedSchemas = (() => {
+          try {
+            const v = sessionStorage.getItem('lastSelectedSchemas')
+            return v ? JSON.parse(v) : null
+          } catch { return null }
+        })()
+        if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
+          selectedSchemas.value = savedSchemas
           loadTableListForSchemas()
+        } else {
+          const first = findFirstSelectableSchema(connList.value)
+          if (first) {
+            selectedSchemas.value = [first.value]
+            loadTableListForSchemas()
+          }
         }
       }
     } catch (e2) {
       console.error('加载连接列表失败:', e2)
     }
+  } finally {
+    schemasLoading.value = false
   }
 }
 
@@ -655,8 +708,10 @@ function parseSchemaValue(value) {
 }
 
 async function loadTableListForSchemas() {
+  tablesLoading.value = true
   if (selectedSchemas.value.length === 0) {
     tableList.value = []
+    tablesLoading.value = false
     return
   }
   try {
@@ -690,13 +745,17 @@ async function loadTableListForSchemas() {
   } catch (e) {
     console.error('加载表列表失败:', e)
     tableList.value = []
+  } finally {
+    tablesLoading.value = false
   }
 }
 
 async function loadTableList(connId, schema) {
+  tablesLoading.value = true
   try {
     if (!connId) {
       tableList.value = []
+      tablesLoading.value = false
       return
     }
     const resp = await http.get('/listTableNames', {
@@ -713,6 +772,8 @@ async function loadTableList(connId, schema) {
   } catch (e) {
     console.error('加载表列表失败:', e)
     tableList.value = []
+  } finally {
+    tablesLoading.value = false
   }
 }
 
@@ -2502,6 +2563,21 @@ async function loadSession(id) {
         if (isSql) lastSql.value = msg.content
       }
 
+      // 恢复会话上下文（当时选择的 schemas 和 tables）
+      const ctx = data.session.context
+      if (ctx && ctx.schemas && ctx.schemas.length > 0) {
+        const schemaValues = ctx.schemas
+          .filter(s => s.connId && s.schema)
+          .map(s => s.connId + '::' + s.schema)
+        if (schemaValues.length > 0) {
+          selectedSchemas.value = schemaValues
+          await loadTableListForSchemas()
+          if (ctx.tables && ctx.tables.length > 0) {
+            selectedTables.value = ctx.tables.filter(t => tableList.value.some(tl => tl.label === t || tl.name === t))
+          }
+        }
+      }
+
       ElMessage({ message: '已加载历史会话', type: 'success' })
       scrollToBottom()
       // 历史会话加载完成后立即渲染 mermaid
@@ -2512,6 +2588,19 @@ async function loadSession(id) {
     ElMessage({ message: '加载会话失败', type: 'error' })
   }
 }
+
+// 监听 selectedSchemas / selectedTables 变化，保存到 sessionStorage（页面刷新后恢复）
+watch(selectedSchemas, (val) => {
+  try {
+    sessionStorage.setItem('lastSelectedSchemas', JSON.stringify(val))
+  } catch (_) {}
+}, { deep: true })
+
+watch(selectedTables, (val) => {
+  try {
+    sessionStorage.setItem('lastSelectedTables', JSON.stringify(val))
+  } catch (_) {}
+}, { deep: true })
 
 function handleExportLinkClick(e) {
   const link = e.target.closest('a[data-export-link]')
@@ -2526,7 +2615,29 @@ function handleExportLinkClick(e) {
 }
 
 onMounted(() => {
-  loadConnList()
+  loadConnList().then(() => {
+    // 从 sessionStorage 恢复上次选择的 schemas 和 tables（仅当 loadConnList 未自动恢复时）
+    if (!sessionId.value && selectedSchemas.value.length === 0) {
+      try {
+        const savedSchemas = sessionStorage.getItem('lastSelectedSchemas')
+        if (savedSchemas) {
+          const parsed = JSON.parse(savedSchemas)
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            selectedSchemas.value = parsed
+            loadTableListForSchemas().then(() => {
+              const savedTables = sessionStorage.getItem('lastSelectedTables')
+              if (savedTables) {
+                const parsedTables = JSON.parse(savedTables)
+                if (Array.isArray(parsedTables) && parsedTables.length > 0) {
+                  selectedTables.value = parsedTables.filter(t => tableList.value.some(tl => tl.label === t || tl.name === t))
+                }
+              }
+            })
+          }
+        }
+      } catch (_) {}
+    }
+  })
   getSysModel()
   document.addEventListener('keydown', handleEscKey)
   document.addEventListener('keydown', handleMermaidKeyDown)
@@ -3246,92 +3357,155 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-/* 相关表选择器容器 */
+/* ========== 数据库 / 表选择器 - 现代化设计 ========== */
 .table-selector-row {
   display: flex;
   gap: 16px;
   margin-bottom: 12px;
   flex-shrink: 0;
+  align-items: flex-start;
 }
 
 .table-selector-row .table-selector-container:first-child {
-  flex: 0 0 20%;
+  flex: 0 0 calc(20% - 8px);
 }
 
 .table-selector-row .table-selector-container:last-child {
-  flex: 0 0 80%;
+  flex: 0 0 calc(80% - 8px);
 }
 
-/* 当只有一个数据库时，相关表占满整行 */
 .table-selector-row .table-selector-container.full-width {
   flex: 0 0 100%;
 }
 
+.table-selector-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.selector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.selector-header .table-selector-label {
+  margin-bottom: 0;
+}
+
 .table-selector-label {
   display: block;
-  margin-bottom: 8px;
-  font-size: 13px;
+  font-size: 12px;
   color: #4a5568;
   font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
 }
 
-.table-selector {
+.selector-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 100px;
+  background: linear-gradient(135deg, #e8eaf6 0%, #c5cae9 100%);
+  color: #283593;
+  letter-spacing: 0.3px;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.selector-skeleton {
   width: 100%;
-}
-
-.table-selector-label::before {
-  content: '📊';
-  margin-right: 6px;
-}
-
-.table-selector {
-  width: 100%;
-}
-
-.table-selector :deep(.el-input__inner) {
+  height: 32px;
   border-radius: 10px;
   border: 1.5px solid #e0e0e0;
-  transition: all 0.3s ease;
-  min-height: 40px;
+  overflow: hidden;
+  position: relative;
+  box-sizing: border-box;
 }
 
-.table-selector :deep(.el-input__inner:hover) {
-  border-color: #bdbdbd;
-  box-shadow: 0 0 0 3px rgba(189, 189, 189, 0.08);
+.selector-skeleton::after {
+  content: '加载中...';
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: #c0c4cc;
+  pointer-events: none;
+  letter-spacing: 0.3px;
 }
 
-.table-selector :deep(.el-input__inner:focus) {
-  border-color: #90a4ae;
-  box-shadow: 0 0 0 3px rgba(144, 164, 174, 0.12);
+.skeleton-shimmer {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #f5f7fa 0%, #e8eaed 35%, #f5f7fa 65%);
+  background-size: 200% 100%;
+  animation: skeletonSlide 1.5s ease-in-out infinite;
+  border-radius: 8px;
 }
 
-.table-selector :deep(.el-tag) {
-  border-radius: 6px;
-  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-  border-color: #64b5f6;
-  color: #0d47a1;
-  font-weight: 500;
+@keyframes skeletonSlide {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
-.table-selector :deep(.el-select__tags) {
-  padding: 4px 8px;
+.modern-tree-select {
+  width: 100%;
+  margin: 0;
 }
 
-/* 下拉选项美化 */
-.table-selector :deep(.el-select-dropdown__item) {
-  transition: all 0.2s ease;
+.modern-select {
+  width: 100%;
+  margin: 0;
 }
 
-.table-selector :deep(.el-select-dropdown__item:hover) {
-  background: linear-gradient(90deg, rgba(25, 118, 210, 0.05) 0%, rgba(25, 118, 210, 0.15) 100%);
-  color: #1565c0;
+.table-option-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  width: 100%;
+}
+
+.table-option-name {
   font-weight: 600;
+  color: #1a202c;
+  font-size: 13px;
+  flex-shrink: 0;
 }
 
-.table-selector :deep(.el-select-dropdown__item.selected) {
-  background: linear-gradient(90deg, rgba(25, 118, 210, 0.1) 0%, rgba(25, 118, 210, 0.2) 100%);
-  color: #1565c0;
-  font-weight: 700;
+.table-option-comment {
+  font-size: 12px;
+  color: #909399;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-option-comment::before {
+  content: '— ';
+  color: #c0c4cc;
+}
+
+.table-option-schema {
+  font-size: 11px;
+  color: #409eff;
+  background: rgba(64, 158, 255, 0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  flex-shrink: 0;
 }
 
 /* 多条 SQL 批量确认 */

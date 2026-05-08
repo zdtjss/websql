@@ -92,3 +92,70 @@ def num_to_cn(n):
     if 1 <= n <= 10:
         return nums[n - 1]
     return str(n)
+
+
+import re
+
+_RE_MD_BOLD = re.compile(r'\*\*(.+?)\*\*')
+_RE_MD_ITALIC = re.compile(r'\*(.+?)\*')
+_RE_MD_CODE = re.compile(r'`(.+?)`')
+_RE_MD_LINK = re.compile(r'\[(.+?)\]\(.+?\)')
+_RE_BLOCKQUOTE = re.compile(r'^\s*>\s?', re.MULTILINE)
+_RE_HR = re.compile(r'^[-*_]{3,}\s*$', re.MULTILINE)
+
+_RE_LATEX_INLINE = re.compile(r'\$(.+?)\$')
+_RE_LATEX_DISPLAY = re.compile(r'\$\$(.+?)\$\$')
+_RE_LATEX_ARROW_R = re.compile(r'\\to\b|\\rightarrow')
+_RE_LATEX_ARROW_L = re.compile(r'\\leftarrow')
+_RE_LATEX_ARROW_R2 = re.compile(r'\\Rightarrow')
+_RE_LATEX_ARROW_L2 = re.compile(r'\\Leftarrow')
+
+_RE_LATEX_GREEK = re.compile(r'\\(alpha|beta|gamma|delta|epsilon|theta|pi|phi|omega)\b')
+_RE_LATEX_REL = re.compile(r'\\(ge|geq|gt|le|leq|lt|ne|neq)\b')
+_RE_LATEX_OP = re.compile(r'\\(sum|prod|ldots|cdots)\b')
+_RE_LATEX_BRACES = re.compile(r'[\{\}]')
+_RE_LATEX_CMD = re.compile(r'\\(frac|hat|bar|tilde|mbox|text)\{')
+
+_LATEX_GREEK_MAP = {
+    'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ',
+    'epsilon': 'ε', 'theta': 'θ', 'pi': 'π', 'phi': 'φ', 'omega': 'ω',
+}
+_LATEX_REL_MAP = {
+    'ge': '≥', 'geq': '≥', 'gt': '>', 'le': '≤', 'leq': '≤', 'lt': '<', 'ne': '≠', 'neq': '≠',
+}
+
+
+def _replace_latex_greek(m):
+    return _LATEX_GREEK_MAP.get(m.group(1), m.group(0))
+
+
+def _replace_latex_rel(m):
+    return _LATEX_REL_MAP.get(m.group(1), m.group(0))
+
+
+def _replace_arrow_right(m):
+    return '→' if 'to' in m.group(0) else '→'
+
+
+def strip_markdown(text):
+    if not isinstance(text, str):
+        return str(text)
+    s = text
+    s = _RE_LATEX_DISPLAY.sub(r'\1', s)
+    s = _RE_LATEX_INLINE.sub(r'\1', s)
+    s = _RE_LATEX_ARROW_R.sub('→', s)
+    s = _RE_LATEX_ARROW_L.sub('←', s)
+    s = _RE_LATEX_ARROW_R2.sub('⇒', s)
+    s = _RE_LATEX_ARROW_L2.sub('⇐', s)
+    s = _RE_LATEX_GREEK.sub(_replace_latex_greek, s)
+    s = _RE_LATEX_REL.sub(_replace_latex_rel, s)
+    s = _RE_LATEX_OP.sub('…', s)
+    s = _RE_LATEX_BRACES.sub('', s)
+    s = _RE_LATEX_CMD.sub('', s)
+    s = _RE_MD_BOLD.sub(r'\1', s)
+    s = _RE_MD_ITALIC.sub(r'\1', s)
+    s = _RE_MD_CODE.sub(r'\1', s)
+    s = _RE_MD_LINK.sub(r'\1', s)
+    s = _RE_BLOCKQUOTE.sub('', s)
+    s = _RE_HR.sub('', s)
+    return s

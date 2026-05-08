@@ -570,6 +570,32 @@ func parseInlineMarkdown(text string, defaultBold bool, defaultFontSize int) []r
 			continue
 		}
 
+		if runes[i] == '$' {
+			delim := 1
+			if i+1 < len(runes) && runes[i+1] == '$' {
+				delim = 2
+			}
+			if buf.Len() > 0 {
+				current.text = buf.String()
+				segments = append(segments, current)
+				buf.Reset()
+			}
+			closeDelim := "$"
+			if delim == 2 {
+				closeDelim = "$$"
+			}
+			i += delim
+			end := findStr(runes[i:], closeDelim)
+			if end >= 0 {
+				mathContent := string(runes[i : i+end])
+				current.text = StripMarkdownFormatting(mathContent)
+				segments = append(segments, current)
+				i += end + delim
+				current = runSegment{bold: defaultBold, fontSize: defaultFontSize}
+			}
+			continue
+		}
+
 		buf.WriteRune(runes[i])
 		i++
 	}

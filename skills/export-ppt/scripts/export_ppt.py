@@ -19,7 +19,7 @@ from shared.config import SkillConfig
 from shared.colors import ColorPalette
 from shared.logger import SkillLogger
 from shared.utils import (
-    clean_surrogates, format_date_cn, generate_report_id, ensure_output_dir, safe_json_dumps
+    clean_surrogates, format_date_cn, generate_report_id, ensure_output_dir, safe_json_dumps, strip_markdown
 )
 from shared.exceptions import SkillError, ValidationError, FileGenerationError
 
@@ -157,7 +157,7 @@ class PPTExporter:
         for i, sec in enumerate(sections):
             self.section_builder.build(prs, i + 1, sec["title"], sn, total)
             sn += 1
-            blocks = sec.get("blocks", [])
+            blocks = sec.get("blocks") or []
             content_text = self._render_blocks(blocks)
             content_slide = prs.slides.add_slide(prs.slide_layouts[6])
             self.template.build_content(content_slide, sec["title"], content_text, sn, total)
@@ -214,7 +214,7 @@ class PPTExporter:
         text_lines = []
         for b in blocks:
             t = b.get("type", "")
-            c = b.get("content", "")
+            c = strip_markdown(b.get("content", ""))
             c_clean = clean_surrogates(c)
             if t == "h1":
                 text_lines.append(f"■  {c_clean}")

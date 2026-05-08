@@ -324,7 +324,7 @@ func ListUserConnSchemas(c *gin.Context) {
 			func() {
 				defer func() {
 					if rc := recover(); rc != nil {
-						log.Printf("[ListUserConnSchemas] 获取连接 %s 的 schema 列表失败: %v", r.ConnId, rc)
+						log.Printf("[ListUserConnSchemas] 获取连接 %s %s 的 schema 列表失败: %v", r.ConnId, r.Name, rc)
 						available = false
 					}
 				}()

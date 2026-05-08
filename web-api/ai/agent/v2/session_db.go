@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	"go-web/config"
 )
 
@@ -22,14 +24,33 @@ type SessionDB struct {
 	UserID    string    `db:"user_id" json:"userId"`
 	Title     string    `db:"title" json:"title"`
 	Messages  string    `db:"messages" json:"-"`
+	Context   string    `db:"context" json:"-"`
 	CreatedAt time.Time `db:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `db:"updated_at" json:"updatedAt"`
 }
 
+// SessionToolCall mirrors the tool call structure stored in session messages
+type SessionToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function SessionFunctionCall `json:"function"`
+}
+
+// SessionFunctionCall mirrors the function call within a tool call
+type SessionFunctionCall struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
 // SessionMessage 存储在 messages JSON 数组中的单条消息
 type SessionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ToolCalls        []SessionToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+	ToolName         string            `json:"tool_name,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -40,6 +61,7 @@ type Session struct {
 	ID        string
 	UserID    string
 	CreatedAt time.Time
+	Context   string
 	mu        sync.Mutex
 	messages  []SessionMessage
 	cancelFn  context.CancelFunc
@@ -52,6 +74,23 @@ func (s *Session) Append(role, content string) error {
 
 	s.messages = append(s.messages, SessionMessage{Role: role, Content: content})
 	return s.saveToDB()
+}
+
+// AppendMessage 追加完整的 SessionMessage（包含工具调用信息）并持久化到数据库
+func (s *Session) AppendMessage(msg SessionMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.messages = append(s.messages, msg)
+	return s.saveToDB()
+}
+
+// AppendMessageNoSave 追加消息但暂时不持久化（用于批量追加场景）
+func (s *Session) AppendMessageNoSave(msg SessionMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.messages = append(s.messages, msg)
 }
 
 // GetMessages 获取所有消息的副本
@@ -100,7 +139,20 @@ func (s *Session) Title() string {
 	return ""
 }
 
-// saveToDB 将消息序列化后写入数据库（调用方需持有锁）
+// SetContext 设置会话上下文（schemas/tables）并持久化
+func (s *Session) SetContext(ctxJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Context = ctxJSON
+	return s.saveToDB()
+}
+
+// saveToDB 将消息和上下文序列化后写入数据库（调用方需持有锁）
+// SaveToDB 公开的持久化方法，用于批量追加消息后统一保存
+func (s *Session) SaveToDB() error {
+	return s.saveToDB()
+}
+
 func (s *Session) saveToDB() error {
 	data, err := json.Marshal(s.messages)
 	if err != nil {
@@ -116,9 +168,18 @@ func (s *Session) saveToDB() error {
 			break
 		}
 	}
+	ctx := s.Context
+	if ctx == "" {
+		ctx = "{}"
+	}
 	_, err = config.Mngtdb.Exec(`
-		UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
-	`, string(data), title, time.Now(), s.ID)
+		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ? WHERE id = ?
+	`, string(data), title, ctx, time.Now(), s.ID)
+	if err != nil && strings.Contains(err.Error(), "no such column: context") {
+		_, err = config.Mngtdb.Exec(`
+			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
+		`, string(data), title, time.Now(), s.ID)
+	}
 	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
 		return nil
 	}
@@ -216,7 +277,7 @@ func (s *SessionStore) UnregisterCancel(id string) {
 	s.mu.Unlock()
 }
 
-// GetDetail 获取会话详情（含完整消息）
+// GetDetail 获取会话详情（含完整消息和上下文）
 func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 	sessDB, err := getSessionByID(id)
 	if err != nil {
@@ -231,11 +292,17 @@ func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
 	}
 
+	var sessionCtx *SessionContext
+	if sessDB.Context != "" && sessDB.Context != "{}" {
+		_ = json.Unmarshal([]byte(sessDB.Context), &sessionCtx)
+	}
+
 	detail := SessionDetail{
 		ID:        sessDB.ID,
 		Title:     sessDB.Title,
 		CreatedAt: sessDB.CreatedAt,
 		Messages:  make([]SessionDetailMessage, 0, len(messages)),
+		Context:   sessionCtx,
 	}
 	for _, msg := range messages {
 		detail.Messages = append(detail.Messages, SessionDetailMessage{Role: msg.Role, Content: msg.Content})
@@ -272,10 +339,16 @@ func loadSessionFromDB(id string) (*Session, error) {
 		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
 	}
 
+	ctx := sessDB.Context
+	if ctx == "" {
+		ctx = "{}"
+	}
+
 	return &Session{
 		ID:        sessDB.ID,
 		UserID:    sessDB.UserID,
 		CreatedAt: sessDB.CreatedAt,
+		Context:   ctx,
 		messages:  messages,
 	}, nil
 }
@@ -283,7 +356,26 @@ func loadSessionFromDB(id string) (*Session, error) {
 func getSessionByID(id string) (*SessionDB, error) {
 	var session SessionDB
 	err := config.Mngtdb.Get(&session, `
-		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, created_at, updated_at
+		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, COALESCE(context,'{}') as context, created_at, updated_at
+		FROM t_ai_session WHERE id = ?
+	`, id)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") || strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		if strings.Contains(err.Error(), "no such column: context") {
+			return getSessionByIDWithoutContext(id)
+		}
+		log.Printf("[SessionDB] 查询会话失败 - id=%s, err=%v\n", id, err)
+		return nil, err
+	}
+	return &session, nil
+}
+
+func getSessionByIDWithoutContext(id string) (*SessionDB, error) {
+	var session SessionDB
+	err := config.Mngtdb.Get(&session, `
+		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, '{}' as context, created_at, updated_at
 		FROM t_ai_session WHERE id = ?
 	`, id)
 	if err != nil {
@@ -316,4 +408,44 @@ func deleteSessionInDB(id string) error {
 		return nil
 	}
 	return err
+}
+
+// ──────────────────────────────────────────────
+// schema ↔ SessionMessage 转换
+// ──────────────────────────────────────────────
+
+func sessionToolCallsFromSchema(toolCalls []schema.ToolCall) []SessionToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	result := make([]SessionToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		result[i] = SessionToolCall{
+			ID:   tc.ID,
+			Type: tc.Type,
+			Function: SessionFunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		}
+	}
+	return result
+}
+
+func sessionToolCallsToSchema(toolCalls []SessionToolCall) []schema.ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	result := make([]schema.ToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		result[i] = schema.ToolCall{
+			ID:   tc.ID,
+			Type: tc.Type,
+			Function: schema.FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		}
+	}
+	return result
 }

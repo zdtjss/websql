@@ -336,7 +336,8 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 		if err != nil {
 			log.Printf("[ToolCall] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
 		} else {
-			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, truncateStr(result, 300))
+			// 暂时打印完整的信息吧 result
+			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, result)
 		}
 
 		return result, err

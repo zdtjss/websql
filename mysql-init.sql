@@ -83,10 +83,11 @@ CREATE TABLE IF NOT EXISTS t_system_config (
 );
 
 CREATE TABLE IF NOT EXISTS t_ai_session (
-	id varchar(36) primary key,
-	user_id varchar(36) not null,
+	id varchar(64) primary key,
+	user_id varchar(64) not null,
 	title varchar(256),
 	messages MEDIUMTEXT,
+	context TEXT,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 	INDEX idx_user_id (user_id)

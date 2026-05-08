@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	goWebUtils "go-web/utils"
 	admin "go-web/web-api/admin"
 	"go-web/web-api/ai/agent/v2/export"
 
@@ -75,12 +76,19 @@ type SessionMeta struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// SessionContext 会话上下文（保存当时选择的 schema 和表）
+type SessionContext struct {
+	Schemas []SchemaRef `json:"schemas,omitempty"`
+	Tables  []string    `json:"tables,omitempty"`
+}
+
 // SessionDetail 会话详情
 type SessionDetail struct {
 	ID        string                 `json:"id"`
 	Title     string                 `json:"title"`
 	CreatedAt time.Time              `json:"createdAt"`
 	Messages  []SessionDetailMessage `json:"messages"`
+	Context   *SessionContext        `json:"context,omitempty"`
 }
 
 // SessionDetailMessage 会话消息
@@ -216,7 +224,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 	sessionID := req.SessionID
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+		sessionID = goWebUtils.RandomStr()
 		log.Printf("[Agent] 新建会话 - sessionID=%s\n", sessionID)
 	}
 	if req.UserID == "" {
@@ -245,7 +253,13 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 	sysPrompt := buildSystemPrompt(a.dbType, a.dbSchema, "", req.TableContext, a.scope, req.Schemas)
 
-	if isExportRequest(req.Question) {
+	if isRegenerateRequest(req.Question) {
+		regenerateHint := "\n\n## 🔄 重新生成\n用户要求重新执行上一次的操作。请根据对话历史中的上一次工具调用和查询，使用相同的参数重新执行。如果上次涉及文件导出，必须再次调用导出工具实际生成文件，禁止仅输出文字描述。\n"
+		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
+			regenerateHint += fmt.Sprintf("\n📌 历史 SQL：\n```sql\n%s\n```", lastSQL)
+		}
+		sysPrompt += regenerateHint
+	} else if isExportRequest(req.Question) {
 		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
 			sysPrompt += fmt.Sprintf("\n\n⚠️ 用户正在请求导出操作，历史 SQL：\n```sql\n%s\n```\n如果用户要求导出 Excel，请直接使用此 SQL 调用导出工具；如果用户要求导出 Word/PPT 报告，优先使用 content 模式将分析结果传入。", lastSQL)
 		}
@@ -266,7 +280,18 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		case "user":
 			messages = append(messages, &schema.Message{Role: schema.User, Content: msg.Content})
 		case "assistant":
-			messages = append(messages, &schema.Message{Role: schema.Assistant, Content: msg.Content})
+			sm := &schema.Message{Role: schema.Assistant, Content: msg.Content}
+			if len(msg.ToolCalls) > 0 {
+				sm.ToolCalls = sessionToolCallsToSchema(msg.ToolCalls)
+			}
+			messages = append(messages, sm)
+		case "tool":
+			messages = append(messages, &schema.Message{
+				Role:       schema.Tool,
+				Content:    msg.Content,
+				ToolCallID: msg.ToolCallID,
+				ToolName:   msg.ToolName,
+			})
 		}
 	}
 
@@ -275,12 +300,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
 
-	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
+	_, _ = a.processEvents(iter, flush, sess, checkPointID)
 
-	if fullResponse.Len() > 0 {
-		if err := sess.Append("assistant", fullResponse.String()); err != nil {
-			log.Printf("[Agent] 保存助手消息失败 - err=%v\n", err)
-		}
+	if err := sess.SaveToDB(); err != nil {
+		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
 	}
 
 	log.Printf("[Agent] 执行完毕 - sessionID=%s\n", sessionID)
@@ -307,12 +330,10 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 		return fmt.Errorf("resume failed: %w", err)
 	}
 
-	fullResponse, _ := a.processEvents(iter, flush, sess, checkPointID)
+	_, _ = a.processEvents(iter, flush, sess, checkPointID)
 
-	if fullResponse.Len() > 0 {
-		if err := sess.Append("assistant", fullResponse.String()); err != nil {
-			log.Printf("[Agent] save assistant msg failed - err=%v\n", err)
-		}
+	if err := sess.SaveToDB(); err != nil {
+		log.Printf("[Agent] save assistant msg failed - err=%v\n", err)
 	}
 
 	return nil
@@ -371,7 +392,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				flush(StreamChunk{Type: "error", Content: "AI 处理出现异常中断，请重试"})
 			}
 			if fullResponse.Len() > 0 {
-				_ = sess.Append("assistant", fullResponse.String())
+				_ = sess.SaveToDB()
 			}
 			break
 		}
@@ -391,9 +412,6 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		if role == "" && mo.Message != nil {
 			role = mo.Message.Role
 		}
-		if role == schema.Tool {
-			continue
-		}
 
 		if mo.IsStreaming && mo.MessageStream != nil {
 			var accContent strings.Builder
@@ -412,7 +430,26 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			}
 			if accContent.Len() > 0 {
 				fullResponse.WriteString(accContent.String())
+				sess.AppendMessageNoSave(SessionMessage{Role: string(role), Content: accContent.String()})
 			}
+		} else if role == schema.Tool {
+			msg := mo.Message
+			if msg != nil {
+				sess.AppendMessageNoSave(SessionMessage{
+					Role:       "tool",
+					Content:    msg.Content,
+					ToolCallID: msg.ToolCallID,
+					ToolName:   msg.ToolName,
+				})
+			}
+		} else if role == schema.Assistant && mo.Message != nil && len(mo.Message.ToolCalls) > 0 {
+			msg := mo.Message
+			sm := SessionMessage{
+				Role:      "assistant",
+				Content:   msg.Content,
+				ToolCalls: sessionToolCallsFromSchema(msg.ToolCalls),
+			}
+			sess.AppendMessageNoSave(sm)
 		}
 
 		if hasExit {
@@ -437,6 +474,21 @@ func truncateSessionMessages(msgs []SessionMessage) []SessionMessage {
 func isExportRequest(question string) bool {
 	q := strings.ToLower(question)
 	for _, kw := range []string{"导出", "export", "下载", "excel", "ppt", "word", "图表"} {
+		if strings.Contains(q, kw) {
+			return true
+		}
+	}
+	for _, kw := range []string{"重新生成", "再生成", "再来一次", "再来一遍", "重新导出", "再试一次", "重新输出", "regenerate", "redo", "retry"} {
+		if strings.Contains(q, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRegenerateRequest(question string) bool {
+	q := strings.ToLower(question)
+	for _, kw := range []string{"重新生成", "再生成", "再来一次", "再来一遍", "重新导出", "再试一次", "重新输出", "regenerate", "redo", "retry", "重新做", "再做一次", "重新来"} {
 		if strings.Contains(q, kw) {
 			return true
 		}

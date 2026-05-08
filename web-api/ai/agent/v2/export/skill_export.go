@@ -648,10 +648,17 @@ func buildSections(blocks []MdBlock) []map[string]interface{} {
 	var current map[string]interface{}
 	var currentBlocks []map[string]interface{}
 
+	ensureBlocks := func() []map[string]interface{} {
+		if currentBlocks == nil {
+			return []map[string]interface{}{}
+		}
+		return currentBlocks
+	}
+
 	for _, block := range blocks {
 		if block.Type == "h1" || block.Type == "h2" {
 			if current != nil {
-				current["blocks"] = currentBlocks
+				current["blocks"] = ensureBlocks()
 				sections = append(sections, current)
 			}
 			current = map[string]interface{}{
@@ -661,12 +668,12 @@ func buildSections(blocks []MdBlock) []map[string]interface{} {
 		} else {
 			currentBlocks = append(currentBlocks, map[string]interface{}{
 				"type":    block.Type,
-				"content": block.Content,
+				"content": StripMarkdownFormatting(block.Content),
 			})
 		}
 	}
 	if current != nil {
-		current["blocks"] = currentBlocks
+		current["blocks"] = ensureBlocks()
 		sections = append(sections, current)
 	}
 

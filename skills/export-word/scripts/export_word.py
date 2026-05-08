@@ -19,7 +19,7 @@ from shared.config import SkillConfig
 from shared.colors import ColorPalette
 from shared.logger import SkillLogger
 from shared.utils import (
-    clean_surrogates, format_date_cn, generate_report_id, ensure_output_dir, safe_json_dumps
+    clean_surrogates, format_date_cn, generate_report_id, ensure_output_dir, safe_json_dumps, strip_markdown
 )
 from shared.exceptions import SkillError, ValidationError, FileGenerationError
 
@@ -117,11 +117,11 @@ class WordExporter:
 
         for i, sec in enumerate(sections):
             self.template._heading(doc, 1, i + 2, sec.get("title", f"第{i+2}章"))
-            blocks = sec.get("blocks", [])
+            blocks = sec.get("blocks") or []
 
             for b in blocks:
                 bt = b.get("type", "")
-                bc = b.get("content", "")
+                bc = strip_markdown(b.get("content", ""))
 
                 if bt == "heading1":
                     self.template._heading(doc, 1, b.get("num"), bc)

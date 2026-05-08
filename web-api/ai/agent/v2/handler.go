@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go-web/config"
+	"go-web/utils"
 	admin "go-web/web-api/admin"
 
 	"github.com/gin-gonic/gin"
@@ -146,10 +147,21 @@ func (h *Handler) ChatStream(c *gin.Context) {
 
 	sessionID := req.SessionID
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+		sessionID = utils.RandomStr()
 	}
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
+
+	// 保存会话上下文（当时选择的 schemas 和 tables）
+	if len(req.Schemas) > 0 || len(req.TableContext) > 0 {
+		ctxData := SessionContext{
+			Schemas: req.Schemas,
+			Tables:  req.TableContext,
+		}
+		if ctxJSON, err := json.Marshal(ctxData); err == nil {
+			_ = sess.SetContext(string(ctxJSON))
+		}
+	}
 
 	connID := req.ConnID
 	if connID == "" && len(req.Schemas) > 0 {
@@ -262,7 +274,7 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 
 	sessionID := req.SessionID
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("%s_%d_%d", req.UserID, time.Now().UnixNano(), time.Now().UnixMilli())
+		sessionID = utils.RandomStr()
 	}
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
@@ -309,6 +321,7 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 	}
 	metas, err := h.sessions.ListByUserID(user.Id)
 	if err != nil {
+		log.Printf("[Handler] 获取会话列表失败 - userId=%s, err=%v\n", user.Id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
 		return
 	}
@@ -332,6 +345,7 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 	}
 	detail, err := h.sessions.GetDetail(sessionID)
 	if err != nil {
+		log.Printf("[Handler] 获取会话详情失败 - sessionId=%s, err=%v\n", sessionID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败"})
 		return
 	}
@@ -351,6 +365,7 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		return
 	}
 	if err := h.sessions.Delete(sessionID); err != nil {
+		log.Printf("[Handler] 删除会话失败 - sessionId=%s, err=%v\n", sessionID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除会话失败"})
 		return
 	}
@@ -383,6 +398,7 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 
 	logs, total, err := ListSQLAuditLogsFiltered(scopeUserID, filterUserID, startTime, endTime, page, pageSize)
 	if err != nil {
+		log.Printf("[Handler] 获取审计日志失败 - userId=%s, err=%v\n", user.Id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取审计日志失败"})
 		return
 	}
