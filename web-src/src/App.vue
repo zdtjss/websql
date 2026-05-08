@@ -233,7 +233,7 @@
             </div>
           </div>
           <div class="table-selector-row">
-            <div class="table-selector-container" v-if="schemasLoading || connList.length > 1">
+            <div class="table-selector-container" v-if="shouldShowSchemaSelector">
               <div class="selector-header">
                 <label class="table-selector-label">数据库 / Schema</label>
                 <span v-if="schemasLoading" class="selector-badge loading">加载中...</span>
@@ -537,6 +537,21 @@ const tablesLoading = ref(false)
 // 计算属性：处理后的 schema 级树结构
 const processedConnList = computed(() => {
   return buildSchemaTree(connSchemaList.value)
+})
+
+// 计算属性：是否显示 schema 选择器（单连接单 schema 时隐藏）
+const shouldShowSchemaSelector = computed(() => {
+  // 加载中时显示
+  if (schemasLoading.value) return true
+  // 多个连接时显示
+  if (connSchemaList.value.length > 1) return true
+  // 单个连接但有多个 schema 时显示
+  if (connSchemaList.value.length === 1) {
+    const conn = connSchemaList.value[0]
+    const schemaCount = (conn.schemas || []).length
+    if (schemaCount > 1) return true
+  }
+  return false
 })
 
 // 将 [{connId, name, dbSchema, dirName, schemas: [{name}]}] 转为 el-tree-select 支持的 schema 级树
