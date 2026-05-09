@@ -147,6 +147,81 @@ func (s *Session) SetContext(ctxJSON string) error {
 	return s.saveToDB()
 }
 
+// MergeContext 将会话上下文与现有上下文合并后持久化
+// 与 SetContext 的区别：不会丢失已有数据，新的 schemas/tables 会被合并到现有上下文中（去重）
+func (s *Session) MergeContext(ctxJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ctxJSON == "" || ctxJSON == "{}" {
+		return nil
+	}
+
+	var newCtx SessionContext
+	if err := json.Unmarshal([]byte(ctxJSON), &newCtx); err != nil {
+		return s.saveToDB()
+	}
+
+	var existingCtx SessionContext
+	if s.Context != "" && s.Context != "{}" {
+		_ = json.Unmarshal([]byte(s.Context), &existingCtx)
+	}
+
+	merged := SessionContext{
+		Schemas: mergeSchemaRefs(existingCtx.Schemas, newCtx.Schemas),
+		Tables:  mergeStringSlices(existingCtx.Tables, newCtx.Tables),
+	}
+
+	mergedJSON, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	s.Context = string(mergedJSON)
+	return s.saveToDB()
+}
+
+// mergeSchemaRefs 合并两个 SchemaRef 切片，按 (connId + schema) 去重
+func mergeSchemaRefs(existing, incoming []SchemaRef) []SchemaRef {
+	seen := make(map[string]bool)
+	result := make([]SchemaRef, 0, len(existing)+len(incoming))
+
+	for _, s := range existing {
+		key := s.ConnID + "::" + s.Schema
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, s)
+		}
+	}
+	for _, s := range incoming {
+		key := s.ConnID + "::" + s.Schema
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// mergeStringSlices 合并两个字符串切片，去重
+func mergeStringSlices(existing, incoming []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(existing)+len(incoming))
+
+	for _, s := range existing {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	for _, s := range incoming {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
 // saveToDB 将消息和上下文序列化后写入数据库（调用方需持有锁）
 // SaveToDB 公开的持久化方法，用于批量追加消息后统一保存
 func (s *Session) SaveToDB() error {

@@ -256,7 +256,7 @@
                 collapse-tags-tooltip
               />
             </div>
-            <div class="table-selector-container" :class="{ 'full-width': !schemasLoading && connList.length <= 1 }">
+            <div class="table-selector-container" :class="{ 'full-width': !shouldShowSchemaSelector }">
               <div class="selector-header">
                 <label class="table-selector-label" style="padding-top: 2px;">相关表</label>
                 <span v-if="tablesLoading" class="selector-badge loading">加载中...</span>

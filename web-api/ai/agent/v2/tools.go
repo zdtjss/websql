@@ -24,7 +24,8 @@ func isValidTableName(name string) bool {
 }
 
 type QueryInput struct {
-	SQL string `json:"sql" jsonschema:"required"`
+	SQL    string `json:"sql" jsonschema:"required"`
+	ConnID string `json:"connId,omitempty"`
 }
 type QueryOutput struct {
 	Columns []string         `json:"columns"`
@@ -32,7 +33,8 @@ type QueryOutput struct {
 	Count   int              `json:"count"`
 }
 type ExecInput struct {
-	SQL string `json:"sql" jsonschema:"required"`
+	SQL    string `json:"sql" jsonschema:"required"`
+	ConnID string `json:"connId,omitempty"`
 }
 type ExecOutput struct {
 	AffectedRows int64  `json:"affectedRows"`
@@ -100,12 +102,57 @@ func GetCurrentDateInfo() func(ctx context.Context, input *CurrentDateInfoInput)
 	}
 }
 
-func NewQueryFunc(connId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+func buildConnLookup(schemas []SchemaRef) map[string]string {
+	connLookup := make(map[string]string)
+	for _, s := range schemas {
+		if s.ConnID != "" && s.Schema != "" {
+			key := strings.ToUpper(s.Schema)
+			if existing, ok := connLookup[key]; ok && existing != s.ConnID {
+				logutils.PrintErr(fmt.Errorf("schema name collision: %q 同时存在于连接 %s 和 %s，将使用后者",
+					s.Schema, existing, s.ConnID))
+			}
+			connLookup[key] = s.ConnID
+		}
+	}
+	return connLookup
+}
+
+// buildSchemaNames 返回所有 schema 名的切片，用于错误提示
+func buildSchemaNames(schemas []SchemaRef) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, s := range schemas {
+		if s.Schema != "" && !seen[s.Schema] {
+			seen[s.Schema] = true
+			names = append(names, s.Schema)
+		}
+	}
+	return names
+}
+
+func resolveConnID(defaultConnID, connID string, connLookup map[string]string) string {
+	if connID == "" {
+		return defaultConnID
+	}
+	if schemaConnID, ok := connLookup[strings.ToUpper(connID)]; ok {
+		return schemaConnID
+	}
+	return connID
+}
+
+func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+	connLookup := buildConnLookup(schemas)
+	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
-		log.Printf("[Tool:query_data] sql=%s\n", input.SQL)
-		conn, _ := GetConn(connId)
+		log.Printf("[Tool:query_data] sql=%s connId=%s\n", input.SQL, input.ConnID)
+		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
+		conn, _ := GetConn(targetConnID)
 		if conn == nil {
-			return nil, fmt.Errorf("db conn not found: %s", connId)
+			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
+			if len(schemaNames) > 0 {
+				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
+			}
+			return nil, fmt.Errorf(msg)
 		}
 		sql := strings.TrimSpace(input.SQL)
 		stripped := stripSQLComments(sql)
@@ -145,19 +192,28 @@ type ExecAuditCtx struct {
 	SessionID string
 }
 
-func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+	connLookup := buildConnLookup(schemas)
+	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
-		log.Printf("[Tool:exec_sql] sql=%s\n", input.SQL)
+		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, input.ConnID)
 		sql := strings.TrimSpace(input.SQL)
 		if sql == "" {
 			return nil, fmt.Errorf("SQL is empty")
 		}
 
-		// 注意：危险SQL检测已移到 DangerousSQLApprovalMiddleware 中统一处理
-		// 此处只负责执行，不重复检测
-		conn, _ := GetConn(connId)
+		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
+		isDefaultConn := targetConnID == connId
+		if !isDefaultConn && input.ConnID != "" {
+			log.Printf("[Tool:exec_sql] 非默认连接操作：原始connId=%s → 目标连接=%s（默认=%s）", input.ConnID, targetConnID, connId)
+		}
+		conn, _ := GetConn(targetConnID)
 		if conn == nil {
-			return nil, fmt.Errorf("db conn not found: %s", connId)
+			msg := fmt.Sprintf("db conn not found: %s（原始输入 connId=%s，解析后=%s）", targetConnID, input.ConnID, targetConnID)
+			if len(schemaNames) > 0 {
+				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
+			}
+			return nil, fmt.Errorf(msg)
 		}
 
 		// 审计日志
@@ -168,56 +224,96 @@ func NewExecFunc(connId string, auditCtx *ExecAuditCtx) func(ctx context.Context
 		result, err := conn.Exec(sql)
 		if err != nil {
 			if auditCtx != nil {
-				InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, auditCtx.ConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "failed", 0, err.Error())
+				InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, targetConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "failed", 0, err.Error())
 			}
-			return nil, fmt.Errorf("exec failed: %w", err)
+			return nil, fmt.Errorf("exec failed on conn=%s: %w", targetConnID, err)
 		}
 		affected, _ := result.RowsAffected()
 		if auditCtx != nil {
-			InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, auditCtx.ConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
+			InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, targetConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
 		}
-		log.Printf("[Tool:exec_sql] ok - affectedRows=%d\n", affected)
-		return &ExecOutput{AffectedRows: affected, Message: fmt.Sprintf("ok, %d rows affected", affected)}, nil
+		msg := fmt.Sprintf("ok, %d rows affected（连接：%s）", affected, targetConnID)
+		log.Printf("[Tool:exec_sql] ok - %s\n", msg)
+		return &ExecOutput{AffectedRows: affected, Message: msg}, nil
 	}
 }
 
-func NewSchemaFunc(connId, dbType, dbSchema string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+	schemaConnMap := buildConnLookup(schemas)
+	schemaNames := buildSchemaNames(schemas)
+
 	return func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 		log.Printf("[Tool:get_table_schema] tables=%v\n", input.Tables)
-		conn, actualDBType := GetConn(connId)
-		if conn == nil {
-			return nil, fmt.Errorf("db conn not found: %s", connId)
+
+		getTableConn := func(table string) (*sqlx.DB, string, string) {
+			schemaName, _ := splitSchemaTable(table, dbSchema)
+			if schemaName != "" && schemaName != dbSchema {
+				if targetConnID, ok := schemaConnMap[strings.ToUpper(schemaName)]; ok {
+					if c, t := GetConn(targetConnID); c != nil {
+						return c, t, targetConnID
+					}
+				}
+			}
+			c, t := GetConn(connId)
+			return c, t, connId
 		}
+
 		var sb strings.Builder
 		for _, table := range input.Tables {
 			if !isValidTableName(table) {
 				logutils.PrintErr(fmt.Errorf("invalid table name: %s", table))
 				continue
 			}
+			schemaName, tableName := splitSchemaTable(table, dbSchema)
+			tableConn, actualDBType, _ := getTableConn(table)
+
+			if tableConn == nil {
+				msg := fmt.Sprintf("db conn not found for table: %s", table)
+				if len(schemaNames) > 0 {
+					msg += fmt.Sprintf("。可用 schema 名：%v", schemaNames)
+				}
+				logutils.PrintErr(fmt.Errorf(msg))
+				continue
+			}
+
 			var schemaSQL string
 			switch actualDBType {
 			case "mysql", "mariadb":
-				schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
+				if schemaName != "" {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schemaName, tableName)
+				} else {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
+				}
 			case "sqlite":
 				schemaSQL = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
 			case "oracle":
-				schemaSQL = "SELECT DBMS_METADATA.GET_DDL('TABLE', :1) FROM DUAL"
+				if schemaName != "" && !strings.EqualFold(schemaName, dbSchema) {
+					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s', '%s') FROM DUAL",
+						strings.ToUpper(tableName), strings.ToUpper(schemaName))
+				} else {
+					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s') FROM DUAL",
+						strings.ToUpper(tableName))
+				}
 			default:
-				schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
+				if schemaName != "" {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schemaName, tableName)
+				} else {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
+				}
 			}
 			var rows *sqlx.Rows
 			var err error
 			switch actualDBType {
 			case "sqlite":
-				rows, err = conn.Queryx(schemaSQL, table)
+				rows, err = tableConn.Queryx(schemaSQL, table)
 			case "oracle":
-				rows, err = conn.Queryx(schemaSQL, strings.ToUpper(table))
+				rows, err = tableConn.Queryx(schemaSQL)
 			default:
-				rows, err = conn.Queryx(schemaSQL)
+				rows, err = tableConn.Queryx(schemaSQL)
 			}
 			if err != nil {
 				logutils.PrintErr(fmt.Errorf("get schema failed %s: %w", table, err))
-				sb.WriteString(fallbackColumnInfo(conn, actualDBType, dbSchema, table))
+				sb.WriteString(fallbackColumnInfo(tableConn, actualDBType, schemaName, tableName))
 				continue
 			}
 			for rows.Next() {
@@ -250,7 +346,11 @@ func NewSchemaFunc(connId, dbType, dbSchema string) func(ctx context.Context, in
 
 func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "-- Table: %s\n", table)
+	fmt.Fprintf(&sb, "-- Table: %s", table)
+	if dbSchema != "" && !strings.EqualFold(dbSchema, table) {
+		fmt.Fprintf(&sb, " (schema: %s)", dbSchema)
+	}
+	sb.WriteString("\n")
 	var query string
 	var args []any
 	switch dbType {
@@ -262,6 +362,17 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 			return sb.String()
 		}
 		query = "PRAGMA table_info('" + strings.ReplaceAll(table, "'", "''") + "')"
+	case "oracle":
+		if !isValidTableName(table) {
+			return sb.String()
+		}
+		if dbSchema != "" {
+			query = fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM ALL_TAB_COLUMNS WHERE OWNER = '%s' AND TABLE_NAME = '%s' ORDER BY COLUMN_ID",
+				strings.ToUpper(dbSchema), strings.ToUpper(table))
+		} else {
+			query = fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = '%s' ORDER BY COLUMN_ID",
+				strings.ToUpper(table))
+		}
 	default:
 		return sb.String()
 	}
@@ -766,6 +877,17 @@ func quoteIdent(dbType, name string) string {
 }
 
 // quoteTableRef 构建带 schema 的表引用
+func splitSchemaTable(table, dbSchema string) (schema, tableName string) {
+	schema = dbSchema
+	tableName = table
+	dotIdx := strings.IndexByte(table, '.')
+	if dotIdx > 0 && dotIdx < len(table)-1 {
+		schema = table[:dotIdx]
+		tableName = table[dotIdx+1:]
+	}
+	return
+}
+
 func quoteTableRef(dbType, dbSchema, tableName string) string {
 	if dbSchema != "" {
 		return quoteIdent(dbType, dbSchema) + "." + quoteIdent(dbType, tableName)

@@ -111,18 +111,19 @@ type SQLAgent struct {
 	dbType   string
 	dbSchema string
 	scope    *PermissionScope
+	schemas  []SchemaRef
 }
 
 const maxHistoryRounds = 20
 
-func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
+func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
 	export.InitSkillEnv()
 
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
-	tools, err := buildTools(ctx, connID, dbType, dbSchema, auditCtx)
+	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
@@ -185,7 +186,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
-		Instruction: buildSystemPrompt(dbType, dbSchema, dbVersion, nil, scope, nil),
+		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, nil),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
@@ -215,7 +216,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	if sessions == nil {
 		sessions, _ = NewSessionStore()
 	}
-	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope}, nil
+	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope, schemas: schemas}, nil
 }
 
 // RunStream 流式执行（首次查询）
@@ -251,18 +252,17 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		return sessionID, nil
 	}
 
-	sysPrompt := buildSystemPrompt(a.dbType, a.dbSchema, "", req.TableContext, a.scope, req.Schemas)
+	defaultConnID := req.ConnID
+	if defaultConnID == "" && len(req.Schemas) > 0 {
+		defaultConnID = req.Schemas[0].ConnID
+	}
+	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, "", req.TableContext, a.scope, req.Schemas)
 
-	if isRegenerateRequest(req.Question) {
-		regenerateHint := "\n\n## 🔄 重新生成\n用户要求重新执行上一次的操作。请根据对话历史中的上一次工具调用和查询，使用相同的参数重新执行。如果上次涉及文件导出，必须再次调用导出工具实际生成文件，禁止仅输出文字描述。\n"
-		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
-			regenerateHint += fmt.Sprintf("\n📌 历史 SQL：\n```sql\n%s\n```", lastSQL)
-		}
-		sysPrompt += regenerateHint
-	} else if isExportRequest(req.Question) {
-		if lastSQL := extractLastSQLFromSessionMessages(truncated); lastSQL != "" {
-			sysPrompt += fmt.Sprintf("\n\n⚠️ 用户正在请求导出操作，历史 SQL：\n```sql\n%s\n```\n如果用户要求导出 Excel，请直接使用此 SQL 调用导出工具；如果用户要求导出 Word/PPT 报告，优先使用 content 模式将分析结果传入。", lastSQL)
-		}
+	if detectPreviousExecution(truncated) {
+		sysPrompt += "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +
+			"你必须基于对话历史中实际执行的 tool_calls 参数和 tool 返回结果来回答，" +
+			"禁止凭记忆编造。如果历史中没有相关信息，直接告知用户，禁止猜测。\n"
+		log.Printf("[Agent] 检测到历史执行记录，追加历史引导\n")
 	}
 
 	if req.ExcelData != nil && req.ExcelData.FileID != "" {
@@ -471,64 +471,15 @@ func truncateSessionMessages(msgs []SessionMessage) []SessionMessage {
 	return msgs[len(msgs)-maxHistoryRounds*2:]
 }
 
-func isExportRequest(question string) bool {
-	q := strings.ToLower(question)
-	for _, kw := range []string{"导出", "export", "下载", "excel", "ppt", "word", "图表"} {
-		if strings.Contains(q, kw) {
-			return true
-		}
-	}
-	for _, kw := range []string{"重新生成", "再生成", "再来一次", "再来一遍", "重新导出", "再试一次", "重新输出", "regenerate", "redo", "retry"} {
-		if strings.Contains(q, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-func isRegenerateRequest(question string) bool {
-	q := strings.ToLower(question)
-	for _, kw := range []string{"重新生成", "再生成", "再来一次", "再来一遍", "重新导出", "再试一次", "重新输出", "regenerate", "redo", "retry", "重新做", "再做一次", "重新来"} {
-		if strings.Contains(q, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-func extractLastSQLFromSessionMessages(msgs []SessionMessage) string {
+// detectPreviousExecution 检查会话历史中是否有过工具调用（查询/写入）
+func detectPreviousExecution(msgs []SessionMessage) bool {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
-		if msg.Role != "assistant" || msg.Content == "" {
-			continue
-		}
-		content := msg.Content
-		for {
-			endIdx := strings.LastIndex(content, "```")
-			if endIdx <= 0 {
-				break
-			}
-			startIdx := strings.LastIndex(content[:endIdx], "```")
-			if startIdx == -1 {
-				break
-			}
-			codeBlock := strings.TrimSpace(content[startIdx+3 : endIdx])
-			if idx := strings.Index(codeBlock, "\n"); idx != -1 {
-				firstLine := strings.TrimSpace(codeBlock[:idx])
-				if strings.EqualFold(firstLine, "sql") {
-					codeBlock = strings.TrimSpace(codeBlock[idx+1:])
-				}
-			}
-			upper := strings.ToUpper(strings.TrimSpace(codeBlock))
-			if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "SHOW") ||
-				strings.HasPrefix(upper, "DESCRIBE") || strings.HasPrefix(upper, "EXPLAIN") ||
-				strings.HasPrefix(upper, "WITH") {
-				return codeBlock
-			}
-			content = content[:startIdx]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // authTransport 实现了 http.RoundTripper 接口
@@ -589,11 +540,11 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 	}
 }
 
-func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *ExecAuditCtx) ([]tool.BaseTool, error) {
+func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx) ([]tool.BaseTool, error) {
 	conn, _ := GetConn(connID)
-	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID))
-	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, auditCtx))
-	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema))
+	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas))
+	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx))
+	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
@@ -617,7 +568,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, auditCtx *Ex
 // 系统提示词
 // ──────────────────────────────────────────────
 
-func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef) string {
+func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef) string {
 	var sb strings.Builder
 
 	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
@@ -628,10 +579,42 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 
 	if len(schemas) > 1 {
 		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s\n", dbType, dbVersion)
-		sb.WriteString("**多 Schema 上下文**：用户选择了以下 schema，你可以进行跨库查询与数据组合：\n")
-		for i, s := range schemas {
-			fmt.Fprintf(&sb, "  [%d] 连接ID=%s, Schema=%s\n", i+1, s.ConnID, s.Schema)
+		// 按连接分组
+		type connGroup struct {
+			connID  string
+			schemas []string
 		}
+		connMap := make(map[string]*connGroup)
+		var connOrder []string
+		for _, s := range schemas {
+			if s.ConnID == "" || s.Schema == "" {
+				continue
+			}
+			if _, ok := connMap[s.ConnID]; !ok {
+				connMap[s.ConnID] = &connGroup{connID: s.ConnID}
+				connOrder = append(connOrder, s.ConnID)
+			}
+			connMap[s.ConnID].schemas = append(connMap[s.ConnID].schemas, s.Schema)
+		}
+		sb.WriteString("**多 Schema 上下文**（按数据库连接分组，相同连接内的 schema 可直接 JOIN）：\n")
+		for _, connID := range connOrder {
+			g := connMap[connID]
+			dbConn, _ := GetConn(connID)
+			typeStr := ""
+			if dbConn != nil {
+				typeStr = dbConn.DriverName()
+			}
+			fmt.Fprintf(&sb, "  🔗 连接 %s (%s)：\n", connID, typeStr)
+			for _, s := range g.schemas {
+				fmt.Fprintf(&sb, "    - Schema: %s\n", s)
+			}
+		}
+		// 记录主连接
+		if connID != "" {
+			fmt.Fprintf(&sb, "  ⭐ 默认连接（query_data/exec_sql 不指定 connId 时使用）：连接ID=%s\n", connID)
+		}
+	} else if len(schemas) == 1 {
+		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, schemas[0].Schema)
 	} else {
 		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s，Schema：%s\n", dbType, dbVersion, dbSchema)
 	}
@@ -657,16 +640,69 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 
 	if len(schemas) > 1 {
 		sb.WriteString(`
-## 跨库查询与数据组合
-你被授权访问多个 schema，可以进行跨库数据关联和分析。请注意：
+## 跨库操作规则（重要）
+你被授权访问多个 schema，可能来自同一个数据库连接或多个不同连接。遵循以下规则：
 
-1. **跨库 JOIN / UNION**：使用 ` + dbType + ` 支持的跨库语法链接不同 schema 的表数据
-2. **大数据量防范**：跨库组合可能导致结果集非常大，**务必使用 LIMIT 或聚合函数控制返回行数**
-3. **上下文溢出保护**：如果一次查询返回几万行数据，会超出大模型的上下文窗口，导致分析中断
+### 1. 连接分组概览
+参考上方的"多 Schema 上下文"分组：
+  - **同组 schema**（同一连接）→ 可在同一条 SQL 中引用，支持 JOIN / UNION / 子查询
+  - **不同组 schema**（不同连接）→ 是独立的数据库实例，**绝不能**放在同一条 SQL 中
+
+### 2. 混合场景示例
+假设你有 3 个 schema：Schema_A 和 Schema_B 属于连接1，Schema_C 属于连接2：
+  ✅ 正确做法：
+    第1步：query_data(sql="SELECT ... FROM Schema_A.table1 JOIN Schema_B.table2 ...", connId="Schema_A")
+            （连接1内可 JOIN，无需指定 connId 或传 Schema_A）
+    第2步：query_data(sql="SELECT ... FROM Schema_C.table3 ...", connId="Schema_C")
+            （连接2需单独查询，通过 connId="Schema_C" 路由）
+    第3步：你综合分析两部分结果后回复用户
+
+  ❌ 错误做法：
+    query_data(sql="SELECT ... FROM Schema_A.table1 JOIN Schema_C.table3 ...")
+    → 会报错，因为 Schema_A 和 Schema_C 不在同一数据库中
+
+### 3. 读操作（SELECT）规则
+  - **同一连接内跨 schema**：可自由 JOIN / UNION，使用 schema.table 语法
+    SELECT ... FROM schemaA.table1 t1 JOIN schemaB.table2 t2 ON ...
+  - **不同连接间**：必须分步查询，每步使用各自的 connId 参数
+    步骤1: query_data(sql="SELECT ... FROM table1", connId="schema名")
+    步骤2: query_data(sql="SELECT ... FROM table2", connId="schema名")
+    然后由你综合分析两部分结果
+
+### 4. 写操作（INSERT / UPDATE / DELETE）规则
+  - **写操作同样受连接限制**：一条 SQL 只能操作一个连接
+  - **同一连接内**：可 UPDATE 表A 基于 JOIN 表B（同 schema 或同连接跨 schema）
+  - **不同连接间**：必须在不同 exec_sql 调用中分别执行
+    ✅ 正确：
+      第1步：exec_sql(sql="UPDATE Schema_A.table1 SET ...", connId="Schema_A")
+      第2步：exec_sql(sql="UPDATE Schema_C.table3 SET ...", connId="Schema_C")
+  - **事务隔离**：不同连接有各自的事务，无法跨连接回滚。如果某一步失败，你需要告知用户哪些操作已完成、哪些需要手动回滚
+  - **写入前先说明**：执行写操作前，先向用户说明将要在哪些连接上做什么修改，等待系统推送确认
+
+### 5. query_data / exec_sql 的 connId 参数
+这两个工具现在支持可选参数 connId：
+  - **不填**：在默认连接上执行（标注 ⭐ 的连接）
+  - **填写 Schema 名**：自动路由到该 Schema 所在的连接
+  - **填写连接ID**：直接使用该连接
+参考上面的连接分组信息，选择正确的连接执行 SQL。
+
+### 6. 数据来源标注
+当从不同连接获取数据并综合分析时，请在回复中明确标注每条数据/结论的来源：
+  - "来自连接1(Schema_A)的数据显示..."
+  - "来自连接2(Schema_C)的数据显示..."
+  - 让用户清晰了解跨库操作的完整链路
+
+### 7. 大数据量防范
+跨库组合可能导致结果集非常大，**务必使用 LIMIT 或聚合函数控制返回行数**。
+
+### 8. 上下文溢出保护
+如果一次查询返回几万行数据，会超出大模型的上下文窗口，导致分析中断
    - 优先使用聚合查询（SUM、COUNT、AVG 等）返回统计结果
    - 对明细数据，如果需要导出完整数据集，请调用 export_excel 工具
    - 对多表关联产生的大结果集，先分析数据量（COUNT），再分页查询
-4. **Python 脚本分析**：当需要进行复杂的跨库大数据量统计分析时，系统已预置 ` + "`cross-db-analysis`" + ` Python 脚本工具
+
+### 9. Python 脚本分析
+当需要进行复杂的跨库大数据量统计分析时，系统已预置 ` + "`cross-db-analysis`" + ` Python 脚本工具
    - 脚本可直接连接各数据库，在数据库中完成聚合计算，只返回分析结论
    - 适用于跨库数据量大于 10 万行或需要进行复杂统计模型计算的场景
    - 触发时机：用户要求"分析"、"对比"、"统计"多个库的数据时，优先考虑使用脚本
@@ -690,8 +726,8 @@ func buildSystemPrompt(dbType, dbSchema, dbVersion string, tableContext []string
 | 工具 | 用途与约束 |
 |------|-----------|
 | get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
-| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH） |
-| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。系统会拦截并推送前端确认，你无需额外处理 |
+| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH）。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用 |
+| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。可选参数 connId 指定目标连接（留空默认）。系统会拦截并推送前端确认，你无需额外处理 |
 | export_excel | 导出 Excel，必须传入 sql 参数。必须实际调用此工具，禁止仅文字描述 |
 | export_excel_with_chart | 导出带图表的 Excel，传入 sql。必须实际调用此工具。图表类型根据数据特征自动选择 |
 | export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本）避免重复查询。必须实际调用此工具才能生成文件 |

@@ -153,13 +153,14 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	sess.SetCancel(runnerCancel)
 
 	// 保存会话上下文（当时选择的 schemas 和 tables）
+	// 使用 MergeContext 避免多轮对话中丢失历史选中的 schema/table
 	if len(req.Schemas) > 0 || len(req.TableContext) > 0 {
 		ctxData := SessionContext{
 			Schemas: req.Schemas,
 			Tables:  req.TableContext,
 		}
 		if ctxJSON, err := json.Marshal(ctxData); err == nil {
-			_ = sess.SetContext(string(ctxJSON))
+			_ = sess.MergeContext(string(ctxJSON))
 		}
 	}
 
@@ -167,7 +168,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	if connID == "" && len(req.Schemas) > 0 {
 		connID = req.Schemas[0].ConnID
 	}
-	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, req.Schemas, h.sessions, scope, &ExecAuditCtx{
 		ConnID: connID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
 	})
 	if err != nil {
@@ -283,7 +284,7 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	if connID == "" && len(req.Schemas) > 0 {
 		connID = req.Schemas[0].ConnID
 	}
-	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, h.sessions, scope, &ExecAuditCtx{
+	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, req.Schemas, h.sessions, scope, &ExecAuditCtx{
 		ConnID:    connID,
 		UserID:    user.Id,
 		UserName:  user.Name,

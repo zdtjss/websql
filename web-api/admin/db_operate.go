@@ -454,9 +454,9 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 		case "mysql", "mariadb":
 			querySQL = "SELECT table_name, table_type, table_comment FROM information_schema.tables WHERE table_schema = DATABASE()"
 		case "oracle":
-			querySQL = "SELECT table_name, 'TABLE', NULL FROM user_tables"
+			querySQL = "SELECT table_name, table_type, NULL FROM user_tab_comments UNION ALL SELECT view_name, 'VIEW', NULL FROM user_views ORDER BY table_name"
 		case "sqlite":
-			querySQL = "SELECT name, 'table', NULL FROM sqlite_master WHERE type='table'"
+			querySQL = "SELECT name, type, NULL FROM sqlite_master WHERE type IN ('table','view')"
 		default:
 			querySQL = dbutils.SQL_DIALECT[dc.DriverName()]["listTable"]
 		}
@@ -468,7 +468,11 @@ func queryTableInfo(key string, schema, authorization string) []*Table {
 	var rs *sql.Rows
 	var err2 error
 	if schema != "" {
-		rs, err2 = stmt.Query(schema)
+		if dc.DriverName() == "sqlite" {
+			rs, err2 = stmt.Query()
+		} else {
+			rs, err2 = stmt.Query(schema)
+		}
 	} else {
 		rs, err2 = stmt.Query()
 	}
