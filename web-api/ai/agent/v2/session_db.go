@@ -57,6 +57,8 @@ type SessionMessage struct {
 // Session — 单个会话的内存表示
 // ──────────────────────────────────────────────
 
+const sessionDebounceInterval = 300 * time.Millisecond
+
 type Session struct {
 	ID        string
 	UserID    string
@@ -65,24 +67,27 @@ type Session struct {
 	mu        sync.Mutex
 	messages  []SessionMessage
 	cancelFn  context.CancelFunc
+
+	debounceTimer *time.Timer
+	pendingSave   bool
 }
 
 // Append 追加消息并持久化到数据库
 func (s *Session) Append(role, content string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.messages = append(s.messages, SessionMessage{Role: role, Content: content})
-	return s.saveToDB()
+	s.scheduleSave()
+	s.mu.Unlock()
+	return nil
 }
 
 // AppendMessage 追加完整的 SessionMessage（包含工具调用信息）并持久化到数据库
 func (s *Session) AppendMessage(msg SessionMessage) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.messages = append(s.messages, msg)
-	return s.saveToDB()
+	s.scheduleSave()
+	s.mu.Unlock()
+	return nil
 }
 
 // AppendMessageNoSave 追加消息但暂时不持久化（用于批量追加场景）
@@ -144,7 +149,7 @@ func (s *Session) SetContext(ctxJSON string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Context = ctxJSON
-	return s.saveToDB()
+	return s.doSave()
 }
 
 // MergeContext 将会话上下文与现有上下文合并后持久化
@@ -159,7 +164,7 @@ func (s *Session) MergeContext(ctxJSON string) error {
 
 	var newCtx SessionContext
 	if err := json.Unmarshal([]byte(ctxJSON), &newCtx); err != nil {
-		return s.saveToDB()
+		return s.doSave()
 	}
 
 	var existingCtx SessionContext
@@ -177,7 +182,7 @@ func (s *Session) MergeContext(ctxJSON string) error {
 		return err
 	}
 	s.Context = string(mergedJSON)
-	return s.saveToDB()
+	return s.doSave()
 }
 
 // mergeSchemaRefs 合并两个 SchemaRef 切片，按 (connId + schema) 去重
@@ -223,12 +228,33 @@ func mergeStringSlices(existing, incoming []string) []string {
 }
 
 // saveToDB 将消息和上下文序列化后写入数据库（调用方需持有锁）
-// SaveToDB 公开的持久化方法，用于批量追加消息后统一保存
-func (s *Session) SaveToDB() error {
-	return s.saveToDB()
+// scheduleSave 安排一次延迟写入。如果已有等待中的写入，延长等待时间。
+func (s *Session) scheduleSave() {
+	if s.pendingSave {
+		s.debounceTimer.Reset(sessionDebounceInterval)
+		return
+	}
+	s.pendingSave = true
+	s.debounceTimer = time.AfterFunc(sessionDebounceInterval, func() {
+		s.mu.Lock()
+		s.pendingSave = false
+		_ = s.doSave()
+		s.mu.Unlock()
+	})
 }
 
-func (s *Session) saveToDB() error {
+// SaveToDB 立即同步持久化（不等待 debounce）。
+func (s *Session) SaveToDB() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.debounceTimer != nil {
+		s.debounceTimer.Stop()
+		s.pendingSave = false
+	}
+	return s.doSave()
+}
+
+func (s *Session) doSave() error {
 	data, err := json.Marshal(s.messages)
 	if err != nil {
 		return err
