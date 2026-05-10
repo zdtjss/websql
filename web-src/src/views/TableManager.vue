@@ -167,7 +167,7 @@
 
 <script setup>
 import http from '@/js/utils/httpProxy.js'
-import { Delete, DeleteFilled, Document, Download, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, DeleteFilled, Document, Download, Edit, MoreFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'

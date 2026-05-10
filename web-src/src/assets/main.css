@@ -1,4 +1,360 @@
 /* ============================================
+   CSS Variables for Theme Support
+   ============================================ */
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #fafbfc;
+  --bg-tertiary: #f5f7fa;
+  --bg-hover: #f0f7ff;
+  --bg-active: #ecf5ff;
+  --bg-toolbar: #fafbfc;
+  --bg-sidebar: #ffffff;
+  --bg-main: #ffffff;
+  --bg-empty: #f5f7fa;
+  --bg-inline-bar: #ecf5ff;
+  --bg-row-changed: #fff7e6;
+
+  --text-primary: #303133;
+  --text-secondary: #606266;
+  --text-tertiary: #909399;
+  --text-placeholder: #c0c4cc;
+  --text-link: #409eff;
+
+  --border-primary: #ebeef5;
+  --border-secondary: #f0f2f5;
+  --border-light: #f0f0f0;
+  --border-inline: #d9ecff;
+
+  --scrollbar-thumb: rgba(144, 147, 153, 0.3);
+  --scrollbar-thumb-hover: rgba(144, 147, 153, 0.5);
+
+  --accent-color: #409eff;
+  --success-color: #67c23a;
+  --warning-color: #e6a23c;
+  --danger-color: #f56c6c;
+  --info-color: #909399;
+
+  --dialog-header-border: #f0f0f0;
+  --dialog-footer-border: #f0f0f0;
+
+  --tree-node-hover: #f0f7ff;
+  --tree-node-active: #ecf5ff;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #252536;
+  --bg-tertiary: #1a1a2e;
+  --bg-hover: #2a2a3d;
+  --bg-active: #313147;
+  --bg-toolbar: #252536;
+  --bg-sidebar: #1e1e2e;
+  --bg-main: #1e1e2e;
+  --bg-empty: #1a1a2e;
+  --bg-inline-bar: #2a2a3d;
+  --bg-row-changed: #3d3520;
+
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  --text-tertiary: #6c7086;
+  --text-placeholder: #585b70;
+  --text-link: #89b4fa;
+
+  --border-primary: #313244;
+  --border-secondary: #45475a;
+  --border-light: #313244;
+  --border-inline: #45475a;
+
+  --scrollbar-thumb: rgba(166, 173, 200, 0.2);
+  --scrollbar-thumb-hover: rgba(166, 173, 200, 0.4);
+
+  --accent-color: #89b4fa;
+  --success-color: #a6e3a1;
+  --warning-color: #f9e2af;
+  --danger-color: #f38ba8;
+
+  --dialog-header-border: #313244;
+  --dialog-footer-border: #313244;
+
+  --tree-node-hover: #2a2a3d;
+  --tree-node-active: #353550;
+}
+
+/* ============================================
+   Dark Mode Global Overrides
+   ============================================ */
+[data-theme="dark"] body {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dialog {
+  --el-dialog-bg-color: var(--bg-primary);
+}
+
+[data-theme="dark"] .el-dialog__header {
+  border-bottom-color: var(--dialog-header-border);
+}
+
+[data-theme="dark"] .el-dialog__footer {
+  border-top-color: var(--dialog-footer-border);
+}
+
+[data-theme="dark"] .el-table {
+  --el-table-bg-color: var(--bg-primary);
+  --el-table-tr-bg-color: var(--bg-primary);
+  --el-table-header-bg-color: var(--bg-secondary);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border-primary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-input__wrapper {
+  background-color: var(--bg-secondary);
+  box-shadow: 0 0 0 1px var(--border-primary) inset;
+}
+
+[data-theme="dark"] .el-input__inner {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-button--default {
+  --el-button-bg-color: var(--bg-secondary);
+  --el-button-border-color: var(--border-primary);
+  --el-button-text-color: var(--text-primary);
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-hover-border-color: var(--accent-color);
+  --el-button-hover-text-color: var(--accent-color);
+}
+
+[data-theme="dark"] .el-button--default:hover {
+  border-color: var(--accent-color);
+}
+
+[data-theme="dark"] .el-button--primary {
+  --el-button-bg-color: var(--accent-color);
+  --el-button-border-color: var(--accent-color);
+  --el-button-hover-bg-color: #a6c8ff;
+  --el-button-hover-border-color: #a6c8ff;
+  --el-button-hover-text-color: #1e1e2e;
+}
+
+[data-theme="dark"] .el-button--text {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-button--text:hover {
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .el-tabs__header {
+  background-color: var(--bg-toolbar);
+}
+
+[data-theme="dark"] .el-tabs__item {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-tabs__item.is-active {
+  color: var(--accent-color);
+  background-color: var(--bg-primary);
+}
+
+[data-theme="dark"] .el-tabs__nav-wrap::after {
+  background-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-tabs--card > .el-tabs__header {
+  background-color: var(--bg-toolbar);
+  border-bottom-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-tabs--card > .el-tabs__header .el-tabs__nav {
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-tabs--card > .el-tabs__header .el-tabs__item {
+  background-color: var(--bg-tertiary);
+  border-left-color: var(--border-primary);
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
+  background-color: var(--bg-main);
+  border-bottom-color: var(--bg-main);
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .el-tabs--card > .el-tabs__header .el-tabs__item:hover {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-tree {
+  background-color: var(--bg-sidebar);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-tree-node__content:hover {
+  background-color: var(--tree-node-hover) !important;
+}
+
+[data-theme="dark"] .el-tree-node.is-current > .el-tree-node__content {
+  background-color: var(--tree-node-active) !important;
+}
+
+[data-theme="dark"] .el-pagination {
+  --el-pagination-bg-color: var(--bg-toolbar);
+  --el-pagination-text-color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-pagination button {
+  background-color: var(--bg-secondary);
+}
+
+[data-theme="dark"] .el-select .el-input__wrapper {
+  background-color: var(--bg-secondary);
+}
+
+[data-theme="dark"] .el-select-dropdown {
+  background-color: var(--bg-primary);
+}
+
+[data-theme="dark"] .el-popper.is-light {
+  background-color: var(--bg-primary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dropdown-menu {
+  background-color: var(--bg-primary);
+}
+
+[data-theme="dark"] .el-dropdown-menu__item {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dropdown-menu__item:hover {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .el-switch__label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-tag--info {
+  --el-tag-bg-color: var(--bg-secondary);
+  --el-tag-border-color: var(--border-primary);
+  --el-tag-text-color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-empty__description {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .el-form-item__label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-descriptions__title {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-descriptions__label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-descriptions__content {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-loading-mask {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+/* el-table-v2 (virtual table) dark mode */
+[data-theme="dark"] .el-table-v2 {
+  --el-table-v2-bg-color: var(--bg-primary);
+  --el-table-v2-header-bg-color: var(--bg-secondary);
+  --el-table-v2-row-hover-bg-color: var(--bg-hover);
+  --el-table-v2-border-color: var(--border-primary);
+  --el-table-v2-text-color: var(--text-primary);
+  --el-table-v2-header-text-color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-table-v2__header-row {
+  background-color: var(--bg-secondary);
+}
+
+[data-theme="dark"] .el-table-v2__row--hover {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .el-table-v2__body {
+  background-color: var(--bg-primary);
+}
+
+/* el-splitter dark mode */
+[data-theme="dark"] .el-splitter {
+  background-color: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .el-splitter__resize-handle {
+  background-color: var(--border-primary);
+}
+
+/* CodeMirror editor dark mode */
+[data-theme="dark"] .cm-editor {
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .cm-editor .cm-gutters {
+  background-color: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border-right-color: var(--border-primary);
+}
+
+[data-theme="dark"] .cm-editor .cm-activeLineGutter {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .cm-editor .cm-activeLine {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .cm-editor .cm-cursor {
+  border-left-color: var(--accent-color);
+}
+
+[data-theme="dark"] .cm-selectionBackground {
+  background-color: rgba(137, 180, 250, 0.3) !important;
+}
+
+/* dialog dark mode enhancements */
+[data-theme="dark"] .el-dialog {
+  --el-dialog-bg-color: var(--bg-primary);
+}
+
+[data-theme="dark"] .el-message-box {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-message-box__title {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-message-box__message {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-overlay {
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+/* ============================================
    Global Classical Mode Styles
    ============================================ */
 
@@ -35,11 +391,11 @@
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgba(144, 147, 153, 0.3);
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(144, 147, 153, 0.5);
+    background: var(--scrollbar-thumb-hover);
 }
 
 /* Unified toolbar style */
@@ -49,8 +405,8 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    background: #fafbfc;
-    border-bottom: 1px solid #ebeef5;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border-primary);
 }
 
 .classical-toolbar .el-button {
@@ -64,7 +420,7 @@
 .classical-toolbar .toolbar-title {
     font-weight: 600;
     font-size: 14px;
-    color: #303133;
+    color: var(--text-primary);
     margin-right: 8px;
     display: flex;
     align-items: center;
@@ -72,7 +428,7 @@
 }
 
 .classical-toolbar .toolbar-title .table-icon {
-    color: #409eff;
+    color: var(--accent-color);
     font-size: 16px;
 }
 
@@ -92,7 +448,7 @@
     height: calc(100vh - 60px);
     display: flex;
     flex-direction: column;
-    background: #fff;
+    background: var(--bg-primary);
 }
 
 /* Empty state */
@@ -101,7 +457,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #c0c4cc;
+    color: var(--text-placeholder);
     font-size: 14px;
     flex-direction: column;
     gap: 12px;
@@ -119,7 +475,7 @@
 
 .el-dialog__header {
     padding: 16px 20px 12px !important;
-    border-bottom: 1px solid #f0f0f0;
+    border-bottom: 1px solid var(--dialog-header-border);
     margin-right: 0 !important;
 }
 
@@ -129,26 +485,26 @@
 
 .el-dialog__footer {
     padding: 12px 20px 16px !important;
-    border-top: 1px solid #f0f0f0;
+    border-top: 1px solid var(--dialog-footer-border);
 }
 
 /* Table improvements */
 .el-table {
-    --el-table-border-color: #ebeef5;
-    --el-table-header-bg-color: #fafbfc;
+    --el-table-border-color: var(--border-primary);
+    --el-table-header-bg-color: var(--bg-secondary);
     font-size: 13px;
 }
 
 .el-table th.el-table__cell {
     font-weight: 600;
-    color: #606266;
+    color: var(--text-secondary);
     font-size: 13px;
 }
 
 /* Form improvements in dialogs */
 .el-form-item__label {
     font-weight: 500;
-    color: #606266;
+    color: var(--text-secondary);
 }
 
 /* Pagination improvements */

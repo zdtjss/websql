@@ -140,10 +140,11 @@ const props = defineProps({
   schema: String,
   tableName: String,
   dbColumns: Array,
-  onImportSuccess: Function
+  onImportSuccess: Function,
+  importFormat: { type: String, default: 'xlsx' }
 })
 
-const emit = defineEmits(['update:modelValue', 'success'])
+const emit = defineEmits(['update:modelValue', 'success', 'confirmImportData'])
 
 const visible = computed({
   get: () => props.modelValue,
@@ -248,7 +249,28 @@ function confirmImport() {
     ElMessage({ message: '请至少映射一个字段', type: 'warning' })
     return
   }
-  
+
+  if (props.importFormat === 'csv' || props.importFormat === 'json') {
+    const mapping = {}
+    previewColumns.value.forEach(col => {
+      if (col.dbCol) {
+        mapping[col.excelCol] = col.dbCol
+      }
+    })
+    const mappedData = excelData.value.map(row => {
+      const obj = {}
+      excelHeaders.value.forEach((header, idx) => {
+        const dbCol = mapping[header]
+        if (dbCol) {
+          obj[dbCol] = row[idx] !== undefined ? row[idx] : null
+        }
+      })
+      return obj
+    })
+    emit('confirmImportData', { data: mappedData, mapping, mode: importMode.value })
+    return
+  }
+
   executeImport()
 }
 

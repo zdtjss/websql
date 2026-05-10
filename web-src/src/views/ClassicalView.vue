@@ -6,6 +6,9 @@
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
             <div class="sidebar-header-actions">
+              <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
+                <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
+              </el-button>
               <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
                 <el-icon :size="14"><Refresh /></el-icon>
               </el-button>
@@ -45,6 +48,21 @@
                   </span>
                   <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
                   <span class="tree-node-actions">
+                    <el-tooltip v-if="data.type === 'conn'" content="服务器状态" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewServerStatus(node)"><Monitor /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'conn'" content="刷新" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="refreshNode(node)"><Refresh /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="数据库对象" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewSchemaObjects(node)"><Setting /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="ER关系图" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewERDiagram(node)"><Connection /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="表结构对比" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewTableDiff(node)"><Switch /></el-icon>
+                    </el-tooltip>
                     <el-tooltip v-if="data.type === 'schema'" content="表管理" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Grid /></el-icon>
                     </el-tooltip>
@@ -151,6 +169,31 @@
         <el-button type="primary" @click="submitChangePassword" :loading="changingPwd">确认修改</el-button>
       </template>
     </el-dialog>
+
+    <SchemaObjectsDialog
+      v-model="schemaObjectsVisible"
+      :conn-id="schemaObjectsConnId"
+      :schema="schemaObjectsSchema"
+    />
+
+    <ServerStatusPanel
+      v-model="serverStatusVisible"
+      :conn-id="serverStatusConnId"
+      :schema="serverStatusSchema"
+    />
+
+    <ERDiagramDialog
+      v-model="erDiagramVisible"
+      :conn-id="erDiagramConnId"
+      :schema="erDiagramSchema"
+      @table-click="handleTableClickFromER"
+    />
+
+    <TableDiffDialog
+      v-model="tableDiffVisible"
+      :conn-id="tableDiffConnId"
+      :schema="tableDiffSchema"
+    />
   </div>
 </template>
 
@@ -158,7 +201,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Document, Grid, InfoFilled, Refresh, View } from '@element-plus/icons-vue'
+import { Connection, Document, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, Switch, View } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -166,6 +209,11 @@ import ViewDialog from './comonents/ViewDialog.vue'
 import DataBrowser from './DataBrowser.vue'
 import SQLEditor2 from './SQLEditor2.vue'
 import TableManager from './TableManager.vue'
+import SchemaObjectsDialog from '../components/SchemaObjectsDialog.vue'
+import ServerStatusPanel from '../components/ServerStatusPanel.vue'
+import ERDiagramDialog from '../components/ERDiagramDialog.vue'
+import TableDiffDialog from '../components/TableDiffDialog.vue'
+import { useTheme } from '@/js/utils/useTheme.ts'
 
 const showLoginBtn = ref(true)
 
@@ -206,6 +254,18 @@ const loginRules = reactive({
 
 const tableMgntDialogVisible = ref(false)
 const viewDialogVisible = ref(false)
+const schemaObjectsVisible = ref(false)
+const schemaObjectsConnId = ref('')
+const schemaObjectsSchema = ref('')
+const serverStatusVisible = ref(false)
+const serverStatusConnId = ref('')
+const serverStatusSchema = ref('')
+const erDiagramVisible = ref(false)
+const erDiagramConnId = ref('')
+const erDiagramSchema = ref('')
+const tableDiffVisible = ref(false)
+const tableDiffConnId = ref('')
+const tableDiffSchema = ref('')
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
@@ -274,7 +334,10 @@ function submitChangePassword() {
   })
 }
 
+const { currentTheme, toggleTheme, initTheme } = useTheme()
+
 onMounted(() => {
+  initTheme()
   if (sessionStorage.getItem("isRemote") === null) {
     getSysModel()
   }
@@ -352,8 +415,8 @@ function restoreTab() {
   localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
   localStorage.setItem("editableTabsValue", editableTabsValue.value)
   if (editableTabs.value.length == 0) {
-    // 清空可能带来负面清理
-    localStorage.clear()
+    localStorage.removeItem("editableTabs")
+    localStorage.removeItem("editableTabsValue")
     dbSchemaProxy.cleanCache()
   }
 }
@@ -384,7 +447,6 @@ function loadTree(node, resolve) {
           return e
         }))
       }
-      node.loaded = false
     })
     .catch((error) => {
       console.log(error);
@@ -567,9 +629,6 @@ function refreshTree() {
   http.get("/showTree", { params: { connId: "", key: "", type: "dir", level: 0 } })
     .then((resp) => {
       treeData.value = resp.data.data
-      if (connTree.value) {
-        connTree.value.setData(treeData.value)
-      }
     })
     .finally(() => {
       treeLoading.value = false
@@ -587,6 +646,54 @@ function viewViewInfo(node) {
   tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
   tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
   viewDialogVisible.value = true
+}
+
+function viewSchemaObjects(node) {
+  const conn = findConn(node)
+  schemaObjectsConnId.value = conn.id
+  schemaObjectsSchema.value = node.data.label
+  schemaObjectsVisible.value = true
+}
+
+function viewServerStatus(node) {
+  serverStatusConnId.value = node.data.id
+  const schemas = node.childNodes || []
+  serverStatusSchema.value = schemas.length > 0 ? schemas[0].data.label : ''
+  serverStatusVisible.value = true
+}
+
+function viewERDiagram(node) {
+  const conn = findConn(node)
+  erDiagramConnId.value = conn.id
+  erDiagramSchema.value = node.data.label
+  erDiagramVisible.value = true
+}
+
+function viewTableDiff(node) {
+  const conn = findConn(node)
+  tableDiffConnId.value = conn.id
+  tableDiffSchema.value = node.data.label
+  tableDiffVisible.value = true
+}
+
+function handleTableClickFromER(tableName) {
+  erDiagramVisible.value = false
+  const node = findTableNode(tableName)
+  if (node) {
+    openDataBrowser(node)
+  }
+}
+
+function findTableNode(tableName) {
+  for (const connNode of treeData.value) {
+    if (!connNode.children) continue
+    for (const schemaNode of connNode.children) {
+      if (!schemaNode.children) continue
+      const tableNode = schemaNode.children.find(t => t.label === tableName)
+      if (tableNode) return tableNode
+    }
+  }
+  return null
 }
 
 function openTableManager(node) {
@@ -663,7 +770,7 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 .classical-layout {
   height: 100vh;
   overflow: hidden;
-  background: #f5f7fa;
+  background: var(--bg-tertiary);
 }
 
 /* ── Sidebar ── */
@@ -671,8 +778,8 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #ebeef5;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-primary);
 }
 
 .sidebar-header {
@@ -680,24 +787,34 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px 8px;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid var(--border-secondary);
 }
 
 .sidebar-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   letter-spacing: 0.5px;
 }
 
 .sidebar-refresh-btn {
-  color: #909399;
+  color: var(--text-tertiary);
   padding: 4px;
   border-radius: 4px;
 }
 .sidebar-refresh-btn:hover {
-  color: #409eff;
-  background: #ecf5ff;
+  color: var(--accent-color);
+  background: var(--bg-inline-bar);
+}
+
+.theme-toggle-btn {
+  color: var(--text-tertiary);
+  padding: 4px;
+  border-radius: 4px;
+}
+.theme-toggle-btn:hover {
+  color: var(--accent-color);
+  background: var(--bg-inline-bar);
 }
 
 .sidebar-header-actions {
@@ -707,13 +824,13 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 }
 
 .sidebar-user-btn {
-  color: #606266;
+  color: var(--text-secondary);
   padding: 4px;
   border-radius: 4px;
 }
 .sidebar-user-btn:hover {
-  color: #409eff;
-  background: #ecf5ff;
+  color: var(--accent-color);
+  background: var(--bg-inline-bar);
 }
 
 .sidebar-tree {
@@ -745,7 +862,7 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .tree-node-actions {
@@ -765,35 +882,35 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 /* Type-specific node styling for visual hierarchy */
 .tree-node--dir .tree-node-label {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .tree-node--conn .tree-node-label {
   font-weight: 500;
-  color: #409eff;
+  color: var(--accent-color);
 }
 
 .tree-node--schema .tree-node-label {
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .tree-node--table .tree-node-label,
 .tree-node--view .tree-node-label {
-  color: #606266;
+  color: var(--text-secondary);
   font-size: 12.5px;
 }
 
 .tree-action-icon {
   cursor: pointer;
-  color: #909399;
+  color: var(--text-tertiary);
   padding: 2px;
   border-radius: 3px;
   transition: all 0.15s ease;
 }
 
 .tree-action-icon:hover {
-  color: #409eff;
-  background: #ecf5ff;
+  color: var(--accent-color);
+  background: var(--bg-inline-bar);
 }
 
 /* ── Main Content ── */
@@ -801,7 +918,7 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-main);
 }
 
 .main-tabs {
@@ -811,8 +928,8 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 }
 
 .main-tabs :deep(.el-tabs__header) {
-  background: #fafbfc;
-  border-bottom: 1px solid #ebeef5;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-primary);
   padding: 0 8px;
   margin-bottom: 0;
 }
@@ -827,7 +944,7 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
 }
 
 .main-tabs :deep(.el-tabs__item.is-active) {
-  background: #fff;
+  background: var(--bg-main);
   font-weight: 500;
 }
 
@@ -856,7 +973,7 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #c0c4cc;
+  color: var(--text-placeholder);
   gap: 16px;
 }
 
@@ -895,9 +1012,9 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
   height: 32px;
 }
 :deep(.el-tree-node__content:hover) {
-  background-color: #f0f7ff;
+  background-color: var(--tree-node-hover);
 }
 :deep(.el-tree-node.is-current > .el-tree-node__content) {
-  background-color: #ecf5ff;
+  background-color: var(--tree-node-active);
 }
 </style>

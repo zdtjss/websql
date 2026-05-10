@@ -195,6 +195,26 @@
             </el-table>
         </el-tab-pane>
 
+        <el-tab-pane label="外键" name="foreignKeys">
+            <el-table :data="foreignKeyList" style="width: 100%" class="col-table" v-loading="fkLoading">
+                <el-table-column prop="constraintName" label="约束名" min-width="180" show-overflow-tooltip />
+                <el-table-column prop="columnName" label="本表字段" width="160" />
+                <el-table-column prop="referencedTable" label="引用表" width="160" />
+                <el-table-column prop="referencedColumn" label="引用字段" width="160" />
+                <el-table-column prop="updateRule" label="ON UPDATE" width="120">
+                    <template #default="scope">
+                        <el-tag size="small" :type="ruleTagType(scope.row.updateRule)">{{ scope.row.updateRule || '-' }}</el-tag>
+                    </template>
+                </el-table-column>
+                <el-table-column prop="deleteRule" label="ON DELETE" width="120">
+                    <template #default="scope">
+                        <el-tag size="small" :type="ruleTagType(scope.row.deleteRule)">{{ scope.row.deleteRule || '-' }}</el-tag>
+                    </template>
+                </el-table-column>
+            </el-table>
+            <el-empty v-if="!fkLoading && foreignKeyList.length === 0" description="该表没有外键" />
+        </el-tab-pane>
+
         <el-tab-pane label="选项" name="option">
             <div v-if="editableOptions.length > 0" style="padding: 10px;">
                 <el-table :data="editableOptions" border size="small" style="width: 100%;">
@@ -287,6 +307,7 @@ import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
 import copyToClipboard from '@/js/utils/copy-to-clipboard.js'
+import { getSqlDialect } from '@/js/utils/sqlHelper.ts'
 
 hljs.registerLanguage('sql', highlightSql.default);
 
@@ -300,6 +321,9 @@ const tableCreateDdlRef = ref()
 const indexList = ref([])
 const tableOptionsData = ref({})
 const tableStatsData = ref({})
+
+const foreignKeyList = ref([])
+const fkLoading = ref(false)
 
 const addIndexDialogVisible = ref(false)
 const newIndex = ref({ name: "", type: "INDEX", columns: [] })
@@ -363,6 +387,8 @@ function loadData(pane) {
             })
     } else if (name === "indexes") {
         loadIndexes()
+    } else if (name === "foreignKeys") {
+        loadForeignKeys()
     } else if (name === "option") {
         loadOptions()
     } else if (name === "statistics") {
@@ -386,6 +412,71 @@ function loadIndexes() {
                 indexComment: r.INDEX_COMMENT || r.index_comment || r.indexComment || '',
             }))
         })
+}
+
+function loadForeignKeys() {
+    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
+    let sql = ''
+    if (dbType === 'mysql') {
+        sql = `SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '${props.tableMeta.schema}' AND TABLE_NAME = '${props.tableMeta.tableName}' AND REFERENCED_TABLE_NAME IS NOT NULL`
+    } else if (dbType === 'sqlite') {
+        sql = `PRAGMA foreign_key_list('${props.tableMeta.tableName}')`
+    } else if (dbType === 'oracle') {
+        sql = `SELECT a.constraint_name, a.column_name, c_pk.table_name AS referenced_table_name, c_pk.column_name AS referenced_column_name, c.update_rule, c.delete_rule FROM all_cons_columns a JOIN all_constraints c ON a.constraint_name = c.constraint_name AND a.owner = c.owner JOIN all_cons_columns c_pk ON c.r_constraint_name = c_pk.constraint_name AND c.r_owner = c_pk.owner WHERE c.constraint_type = 'R' AND c.table_name = '${(props.tableMeta.tableName || '').toUpperCase()}' AND c.owner = '${(props.tableMeta.schema || '').toUpperCase()}'`
+    }
+    if (!sql) {
+        foreignKeyList.value = []
+        return
+    }
+    fkLoading.value = true
+    const params = new URLSearchParams()
+    params.append('connId', props.tableMeta.connId)
+    params.append('schema', props.tableMeta.schema)
+    params.append('sql', sql)
+    params.append('maxLine', '100')
+    http.post('/execSQL', params)
+        .then((resp) => {
+            const data = resp.data.data?.data || []
+            if (dbType === 'sqlite') {
+                foreignKeyList.value = data.map(r => ({
+                    constraintName: 'FK_' + r.id,
+                    columnName: r.from,
+                    referencedTable: r.table,
+                    referencedColumn: r.to,
+                    updateRule: r.on_update || 'NO ACTION',
+                    deleteRule: r.on_delete || 'NO ACTION',
+                }))
+            } else if (dbType === 'oracle') {
+                foreignKeyList.value = data.map(r => ({
+                    constraintName: r.CONSTRAINT_NAME || r.constraint_name,
+                    columnName: r.COLUMN_NAME || r.column_name,
+                    referencedTable: r.REFERENCED_TABLE_NAME || r.referenced_table_name,
+                    referencedColumn: r.REFERENCED_COLUMN_NAME || r.referenced_column_name,
+                    updateRule: r.UPDATE_RULE || r.update_rule || 'NO ACTION',
+                    deleteRule: r.DELETE_RULE || r.delete_rule || 'NO ACTION',
+                }))
+            } else {
+                foreignKeyList.value = data.map(r => ({
+                    constraintName: r.CONSTRAINT_NAME || r.constraint_name || r.CONSTRAINT_NAME,
+                    columnName: r.COLUMN_NAME || r.column_name || r.COLUMN_NAME,
+                    referencedTable: r.REFERENCED_TABLE_NAME || r.referenced_table_name || r.REFERENCED_TABLE_NAME,
+                    referencedColumn: r.REFERENCED_COLUMN_NAME || r.referenced_column_name || r.REFERENCED_COLUMN_NAME,
+                    updateRule: r.UPDATE_RULE || r.update_rule || r.UPDATE_RULE || '-',
+                    deleteRule: r.DELETE_RULE || r.delete_rule || r.DELETE_RULE || '-',
+                }))
+            }
+        })
+        .catch(() => { foreignKeyList.value = [] })
+        .finally(() => { fkLoading.value = false })
+}
+
+function ruleTagType(rule) {
+    if (!rule) return 'info'
+    const r = rule.toUpperCase()
+    if (r === 'CASCADE') return 'danger'
+    if (r === 'SET NULL') return 'warning'
+    if (r === 'RESTRICT' || r === 'NO ACTION') return ''
+    return 'info'
 }
 
 function loadOptions() {
@@ -483,10 +574,7 @@ function saveIndexComment(row) {
 }
 
 function getSqlLang() {
-    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
-    if (dbType === "oracle") return "plsql"
-    if (dbType === "mysql") return "mysql"
-    return "sql"
+    return getSqlDialect(props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '')
 }
 
 const OPTION_LABELS = {
@@ -519,8 +607,13 @@ function formatStatsValue(key, val) {
 }
 
 // ========== 字段操作 ==========
+function formatDefaultValue(defaultVal) {
+  if (defaultVal == null || defaultVal === '') return 'NULL'
+  return "'" + defaultVal.replace(/'/g, "''") + "'"
+}
+
 function modifyColumnName(seq, newName) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` change `" + columnListOrigin[seq].columnName + "` `" + newName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` change `" + columnListOrigin[seq].columnName + "` `" + newName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnName = newName
         columnList.value[seq].onColumnNameEdit = false
@@ -528,7 +621,7 @@ function modifyColumnName(seq, newName) {
 }
 
 function modifyColumnType(seq, newType) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + newType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + newType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnType = newType
         columnList.value[seq].onColumnTypeEdit = false
@@ -545,7 +638,7 @@ function modifyColumnDefault(seq, newDefault) {
 }
 
 function modifyColumnComment(seq, newComment) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + (columnListOrigin[seq].columnDefault ?? 'NULL') + " comment '" + (newComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (newComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnComment = newComment
         columnList.value[seq].onColumnCommentEdit = false
@@ -612,10 +705,12 @@ function createIndex() {
 }
 
 function dropIndex(indexName) {
-    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
+    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
     let sql = ""
     if (dbType === "mysql") {
         sql = "DROP INDEX `" + indexName + "` ON `" + props.tableMeta.tableName + "`"
+    } else if (dbType === "oracle") {
+        sql = "DROP INDEX \"" + indexName.toUpperCase() + "\""
     } else {
         sql = "DROP INDEX `" + indexName + "`"
     }
@@ -653,8 +748,8 @@ function copyCreateScript() {
 
     :deep(.el-tabs__header) {
         margin-bottom: 0;
-        background: #fafbfc;
-        border-bottom: 1px solid #ebeef5;
+        background: var(--bg-toolbar);
+        border-bottom: 1px solid var(--border-primary);
         padding: 0 8px;
     }
 
@@ -666,7 +761,7 @@ function copyCreateScript() {
     }
 
     :deep(.el-tabs__item.is-active) {
-        background: #fff;
+        background: var(--bg-primary);
         font-weight: 500;
     }
 

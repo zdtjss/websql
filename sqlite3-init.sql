@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS t_user_role (
 
 INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('825683877367386112', '825683877312860160', '825683877266722816');
 
+CREATE INDEX IF NOT EXISTS idx_t_user_role_user_id ON t_user_role(user_id);
+CREATE INDEX IF NOT EXISTS idx_t_user_role_role_id ON t_user_role(role_id);
+CREATE INDEX IF NOT EXISTS idx_t_power_role_id ON t_power(role_id);
+CREATE INDEX IF NOT EXISTS idx_t_conn_parent_id ON t_conn(parent_id);
+
 create table if not exists t_backup (
 	id text  primary key,
 	user text,

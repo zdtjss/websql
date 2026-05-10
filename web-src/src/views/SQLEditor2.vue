@@ -9,27 +9,46 @@
                     </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
-                    <el-dropdown @command="handleDdlCommand" style="margin-left: 4px;">
-                        <el-button>
-                            SQL<el-icon class="el-icon--right"><ArrowDown /></el-icon>
-                        </el-button>
-                        <template #dropdown>
-                            <el-dropdown-menu>
-                                <el-dropdown-item command="insert">生成 INSERT</el-dropdown-item>
-                                <el-dropdown-item command="update">生成 UPDATE</el-dropdown-item>
-                                <el-dropdown-item command="create" divided>查看建表语句</el-dropdown-item>
-                            </el-dropdown-menu>
-                        </template>
-                    </el-dropdown>
+                    <el-button @click="explainSql" title="查看执行计划">EXPLAIN</el-button>
                     <el-divider direction="vertical" />
-                    <el-button @click="exportDb">导表</el-button>
-                    <el-button @click="exportCurrentToXlsx">导出 Excel</el-button>
+                    <el-dropdown @command="handleExportResult">
+                      <el-button :disabled="result.length === 0">
+                        导出结果<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="insert">INSERT SQL</el-dropdown-item>
+                          <el-dropdown-item command="update">UPDATE SQL</el-dropdown-item>
+                          <el-dropdown-item command="xlsx" divided>Excel (.xlsx)</el-dropdown-item>
+                          <el-dropdown-item command="csv">CSV</el-dropdown-item>
+                          <el-dropdown-item command="json">JSON</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                    <el-button @click="tableCreateDialogVisible = true">建表语句</el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="listBackupData">备份</el-button>
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
+                    <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
+                    <el-button @click="queryBuilderVisible = true" title="可视化查询构建器">查询构建</el-button>
+                    <el-upload
+                      :show-file-list="false"
+                      accept=".sql"
+                      :http-request="handleSqlFile"
+                    >
+                      <el-button title="执行 SQL 文件">执行文件</el-button>
+                    </el-upload>
+                    <el-divider v-if="canModify" direction="vertical" />
+                    <template v-if="canModify">
+                      <el-button size="small" @click="execTransaction('BEGIN')" :disabled="exectingSql" style="color: #67c23a;">BEGIN</el-button>
+                      <el-button size="small" @click="execTransaction('COMMIT')" :disabled="exectingSql" style="color: #409eff;">COMMIT</el-button>
+                      <el-button size="small" @click="execTransaction('ROLLBACK')" :disabled="exectingSql" style="color: #f56c6c;">ROLLBACK</el-button>
+                    </template>
                 </div>
                 <div class="toolbar-right">
+                    <span v-if="executionTime !== null" class="exec-time">{{ executionTime }}ms</span>
+                    <span v-if="canInlineEdit && result.length > 0" class="inline-edit-badge" title="当前结果集有主键，支持双击单元格内联编辑">✎ 可编辑</span>
                     <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom" :show-after="400">
                         <label class="modify-toggle">
                             <el-switch v-model="canModify" size="small" />
@@ -52,11 +71,20 @@
                     <template #default="{ height: autoHeight, width: autoWidth }">
                         <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }">
                             <el-table-v2 
-                                :columns="columns" 
-                                :data="result" 
-                                :width="totalColumnWidth" 
-                                :height="autoHeight" 
-                                :row-height="35" />
+                    :columns="columns" 
+                    :data="result" 
+                    :width="totalColumnWidth" 
+                    :height="autoHeight" 
+                    :row-height="35" />
+                <div v-if="canInlineEdit && inlineChangeCount > 0" class="db-inline-bar">
+                    <el-button type="warning" size="small" @click="saveInlineChanges" :loading="savingInline">
+                        <span>保存更改</span>
+                    </el-button>
+                    <el-button size="small" @click="exec(); inlineChanges.clear()">
+                        <span>放弃更改</span>
+                    </el-button>
+                    <span class="inline-count">{{ inlineChangeCount }} 处更改</span>
+                </div>
                         </div>
                     </template>
                 </el-auto-resizer>
@@ -149,6 +177,20 @@
             </div>
         </template>
     </el-dialog>
+
+  <SqlSnippetManager
+    v-model="snippetVisible"
+    :current-sql="getEditorDoc()"
+    @apply="onApplySnippet"
+  />
+
+  <QueryBuilderDialog
+    v-model="queryBuilderVisible"
+    :conn-id="props.connId"
+    :schema="props.schema"
+    @execute="onQueryBuilderExecute"
+    @insert="onQueryBuilderInsert"
+  />
 </template>
 
 <script lang="ts" setup>
@@ -157,8 +199,9 @@ import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark"
 import { EditorState } from '@codemirror/state'
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql';
-import { syntaxHighlighting } from '@codemirror/language'
+import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
+import { tags } from '@lezer/highlight'
 import { ref, onMounted, watch, h, nextTick, computed } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
@@ -166,6 +209,8 @@ import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
+import SqlSnippetManager from '../components/SqlSnippetManager.vue'
+import QueryBuilderDialog from '../components/QueryBuilderDialog.vue'
 
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -174,8 +219,49 @@ import 'highlight.js/styles/stackoverflow-light.css'
 import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
 import copyToClipboard from '../js/utils/copy-to-clipboard.js'
+import { fmtVal, getSqlDialect } from '../js/utils/sqlHelper.ts'
+import { exportToCsv, exportToJson } from '../js/utils/exportHelper.ts'
+import { useTheme } from '../js/utils/useTheme.ts'
 
 hljs.registerLanguage('sql', highlightSql.default);
+
+const { currentTheme } = useTheme()
+
+const lightEditorTheme = EditorView.theme({
+  '&': { backgroundColor: '#ffffff', color: '#303133' },
+  '.cm-gutters': { backgroundColor: '#fafbfc', color: '#909399', borderRight: '1px solid #ebeef5' },
+  '.cm-activeLineGutter': { backgroundColor: '#ecf5ff' },
+  '.cm-activeLine': { backgroundColor: '#f5f7fa33' },
+  '.cm-cursor': { borderLeftColor: '#303133' },
+  '.cm-selectionBackground': { backgroundColor: '#b3d8ff66' },
+}, { dark: false })
+
+const darkEditorTheme = EditorView.theme({
+  '&': { backgroundColor: '#1e1e2e', color: '#cdd6f4' },
+  '.cm-gutters': { backgroundColor: '#1e1e2e', color: '#6c7086', borderRight: '1px solid #313244' },
+  '.cm-activeLineGutter': { backgroundColor: '#313147' },
+  '.cm-activeLine': { backgroundColor: '#2a2a3d33' },
+  '.cm-cursor': { borderLeftColor: '#cdd6f4' },
+  '.cm-selectionBackground': { backgroundColor: '#45475a66' },
+}, { dark: true })
+
+const lightHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: '#0550ae', fontWeight: '600' },
+  { tag: tags.string, color: '#0a3069' },
+  { tag: tags.number, color: '#0550ae' },
+  { tag: tags.comment, color: '#6e7781', fontStyle: 'italic' },
+  { tag: tags.typeName, color: '#0550ae' },
+  { tag: tags.operator, color: '#0550ae' },
+  { tag: tags.bracket, color: '#0550ae' },
+  { tag: tags.function(tags.variableName), color: '#8250df' },
+  { tag: tags.variableName, color: '#0550ae' },
+  { tag: tags.bool, color: '#0550ae' },
+  { tag: tags.null, color: '#0550ae' },
+])
+
+function getEditorTheme() {
+  return currentTheme.value === 'dark' ? darkEditorTheme : lightEditorTheme
+}
 
 const props = defineProps<{
     tabId: string,
@@ -196,6 +282,9 @@ const codemirror = ref()
 const exportDialogVisible = ref(false)
 
 const exectingSql = ref(false)
+const executionTime = ref<number | null>(null)
+const snippetVisible = ref(false)
+const queryBuilderVisible = ref(false)
 const currentSelectTable = ref("")
 
 const tableName = ref("")
@@ -220,6 +309,12 @@ const dataDetailsDialogVisible = ref(false)
 const onDataSaving = ref(false)
 
 const canModify = ref(false)
+
+const editingCellRow = ref(-1)
+const editingCellCol = ref('')
+const editingCellValue = ref('')
+const inlineChanges = ref(new Map<string, any>())
+const savingInline = ref(false)
 
 const tableList = computed(() => {
     try {
@@ -263,6 +358,58 @@ function showSqlHistory() {
         })
 }
 
+function execTransaction(command: string) {
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("sql", command)
+    http.post("/execSQL", params)
+        .then(() => {
+            ElMessage({ message: command + ' 执行成功', type: 'success' })
+        })
+        .catch(() => {
+            ElMessage({ message: command + ' 执行失败', type: 'error' })
+        })
+}
+
+async function handleSqlFile(options: any) {
+    const file = options.file
+    const text = await file.text()
+    const statements = text
+        .split(/;\s*\n|;\s*$/)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0 && !s.startsWith('--') && !s.startsWith('/*'))
+
+    if (statements.length === 0) {
+        ElMessage({ message: '文件中没有可执行的 SQL', type: 'warning' })
+        return
+    }
+
+    ElMessage({ message: `开始执行 ${statements.length} 条语句...`, type: 'info' })
+    let successCount = 0
+    let errorCount = 0
+
+    for (const stmt of statements) {
+        const params = new URLSearchParams()
+        params.append("connId", props.connId)
+        params.append("schema", props.schema)
+        params.append("sql", stmt)
+        params.append("maxLine", maxLine.value)
+        try {
+            await http.post("/execSQL", params)
+            successCount++
+        } catch {
+            errorCount++
+        }
+    }
+
+    if (errorCount === 0) {
+        ElMessage({ message: `全部 ${successCount} 条执行成功`, type: 'success' })
+    } else {
+        ElMessage({ message: `${successCount} 成功, ${errorCount} 失败`, type: 'warning' })
+    }
+}
+
 function applySqlFromHistory(sql: string) {
     if (!sql) return
     const editorState = editorView.value?.state as EditorState
@@ -275,6 +422,45 @@ function applySqlFromHistory(sql: string) {
     }
     sqlHistoryDrawerShow.value = false
     ElMessage({ message: '已填入编辑器', type: 'success' })
+}
+
+function onApplySnippet(sql: string) {
+    if (!sql) return
+    const editorState = editorView.value?.state as EditorState
+    if (editorState) {
+        const doc = editorState.doc.toString()
+        const insertPos = doc.length
+        editorView.value?.dispatch({
+            changes: { from: insertPos, insert: '\n' + sql }
+        })
+    }
+    ElMessage({ message: '已填入编辑器', type: 'success' })
+}
+
+function onQueryBuilderExecute(sql: string) {
+    const editorState = editorView.value?.state as EditorState
+    if (editorState) {
+        const doc = editorState.doc.toString()
+        const insertPos = doc.length
+        editorView.value?.dispatch({
+            changes: { from: 0, to: doc.length, insert: sql }
+        })
+    }
+    nextTick(() => {
+        exec()
+    })
+}
+
+function onQueryBuilderInsert(sql: string) {
+    const editorState = editorView.value?.state as EditorState
+    if (editorState) {
+        const doc = editorState.doc.toString()
+        const insertPos = doc.length
+        editorView.value?.dispatch({
+            changes: { from: insertPos, insert: '\n' + sql }
+        })
+    }
+    ElMessage({ message: 'SQL 已插入编辑器', type: 'success' })
 }
 
 onMounted(() => {
@@ -290,6 +476,11 @@ onMounted(() => {
     canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat")  != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
 })
 
+watch(currentTheme, () => {
+    const doc = getEditorDoc()
+    createEditor(codemirror, doc)
+})
+
 watch(canModify, (can) => {
      const schemaPathLower = props.schemaPath.toLowerCase()
     if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_read") != -1)) {
@@ -301,35 +492,36 @@ function createEditor(editorContainer: any, doc: any) {
     if (typeof editorView.value !== 'undefined') {
         editorView.value.destroy();
     }
+    const isDark = currentTheme.value === 'dark'
+    const extensions = [
+        keymap.of([
+            ...standardKeymap,
+            {
+                key: 'Tab',
+                run: insertTab,
+            }, {
+                key: "ctrl-y",
+                run: redo
+            }, {
+                key: "ctrl-z",
+                run: undo
+            }
+        ]),
+        sql({
+            dialect: dbSchemaProxy.getDialect(props.schema),
+            schema: <any>dbSchemaProxy.getAll(props.schema),
+        }),
+        history(),
+        lineNumbers(),
+        highlightActiveLineGutter(),
+        autocompletion(),
+        EditorView.editable.of(true),
+        getEditorTheme(),
+        syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle),
+    ]
     const startState = EditorState.create({
-        //doc为编辑器内容
         doc: doc,
-        extensions: [
-            keymap.of([
-                ...standardKeymap,
-                {
-                    key: 'Tab',
-                    run: insertTab,
-                }, {
-                    key: "ctrl-y",
-                    run: redo
-                }, {
-                    key: "ctrl-z",
-                    run: undo
-                }
-            ]),
-            sql({
-                dialect: dbSchemaProxy.getDialect(props.schema),
-                schema: <any>dbSchemaProxy.getAll(props.schema),
-                // tables: dbSchemaProxy.getTable(props.schema)
-            }),
-            history(),
-            lineNumbers(),
-            highlightActiveLineGutter(),
-            syntaxHighlighting(oneDarkHighlightStyle),
-            autocompletion(),
-            EditorView.editable.of(true),
-        ],
+        extensions: extensions,
     });
     editorView.value = new EditorView({
         state: startState,
@@ -338,7 +530,11 @@ function createEditor(editorContainer: any, doc: any) {
 }
 //获取编辑器里的文本内容
 const getEditorDoc = (): string => {
-    return (editorView.value as EditorView).state.doc.toString() || "";
+    try {
+        return (editorView.value as EditorView)?.state?.doc?.toString() || ""
+    } catch {
+        return ""
+    }
 };
 
 function getSqlKey() {
@@ -353,6 +549,161 @@ function formatSql() {
     }
     const editorState = <EditorState>editorView.value?.state
     editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: getSqlLang() }) + "\n"))
+}
+
+function explainSql() {
+    const sqlExec = getSelection()?.toString()
+    if (!sqlExec) {
+        ElMessage({ message: "请先选择SQL", type: "error" })
+        return
+    }
+    const effectiveSql = extractEffectiveSql(sqlExec)
+    if (effectiveSql.toLowerCase().startsWith('explain ')) {
+        ElMessage({ message: "语句已包含 EXPLAIN", type: "warning" })
+        return
+    }
+    const explainStmt = 'EXPLAIN ' + effectiveSql
+    currentSelectTable.value = extractTableName(sqlExec)
+    exectingSql.value = true
+    executionTime.value = null
+    const startTime = performance.now()
+    const params = new URLSearchParams()
+    params.append("connId", props.connId)
+    params.append("schema", props.schema)
+    params.append("tableName", currentSelectTable.value)
+    params.append("sql", explainStmt)
+    params.append("maxLine", maxLine.value)
+    http.post("/execSQL", params)
+        .then((resp) => {
+            executionTime.value = Math.round(performance.now() - startTime)
+            canEdit.value = false
+            tableKeys.value = resp.data.data.keys || []
+            columns.value = resp.data.data.columns.map((col: any) => {
+                const colDef: any = {
+                    key: col.name,
+                    title: col.name,
+                    dataKey: col.name,
+                    comment: col.comment,
+                    dataType: col.type,
+                    width: 150,
+                    minWidth: 150,
+                    headerCellRenderer: ({ column }: { column: any }) => {
+                        return h('div', { 
+                            class: "header-box",
+                            onDragenter: (e: any) => e.preventDefault(),
+                            onMouseenter: (e: any) => {
+                                const dragLine = e.target.querySelector('.drag-line')
+                                if (dragLine) dragLine.style.opacity = '1'
+                            },
+                            onMouseleave: (e: any) => {
+                                const dragLine = e.target.querySelector('.drag-line')
+                                if (dragLine) dragLine.style.opacity = '0'
+                            }
+                        }, [
+                            h('div', { 
+                                class: "header-text",
+                                title: col.comment 
+                            }, col.name),
+                            h('div', { 
+                                class: "drag-line",
+                                draggable: true,
+                                style: {
+                                    position: 'absolute',
+                                    right: '-4px',
+                                    top: 0,
+                                    bottom: 0,
+                                    width: '8px',
+                                    cursor: 'ew-resize',
+                                    backgroundColor: 'transparent',
+                                    borderRight: '1px solid #409eff',
+                                    zIndex: 999,
+                                    transform: 'translateZ(999px)',
+                                    opacity: 0,
+                                    transition: 'opacity 0.2s'
+                                },
+                                onDragstart: (e: any) => dragStart(e),
+                                onDragend: (e: any) => dragEnd(e),
+                                onMouseenter: (e: any) => {
+                                    e.target.style.opacity = '1'
+                                },
+                                onMouseleave: (e: any) => {
+                                    e.target.style.opacity = '0'
+                                }
+                            })
+                        ])
+                    },
+                    cellRenderer: ({ cellData, rowData, column, rowIndex }: { cellData: any, rowData: any, column: any, rowIndex: number }) => {
+                        const colKey = column.dataKey as string
+                        const isEditing = isEditingCell(rowIndex, colKey)
+                        const isChanged = isCellChanged(rowIndex, colKey)
+                        const colType = col.type
+                        
+                        if (isEditing) {
+                            if (isDateType(colType)) {
+                                return h('input', {
+                                    type: 'datetime-local',
+                                    value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
+                                    style: {
+                                        width: '100%', height: '28px', border: '1px solid #409eff',
+                                        borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                                        background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                                        boxSizing: 'border-box'
+                                    },
+                                    onInput: (e: Event) => {
+                                        const target = e.target as HTMLInputElement
+                                        editingCellValue.value = target.value + ':00'
+                                    },
+                                    onKeyup: (e: KeyboardEvent) => {
+                                        if (e.key === 'Enter') commitInlineEdit()
+                                        if (e.key === 'Escape') cancelInlineEdit()
+                                    },
+                                    onBlur: () => commitInlineEdit()
+                                })
+                            }
+                            return h('input', {
+                                value: editingCellValue.value,
+                                style: {
+                                    width: '100%', height: '28px', border: '1px solid #409eff',
+                                    borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                                    background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                                    boxSizing: 'border-box'
+                                },
+                                onInput: (e: Event) => {
+                                    const target = e.target as HTMLInputElement
+                                    editingCellValue.value = target.value
+                                },
+                                onKeyup: (e: KeyboardEvent) => {
+                                    if (e.key === 'Enter') commitInlineEdit()
+                                    if (e.key === 'Escape') cancelInlineEdit()
+                                },
+                                onBlur: () => commitInlineEdit()
+                            })
+                        }
+                        
+                        const displayVal = cellData != null ? String(cellData) : ''
+                        const changedStyle = isChanged ? {
+                            backgroundColor: '#fff7e6', padding: '2px 4px', 
+                            borderRadius: '3px', borderBottom: '1px dashed #faad14',
+                            cursor: 'pointer'
+                        } : { cursor: 'pointer' }
+                        
+                        return h('span', {
+                            title: displayVal,
+                            style: changedStyle,
+                            onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
+                        }, displayVal)
+                    }
+                }
+                return colDef
+            })
+            result.value = resp.data.data.data
+            inlineChanges.value = new Map()
+            exectingSql.value = false
+        })
+        .catch((error) => {
+            console.log(error);
+            exectingSql.value = false
+        });
 }
 
 function listBackupData() {
@@ -410,6 +761,8 @@ function exec() {
     }
     currentSelectTable.value = extractTableName(sqlExec)
     exectingSql.value = true
+    executionTime.value = null
+    const startTime = performance.now()
     const params = new URLSearchParams()
     params.append("connId", props.connId)
     params.append("schema", props.schema)
@@ -418,10 +771,11 @@ function exec() {
     params.append("maxLine", maxLine.value)
     http.post("/execSQL", params)
         .then((resp) => {
+            executionTime.value = Math.round(performance.now() - startTime)
             canEdit.value = resp.data.data.canEdit
             tableKeys.value = resp.data.data.keys || []
             columns.value = resp.data.data.columns.map((col: any) => {
-                const colDef = {
+                const colDef: any = {
                     key: col.name,
                     title: col.name,
                     dataKey: col.name,
@@ -473,6 +827,67 @@ function exec() {
                                 }
                             })
                         ])
+                    },
+                    cellRenderer: ({ cellData, rowData, column, rowIndex }: { cellData: any, rowData: any, column: any, rowIndex: number }) => {
+                        const colKey = column.dataKey as string
+                        const isEditing = isEditingCell(rowIndex, colKey)
+                        const isChanged = isCellChanged(rowIndex, colKey)
+                        const colType = col.type
+                        
+                        if (isEditing) {
+                            if (isDateType(colType)) {
+                                return h('input', {
+                                    type: 'datetime-local',
+                                    value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
+                                    style: {
+                                        width: '100%', height: '28px', border: '1px solid #409eff',
+                                        borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                                        background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                                        boxSizing: 'border-box'
+                                    },
+                                    onInput: (e: Event) => {
+                                        const target = e.target as HTMLInputElement
+                                        editingCellValue.value = target.value + ':00'
+                                    },
+                                    onKeyup: (e: KeyboardEvent) => {
+                                        if (e.key === 'Enter') commitInlineEdit()
+                                        if (e.key === 'Escape') cancelInlineEdit()
+                                    },
+                                    onBlur: () => commitInlineEdit()
+                                })
+                            }
+                            return h('input', {
+                                value: editingCellValue.value,
+                                style: {
+                                    width: '100%', height: '28px', border: '1px solid #409eff',
+                                    borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                                    background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                                    boxSizing: 'border-box'
+                                },
+                                onInput: (e: Event) => {
+                                    const target = e.target as HTMLInputElement
+                                    editingCellValue.value = target.value
+                                },
+                                onKeyup: (e: KeyboardEvent) => {
+                                    if (e.key === 'Enter') commitInlineEdit()
+                                    if (e.key === 'Escape') cancelInlineEdit()
+                                },
+                                onBlur: () => commitInlineEdit()
+                            })
+                        }
+                        
+                        const displayVal = cellData != null ? String(cellData) : ''
+                        const changedStyle = isChanged ? {
+                            backgroundColor: '#fff7e6', padding: '2px 4px', 
+                            borderRadius: '3px', borderBottom: '1px dashed #faad14',
+                            cursor: 'pointer'
+                        } : { cursor: 'pointer' }
+                        
+                        return h('span', {
+                            title: displayVal,
+                            style: changedStyle,
+                            onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
+                        }, displayVal)
                     }
                 }
                 return colDef
@@ -498,6 +913,139 @@ function exec() {
         });
 }
 
+function isDateType(colType: string | undefined): boolean {
+  if (!colType) return false
+  const upper = colType.toUpperCase()
+  return upper === 'DATETIME' || upper === 'DATE' || upper === 'TIMESTAMP' 
+    || upper === 'TIMESTAMP(6)' || upper.includes('TIMESTAMP')
+    || upper === 'TIMESTAMPTZ' || upper === 'TIMESTAMPLTZ'
+}
+
+function startInlineEdit(rowIndex: number, colKey: string, event: MouseEvent) {
+  if (!canInlineEdit.value) return
+  if (tableKeys.value.length === 0) return
+  const target = event.target as HTMLElement
+  if (target.tagName === 'INPUT') return
+  editingCellRow.value = rowIndex
+  editingCellCol.value = colKey
+  const rawVal = result.value[rowIndex]?.[colKey]
+  editingCellValue.value = rawVal != null ? String(rawVal) : ''
+}
+
+function commitInlineEdit() {
+  if (editingCellRow.value < 0 || !editingCellCol.value) {
+    cancelInlineEdit()
+    return
+  }
+  const rowIdx = editingCellRow.value
+  const colKey = editingCellCol.value
+  const newVal = editingCellValue.value
+  const oldVal = result.value[rowIdx]?.[colKey]
+  if (String(oldVal ?? '') !== newVal) {
+    const changeKey = rowIdx + '::' + colKey
+    const newMap = new Map(inlineChanges.value)
+    newMap.set(changeKey, newVal)
+    inlineChanges.value = newMap
+    result.value[rowIdx][colKey] = newVal
+  }
+  cancelInlineEdit()
+}
+
+function cancelInlineEdit() {
+  editingCellRow.value = -1
+  editingCellCol.value = ''
+  editingCellValue.value = ''
+}
+
+function isEditingCell(rowIndex: number, colKey: string) {
+  return editingCellRow.value === rowIndex && editingCellCol.value === colKey
+}
+
+function isCellChanged(rowIndex: number, colKey: string) {
+  const changeKey = rowIndex + '::' + colKey
+  return inlineChanges.value.has(changeKey)
+}
+
+function discardInlineChanges() {
+  const changes = inlineChanges.value
+  changes.forEach((newVal, key) => {
+    const [rowStr, colKey] = key.split('::')
+    const rowIdx = parseInt(rowStr)
+    if (result.value[rowIdx]) {
+      // Restore use original value; we don't have it stored separately so keep the edit
+    }
+  })
+  inlineChanges.value = new Map()
+  result.value = [...result.value]
+}
+
+function saveInlineChanges() {
+  if (inlineChanges.value.size === 0) return
+  savingInline.value = true
+
+  const groupedByRow = new Map<number, Map<string, string>>()
+  inlineChanges.value.forEach((newVal, key) => {
+    const [rowStr, colKey] = key.split('::')
+    const rowIdx = parseInt(rowStr)
+    if (!groupedByRow.has(rowIdx)) {
+      groupedByRow.set(rowIdx, new Map())
+    }
+    groupedByRow.get(rowIdx)!.set(colKey, newVal)
+  })
+
+  const promises: Promise<any>[] = []
+  groupedByRow.forEach((colMap, rowIdx) => {
+    const row = result.value[rowIdx]
+    if (!row) return
+
+    const pkConditions = tableKeys.value
+      .filter(k => k in row)
+      .map(k => k + ' = ' + fmtVal(row[k]))
+    
+    const setClauses: string[] = []
+    colMap.forEach((newVal, colKey) => {
+      setClauses.push(colKey + ' = ' + fmtVal(newVal))
+    })
+
+    if (setClauses.length === 0) return
+
+    let sql: string
+    if (pkConditions.length > 0 && canEdit.value) {
+      sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + pkConditions.join(' and ')
+    } else {
+      const allWhereCols = Object.keys(row)
+        .filter((k: string) => k !== 'col-idx' && colMap.has(k))
+      const whereConditions = allWhereCols.map((k: string) => k + ' = ' + fmtVal(row[k]))
+      sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
+    }
+
+    const params = new URLSearchParams()
+    params.append('connId', props.connId)
+    params.append('schema', props.schema)
+    params.append('tableName', currentSelectTable.value)
+    params.append('sql', sql)
+    promises.push(http.post('/execSQL', params))
+  })
+
+  Promise.all(promises)
+    .then(() => {
+      ElMessage.success('内联更改已保存')
+      inlineChanges.value = new Map()
+      exec()
+    })
+    .catch((err) => {
+      console.error(err)
+      ElMessage.error('保存失败')
+    })
+    .finally(() => {
+      savingInline.value = false
+    })
+}
+
+const inlineChangeCount = computed(() => inlineChanges.value.size)
+
+const canInlineEdit = computed(() => canEdit.value && tableKeys.value.length > 0)
+
 function openDataDetails(rowIndex: number) {
     dataDetailsDialogVisible.value = true
     rowData.value = result.value[rowIndex]
@@ -505,18 +1053,24 @@ function openDataDetails(rowIndex: number) {
 }
 
 function saveData(rowData: any) {
+    const changedKeys = Object.keys(originRowData).filter((key) => originRowData[key] != rowData[key])
 
-    let effiectiveSql = "update " + currentSelectTable.value + " set "
-
-    const updateColumnSets = Object.keys(originRowData).filter((key) => originRowData[key] != rowData[key]).map((key) => key + " = " + fmtVal(rowData[key]))
-
-    if (updateColumnSets.length === 0 && canEdit.value) {
+    if (changedKeys.length === 0 && canEdit.value) {
         ElMessage({ message: "数据未修改", type: "warning" })
         return
     }
 
+    const updateColumnSets = changedKeys.map((key) => key + " = " + fmtVal(rowData[key]))
+
+    const allWhereCols = [
+      ...tableKeys.value,
+      ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))
+    ]
+    const whereColumns = allWhereCols.map((key: string) => key + " = " + fmtVal(originRowData[key]))
+
+    let effiectiveSql = "update " + currentSelectTable.value + " set "
     effiectiveSql += updateColumnSets.join(", ") + " where "
-    effiectiveSql += tableKeys.value.map((key: string) => key + " = " + fmtVal(originRowData[key])).join(" and ")
+    effiectiveSql += whereColumns.join(" and ")
 
     onDataSaving.value = true
 
@@ -541,42 +1095,29 @@ function saveData(rowData: any) {
 }
 
 function extractEffectiveSql(sql: string) {
-
-    let relSql = sql.trimStart()
-    // 忽略注释的语句
-    if (relSql == "" || relSql.startsWith("--") || relSql.startsWith("//") || relSql.startsWith("/*")) {
-        const nsql = []
-        const sqlArr = relSql.split("\n")
-        for (let i = 0; i < sqlArr.length; i++) {
-            let row = sqlArr[i]
-            if (row == "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
-                continue
-            }
-            row = row.trimEnd()
-            // 删除句尾的分号
-            if (row.endsWith(";")) {
-                nsql.push(row.substring(0, row.length - 1))
-            } else {
-                nsql.push(row)
-            }
-        }
-        relSql = nsql.join("\n")
+  let relSql = sql.trimStart()
+  const sqlArr = relSql.split("\n")
+  const nsql: string[] = []
+  for (let i = 0; i < sqlArr.length; i++) {
+    let row = sqlArr[i].trim()
+    if (row === "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
+      continue
     }
-
-    // 补充schema
-    /* const sqlLower = relSql.toLowerCase()
-    const idxFromEnd = sqlLower.indexOf(" from ") + 6
-    if (idxFromEnd !== 5) {
-        relSql = fillSchema(relSql, "", props.schema, idxFromEnd, 0)
-    } */
-
-    relSql = relSql.trimEnd()
-    // 删除句尾的分号
-    if (relSql.endsWith(";")) {
-        return relSql.substring(0, relSql.length - 1)
+    row = row.trimEnd()
+    if (row.endsWith(";")) {
+      nsql.push(row.substring(0, row.length - 1))
+    } else {
+      nsql.push(row)
     }
+  }
+  relSql = nsql.join("\n")
 
-    return relSql
+  relSql = relSql.trimEnd()
+  if (relSql.endsWith(";")) {
+    return relSql.substring(0, relSql.length - 1)
+  }
+
+  return relSql
 }
 
 function fillSchema(relSql: string, sqlResult: string, schema: string, searchStart: number, concatStart: number): string {
@@ -641,8 +1182,26 @@ function extractTableName(sqlExec: string) {
     return currentSelectTable
 }
 
-function exportDb() {
-    exportDialogVisible.value = true
+function handleExportResult(command: string) {
+    if (result.value.length === 0) {
+        ElMessage({ message: "请先执行查询", type: "warning" })
+        return
+    }
+
+    if (command === 'insert') {
+        exportCurrentToSqlInsert()
+    } else if (command === 'update') {
+        exportCurrentToSqlUpdate()
+    } else if (command === 'xlsx') {
+        exportCurrentToXlsx()
+    } else if (command === 'csv') {
+        const cols = columns.value.slice(1).map((col: any) => col.title)
+        exportToCsv(cols, result.value, currentSelectTable.value || 'query_result')
+        ElMessage({ message: '已导出 CSV', type: 'success' })
+    } else if (command === 'json') {
+        exportToJson(result.value, currentSelectTable.value || 'query_result')
+        ElMessage({ message: '已导出 JSON', type: 'success' })
+    }
 }
 
 function exportCurrentToXlsx() {
@@ -673,22 +1232,6 @@ function exportCurrentToXlsx() {
         autoWidth: false
     }
     excel.exportJsonToExcel(obj)
-}
-
-function handleDdlCommand(command: string) {
-    switch (command) {
-        case "insert":
-            exportCurrentToSqlInsert()
-            break
-        case "update":
-            exportCurrentToSqlUpdate()
-            break
-        case "create":
-            tableCreateDialogVisible.value = true
-            break
-        default:
-            ElMessage({ message: "无效操作", type: "error" })
-    }
 }
 
 function exportCurrentToSqlInsert() {
@@ -749,14 +1292,7 @@ function exportCurrentToSqlUpdate() {
 }
 
 function getSqlLang(): SqlLanguage {
-    let sqlLang: SqlLanguage = "sql"
-    const dbType = dbSchemaProxy.getDbType(props.schema).toLowerCase()
-    if (dbType === "oracle") {
-        sqlLang = "plsql"
-    } else if (dbType === "mysql") {
-        sqlLang = "mysql"
-    }
-    return sqlLang
+    return getSqlDialect(dbSchemaProxy.getDbType(props.schema))
 }
 
 function showCreateScript() {
@@ -770,33 +1306,28 @@ function copyCreateScript() {
     )
 }
 
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
 function onKeyup() {
-    localStorage.setItem(getSqlKey(), getEditorDoc())
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(getSqlKey(), getEditorDoc())
+    } catch (e) {
+      // localStorage may be full, silently ignore
+    }
+  }, 500)
 }
 
 function onResultDivResize(index: number, sizes: number[]) {
-    nextTick(() => { // 确保 DOM 已更新
+    nextTick(() => {
         if (sqlAreaRef.value) {
             sqlAreaRef.value.style.height = (sizes[index] - 25) + "px"
-            // 或者强制覆盖
             sqlAreaRef.value.style.setProperty('height', (sizes[index] - 25) + "px", 'important')
         }
     })
 
     console.log(index, JSON.stringify(sizes))
-}
-
-function fmtVal(val: any) {
-    if (val === null) {
-        return "null"
-    } else if (typeof val === "string" && val.length > 2 && val.startsWith("b'") && val.charAt(val.length - 1) === "'") {
-        return val
-    } else if (typeof val === "string" && val.length > 2 && val.startsWith("s:") && new Number(val.substring(2)).toString() !== "NaN") {
-        return val.substring(2, val.length)
-    } else if (typeof val === "string") {
-        return "'" + val + "'"
-    }
-    return val
 }
 
 function openTableManager() {
@@ -893,8 +1424,8 @@ const dragEnd = (e: DragEvent) => {
     align-items: center;
     justify-content: space-between;
     padding: 6px 12px;
-    background: #fafbfc;
-    border-bottom: 1px solid #ebeef5;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border-primary);
     gap: 4px;
 }
 
@@ -931,21 +1462,39 @@ const dragEnd = (e: DragEvent) => {
 
 .modify-label {
     font-size: 12px;
-    color: #606266;
+    color: var(--text-secondary);
     user-select: none;
 }
 
 .max-rows-label {
     font-size: 12px;
-    color: #909399;
+    color: var(--text-tertiary);
     white-space: nowrap;
+}
+
+.exec-time {
+    font-size: 12px;
+    color: #67c23a;
+    font-weight: 500;
+    white-space: nowrap;
+    margin-right: 4px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.inline-edit-badge {
+    font-size: 12px;
+    color: #409eff;
+    font-weight: 500;
+    white-space: nowrap;
+    margin-right: 4px;
+    cursor: default;
 }
 
 /* ── SQL Editor Area ── */
 .sql-area {
     padding: 0;
     margin-top: 2px;
-    border-top: 1px solid #ebeef5;
+    border-top: 1px solid var(--border-primary);
     height: calc(100vh * 0.55 - 50px);
 }
 
@@ -989,7 +1538,7 @@ const dragEnd = (e: DragEvent) => {
         line-height: 35px;
         font-weight: 600;
         font-size: 13px;
-        color: #606266;
+        color: var(--text-secondary);
     }
     .drag-line {
         position: absolute;
@@ -1038,6 +1587,40 @@ const dragEnd = (e: DragEvent) => {
 /* ── Data Details Dialog ── */
 .el-dialog .el-form-item {
     margin-bottom: 12px;
+}
+
+/* ── Inline Edit Bar ── */
+.db-inline-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #fffbe6;
+    border-top: 1px solid #ffe58f;
+    border-bottom: 1px solid #ffe58f;
+    margin-top: -1px;
+}
+
+.db-inline-bar .el-button {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+.inline-count {
+    font-size: 12px;
+    color: #ad6800;
+    margin-left: 4px;
+}
+
+[data-theme="dark"] .db-inline-bar {
+    background: #3d3a1a;
+    border-top: 1px solid #5a5522;
+    border-bottom: 1px solid #5a5522;
+}
+
+[data-theme="dark"] .inline-count {
+    color: #e0c068;
 }
 </style>
 <style lang="less" scoped>

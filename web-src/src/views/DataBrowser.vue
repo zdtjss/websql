@@ -9,33 +9,68 @@
         </span>
         <el-divider direction="vertical" />
         <el-button size="small" @click="loadData" :loading="loading" :icon="Refresh">刷新</el-button>
+        <el-dropdown @command="handleAutoRefresh" style="margin-left: -4px;">
+          <el-button size="small" :type="autoRefreshInterval > 0 ? 'warning' : ''" :icon="Timer">
+            {{ autoRefreshInterval > 0 ? autoRefreshInterval + 's' : '' }}
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="0">关闭自动刷新</el-dropdown-item>
+              <el-dropdown-item command="5">每 5 秒</el-dropdown-item>
+              <el-dropdown-item command="15">每 15 秒</el-dropdown-item>
+              <el-dropdown-item command="30">每 30 秒</el-dropdown-item>
+              <el-dropdown-item command="60">每 60 秒</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button size="small" type="primary" @click="openInsertDialog" :icon="Plus">新增</el-button>
         <el-upload
           :file-list="fileList"
           :http-request="handleFileSelect"
           :show-file-list="false"
           :limit="1"
-          accept=".xlsx,.xls"
+          :accept="importAccept"
         >
           <el-dropdown @command="handleImportCommand">
             <el-button size="small" type="success">
               导入<el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </el-button>
             <template #dropdown>
+              <el-dropdown-item command="insert_xlsx">📊 新增导入 (Excel)</el-dropdown-item>
+              <el-dropdown-item command="update_xlsx">📊 更新导入 (Excel)</el-dropdown-item>
+              <el-dropdown-item command="insert_csv" divided>📄 新增导入 (CSV)</el-dropdown-item>
+              <el-dropdown-item command="update_csv">📄 更新导入 (CSV)</el-dropdown-item>
+              <el-dropdown-item command="insert_json" divided>📋 新增导入 (JSON)</el-dropdown-item>
+              <el-dropdown-item command="update_json">📋 更新导入 (JSON)</el-dropdown-item>
+          </template>
+        </el-dropdown>
+        </el-upload>
+        <el-dropdown @command="handleExportCommand">
+            <el-button size="small" type="warning" :loading="exporting">
+              导出<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="insert">新增导入</el-dropdown-item>
-                <el-dropdown-item command="update">更新导入</el-dropdown-item>
+                <el-dropdown-item command="xlsx">Excel (.xlsx)</el-dropdown-item>
+                <el-dropdown-item command="csv">CSV</el-dropdown-item>
+                <el-dropdown-item command="json">JSON</el-dropdown-item>
+                <el-dropdown-item command="sql">SQL INSERT</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-        </el-upload>
-        <el-button size="small" type="warning" :loading="exporting" @click="exportData" :icon="Download">导出</el-button>
       </div>
       <div class="toolbar-right" v-if="filterExpr">
         <el-tag closable type="info" size="small" @close="filterExpr = ''; columnFilterConditions = {}; loadData()">
           过滤中
         </el-tag>
       </div>
+    </div>
+
+    <!-- Inline edit status bar -->
+    <div v-if="inlineChangeCount > 0" class="db-inline-bar">
+      <span class="inline-change-hint">{{ inlineChangeCount }} 个单元格已修改</span>
+      <el-button size="small" type="primary" :loading="savingInline" @click="saveInlineChanges">保存更改</el-button>
+      <el-button size="small" @click="discardInlineChanges">放弃更改</el-button>
     </div>
 
     <!-- Table area -->
@@ -47,7 +82,7 @@
         :row-key="getRowKey"
         stripe
         border
-        @sort-change="onSortChange"
+        :row-class-name="rowClassName"
       >
         <!-- Row index column -->
         <el-table-column type="index" width="60" fixed :index="rowIndexOffset" />
@@ -58,7 +93,6 @@
           :key="col.name"
           :prop="col.name"
           :min-width="Math.max(150, col.name.length * 14 + 60)"
-          show-overflow-tooltip
           resizable
         >
           <template #header>
@@ -89,7 +123,34 @@
             </div>
           </template>
           <template #default="scope">
-            <span :title="col.comment">{{ scope.row[col.name] }}</span>
+            <div class="inline-cell" @dblclick.stop="startInlineEdit(scope.row, col.name, $event)">
+              <template v-if="isEditingCell(scope.row, col.name)">
+                <el-date-picker
+                  v-if="isDateColumn(col.name)"
+                  v-model="editingValue"
+                  type="datetime"
+                  value-format="YYYY-MM-DDTHH:mm:ss"
+                  placeholder="选择日期"
+                  size="small"
+                  class="inline-edit-input"
+                  @keyup.escape="cancelInlineEdit()"
+                  @visible-change="(visible) => { if (!visible) commitInlineEdit() }"
+                />
+                <el-input
+                  v-else
+                  :ref="(el) => setEditInputRef(el)"
+                  v-model="editingValue"
+                  size="small"
+                  class="inline-edit-input"
+                  @keyup.enter="commitInlineEdit()"
+                  @keyup.escape="cancelInlineEdit()"
+                  @blur="commitInlineEdit()"
+                />
+              </template>
+              <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="String(scope.row[col.name] ?? '')">
+                {{ scope.row[col.name] }}
+              </span>
+            </div>
           </template>
         </el-table-column>
 
@@ -97,7 +158,7 @@
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="scope">
             <el-button size="small" type="primary" link @click="openEditDialog(scope.row, scope.$index)">
-              编辑
+              详细
             </el-button>
             <el-popconfirm
               title="确定删除这条记录吗？"
@@ -200,7 +261,15 @@
           :label="col.name"
           :title="col.comment"
         >
+          <el-date-picker
+            v-if="isDateColumn(col.name)"
+            v-model="editRowData[col.name]"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            :disabled="pkColumns.includes(col.name)"
+          />
           <el-input
+            v-else
             v-model="editRowData[col.name]"
             type="textarea"
             autosize
@@ -232,7 +301,14 @@
           :label="col.name"
           :title="col.comment"
         >
+          <el-date-picker
+            v-if="isDateColumn(col.name)"
+            v-model="insertRowData[col.name]"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+          />
           <el-input
+            v-else
             v-model="insertRowData[col.name]"
             type="textarea"
             autosize
@@ -254,18 +330,22 @@
     :schema="schema"
     :table-name="tableName"
     :db-columns="dbColumns"
+    :import-format="importFormat"
     :on-import-success="loadData"
     ref="importDialogRef"
+    @confirm-import-data="handleCsvJsonImport"
   />
 </template>
 
 <script setup>
-import { ArrowDown, ArrowUp, Download, Filter, Grid, Plus, Refresh, Sort } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { computed, onMounted, ref, watch } from 'vue'
+import { ArrowDown, ArrowUp, Download, Filter, Grid, Plus, Refresh, Sort, Timer } from '@element-plus/icons-vue'
+import { ElLoading, ElMessage } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
 import http from '../js/utils/httpProxy.js'
+import { fmtVal } from '../js/utils/sqlHelper.ts'
+import { exportToCsv, exportToJson, exportToSql, downloadBlob } from '../js/utils/exportHelper.ts'
 
 const props = defineProps({
   connId: String,
@@ -302,6 +382,22 @@ const originRowData = ref({})
 const pkColumns = ref([])
 const saving = ref(false)
 
+// Inline editing state
+const editingCell = ref(null)  // { rowKey: string, colName: string } | null
+const editingValue = ref('')
+const changedRows = ref({})  // { [rowKey]: { [colName]: newValue, ... } }
+const originalRows = ref({})  // { [rowKey]: { [colName]: value, ... } }
+const savingInline = ref(false)
+let editInputRef = null
+
+const inlineChangeCount = computed(() => {
+  let count = 0
+  Object.values(changedRows.value).forEach(row => {
+    count += Object.keys(row).length
+  })
+  return count
+})
+
 // Insert dialog state
 const insertDialogVisible = ref(false)
 const insertRowData = ref({})
@@ -313,13 +409,55 @@ const importing = ref(false)
 const importPreviewVisible = ref(false)
 const dbColumns = ref([])
 const importDialogRef = ref(null)
-const importMode = ref('insert') // 存储当前选择的导入模式
+const importMode = ref('insert')
+const importFormat = ref('xlsx')
+
+const importAccept = computed(() => {
+  switch (importFormat.value) {
+    case 'csv': return '.csv'
+    case 'json': return '.json'
+    default: return '.xlsx,.xls'
+  }
+})
+
+// Auto-refresh
+const autoRefreshInterval = ref(0)
+let autoRefreshTimer = null
+
+function handleAutoRefresh(seconds) {
+  const sec = parseInt(seconds)
+  autoRefreshInterval.value = sec
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+  if (sec > 0) {
+    autoRefreshTimer = setInterval(() => {
+      if (!loading.value) {
+        loadData()
+      }
+    }, sec * 1000)
+  }
+}
+
+onBeforeUnmount(() => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+  }
+})
 
 function handleImportCommand(command) {
-  // Store the import mode for later use when file is selected
-  importMode.value = command
-  // Trigger the hidden file input click
-  const fileInput = document.querySelector('input[type="file"]')
+  if (command.endsWith('_csv')) {
+    importFormat.value = 'csv'
+    importMode.value = command.startsWith('insert') ? 'insert' : 'update'
+  } else if (command.endsWith('_json')) {
+    importFormat.value = 'json'
+    importMode.value = command.startsWith('insert') ? 'insert' : 'update'
+  } else {
+    importFormat.value = 'xlsx'
+    importMode.value = command.startsWith('insert') ? 'insert' : 'update'
+  }
+  const fileInput = document.querySelector('.data-browser input[type="file"]')
   if (fileInput) {
     fileInput.click()
   }
@@ -405,6 +543,10 @@ async function fetchData() {
   }
 
   rows.value = data?.data ?? []
+  changedRows.value = {}
+  rows.value.forEach(row => {
+    originalRows.value[getRowKey(row)] = { ...row }
+  })
 }
 
 async function loadData() {
@@ -430,12 +572,6 @@ function onSizeChange() {
   loadData()
 }
 
-function onSortChange({ prop, order }) {
-  sortColumn.value = prop || ''
-  sortOrder.value = order  // 'ascending' | 'descending' | null
-  loadData()
-}
-
 function handleSort(colName) {
   if (sortColumn.value === colName) {
     if (sortOrder.value === null) {
@@ -458,6 +594,147 @@ function getSortIcon(colName) {
     return Sort
   }
   return sortOrder.value === 'ascending' ? ArrowUp : ArrowDown
+}
+
+function rowClassName({ row }) {
+  const key = getRowKey(row)
+  return changedRows.value[key] ? 'row-changed' : ''
+}
+
+function setEditInputRef(el) {
+  if (el) {
+    editInputRef = el
+    el.focus?.()
+    el.select?.()
+  }
+}
+
+function isDateColumn(colName) {
+  const col = dataColumns.value.find((c) => c.name === colName)
+  if (!col || !col.type) return false
+  const upper = col.type.toUpperCase()
+  return upper === 'DATETIME' || upper === 'DATE' || upper === 'TIMESTAMP' 
+    || upper === 'TIMESTAMP(6)' || upper.includes('TIMESTAMP')
+    || upper === 'TIMESTAMPTZ' || upper === 'TIMESTAMPLTZ'
+}
+
+function isEditingCell(row, colName) {
+  if (!editingCell.value) return false
+  return editingCell.value.rowKey === getRowKey(row) && editingCell.value.colName === colName
+}
+
+function isCellChanged(row, colName) {
+  const key = getRowKey(row)
+  return changedRows.value[key] && changedRows.value[key][colName] !== undefined
+}
+
+function startInlineEdit(row, colName, event) {
+  if (pkColumns.value.includes(colName)) return
+  const key = getRowKey(row)
+  editingCell.value = { rowKey: key, colName }
+  const changed = changedRows.value[key]
+  const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
+  editingValue.value = currentVal ?? ''
+}
+
+function commitInlineEdit() {
+  if (!editingCell.value) return
+  const { rowKey, colName } = editingCell.value
+  const newVal = editingValue.value
+  const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+  const strNew = String(newVal ?? '')
+  const strOrig = String(origVal ?? '')
+
+  if (strNew !== strOrig) {
+    if (!changedRows.value[rowKey]) {
+      changedRows.value[rowKey] = {}
+    }
+    changedRows.value[rowKey][colName] = newVal
+  } else {
+    if (changedRows.value[rowKey]) {
+      delete changedRows.value[rowKey][colName]
+      if (Object.keys(changedRows.value[rowKey]).length === 0) {
+        delete changedRows.value[rowKey]
+      }
+    }
+  }
+
+  editingCell.value = null
+  editingValue.value = ''
+}
+
+function cancelInlineEdit() {
+  editingCell.value = null
+  editingValue.value = ''
+}
+
+async function saveInlineChanges() {
+  const rowKeys = Object.keys(changedRows.value)
+  if (rowKeys.length === 0) return
+
+  savingInline.value = true
+  let successCount = 0
+  let errorCount = 0
+
+  try {
+    for (const rowKey of rowKeys) {
+      const changed = changedRows.value[rowKey]
+      const orig = originalRows.value[rowKey]
+      if (!orig) continue
+
+      const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
+      const setClauses = Object.keys(changed)
+        .map(k => `\`${k}\` = ${fmtVal(changed[k])}`)
+        .join(', ')
+
+      const allWhereCols = [
+        ...pkCols,
+        ...Object.keys(changed).filter(k => !pkCols.includes(k))
+      ]
+      const whereClauses = allWhereCols
+        .map(k => `\`${k}\` = ${fmtVal(orig[k])}`)
+        .join(' AND ')
+
+      const sql = `UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`
+
+      const params = new URLSearchParams()
+      params.append('connId', props.connId)
+      params.append('schema', props.schema)
+      params.append('sql', sql)
+
+      try {
+        const resp = await http.post('/execSQL', params)
+        const respData = resp.data.data
+        if (respData && respData.msg) {
+          errorCount++
+        } else {
+          successCount++
+        }
+      } catch {
+        errorCount++
+      }
+    }
+
+    if (errorCount === 0) {
+      ElMessage({ message: `成功保存 ${successCount} 条记录`, type: 'success' })
+    } else {
+      ElMessage({ message: `保存完成: ${successCount} 成功, ${errorCount} 失败`, type: 'warning' })
+    }
+    await loadData()
+  } finally {
+    savingInline.value = false
+  }
+}
+
+function discardInlineChanges() {
+  changedRows.value = {}
+  rows.value.forEach(row => {
+    const key = getRowKey(row)
+    if (originalRows.value[key]) {
+      Object.assign(row, originalRows.value[key])
+    }
+  })
+  ElMessage({ message: '已放弃更改', type: 'info' })
 }
 
 function openColumnFilter(col, event) {
@@ -584,7 +861,56 @@ function clearColumnFilter() {
   ElMessage({ message: '该字段过滤已清除', type: 'success' })
 }
 
-function exportData() {
+async function handleExportCommand(format) {
+  if (format === 'xlsx') {
+    await exportToExcel()
+    return
+  }
+
+  loading.value = true
+  try {
+    const resp = await fetchFullData()
+    if (!resp) return
+
+    const rows = resp.data?.data ?? []
+    const cols = dataColumns.value.map(c => c.name)
+
+    if (format === 'csv') {
+      exportToCsv(cols, rows, props.tableName)
+    } else if (format === 'json') {
+      exportToJson(rows, props.tableName)
+    } else if (format === 'sql') {
+      const sqlText = exportToSql(cols, rows, props.tableName)
+      downloadBlob(sqlText, props.tableName + '.sql', 'text/plain')
+    }
+    ElMessage({ message: '导出成功', type: 'success' })
+  } catch (err) {
+    console.error('[DataBrowser] 导出失败:', err)
+    ElMessage({ message: '导出失败', type: 'error' })
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchFullData() {
+  let sql = `SELECT * FROM \`${props.tableName}\``
+  if (filterExpr.value.trim()) {
+    sql += ` WHERE ${filterExpr.value.trim()}`
+  }
+  if (sortColumn.value && sortOrder.value) {
+    const dir = sortOrder.value === 'descending' ? 'DESC' : 'ASC'
+    sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
+  }
+  const params = new URLSearchParams()
+  params.append('connId', props.connId)
+  params.append('schema', props.schema)
+  params.append('tableName', props.tableName)
+  params.append('sql', sql)
+  params.append('maxLine', '100000')
+  return await http.post('/execSQL', params)
+}
+
+async function exportToExcel() {
   let sql = `SELECT * FROM \`${props.tableName}\``
   if (filterExpr.value.trim()) {
     sql += ` WHERE ${filterExpr.value.trim()}`
@@ -632,7 +958,6 @@ async function saveData() {
   const origin = originRowData.value
   const current = editRowData.value
 
-  // Build SET clause from changed columns (exclude PK columns)
   const changedCols = Object.keys(origin).filter(
     key => !pkColumns.value.includes(key) && origin[key] !== current[key]
   )
@@ -644,9 +969,12 @@ async function saveData() {
 
   const setClauses = changedCols.map(key => `\`${key}\` = ${fmtVal(current[key])}`).join(', ')
 
-  // Build WHERE clause from PK columns
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(origin).slice(0, 1)
-  const whereClauses = pkCols.map(key => `\`${key}\` = ${fmtVal(origin[key])}`).join(' AND ')
+  const allWhereCols = [
+    ...pkCols,
+    ...changedCols.filter(k => !pkCols.includes(k))
+  ]
+  const whereClauses = allWhereCols.map(key => `\`${key}\` = ${fmtVal(origin[key])}`).join(' AND ')
 
   const sql = `UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`
 
@@ -673,17 +1001,6 @@ async function saveData() {
   } finally {
     saving.value = false
   }
-}
-
-function fmtVal(val) {
-  if (val === null || val === undefined) {
-    return 'NULL'
-  } else if (typeof val === 'string' && val.length > 2 && val.startsWith("b'") && val.endsWith("'")) {
-    return val
-  } else if (typeof val === 'string') {
-    return "'" + val.replace(/'/g, "''") + "'"
-  }
-  return val
 }
 
 function openInsertDialog() {
@@ -793,6 +1110,16 @@ function upload(options) {
 
 function handleFileSelect(options) {
   const file = options.file
+  if (importFormat.value === 'csv') {
+    handleCsvFile(file)
+  } else if (importFormat.value === 'json') {
+    handleJsonFile(file)
+  } else {
+    handleExcelFile(file)
+  }
+}
+
+function handleExcelFile(file) {
   const reader = new FileReader()
   reader.onload = (e) => {
     try {
@@ -810,12 +1137,10 @@ function handleFileSelect(options) {
       const headers = jsonData[0] || []
       const dataRows = jsonData.slice(1)
       
-      // 获取数据库字段
       if (dataColumns.value && dataColumns.value.length > 0) {
         dbColumns.value = dataColumns.value.map(col => col.name)
       }
       
-      // 设置文件数据并打开对话框（根据导入模式）
       importDialogRef.value?.setFileData(file, headers, dataRows)
       importDialogRef.value?.initMapping()
       importDialogRef.value?.previewData()
@@ -828,7 +1153,163 @@ function handleFileSelect(options) {
       ElMessage({ message: '读取 Excel 文件失败，请检查文件格式', type: 'error' })
     }
   }
-  reader.readAsArrayBuffer(options.file)
+  reader.readAsArrayBuffer(file)
+}
+
+function handleCsvFile(file) {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const text = e.target.result
+      const lines = text.split(/\r?\n/).filter(line => line.trim())
+      if (lines.length === 0) {
+        ElMessage({ message: 'CSV 文件为空', type: 'warning' })
+        return
+      }
+      const headers = parseCsvLine(lines[0])
+      const dataRows = lines.slice(1).map(parseCsvLine)
+      
+      if (dataColumns.value && dataColumns.value.length > 0) {
+        dbColumns.value = dataColumns.value.map(col => col.name)
+      }
+      
+      importDialogRef.value?.setFileData(file, headers, dataRows)
+      importDialogRef.value?.initMapping()
+      importDialogRef.value?.previewData()
+      if (importDialogRef.value?.setImportMode) {
+        importDialogRef.value.setImportMode(importMode.value)
+      }
+      importPreviewVisible.value = true
+    } catch (err) {
+      console.error('[DataBrowser] 读取 CSV 文件失败:', err)
+      ElMessage({ message: '读取 CSV 文件失败，请检查文件格式', type: 'error' })
+    }
+  }
+  reader.readAsText(file)
+}
+
+function parseCsvLine(line) {
+  const result = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        current += ch
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true
+      } else if (ch === ',') {
+        result.push(current)
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+  }
+  result.push(current)
+  return result
+}
+
+function handleJsonFile(file) {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const json = JSON.parse(e.target.result)
+      if (!Array.isArray(json) || json.length === 0) {
+        ElMessage({ message: 'JSON 文件应为非空数组', type: 'warning' })
+        return
+      }
+      const headers = Object.keys(json[0])
+      const dataRows = json.map(obj => headers.map(h => obj[h] ?? ''))
+      
+      if (dataColumns.value && dataColumns.value.length > 0) {
+        dbColumns.value = dataColumns.value.map(col => col.name)
+      }
+      
+      importDialogRef.value?.setFileData(file, headers, dataRows)
+      importDialogRef.value?.initMapping()
+      importDialogRef.value?.previewData()
+      if (importDialogRef.value?.setImportMode) {
+        importDialogRef.value.setImportMode(importMode.value)
+      }
+      importPreviewVisible.value = true
+    } catch (err) {
+      console.error('[DataBrowser] 读取 JSON 文件失败:', err)
+      ElMessage({ message: '读取 JSON 文件失败，请检查文件格式', type: 'error' })
+    }
+  }
+  reader.readAsText(file)
+}
+
+async function handleCsvJsonImport({ data, mapping, mode }) {
+  if (!data || data.length === 0) {
+    ElMessage({ message: '没有可导入的数据', type: 'warning' })
+    return
+  }
+
+  const loading = ElLoading.service({ fullscreen: false, text: `正在${mode === 'insert' ? '新增' : '更新'}导入 ${data.length} 条数据...` })
+
+  let successCount = 0
+  let errorCount = 0
+
+  try {
+    const batchSize = 50
+    for (let i = 0; i < data.length; i += batchSize) {
+      const batch = data.slice(i, i + batchSize)
+      const sqlStatements = []
+
+      for (const row of batch) {
+        const cols = Object.keys(row).filter(k => row[k] !== null && row[k] !== undefined)
+        if (cols.length === 0) continue
+
+        if (mode === 'insert') {
+          const colList = cols.map(k => '`' + k + '`').join(', ')
+          const valList = cols.map(k => fmtVal(row[k])).join(', ')
+          sqlStatements.push(`INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`)
+        } else {
+          const setClauses = cols.map(k => '`' + k + '` = ' + fmtVal(row[k])).join(', ')
+          const pkCols = pkColumns.value.length > 0 ? pkColumns.value : cols.slice(0, 1)
+          const whereClauses = pkCols.filter(k => row[k] !== null).map(k => '`' + k + '` = ' + fmtVal(row[k])).join(' AND ')
+          if (!whereClauses) continue
+          sqlStatements.push(`UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
+        }
+      }
+
+      const batchSql = sqlStatements.join('; ')
+      if (!batchSql) continue
+
+      const params = new URLSearchParams()
+      params.append('connId', props.connId)
+      params.append('schema', props.schema)
+      params.append('sql', batchSql)
+
+      try {
+        await http.post('/execSQL', params)
+        successCount += batch.length
+      } catch {
+        errorCount += batch.length - sqlStatements.length
+      }
+    }
+  } finally {
+    loading.close()
+    importPreviewVisible.value = false
+    if (errorCount === 0) {
+      ElMessage({ message: `${mode === 'insert' ? '新增' : '更新'}导入成功，共 ${successCount} 条`, type: 'success' })
+    } else {
+      ElMessage({ message: `导入完成: ${successCount} 成功, ${errorCount} 失败`, type: 'warning' })
+    }
+    await loadData()
+  }
 }
 
 onMounted(() => {
@@ -850,7 +1331,7 @@ watch(
   height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-primary);
 }
 
 .db-toolbar {
@@ -858,8 +1339,8 @@ watch(
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px;
-  background: #fafbfc;
-  border-bottom: 1px solid #ebeef5;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-primary);
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -879,7 +1360,7 @@ watch(
 .db-toolbar .toolbar-title {
   font-weight: 600;
   font-size: 14px;
-  color: #303133;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -898,9 +1379,53 @@ watch(
 
 .db-pagination {
   padding: 8px 14px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--border-primary);
   display: flex;
   justify-content: flex-end;
-  background: #fafbfc;
+  background: var(--bg-toolbar);
+}
+
+.db-inline-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: var(--bg-inline-bar);
+  border-bottom: 1px solid var(--border-inline);
+}
+
+.db-inline-bar .inline-change-hint {
+  font-size: 13px;
+  color: var(--accent-color);
+  font-weight: 500;
+}
+
+.inline-cell {
+  min-height: 24px;
+  cursor: pointer;
+}
+
+.inline-edit-input {
+  width: 100%;
+}
+
+.inline-edit-input :deep(.el-input__inner) {
+  padding: 0 4px;
+  height: 28px;
+}
+
+.cell-changed {
+  background: #fff7e6;
+  padding: 2px 4px;
+  border-radius: 3px;
+  border-bottom: 1px dashed #faad14;
+}
+
+[data-theme="dark"] .cell-changed {
+  background: #3d3520;
+}
+
+:deep(.row-changed td) {
+  border-bottom: 2px solid #faad14;
 }
 </style>

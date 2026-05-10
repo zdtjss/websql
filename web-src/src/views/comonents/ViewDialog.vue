@@ -25,6 +25,7 @@
 import { ref, onMounted } from 'vue'
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
+import { getSqlDialect } from '@/js/utils/sqlHelper.ts'
 import hljs from 'highlight.js/lib/core'
 import { format } from 'sql-formatter'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -85,14 +86,7 @@ function loadData(pane) {
 }
 
 function getSqlLang(schema) {
-    let sqlLang = "sql"
-    const dbType = dbSchemaProxy.getDbType(schema).toLowerCase()
-    if (dbType === "oracle") {
-        sqlLang = "plsql"
-    } else if (dbType === "mysql") {
-        sqlLang = "mysql"
-    }
-    return sqlLang
+    return getSqlDialect(dbSchemaProxy.getDbType(schema))
 }
 
 </script>

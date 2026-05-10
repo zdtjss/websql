@@ -60,11 +60,11 @@ func filterSchemasWithPermission(connId, authorization string) []*Tree {
 	}
 
 	userPower := GetUserPower(authorization)
-	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return allSchemas
-		}
+	if userPower == nil {
 		return []*Tree{}
+	}
+	if userPower.UserId == config.AdminId {
+		return allSchemas
 	}
 
 	powerDetails := findUserPowerDetails(userPower.UserId)

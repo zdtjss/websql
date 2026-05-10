@@ -1,0 +1,52 @@
+export function downloadBlob(data: BlobPart, filename: string, mimeType: string) {
+  const blob = new Blob([data], { type: mimeType })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+}
+
+export function exportToJson(data: any[], filename: string) {
+  const json = JSON.stringify(data, null, 2)
+  downloadBlob(json, filename + '.json', 'application/json')
+}
+
+export function exportToCsv(columns: string[], rows: any[], filename: string) {
+  const escapeCsvField = (val: any): string => {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+
+  const header = columns.map(escapeCsvField).join(',')
+  const body = rows.map(row =>
+    columns.map(col => escapeCsvField(row[col])).join(',')
+  ).join('\n')
+
+  const bom = '\uFEFF'
+  downloadBlob(bom + header + '\n' + body, filename + '.csv', 'text/csv;charset=utf-8')
+}
+
+export function exportToSql(columns: string[], rows: any[], tableName: string): string {
+  const colList = '`' + columns.join('`, `') + '`'
+  const values = rows.map(row => {
+    const vals = columns.map(col => {
+      const val = row[col]
+      if (val === null || val === undefined) return 'NULL'
+      if (typeof val === 'string') {
+        if (val.length > 2 && val.startsWith("b'") && val.endsWith("'")) return val
+        return "'" + val.replace(/\\/g, '\\\\').replace(/'/g, "''") + "'"
+      }
+      return String(val)
+    }).join(', ')
+    return `INSERT INTO \`${tableName}\` (${colList}) VALUES (${vals});`
+  }).join('\n')
+  return values
+}
