@@ -2,10 +2,10 @@
     <el-tabs v-model="activeName" type="card" class="view-dialog-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
             <el-table :data="columnList" style="width: 100%" height="470" size="small" stripe>
-                <el-table-column prop="columnName" label="名称" width="250" />
-                <el-table-column prop="columnType" label="类型" width="160" />
-                <el-table-column prop="isNullable" label="可空" width="100" />
-                <el-table-column prop="columnComment" label="注释" />
+                <el-table-column prop="columnName" label="名称" width="250" resizable />
+                <el-table-column prop="columnType" label="类型" width="160" resizable />
+                <el-table-column prop="isNullable" label="可空" width="100" resizable />
+                <el-table-column prop="columnComment" label="注释" resizable />
             </el-table>
         </el-tab-pane>
         <el-tab-pane label="选项" name="option">

@@ -37,16 +37,16 @@
       <div v-if="diffCols.length > 0">
         <h4 style="margin:12px 0 8px;color:var(--text-secondary);">差异列 ({{ diffCols.length }})</h4>
         <el-table :data="diffCols" size="small" max-height="300" stripe>
-          <el-table-column label="状态" width="90">
+          <el-table-column label="状态" width="90" resizable>
             <template #default="scope">
               <el-tag size="small" :type="scope.row.status === '新增' ? 'success' : scope.row.status === '删除' ? 'danger' : 'warning'">
                 {{ scope.row.status }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="column" label="列名" width="200" />
-          <el-table-column prop="sourceDef" label="源表定义" min-width="200" show-overflow-tooltip />
-          <el-table-column prop="targetDef" label="目标表定义" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="column" label="列名" width="200" resizable />
+          <el-table-column prop="sourceDef" label="源表定义" min-width="200" show-overflow-tooltip resizable />
+          <el-table-column prop="targetDef" label="目标表定义" min-width="200" show-overflow-tooltip resizable />
         </el-table>
       </div>
       <el-empty v-if="diffCols.length === 0" description="两个表结构完全一致" />

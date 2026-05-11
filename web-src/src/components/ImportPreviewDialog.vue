@@ -46,6 +46,7 @@
           :key="col.excelCol + '_' + idx"
           min-width="120"
           :width="150"
+          resizable
         >
           <template #header>
             <div style="display: flex; flex-direction: column; gap: 6px; padding: 8px 0;">

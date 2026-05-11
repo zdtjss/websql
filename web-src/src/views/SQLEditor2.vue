@@ -63,31 +63,35 @@
 
             <el-splitter-panel size="55%">
                 <div id="sqlArea" ref="sqlAreaRef" class="sql-area">
-                    <div ref="codemirror" class="codemirror" @keyup="onKeyup"></div>
+                    <div ref="codemirror" class="codemirror" :class="{ 'table-link-cursor': tableNameUnderCursor }" @keyup="onKeyup" @keydown="onEditorKeydown" @mousemove="onEditorMousemove" @click="onEditorClick"></div>
                 </div>
             </el-splitter-panel>
             <el-splitter-panel size="45%">
-                <el-auto-resizer>
-                    <template #default="{ height: autoHeight, width: autoWidth }">
-                        <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }">
-                            <el-table-v2 
-                    :columns="columns" 
-                    :data="result" 
-                    :width="totalColumnWidth" 
-                    :height="autoHeight" 
-                    :row-height="35" />
-                <div v-if="canInlineEdit && inlineChangeCount > 0" class="db-inline-bar">
-                    <el-button type="warning" size="small" @click="saveInlineChanges" :loading="savingInline">
-                        <span>保存更改</span>
-                    </el-button>
-                    <el-button size="small" @click="exec(); inlineChanges.clear()">
-                        <span>放弃更改</span>
-                    </el-button>
-                    <span class="inline-count">{{ inlineChangeCount }} 处更改</span>
+                <div style="height: 100%; display: flex; flex-direction: column;">
+                    <div style="flex: 1; overflow: hidden;">
+                        <el-auto-resizer>
+                            <template #default="{ height: autoHeight, width: autoWidth }">
+                                <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }" @paste="handlePaste2" @keydown="onTableKeydown2">
+                                    <el-table-v2 
+                            :columns="columns" 
+                            :data="result" 
+                            :width="totalColumnWidth" 
+                            :height="autoHeight" 
+                            :row-height="35" />
+                                </div>
+                            </template>
+                        </el-auto-resizer>
+                    </div>
+                    <div v-if="canInlineEdit && inlineChangeCount > 0" class="db-inline-bar">
+                        <el-button type="warning" size="small" @click="saveInlineChanges" :loading="savingInline">
+                            <span>保存更改</span>
+                        </el-button>
+                        <el-button size="small" @click="exec(); inlineChanges.clear()">
+                            <span>放弃更改</span>
+                        </el-button>
+                        <span class="inline-count">{{ inlineChangeCount }} 处更改</span>
+                    </div>
                 </div>
-                        </div>
-                    </template>
-                </el-auto-resizer>
             </el-splitter-panel>
         </el-splitter>
     </div>
@@ -95,15 +99,15 @@
         <DBExport :connId="props.connId" :schema="props.schema" opt="insert" :canImport="canModify"/>
     </el-dialog>
     <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
-        destroy-on-close width="1000px" style="height:650px;overflow-y: auto;">
-        <div>
+        destroy-on-close width="1000px" class="table-structure-dialog">
+        <div class="dialog-toolbar">
             <el-switch v-model="isTable" class="ml-2" inline-prompt size="large"
                 style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff;margin-right: 10px;"
                 active-text="表" inactive-text="视图" />
             <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
             <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
         </div>
-        <div>
+        <div class="dialog-scroll-body">
             <TableEditor v-if="isTable" :tableMeta="tableMeta" />
             <ViewDialog v-else :tableMeta="tableMeta" />
         </div>
@@ -111,10 +115,10 @@
     <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
         style="height:650px;overflow-y: auto;">
         <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="520">
-            <el-table-column type="index" width="50" />
-            <el-table-column prop="exec_time" label="操作时间" width="170" />
-            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip />
-            <el-table-column label="" width="38">
+            <el-table-column type="index" width="50" resizable />
+            <el-table-column prop="exec_time" label="操作时间" width="170" resizable />
+            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip resizable />
+            <el-table-column label="" width="38" resizable>
                 <template #default="scope">
                     <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
                         <View />
@@ -141,8 +145,8 @@
             <el-input v-model="sqlHistorySearch" placeholder="搜索 SQL..." clearable size="small" />
         </div>
         <el-table :data="filteredSqlHistory" stripe size="small" style="width: 100%;" max-height="calc(100vh - 180px)">
-            <el-table-column prop="exec_time" label="时间" width="160" />
-            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip>
+            <el-table-column prop="exec_time" label="时间" width="160" resizable />
+            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip resizable>
                 <template #default="scope">
                     <span style="cursor: pointer; color: #409eff;" @click="applySqlFromHistory(scope.row.exec_sql)" title="点击填入编辑器">
                         {{ scope.row.exec_sql }}
@@ -152,8 +156,8 @@
         </el-table>
     </el-drawer>
     <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
-        style="height:650px;overflow-y: auto;">
-        <div style="height: 530px;overflow-y: auto;">
+        class="data-details-dialog">
+        <div class="dialog-scroll-body">
             <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
                 <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
                     <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"
@@ -202,7 +206,7 @@ import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { tags } from '@lezer/highlight'
-import { ref, onMounted, watch, h, nextTick, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
 import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
@@ -316,6 +320,10 @@ const editingCellValue = ref('')
 const inlineChanges = ref(new Map<string, any>())
 const savingInline = ref(false)
 
+const activeCellRow2 = ref(-1)
+const activeCellCol2 = ref('')
+const pasteSnapshot2 = ref<any>(null)
+
 const tableList = computed(() => {
     try {
         return dbSchemaProxy.getTable(props.schema).map((t: any) => t.label)
@@ -323,6 +331,10 @@ const tableList = computed(() => {
         return []
     }
 })
+
+const ctrlHeld = ref(false)
+const tableNameUnderCursor = ref('')
+const lastMousePos = ref({ x: -1, y: -1 })
 
 // 计算所有列的总宽度
 const totalColumnWidth = computed(() => {
@@ -464,6 +476,7 @@ function onQueryBuilderInsert(sql: string) {
 }
 
 onMounted(() => {
+    window.addEventListener('keyup', onGlobalKeyup)
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
             let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
@@ -474,6 +487,10 @@ onMounted(() => {
     createEditor(codemirror, doc);
     const schemaPathLower = props.schemaPath.toLowerCase()
     canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat")  != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
+})
+
+onBeforeUnmount(() => {
+    window.removeEventListener('keyup', onGlobalKeyup)
 })
 
 watch(currentTheme, () => {
@@ -493,20 +510,17 @@ function createEditor(editorContainer: any, doc: any) {
         editorView.value.destroy();
     }
     const isDark = currentTheme.value === 'dark'
-    const extensions = [
-        keymap.of([
-            ...standardKeymap,
-            {
-                key: 'Tab',
-                run: insertTab,
-            }, {
-                key: "ctrl-y",
-                run: redo
-            }, {
-                key: "ctrl-z",
-                run: undo
-            }
-        ]),
+    const cleanKeymap = standardKeymap.filter(
+            k => k.key !== "Mod-z" && k.key !== "Mod-Shift-z" && k.key !== "Mod-y"
+        )
+        const extensions = [
+            keymap.of([
+                ...cleanKeymap,
+                { key: "Mod-z", run: undo, preventDefault: true },
+                { key: "Mod-y", run: redo, preventDefault: true },
+                { key: "Mod-Shift-z", run: redo, preventDefault: true },
+                { key: 'Tab', run: insertTab, preventDefault: true },
+            ]),
         sql({
             dialect: dbSchemaProxy.getDialect(props.schema),
             schema: <any>dbSchemaProxy.getAll(props.schema),
@@ -682,14 +696,24 @@ function explainSql() {
                         
                         const displayVal = cellData != null ? String(cellData) : ''
                         const changedStyle = isChanged ? {
-                            backgroundColor: '#fff7e6', padding: '2px 4px', 
-                            borderRadius: '3px', borderBottom: '1px dashed #faad14',
+                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px', 
+                            borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
                             cursor: 'pointer'
                         } : { cursor: 'pointer' }
+                        
+                        if (cellData === null || cellData === undefined || cellData === '') {
+                            return h('span', {
+                                title: '(空)',
+                                style: { ...changedStyle, color: 'var(--text-tertiary, #bbb)', fontStyle: 'italic' },
+                                onClick: () => { activeCellRow2.value = rowIndex; activeCellCol2.value = colKey },
+                                onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
+                            }, '-')
+                        }
                         
                         return h('span', {
                             title: displayVal,
                             style: changedStyle,
+                            onClick: () => { activeCellRow2.value = rowIndex; activeCellCol2.value = colKey },
                             onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
                         }, displayVal)
                     }
@@ -878,8 +902,8 @@ function exec() {
                         
                         const displayVal = cellData != null ? String(cellData) : ''
                         const changedStyle = isChanged ? {
-                            backgroundColor: '#fff7e6', padding: '2px 4px', 
-                            borderRadius: '3px', borderBottom: '1px dashed #faad14',
+                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px', 
+                            borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
                             cursor: 'pointer'
                         } : { cursor: 'pointer' }
                         
@@ -955,6 +979,103 @@ function cancelInlineEdit() {
   editingCellRow.value = -1
   editingCellCol.value = ''
   editingCellValue.value = ''
+}
+
+function handlePaste2(event: ClipboardEvent) {
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text) return
+
+  let startRowIdx = -1
+  let startColIdx = -1
+
+  const colKeys = columns.value.map((c: any) => c.dataKey)
+
+  if (editingCellRow.value >= 0 && editingCellCol.value) {
+    startRowIdx = editingCellRow.value
+    startColIdx = colKeys.indexOf(editingCellCol.value)
+  } else if (activeCellRow2.value >= 0 && activeCellCol2.value) {
+    startRowIdx = activeCellRow2.value
+    startColIdx = colKeys.indexOf(activeCellCol2.value)
+  }
+
+  if (startRowIdx < 0 || startColIdx < 0) return
+
+  const lines = text.split('\n')
+  const grid: string[][] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed) {
+      grid.push(trimmed.split('\t'))
+    }
+  }
+  if (grid.length === 0) return
+
+  event.preventDefault()
+
+  // Save snapshot for Ctrl+Z undo
+  const snapshot: any = {
+    inlineChanges: new Map(inlineChanges.value),
+    restoredCells: [] as { rowIdx: number; colKey: string; oldVal: any }[]
+  }
+
+  cancelInlineEdit()
+
+  for (let ri = 0; ri < grid.length; ri++) {
+    const targetRowIdx = startRowIdx + ri
+    if (targetRowIdx >= result.value.length) break
+    const targetRow = result.value[targetRowIdx]
+
+    for (let ci = 0; ci < grid[ri].length; ci++) {
+      const targetColIdx = startColIdx + ci
+      if (targetColIdx >= colKeys.length) break
+      const colKey = colKeys[targetColIdx]
+      if (tableKeys.value.includes(colKey)) continue
+
+      const newVal = grid[ri][ci].trim()
+
+      // Record old value for undo
+      const changeKey = targetRowIdx + '::' + colKey
+      const oldChanged = inlineChanges.value.get(changeKey)
+      const oldVal = oldChanged !== undefined ? oldChanged : targetRow[colKey]
+      snapshot.restoredCells.push({ rowIdx: targetRowIdx, colKey, oldVal })
+
+      if (String(targetRow[colKey] ?? '') !== newVal) {
+        const newMap = new Map(inlineChanges.value)
+        newMap.set(changeKey, newVal)
+        inlineChanges.value = newMap
+        targetRow[colKey] = newVal
+      }
+    }
+  }
+
+  pasteSnapshot2.value = snapshot
+  activeCellRow2.value = -1
+  activeCellCol2.value = ''
+}
+
+function onTableKeydown2(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+    if (pasteSnapshot2.value) {
+      event.preventDefault()
+      undoPaste2()
+    }
+  }
+}
+
+function undoPaste2() {
+  const snapshot = pasteSnapshot2.value
+  if (!snapshot) return
+
+  inlineChanges.value = new Map(snapshot.inlineChanges)
+
+  for (const cell of snapshot.restoredCells) {
+    const { rowIdx, colKey, oldVal } = cell
+    if (rowIdx < result.value.length) {
+      result.value[rowIdx][colKey] = oldVal
+    }
+  }
+
+  pasteSnapshot2.value = null
 }
 
 function isEditingCell(rowIndex: number, colKey: string) {
@@ -1044,7 +1165,7 @@ function saveInlineChanges() {
 
 const inlineChangeCount = computed(() => inlineChanges.value.size)
 
-const canInlineEdit = computed(() => canEdit.value && tableKeys.value.length > 0)
+const canInlineEdit = computed(() => canModify.value && canEdit.value && tableKeys.value.length > 0)
 
 function openDataDetails(rowIndex: number) {
     dataDetailsDialogVisible.value = true
@@ -1308,7 +1429,8 @@ function copyCreateScript() {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
-function onKeyup() {
+function onKeyup(e: KeyboardEvent) {
+  onEditorKeyup(e)
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     try {
@@ -1317,6 +1439,78 @@ function onKeyup() {
       // localStorage may be full, silently ignore
     }
   }, 500)
+}
+
+function onEditorKeydown(e: KeyboardEvent) {
+  if (e.key === 'Control' || e.key === 'Meta') {
+    ctrlHeld.value = true
+    detectTableAtMouse()
+  }
+}
+
+function onEditorKeyup(e: KeyboardEvent) {
+  if (e.key === 'Control' || e.key === 'Meta') {
+    ctrlHeld.value = false
+    tableNameUnderCursor.value = ''
+  }
+}
+
+function onGlobalKeyup(e: KeyboardEvent) {
+  if (e.key === 'Control' || e.key === 'Meta') {
+    ctrlHeld.value = false
+    tableNameUnderCursor.value = ''
+  }
+}
+
+function detectTableAtPosition(clientX: number, clientY: number) {
+  if (!editorView.value) return
+  const pos = editorView.value.posAtCoords({ x: clientX, y: clientY })
+  if (pos === null) {
+    tableNameUnderCursor.value = ''
+    return
+  }
+  const word = editorView.value.state.wordAt(pos)
+  if (!word) {
+    tableNameUnderCursor.value = ''
+    return
+  }
+  const wordText = editorView.value.state.sliceDoc(word.from, word.to)
+  const tables = tableList.value
+  if (tables.some((t: string) => t.toLowerCase() === wordText.toLowerCase())) {
+    tableNameUnderCursor.value = wordText
+  } else {
+    tableNameUnderCursor.value = ''
+  }
+}
+
+function detectTableAtMouse() {
+  if (lastMousePos.value.x < 0) return
+  detectTableAtPosition(lastMousePos.value.x, lastMousePos.value.y)
+}
+
+function onEditorMousemove(e: MouseEvent) {
+  lastMousePos.value = { x: e.clientX, y: e.clientY }
+  if (!ctrlHeld.value) {
+    if (tableNameUnderCursor.value) {
+      tableNameUnderCursor.value = ''
+    }
+    return
+  }
+  detectTableAtPosition(e.clientX, e.clientY)
+}
+
+function onEditorClick(e: MouseEvent) {
+  if (!ctrlHeld.value || !tableNameUnderCursor.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  const tableName = tableNameUnderCursor.value
+  tableNameUnderCursor.value = ''
+  ctrlHeld.value = false
+  emit('openDataBrowser', {
+    connId: props.connId,
+    schema: props.schema,
+    tableName: tableName,
+  })
 }
 
 function onResultDivResize(index: number, sizes: number[]) {
@@ -1509,6 +1703,10 @@ const dragEnd = (e: DragEvent) => {
     height: 100%;
 }
 
+.table-link-cursor .cm-editor {
+    cursor: pointer;
+}
+
 /* ── Result Table ── */
 .el-table-v2__header-cell-text {
     user-select: text;
@@ -1621,6 +1819,39 @@ const dragEnd = (e: DragEvent) => {
 
 [data-theme="dark"] .inline-count {
     color: #e0c068;
+}
+
+/* ── Table Structure Dialog ── */
+.table-structure-dialog {
+    height: 750px !important;
+}
+.table-structure-dialog .el-dialog__body {
+    display: flex;
+    flex-direction: column;
+    height: calc(100% - 54px);
+    overflow: hidden;
+    padding: 0 20px 20px;
+}
+.table-structure-dialog .dialog-toolbar {
+    flex-shrink: 0;
+    padding: 12px 0 8px;
+}
+.table-structure-dialog .dialog-scroll-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+/* ── Data Details Dialog ── */
+.data-details-dialog {
+    height: 750px !important;
+}
+.data-details-dialog .el-dialog__body {
+    height: calc(100% - 140px);
+    overflow-y: auto;
+}
+.data-details-dialog .dialog-scroll-body {
+    min-height: 100%;
 }
 </style>
 <style lang="less" scoped>

@@ -26,7 +26,7 @@
         <el-slider v-model="systemConfig.aiTemperature" :min="0" :max="2" :step="0.1" show-input />
       </el-form-item>
       <el-form-item label="Max Tokens">
-        <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :max="128000" :step="1024" placeholder="0=不限" />
+        <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :step="100" placeholder="0=不限" />
       </el-form-item>
       <el-form-item label="思考模式">
         <el-switch v-model="systemConfig.aiEnableThinking" />

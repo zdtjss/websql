@@ -10,17 +10,17 @@
     <el-tabs v-model="activeTab" type="card" @tab-change="onTabChange">
       <el-tab-pane label="存储过程" name="procedures">
         <el-table :data="procedureList" style="width: 100%" v-loading="loading" max-height="480">
-          <el-table-column prop="name" label="名称" width="240" show-overflow-tooltip />
-          <el-table-column prop="type" label="类型" width="100">
+          <el-table-column prop="name" label="名称" width="240" show-overflow-tooltip resizable />
+          <el-table-column prop="type" label="类型" width="100" resizable>
             <template #default="scope">
               <el-tag size="small" :type="scope.row.type === 'PROCEDURE' ? '' : 'success'">
                 {{ scope.row.type === 'PROCEDURE' ? '过程' : '函数' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="returnType" label="返回值" width="120" show-overflow-tooltip />
-          <el-table-column prop="comment" label="注释" min-width="160" show-overflow-tooltip />
-          <el-table-column label="操作" width="100">
+          <el-table-column prop="returnType" label="返回值" width="120" show-overflow-tooltip resizable />
+          <el-table-column prop="comment" label="注释" min-width="160" show-overflow-tooltip resizable />
+          <el-table-column label="操作" width="100" resizable>
             <template #default="scope">
               <el-button size="small" link type="primary" @click="viewObjectDetail(scope.row)">查看</el-button>
             </template>
@@ -31,19 +31,19 @@
 
       <el-tab-pane label="触发器" name="triggers">
         <el-table :data="triggerList" style="width: 100%" v-loading="loading" max-height="480">
-          <el-table-column prop="name" label="触发器名" width="220" show-overflow-tooltip />
-          <el-table-column prop="tableName" label="所在表" width="180" show-overflow-tooltip />
-          <el-table-column prop="timing" label="时机" width="80">
+          <el-table-column prop="name" label="触发器名" width="220" show-overflow-tooltip resizable />
+          <el-table-column prop="tableName" label="所在表" width="180" show-overflow-tooltip resizable />
+          <el-table-column prop="timing" label="时机" width="80" resizable>
             <template #default="scope">
               <el-tag size="small" :type="scope.row.timing === 'BEFORE' ? 'warning' : 'danger'">{{ scope.row.timing }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="event" label="事件" width="80">
+          <el-table-column prop="event" label="事件" width="80" resizable>
             <template #default="scope">
               <el-tag size="small">{{ scope.row.event }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="100">
+          <el-table-column label="操作" width="100" resizable>
             <template #default="scope">
               <el-button size="small" link type="primary" @click="viewObjectDetail(scope.row)">查看</el-button>
             </template>

@@ -35,17 +35,17 @@
             <el-progress :percentage="connPercentage" :stroke-width="8" style="flex:1;max-width:200px;" />
           </div>
           <el-table :data="processList" max-height="400" size="small" stripe>
-            <el-table-column prop="id" label="ID" width="70" />
-            <el-table-column prop="user" label="用户" width="120" />
-            <el-table-column prop="host" label="来源" width="180" />
-            <el-table-column prop="db" label="数据库" width="120" />
-            <el-table-column prop="command" label="命令" width="90">
+            <el-table-column prop="id" label="ID" width="70" resizable />
+            <el-table-column prop="user" label="用户" width="120" resizable />
+            <el-table-column prop="host" label="来源" width="180" resizable />
+            <el-table-column prop="db" label="数据库" width="120" resizable />
+            <el-table-column prop="command" label="命令" width="90" resizable>
               <template #default="scope">
                 <el-tag size="small" :type="scope.row.command === 'Sleep' ? 'info' : 'warning'">{{ scope.row.command }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="time" label="时间(s)" width="80" />
-            <el-table-column prop="state" label="状态" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="time" label="时间(s)" width="80" resizable />
+            <el-table-column prop="state" label="状态" min-width="180" show-overflow-tooltip resizable />
           </el-table>
         </div>
       </el-tab-pane>

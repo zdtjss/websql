@@ -48,18 +48,18 @@
             暂无提示词，点击上方"新增提示词"按钮添加
           </div>
           <el-table v-else :data="prompts" style="width: 100%" stripe>
-            <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
-            <el-table-column label="创建者" width="120">
+            <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip resizable />
+            <el-table-column label="创建者" width="120" resizable>
               <template #default="{ row }">
                 {{ row.sharedByName || '-' }}
               </template>
             </el-table-column>
-            <el-table-column label="更新时间" width="180">
+            <el-table-column label="更新时间" width="180" resizable>
               <template #default="{ row }">
                 {{ row.updatedAt || row.createdAt || '-' }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="120" fixed="right">
+            <el-table-column label="操作" width="120" fixed="right" resizable>
               <template #default="{ row }">
                 <el-button type="primary" size="small" text @click="handleEdit(row)" title="编辑">
                   <el-icon><Edit /></el-icon>

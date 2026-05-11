@@ -23,14 +23,14 @@
     </div>
     
     <el-table :data="connList" style="width: 100%">
-      <el-table-column type="index" width="50" />
-      <el-table-column prop="name" label="连接名称" width="180">
+      <el-table-column type="index" width="50" resizable />
+      <el-table-column prop="name" label="连接名称" width="180" resizable>
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.name" />
           <span v-else>{{ scope.row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="dbType" label="数据库类型" width="120">
+      <el-table-column prop="dbType" label="数据库类型" width="120" resizable>
         <template #default="scope">
           <span v-if="!scope.row.editing">{{ getDbTypeLabel(scope.row.dbType) }}</span>
           <el-select v-else v-model="scope.row.dbType" placeholder="请选择">
@@ -38,7 +38,7 @@
           </el-select>
         </template>
       </el-table-column>
-      <el-table-column prop="parentId" label="所属层级" width="150">
+      <el-table-column prop="parentId" label="所属层级" width="150" resizable>
         <template #default="scope">
           <span v-if="!scope.row.editing">{{ scope.row.parentName || '未指定' }}</span>
           <el-tree-select 
@@ -51,25 +51,25 @@
           />
         </template>
       </el-table-column>
-      <el-table-column prop="user" label="用户名" width="180">
+      <el-table-column prop="user" label="用户名" width="180" resizable>
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.user" />
           <span v-else>{{ scope.row.user }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="pwd" label="密码" width="120">
+      <el-table-column prop="pwd" label="密码" width="120" resizable>
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.pwd" type="password" />
           <span v-else>******</span>
         </template>
       </el-table-column>
-      <el-table-column prop="url" label="连接信息" min-width="200">
+      <el-table-column prop="url" label="连接信息" min-width="200" resizable>
         <template #default="scope">
           <el-input v-if="scope.row.editing" v-model="scope.row.url" type="textarea" :rows="2" />
           <span v-else>{{ scope.row.url }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right" resizable>
         <template #default="scope">
           <el-button 
             v-if="!scope.row.editing" 

@@ -24,6 +24,7 @@
           </template>
         </el-dropdown>
         <el-button size="small" type="primary" @click="openInsertDialog" :icon="Plus">新增</el-button>
+        <el-button size="small" type="success" @click="addBlankRow" :icon="Plus">添加行</el-button>
         <el-upload
           :file-list="fileList"
           :http-request="handleFileSelect"
@@ -67,14 +68,18 @@
     </div>
 
     <!-- Inline edit status bar -->
-    <div v-if="inlineChangeCount > 0" class="db-inline-bar">
-      <span class="inline-change-hint">{{ inlineChangeCount }} 个单元格已修改</span>
+    <div v-if="inlineChangeCount > 0 || newRowUids.size > 0" class="db-inline-bar">
+      <span class="inline-change-hint">
+        <template v-if="inlineChangeCount > 0">{{ inlineChangeCount }} 个单元格已修改</template>
+        <template v-if="inlineChangeCount > 0 && newRowUids.size > 0">，</template>
+        <template v-if="newRowUids.size > 0">{{ newRowUids.size }} 行待新增</template>
+      </span>
       <el-button size="small" type="primary" :loading="savingInline" @click="saveInlineChanges">保存更改</el-button>
       <el-button size="small" @click="discardInlineChanges">放弃更改</el-button>
     </div>
 
     <!-- Table area -->
-    <div style="flex: 1; overflow: hidden;">
+    <div class="table-wrapper" style="flex: 1; overflow: hidden;" @paste="handlePaste" @keydown="onTableKeydown" @mouseup="onTableMouseUp" @mouseleave="onTableMouseUp" tabindex="0">
       <el-table
         :data="rows"
         height="100%"
@@ -83,9 +88,10 @@
         stripe
         border
         :row-class-name="rowClassName"
+        :cell-class-name="cellClassFn"
       >
         <!-- Row index column -->
-        <el-table-column type="index" width="60" fixed :index="rowIndexOffset" />
+        <el-table-column type="index" width="60" fixed :index="rowIndexOffset" resizable />
 
         <!-- Data columns -->
         <el-table-column
@@ -123,7 +129,12 @@
             </div>
           </template>
           <template #default="scope">
-            <div class="inline-cell" @dblclick.stop="startInlineEdit(scope.row, col.name, $event)">
+            <div class="inline-cell"
+              :class="{ 'cell-selected-sel': isCellInSelection(scope.$index, col.name) }"
+              @mousedown="onCellMouseDown(scope.$index, col.name, $event)"
+              @mouseenter="onCellMouseEnter(scope.$index, col.name)"
+              @dblclick.stop="startInlineEdit(scope.row, col.name, $event)"
+              @click="activeCellIndex = scope.$index; activeColName = col.name">
               <template v-if="isEditingCell(scope.row, col.name)">
                 <el-date-picker
                   v-if="isDateColumn(col.name)"
@@ -148,26 +159,35 @@
                 />
               </template>
               <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="String(scope.row[col.name] ?? '')">
-                {{ scope.row[col.name] }}
+                <template v-if="scope.row[col.name] !== null && scope.row[col.name] !== undefined && scope.row[col.name] !== ''">{{ scope.row[col.name] }}</template>
+                <span v-else class="null-placeholder">-</span>
               </span>
             </div>
           </template>
         </el-table-column>
 
         <!-- Action column -->
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right" resizable>
           <template #default="scope">
-            <el-button size="small" type="primary" link @click="openEditDialog(scope.row, scope.$index)">
-              详细
-            </el-button>
-            <el-popconfirm
-              title="确定删除这条记录吗？"
-              @confirm="deleteRow(scope.row)"
-            >
-              <template #reference>
-                <el-button size="small" type="danger" link>删除</el-button>
-              </template>
-            </el-popconfirm>
+            <template v-if="isNewRow(scope.row)">
+              <el-button size="small" type="danger" link @click="removeNewRow(scope.row)">
+                移除
+              </el-button>
+            </template>
+            <template v-else>
+              <el-button size="small" type="primary" link @click="openEditDialog(scope.row, scope.$index)">
+                详细
+              </el-button>
+              <el-popconfirm
+                title="确定删除这条记录吗？"
+                @confirm="deleteRow(scope.row)"
+              >
+                <template #reference>
+                  <el-button size="small" type="danger" link>删除</el-button>
+                </template>
+              </el-popconfirm>
+            </template>
+            <el-button size="small" type="success" link @click="copyRow(scope.row)">复制</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -390,6 +410,11 @@ const originalRows = ref({})  // { [rowKey]: { [colName]: value, ... } }
 const savingInline = ref(false)
 let editInputRef = null
 
+// Paste tracking
+const activeCellIndex = ref(-1)
+const activeColName = ref('')
+const pasteSnapshot = ref(null)
+
 const inlineChangeCount = computed(() => {
   let count = 0
   Object.values(changedRows.value).forEach(row => {
@@ -397,6 +422,170 @@ const inlineChangeCount = computed(() => {
   })
   return count
 })
+
+// Inline new row state
+let nextRowUid = 1
+const newRowUids = ref(new Set())  // track _rowUid values of unsaved new rows
+
+// Excel-style range selection state
+const selStart = ref({ row: -1, col: -1 })
+const selEnd = ref({ row: -1, col: -1 })
+const selAnchor = ref({ row: -1, col: -1 })
+const isSelDragging = ref(false)
+
+const selectionBounds = computed(() => {
+  if (selStart.value.row < 0 || selEnd.value.row < 0) return null
+  return {
+    rowMin: Math.min(selStart.value.row, selEnd.value.row),
+    rowMax: Math.max(selStart.value.row, selEnd.value.row),
+    colMin: Math.min(selStart.value.col, selEnd.value.col),
+    colMax: Math.max(selStart.value.col, selEnd.value.col),
+  }
+})
+
+function colNameToIndex(colName) {
+  return dataColumns.value.findIndex(c => c.name === colName)
+}
+
+function isCellInSelection(rowIdx, colName) {
+  const bounds = selectionBounds.value
+  if (!bounds) return false
+  const colIdx = colNameToIndex(colName)
+  return rowIdx >= bounds.rowMin && rowIdx <= bounds.rowMax &&
+         colIdx >= bounds.colMin && colIdx <= bounds.colMax
+}
+
+function cellClassFn({ rowIndex, columnIndex }) {
+  const bounds = selectionBounds.value
+  if (!bounds) return ''
+  // columnIndex includes index column and action column, need to offset
+  const dataColIdx = columnIndex - 1  // -1 for the index column
+  if (dataColIdx >= bounds.colMin && dataColIdx <= bounds.colMax &&
+      rowIndex >= bounds.rowMin && rowIndex <= bounds.rowMax) {
+    return 'cell-range-selected'
+  }
+  return ''
+}
+
+function clearRangeSelection() {
+  selStart.value = { row: -1, col: -1 }
+  selEnd.value = { row: -1, col: -1 }
+  selAnchor.value = { row: -1, col: -1 }
+  isSelDragging.value = false
+}
+
+function onCellMouseDown(rowIdx, colName, e) {
+  if (isEditingCell.value) return
+  const colIdx = colNameToIndex(colName)
+  if (colIdx < 0) return
+
+  if (e.shiftKey && selAnchor.value.row >= 0) {
+    selEnd.value = { row: rowIdx, col: colIdx }
+  } else {
+    selStart.value = { row: rowIdx, col: colIdx }
+    selEnd.value = { row: rowIdx, col: colIdx }
+  }
+  selAnchor.value = { row: selStart.value.row, col: selStart.value.col }
+  isSelDragging.value = true
+  // Prevent triggering click/dblclick on the inline edit
+  e.preventDefault()
+}
+
+function onCellMouseEnter(rowIdx, colName) {
+  if (!isSelDragging.value) return
+  const colIdx = colNameToIndex(colName)
+  if (colIdx < 0) return
+  selEnd.value = { row: rowIdx, col: colIdx }
+}
+
+function onTableMouseUp() {
+  isSelDragging.value = false
+}
+
+function copySelectedRange() {
+  const bounds = selectionBounds.value
+  if (!bounds) return
+
+  const lines = []
+  const cols = dataColumns.value.slice(bounds.colMin, bounds.colMax + 1)
+  for (let r = bounds.rowMin; r <= bounds.rowMax; r++) {
+    const row = rows.value[r]
+    if (!row) continue
+    const line = cols.map(c => {
+      const val = row[c.name]
+      return val != null ? String(val) : ''
+    }).join('\t')
+    lines.push(line)
+  }
+  if (lines.length > 0) {
+    navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
+    ElMessage({ message: `已复制 ${lines.length} 行`, type: 'success' })
+  }
+}
+
+async function pasteToSelectedRange(e) {
+  const bounds = selectionBounds.value
+  if (!bounds) return
+
+  let text = ''
+  try {
+    text = await navigator.clipboard.readText()
+  } catch {
+    try {
+      text = (e.clipboardData || window.clipboardData)?.getData('text') || ''
+    } catch { return }
+  }
+  if (!text.trim()) return
+
+  const lines = text.split(/\r?\n/).filter(l => l.trim() !== '' || l === '').map(l => l || '\t')
+  const rows_data = lines.map(l => l.split('\t'))
+  if (rows_data.length === 0) return
+
+  const pasteRows = rows_data.length
+  const pasteCols = Math.max(...rows_data.map(r => r.length))
+  const availableCols = dataColumns.value.length - bounds.colMin
+
+  // Ensure enough rows exist
+  const neededRows = bounds.rowMin + pasteRows
+  while (rows.value.length < neededRows) {
+    addBlankRowSilent()
+  }
+
+  // Apply paste values
+  for (let r = 0; r < pasteRows; r++) {
+    const targetRow = rows.value[bounds.rowMin + r]
+    if (!targetRow) continue
+    const key = getRowKey(targetRow)
+    if (!changedRows.value[key]) changedRows.value[key] = {}
+
+    for (let c = 0; c < Math.min(pasteCols, availableCols); c++) {
+      const colName = dataColumns.value[bounds.colMin + c]?.name
+      if (!colName) continue
+      const val = rows_data[r][c] !== undefined ? rows_data[r][c] : ''
+
+      if (isNewRow(targetRow) && pkColumns.value.includes(colName)) {
+        targetRow[colName] = val
+      }
+      if (String(targetRow[colName] ?? '') !== val) {
+        changedRows.value[key][colName] = val
+      } else {
+        delete changedRows.value[key][colName]
+      }
+    }
+    if (Object.keys(changedRows.value[key]).length === 0) {
+      delete changedRows.value[key]
+    }
+  }
+}
+
+function addBlankRowSilent() {
+  const blank = { _rowUid: nextRowUid++ }
+  dataColumns.value.forEach(col => { blank[col.name] = '' })
+  rows.value.push(blank)
+  const key = getRowKey(blank)
+  newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
+  originalRows.value[key] = {}
+}
 
 // Insert dialog state
 const insertDialogVisible = ref(false)
@@ -481,6 +670,7 @@ function isColumnFiltered(colName) {
 }
 
 function getRowKey(row) {
+  if (row._rowUid) return '_new_' + row._rowUid
   if (pkColumns.value.length > 0) {
     return pkColumns.value.map(k => row[k]).join('_')
   }
@@ -544,6 +734,7 @@ async function fetchData() {
 
   rows.value = data?.data ?? []
   changedRows.value = {}
+  newRowUids.value = new Set()
   rows.value.forEach(row => {
     originalRows.value[getRowKey(row)] = { ...row }
   })
@@ -598,7 +789,9 @@ function getSortIcon(colName) {
 
 function rowClassName({ row }) {
   const key = getRowKey(row)
-  return changedRows.value[key] ? 'row-changed' : ''
+  if (changedRows.value[key]) return 'row-changed'
+  if (isNewRow(row)) return 'row-new'
+  return ''
 }
 
 function setEditInputRef(el) {
@@ -629,7 +822,7 @@ function isCellChanged(row, colName) {
 }
 
 function startInlineEdit(row, colName, event) {
-  if (pkColumns.value.includes(colName)) return
+  if (!isNewRow(row) && pkColumns.value.includes(colName)) return
   const key = getRowKey(row)
   editingCell.value = { rowKey: key, colName }
   const changed = changedRows.value[key]
@@ -668,16 +861,187 @@ function cancelInlineEdit() {
   editingValue.value = ''
 }
 
+function handlePaste(event) {
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text) return
+
+  let startRowIdx = -1
+  let startColIdx = -1
+
+  if (editingCell.value) {
+    startRowIdx = rows.value.findIndex(r => getRowKey(r) === editingCell.value.rowKey)
+    startColIdx = dataColumns.value.findIndex(c => c.name === editingCell.value.colName)
+  } else if (activeCellIndex.value >= 0 && activeColName.value) {
+    startRowIdx = activeCellIndex.value
+    startColIdx = dataColumns.value.findIndex(c => c.name === activeColName.value)
+  }
+
+  if (startRowIdx < 0 || startColIdx < 0) return
+
+  const lines = text.split('\n')
+  const grid = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed) {
+      grid.push(trimmed.split('\t'))
+    }
+  }
+  if (grid.length === 0) return
+
+  event.preventDefault()
+
+  // Save snapshot for Ctrl+Z undo
+  const snapshot = {
+    changedRows: JSON.parse(JSON.stringify(changedRows.value)),
+    restoredCells: []
+  }
+
+  cancelInlineEdit()
+
+  for (let ri = 0; ri < grid.length; ri++) {
+    const targetRowIdx = startRowIdx + ri
+    if (targetRowIdx >= rows.value.length) break
+    const targetRow = rows.value[targetRowIdx]
+    const rowKey = getRowKey(targetRow)
+
+    for (let ci = 0; ci < grid[ri].length; ci++) {
+      const targetColIdx = startColIdx + ci
+      if (targetColIdx >= dataColumns.value.length) break
+      const colName = dataColumns.value[targetColIdx].name
+      const targetRow = rows.value[targetRowIdx]
+      if (!isNewRow(targetRow) && pkColumns.value.includes(colName)) continue
+
+      const newVal = grid[ri][ci].trim()
+      const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+
+      // Record old value for undo
+      const oldChanged = changedRows.value[rowKey]?.[colName]
+      snapshot.restoredCells.push({
+        rowKey,
+        colName,
+        oldVal: oldChanged !== undefined ? oldChanged : origVal
+      })
+
+      const strNew = String(newVal ?? '')
+      const strOrig = String(origVal ?? '')
+
+      if (strNew !== strOrig) {
+        if (!changedRows.value[rowKey]) {
+          changedRows.value[rowKey] = {}
+        }
+        changedRows.value[rowKey][colName] = newVal
+      } else {
+        if (changedRows.value[rowKey]) {
+          delete changedRows.value[rowKey][colName]
+          if (Object.keys(changedRows.value[rowKey]).length === 0) {
+            delete changedRows.value[rowKey]
+          }
+        }
+      }
+    }
+  }
+
+  pasteSnapshot.value = snapshot
+  activeCellIndex.value = -1
+  activeColName.value = ''
+}
+
+function onTableKeydown(event) {
+  // Ctrl+Z: undo paste
+  if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+    if (pasteSnapshot.value) {
+      event.preventDefault()
+      undoPaste()
+      return
+    }
+  }
+  // Range selection keyboard shortcuts
+  if (isEditingCell.value) return
+  const bounds = selectionBounds.value
+  if (!bounds) return
+
+  if (event.ctrlKey && event.key === 'c') {
+    event.preventDefault()
+    copySelectedRange()
+  } else if (event.ctrlKey && event.key === 'v') {
+    event.preventDefault()
+    pasteToSelectedRange(event)
+  }
+}
+
+function undoPaste() {
+  const snapshot = pasteSnapshot.value
+  if (!snapshot) return
+
+  changedRows.value = JSON.parse(JSON.stringify(snapshot.changedRows))
+
+  for (const cell of snapshot.restoredCells) {
+    const { rowKey, colName, oldVal } = cell
+    const row = rows.value.find(r => getRowKey(r) === rowKey)
+    if (row) {
+      if (oldVal === undefined) {
+        delete row[colName]
+      } else {
+        row[colName] = oldVal
+      }
+    }
+  }
+
+  pasteSnapshot.value = null
+}
+
 async function saveInlineChanges() {
   const rowKeys = Object.keys(changedRows.value)
-  if (rowKeys.length === 0) return
+  const newKeys = rowKeys.filter(k => k.startsWith('_new_'))
+  const existingKeys = rowKeys.filter(k => !k.startsWith('_new_'))
+  if (rowKeys.length === 0 && newRowUids.value.size === 0) return
 
   savingInline.value = true
   let successCount = 0
   let errorCount = 0
 
   try {
-    for (const rowKey of rowKeys) {
+    for (const rowKey of newKeys) {
+      const changed = changedRows.value[rowKey]
+      const row = rows.value.find(r => getRowKey(r) === rowKey)
+      if (!row) continue
+
+      const merged = { ...row }
+      if (changed) {
+        Object.keys(changed).forEach(k => { merged[k] = changed[k] })
+      }
+
+      const insertCols = dataColumns.value
+        .filter(col => {
+          const val = merged[col.name]
+          return val !== '' && val !== null && val !== undefined
+        })
+      if (insertCols.length === 0) continue
+
+      const colList = insertCols.map(c => '`' + c.name + '`').join(', ')
+      const valList = insertCols.map(c => fmtVal(merged[c.name])).join(', ')
+
+      const sql = `INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`
+
+      const params = new URLSearchParams()
+      params.append('connId', props.connId)
+      params.append('schema', props.schema)
+      params.append('sql', sql)
+
+      try {
+        const resp = await http.post('/execSQL', params)
+        const respData = resp.data.data
+        if (respData && respData.msg) {
+          errorCount++
+        } else {
+          successCount++
+        }
+      } catch {
+        errorCount++
+      }
+    }
+
+    for (const rowKey of existingKeys) {
       const changed = changedRows.value[rowKey]
       const orig = originalRows.value[rowKey]
       if (!orig) continue
@@ -727,14 +1091,72 @@ async function saveInlineChanges() {
 }
 
 function discardInlineChanges() {
+  // Remove new rows
+  const uidSet = newRowUids.value
+  rows.value = rows.value.filter(r => !r._rowUid || !uidSet.has(r._rowUid))
+  newRowUids.value = new Set()
+  // Restore original values
   changedRows.value = {}
   rows.value.forEach(row => {
-    const key = getRowKey(row)
-    if (originalRows.value[key]) {
-      Object.assign(row, originalRows.value[key])
+    if (!row._rowUid) {
+      const key = getRowKey(row)
+      if (originalRows.value[key]) {
+        Object.assign(row, originalRows.value[key])
+      }
     }
   })
   ElMessage({ message: '已放弃更改', type: 'info' })
+}
+
+function addBlankRow() {
+  const blank = { _rowUid: nextRowUid++ }
+  dataColumns.value.forEach(col => { blank[col.name] = '' })
+  rows.value.push(blank)
+  const key = getRowKey(blank)
+  newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
+  originalRows.value[key] = {}
+}
+
+function copyRow(row) {
+  const copied = { _rowUid: nextRowUid++ }
+  dataColumns.value.forEach(col => {
+    if (pkColumns.value.includes(col.name)) {
+      copied[col.name] = ''
+    } else {
+      copied[col.name] = row[col.name] != null ? row[col.name] : ''
+    }
+  })
+  rows.value.push(copied)
+  const key = getRowKey(copied)
+  newRowUids.value = new Set([...newRowUids.value, copied._rowUid])
+  originalRows.value[key] = {}
+  // Mark non-empty fields as changed so save bar appears
+  const changed = {}
+  dataColumns.value.forEach(col => {
+    const val = copied[col.name]
+    if (val !== '' && val !== null && val !== undefined && !pkColumns.value.includes(col.name)) {
+      changed[col.name] = val
+    }
+  })
+  if (Object.keys(changed).length > 0) {
+    changedRows.value[key] = changed
+  }
+}
+
+function removeNewRow(row) {
+  if (!row._rowUid) return
+  rows.value = rows.value.filter(r => r._rowUid !== row._rowUid)
+  const uid = row._rowUid
+  const nextSet = new Set(newRowUids.value)
+  nextSet.delete(uid)
+  newRowUids.value = nextSet
+  const key = getRowKey(row)
+  delete changedRows.value[key]
+  delete originalRows.value[key]
+}
+
+function isNewRow(row) {
+  return row._rowUid && newRowUids.value.has(row._rowUid)
 }
 
 function openColumnFilter(col, event) {
@@ -1051,6 +1473,10 @@ async function insertData() {
 }
 
 async function deleteRow(row) {
+  if (isNewRow(row)) {
+    removeNewRow(row)
+    return
+  }
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(row).slice(0, 1)
   const whereClauses = pkCols.map(key => `\`${key}\` = ${fmtVal(row[key])}`).join(' AND ')
   const sql = `DELETE FROM \`${props.tableName}\` WHERE ${whereClauses}`
@@ -1403,6 +1829,23 @@ watch(
 .inline-cell {
   min-height: 24px;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inline-cell > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  width: 100%;
+}
+
+.null-placeholder {
+  color: var(--text-tertiary, #bbb);
+  font-style: italic;
+  user-select: none;
 }
 
 .inline-edit-input {
@@ -1423,6 +1866,35 @@ watch(
 
 [data-theme="dark"] .cell-changed {
   background: #3d3520;
+}
+
+:deep(.row-new td) {
+  border-left: 3px solid #67c23a;
+  background-color: #f0f9eb !important;
+}
+
+[data-theme="dark"] :deep(.row-new td) {
+  background-color: #1a2a1a !important;
+  border-left-color: #4caf50;
+}
+
+:deep(.cell-range-selected) {
+  background-color: #d4e6ff !important;
+  outline: 2px solid #409eff;
+  outline-offset: -1px;
+}
+
+[data-theme="dark"] :deep(.cell-range-selected) {
+  background-color: #2a3a5a !important;
+  outline-color: #89b4fa;
+}
+
+:deep(.cell-selected-sel) {
+  background-color: rgba(64, 158, 255, 0.08);
+}
+
+[data-theme="dark"] :deep(.cell-selected-sel) {
+  background-color: rgba(137, 180, 250, 0.12);
 }
 
 :deep(.row-changed td) {

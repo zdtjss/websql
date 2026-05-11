@@ -39,32 +39,32 @@
     </el-form>
 
     <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 340px)" v-loading="loading">
-      <el-table-column prop="execTime" label="执行时间" width="170" sortable>
+      <el-table-column prop="execTime" label="执行时间" width="170" sortable resizable>
         <template #default="{ row }">
           {{ formatDate(row.execTime) }}
         </template>
       </el-table-column>
-      <el-table-column prop="userName" label="用户" width="100" />
-      <el-table-column prop="sqlType" label="类型" width="90">
+      <el-table-column prop="userName" label="用户" width="100" resizable />
+      <el-table-column prop="sqlType" label="类型" width="90" resizable>
         <template #default="{ row }">
           <el-tag :type="getTypeTag(row.sqlType)" size="small">{{ row.sqlType }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="riskLevel" label="风险" width="80">
+      <el-table-column prop="riskLevel" label="风险" width="80" resizable>
         <template #default="{ row }">
           <el-tag :type="row.riskLevel === 'high' ? 'danger' : 'warning'" size="small">{{ row.riskLevel }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="90">
+      <el-table-column prop="status" label="状态" width="90" resizable>
         <template #default="{ row }">
           <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
             {{ row.status === 'success' ? '成功' : '失败' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="affectedRows" label="影响行数" width="100" />
-      <el-table-column prop="sqlText" label="SQL 语句" min-width="300" show-overflow-tooltip />
-      <el-table-column prop="errorMsg" label="错误信息" width="200" show-overflow-tooltip />
+      <el-table-column prop="affectedRows" label="影响行数" width="100" resizable />
+      <el-table-column prop="sqlText" label="SQL 语句" min-width="300" show-overflow-tooltip resizable />
+      <el-table-column prop="errorMsg" label="错误信息" width="200" show-overflow-tooltip resizable />
     </el-table>
 
     <el-empty v-if="!loading && logs.length === 0" description="暂无审计日志" />

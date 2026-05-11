@@ -2,7 +2,7 @@
     <el-tabs v-model="activeName" type="card" class="table-editor-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
             <el-table :data="columnList" style="width: 100%" class="col-table">
-                <el-table-column label="名称" width="250">
+                <el-table-column label="名称" width="250" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnName" style="margin-bottom: 10px;" />
                         <div v-if="!scope.row.isNew && !scope.row.onColumnNameEdit" class="column_name">
@@ -29,7 +29,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="类型" width="180">
+                <el-table-column label="类型" width="180" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnType" style="margin-bottom: 10px;" />
                         <div v-if="!scope.row.isNew && !scope.row.onColumnTypeEdit" class="column_type">
@@ -56,7 +56,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="默认值" width="140">
+                <el-table-column label="默认值" width="140" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnDefault" style="margin-bottom: 10px;" placeholder="NULL" />
                         <div v-if="!scope.row.isNew && !scope.row.onColumnDefaultEdit" class="column_default">
@@ -83,14 +83,14 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="可空" width="80">
+                <el-table-column label="可空" width="80" resizable>
                     <template #default="scope">
                         <el-switch v-model="scope.row.isNullable" class="ml-2" :disabled="scope.row.columnKey === 'PRI'"
                             style="margin-left: 10px; --el-switch-on-color: #13ce66;" active-value="YES"
                             inactive-value="NO" />
                     </template>
                 </el-table-column>
-                <el-table-column label="注释">
+                <el-table-column label="注释" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnComment" style="margin-bottom: 10px;"
                             type="textarea" autosize />
@@ -119,7 +119,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="操作" width="70">
+                <el-table-column label="操作" width="70" resizable>
                     <template #default="scope">
                         <div v-if="scope.row.isNew">
                             <el-icon title="保存新增" style="cursor: pointer;margin-right: 5px;" :size="12"
@@ -152,16 +152,16 @@
                 <el-button size="small" @click="showAddIndexDialog">新建索引</el-button>
             </div>
             <el-table :data="indexList" style="width: 100%" class="col-table" row-key="rowKey">
-                <el-table-column prop="indexName" label="索引名" width="200" />
-                <el-table-column prop="columnName" label="字段" width="200" />
-                <el-table-column label="唯一" width="80">
+                <el-table-column prop="indexName" label="索引名" width="200" resizable />
+                <el-table-column prop="columnName" label="字段" width="200" resizable />
+                <el-table-column label="唯一" width="80" resizable>
                     <template #default="scope">
                         <span>{{ scope.row.nonUnique == 0 ? '是' : '否' }}</span>
                     </template>
                 </el-table-column>
-                <el-table-column prop="seqInIndex" label="序号" width="60" />
-                <el-table-column prop="indexType" label="类型" width="120" />
-                <el-table-column label="注释">
+                <el-table-column prop="seqInIndex" label="序号" width="60" resizable />
+                <el-table-column prop="indexType" label="类型" width="120" resizable />
+                <el-table-column label="注释" resizable>
                     <template #default="scope">
                         <div v-if="!scope.row.onCommentEdit" class="column_comment">
                             <span>{{ scope.row.indexComment || '-' }}</span>
@@ -181,7 +181,7 @@
                         </div>
                     </template>
                 </el-table-column>
-                <el-table-column label="操作" width="70">
+                <el-table-column label="操作" width="70" resizable>
                     <template #default="scope">
                         <el-popconfirm :title="'删除索引 ' + scope.row.indexName + '？'" hide-after="0" @confirm="dropIndex(scope.row.indexName)">
                             <template #reference>
@@ -197,16 +197,16 @@
 
         <el-tab-pane label="外键" name="foreignKeys">
             <el-table :data="foreignKeyList" style="width: 100%" class="col-table" v-loading="fkLoading">
-                <el-table-column prop="constraintName" label="约束名" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="columnName" label="本表字段" width="160" />
-                <el-table-column prop="referencedTable" label="引用表" width="160" />
-                <el-table-column prop="referencedColumn" label="引用字段" width="160" />
-                <el-table-column prop="updateRule" label="ON UPDATE" width="120">
+                <el-table-column prop="constraintName" label="约束名" min-width="180" show-overflow-tooltip resizable />
+                <el-table-column prop="columnName" label="本表字段" width="160" resizable />
+                <el-table-column prop="referencedTable" label="引用表" width="160" resizable />
+                <el-table-column prop="referencedColumn" label="引用字段" width="160" resizable />
+                <el-table-column prop="updateRule" label="ON UPDATE" width="120" resizable>
                     <template #default="scope">
                         <el-tag size="small" :type="ruleTagType(scope.row.updateRule)">{{ scope.row.updateRule || '-' }}</el-tag>
                     </template>
                 </el-table-column>
-                <el-table-column prop="deleteRule" label="ON DELETE" width="120">
+                <el-table-column prop="deleteRule" label="ON DELETE" width="120" resizable>
                     <template #default="scope">
                         <el-tag size="small" :type="ruleTagType(scope.row.deleteRule)">{{ scope.row.deleteRule || '-' }}</el-tag>
                     </template>
@@ -218,10 +218,10 @@
         <el-tab-pane label="选项" name="option">
             <div v-if="editableOptions.length > 0" style="padding: 10px;">
                 <el-table :data="editableOptions" border size="small" style="width: 100%;">
-                    <el-table-column label="选项" width="160">
+                    <el-table-column label="选项" width="160" resizable>
                         <template #default="scope">{{ optionLabel(scope.row.key) }}</template>
                     </el-table-column>
-                    <el-table-column label="值">
+                    <el-table-column label="值" resizable>
                         <template #default="scope">
                             <div v-if="!scope.row.editing" class="column_comment">
                                 <span>{{ scope.row.value ?? '-' }}</span>
@@ -268,7 +268,7 @@
             <el-icon style="margin-top: 0px;position: absolute;right: 18px;cursor: pointer;z-index: 9999999;" size="16" @click="copyCreateScript">
                 <CopyDocument />
             </el-icon>
-            <div style="font-size: 18px;width: 100%; max-height: 500px;overflow-y: auto;overflow-x: hidden;">
+            <div style="font-size: 18px;width: 100%; height: 100%;overflow-y: auto;overflow-x: hidden;">
                 <pre><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </div>
         </el-tab-pane>
@@ -418,7 +418,7 @@ function loadForeignKeys() {
     const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
     let sql = ''
     if (dbType === 'mysql') {
-        sql = `SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, UPDATE_RULE, DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '${props.tableMeta.schema}' AND TABLE_NAME = '${props.tableMeta.tableName}' AND REFERENCED_TABLE_NAME IS NOT NULL`
+        sql = `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON k.CONSTRAINT_NAME = r.CONSTRAINT_NAME AND k.CONSTRAINT_SCHEMA = r.CONSTRAINT_SCHEMA WHERE k.TABLE_SCHEMA = '${props.tableMeta.schema}' AND k.TABLE_NAME = '${props.tableMeta.tableName}' AND k.REFERENCED_TABLE_NAME IS NOT NULL`
     } else if (dbType === 'sqlite') {
         sql = `PRAGMA foreign_key_list('${props.tableMeta.tableName}')`
     } else if (dbType === 'oracle') {
@@ -776,7 +776,7 @@ function copyCreateScript() {
 
 .col-table {
     width: 100%;
-    max-height: 500px;
+    height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
 }

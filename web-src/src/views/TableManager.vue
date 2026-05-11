@@ -25,12 +25,12 @@
       <!-- Column rows -->
       <div style="margin-bottom: 8px; font-weight: 600; font-size: 13px;">字段列表</div>
       <el-table :data="newTableForm.columns" size="small" border style="width: 100%;">
-        <el-table-column label="字段名" min-width="120">
+        <el-table-column label="字段名" min-width="120" resizable>
           <template #default="scope">
             <el-input v-model="scope.row.colName" size="small" placeholder="字段名" />
           </template>
         </el-table-column>
-        <el-table-column label="类型" min-width="200">
+        <el-table-column label="类型" min-width="200" resizable>
           <template #default="scope">
             <div style="display: flex; gap: 4px; align-items: center;">
               <el-select v-model="scope.row.colBaseType" size="small" style="flex: 1; min-width: 100px;" @change="onColTypeChange(scope.row)">
@@ -46,22 +46,22 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="可空" width="60" align="center">
+        <el-table-column label="可空" width="60" align="center" resizable>
           <template #default="scope">
             <el-checkbox v-model="scope.row.nullable" />
           </template>
         </el-table-column>
-        <el-table-column label="默认值" min-width="100">
+        <el-table-column label="默认值" min-width="100" resizable>
           <template #default="scope">
             <el-input v-model="scope.row.defaultVal" size="small" placeholder="默认值" />
           </template>
         </el-table-column>
-        <el-table-column label="注释" min-width="120">
+        <el-table-column label="注释" min-width="120" resizable>
           <template #default="scope">
             <el-input v-model="scope.row.comment" size="small" placeholder="注释" />
           </template>
         </el-table-column>
-        <el-table-column label="" width="50" align="center">
+        <el-table-column label="" width="50" align="center" resizable>
           <template #default="scope">
             <el-button type="danger" size="small" link @click="removeColumn(scope.$index)">删</el-button>
           </template>
@@ -98,7 +98,7 @@
   <!-- Main content: left list + right editor -->
     <div class="tm-body">
       <!-- Left: table list -->
-      <div class="tm-sidebar">
+      <div class="tm-sidebar" :style="{ width: sidebarWidth + 'px' }">
         <div class="tm-search">
           <el-input
             v-model="searchKeyword"
@@ -117,11 +117,11 @@
             height="100%"
             @row-click="onTableClick"
           >
-            <el-table-column prop="name" label="表名" show-overflow-tooltip />
-            <el-table-column prop="comment" label="注释" show-overflow-tooltip />
-            <el-table-column label="" width="44" align="center">
+            <el-table-column prop="name" label="表名" show-overflow-tooltip resizable />
+            <el-table-column prop="comment" label="注释" show-overflow-tooltip resizable />
+            <el-table-column label="" width="44" align="center" resizable>
               <template #default="scope">
-                <el-dropdown trigger="click" @command="(cmd) => onTableAction(cmd, scope.row)" @click.stop>
+                <el-dropdown trigger="hover" @command="(cmd) => onTableAction(cmd, scope.row)" @click.stop>
                   <el-icon style="cursor: pointer; color: #909399;" :size="16" title="操作"><MoreFilled /></el-icon>
                   <template #dropdown>
                     <el-dropdown-menu>
@@ -149,6 +149,9 @@
         </div>
       </div>
 
+      <!-- Resizable handle -->
+      <div class="tm-resize-handle" @mousedown.prevent="onResizeStart"></div>
+
       <!-- Right: TableEditor -->
       <div class="tm-editor">
         <div v-if="!selectedTable" class="classical-empty">
@@ -169,7 +172,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { Delete, DeleteFilled, Document, Download, Edit, MoreFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 
 const props = defineProps({
@@ -201,6 +204,44 @@ const filteredTables = computed(() => {
     (t) => t.name.toLowerCase().includes(kw) || (t.comment && t.comment.toLowerCase().includes(kw))
   )
 })
+
+// Sidebar drag resize
+const sidebarWidth = ref(300)
+let isResizing = false
+
+function initSidebarWidth() {
+  const el = document.querySelector('.tm-sidebar')
+  if (el) {
+    sidebarWidth.value = el.offsetWidth
+  }
+}
+
+function onResizeStart(e) {
+  isResizing = true
+  initSidebarWidth()
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', onResizeEnd)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+}
+
+function onResizeMove(e) {
+  if (!isResizing) return
+  const parent = document.querySelector('.tm-body')
+  if (!parent) return
+  const parentRect = parent.getBoundingClientRect()
+  let newWidth = e.clientX - parentRect.left
+  newWidth = Math.max(200, Math.min(500, newWidth))
+  sidebarWidth.value = newWidth
+}
+
+function onResizeEnd() {
+  isResizing = false
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
 
 function loadTables() {
   if (!props.connId || !props.schema) return
@@ -448,6 +489,12 @@ function onTableDrop() {
 
 onMounted(() => {
   loadTables()
+  initSidebarWidth()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
 })
 
 watch(
@@ -489,14 +536,27 @@ watch(
 }
 
 .tm-sidebar {
-  width: 30%;
-  min-width: 240px;
-  max-width: 400px;
   border-right: 1px solid #ebeef5;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: #fafbfc;
+  flex-shrink: 0;
+}
+
+.tm-resize-handle {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
+}
+
+.tm-resize-handle:hover {
+  background: var(--accent-color, #409eff);
+  opacity: 0.4;
 }
 
 .tm-search {
