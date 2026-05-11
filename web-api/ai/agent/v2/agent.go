@@ -3,15 +3,12 @@ package agentv2
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	goWebUtils "go-web/utils"
@@ -101,122 +98,24 @@ type SessionDetailMessage struct {
 }
 
 // ──────────────────────────────────────────────
-// 组件缓存
+// SQLAgent + Runner
 // ──────────────────────────────────────────────
 
 const (
 	maxHistoryRounds = 20
 	maxIterations    = 50
 
-	defaultContextTokens = 32768
+	defaultContextTokens = 128000
 )
 
 // computeSummarizationTrigger 根据配置的模型上下文窗口计算摘要触发阈值。
-// 取模型窗口的 70%，留 30% 余量给当前轮次的响应。兜底 32768。
+// 取模型窗口的 85%，留 15% 余量给当前轮次的响应。兜底 128000。
 func computeSummarizationTrigger(cfg *admin.AIConfig) int {
 	if cfg.MaxContextTokens > 0 {
-		return cfg.MaxContextTokens * 70 / 100
+		return cfg.MaxContextTokens * 85 / 100
 	}
 	return defaultContextTokens
 }
-
-// sharedComponentsKey 组件缓存的键，由模型配置的标识字段组成。
-type sharedComponentsKey string
-
-// sharedComponents 缓存 ChatModel 及通用中间件。
-// 这些组件与用户身份、权限、connID 无关，可以安全地在请求之间复用。
-type sharedComponents struct {
-	chatModel     model.ToolCallingChatModel
-	summarization adk.ChatModelAgentMiddleware
-	filesystem    adk.ChatModelAgentMiddleware
-	skill         adk.ChatModelAgentMiddleware
-}
-
-var (
-	sharedMu    sync.Mutex
-	sharedCache = make(map[sharedComponentsKey]*sharedComponents)
-)
-
-func makeSharedKey(cfg *admin.AIConfig) sharedComponentsKey {
-	h := sha256.New()
-	h.Write([]byte(cfg.Provider))
-	h.Write([]byte(cfg.BaseURL))
-	h.Write([]byte(cfg.Model))
-	h.Write([]byte(cfg.ApiKey))
-	return sharedComponentsKey(hex.EncodeToString(h.Sum(nil)))
-}
-
-func getOrCreateSharedComponents(ctx context.Context, cfg *admin.AIConfig) (*sharedComponents, error) {
-	key := makeSharedKey(cfg)
-
-	sharedMu.Lock()
-	if sc, ok := sharedCache[key]; ok {
-		sharedMu.Unlock()
-		return sc, nil
-	}
-	sharedMu.Unlock()
-
-	cm, err := buildChatModel(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("创建模型失败：%w", err)
-	}
-
-	triggerTokens := computeSummarizationTrigger(cfg)
-
-	summarizationMW, err := summarization.New(ctx, &summarization.Config{
-		Model: cm,
-		Trigger: &summarization.TriggerCondition{
-			ContextTokens: triggerTokens,
-		},
-		TokenCounter: estimateTokenCount,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
-	}
-
-	osfsBackend := export.NewOSFilesystemBackend()
-	fsm, err := filesystem.New(ctx, &filesystem.MiddlewareConfig{
-		Backend:        osfsBackend,
-		StreamingShell: osfsBackend,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建文件系统中间件失败：%w", err)
-	}
-
-	skillBackend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
-		Backend: osfsBackend,
-		BaseDir: filepath.Join(export.GetSkillScriptsBaseDir(), "skills"),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建 Skill Backend 失败：%w", err)
-	}
-
-	sm, err := skill.NewMiddleware(ctx, &skill.Config{
-		Backend: skillBackend,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建 Skill 中间件失败：%w", err)
-	}
-
-	sc := &sharedComponents{
-		chatModel:     cm,
-		summarization: summarizationMW,
-		filesystem:    fsm,
-		skill:         sm,
-	}
-
-	sharedMu.Lock()
-	sharedCache[key] = sc
-	sharedMu.Unlock()
-
-	log.Printf("[Agent] 共享组件缓存命中 - provider=%s, model=%s, summarizationTrigger=%d\n",
-		cfg.Provider, cfg.Model, triggerTokens)
-	return sc, nil
-}
-
-// ──────────────────────────────────────────────
-// SQLAgent + Runner
-// ──────────────────────────────────────────────
 
 // 全局 CheckPointStore（单实例共享）
 var globalCheckPointStore = NewInMemoryCheckPointStore()
@@ -234,11 +133,10 @@ type SQLAgent struct {
 func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
 	export.InitSkillEnv()
 
-	sc, err := getOrCreateSharedComponents(ctx, cfg)
+	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
-
 	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
@@ -247,6 +145,50 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	err = adk.SetLanguage(adk.LanguageChinese)
 	if err != nil {
 		log.Printf("[Agent] 设置语言失败 - err=%v\n", err)
+	}
+
+	triggerTokens := computeSummarizationTrigger(cfg)
+
+	summarizationMW, err := summarization.New(ctx, &summarization.Config{
+		Model: cm,
+		Trigger: &summarization.TriggerCondition{
+			ContextTokens: triggerTokens,
+		},
+		TokenCounter: estimateTokenCount,
+	})
+
+	if err != nil {
+		log.Printf("[Agent] 创建摘要中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
+	}
+
+	osfsBackend := export.NewOSFilesystemBackend()
+	skillsDir := filepath.Join(export.GetSkillScriptsBaseDir(), "skills")
+
+	fsm, err := filesystem.New(ctx, &filesystem.MiddlewareConfig{
+		Backend:        osfsBackend,
+		StreamingShell: osfsBackend,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Filesystem 中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建文件系统中间件失败：%w", err)
+	}
+
+	skillBackend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
+		Backend: osfsBackend,
+		BaseDir: skillsDir,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Skill Backend 失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建 Skill Backend 失败：%w", err)
+	}
+
+	sm, err := skill.NewMiddleware(ctx, &skill.Config{
+		Backend: skillBackend,
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 Skill 中间件失败 - err=%v\n", err)
+		return nil, fmt.Errorf("创建 Skill 中间件失败：%w", err)
 	}
 
 	var permAgentTool tool.BaseTool
@@ -263,7 +205,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
 		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, nil),
-		Model:       sc.chatModel,
+		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
@@ -272,9 +214,9 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
 			&DangerousSQLApprovalMiddleware{},
 			&ToolErrorRecoveryMiddleware{},
-			sc.summarization,
-			sc.filesystem,
-			sc.skill,
+			summarizationMW,
+			fsm,
+			sm,
 		},
 		MaxIterations: maxIterations,
 		ModelRetryConfig: &adk.ModelRetryConfig{
@@ -293,6 +235,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 			},
 		},
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("创建 Agent 失败：%w", err)
 	}
@@ -389,14 +332,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	// 使用 Runner.Run 执行，传入 CheckPointID 以支持中断恢复
 	// CheckPointID 使用 sessionID，确保同一会话的中断可以恢复
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
-	iter := a.runner.Run(ctx, messages,
-		adk.WithCheckPointID(checkPointID),
-		adk.WithSessionValues(map[string]any{
-			"db_type":    a.dbType,
-			"db_schema":  a.dbSchema,
-			"user_scope": a.scope.DescribeForPrompt(),
-		}),
-	)
+	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
 
 	_, _ = a.processEvents(iter, flush, sess, checkPointID)
 
@@ -423,13 +359,7 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
 		Targets: targetsAny,
-	},
-		adk.WithSessionValues(map[string]any{
-			"db_type":    a.dbType,
-			"db_schema":  a.dbSchema,
-			"user_scope": a.scope.DescribeForPrompt(),
-		}),
-	)
+	})
 	if err != nil {
 		return fmt.Errorf("resume failed: %w", err)
 	}
@@ -672,27 +602,6 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 // 系统提示词
 // ──────────────────────────────────────────────
 
-var (
-	sqlDialectCacheMu sync.Mutex
-	sqlDialectCache   = make(map[string]string)
-)
-
-func getSQLDialectRulesCached(dbType string) string {
-	key := strings.ToLower(dbType)
-	sqlDialectCacheMu.Lock()
-	if rules, ok := sqlDialectCache[key]; ok {
-		sqlDialectCacheMu.Unlock()
-		return rules
-	}
-	sqlDialectCacheMu.Unlock()
-
-	rules := getSQLDialectRules(dbType)
-	sqlDialectCacheMu.Lock()
-	sqlDialectCache[key] = rules
-	sqlDialectCacheMu.Unlock()
-	return rules
-}
-
 // estimateTokenCount 估算文本的 token 数量。
 // 提供比默认 4 chars/token 更精确的估算，针对中英文混合文本优化。
 func estimateTokenCount(_ context.Context, input *summarization.TokenCounterInput) (int, error) {
@@ -897,7 +806,7 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 | import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
 
 ## SQL 编写规范（` + dbType + `）
-` + getSQLDialectRulesCached(dbType) + `
+` + getSQLDialectRules(dbType) + `
 
 ## 写操作安全
 - 所有写操作必须通过 exec_sql 工具执行，系统会自动拦截并推送前端由用户确认
