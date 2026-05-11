@@ -34,7 +34,8 @@ export const dbSchemaProxy = {
         return schemaNames
     },
     getDbType(schema) {
-        return this.schemaProxy[schema]["dbType"]
+        const entry = this.schemaProxy[schema]
+        return entry ? entry.dbType : null
     },
     getDialect(schema) {
         const dbType = this.schemaProxy[schema]["dbType"]

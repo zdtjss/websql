@@ -25,7 +25,6 @@
                         </el-dropdown-menu>
                       </template>
                     </el-dropdown>
-                    <el-button @click="tableCreateDialogVisible = true">建表语句</el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="listBackupData">备份</el-button>
                     <el-button @click="openTableManager">表管理</el-button>
@@ -97,20 +96,6 @@
     </div>
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
         <DBExport :connId="props.connId" :schema="props.schema" opt="insert" :canImport="canModify"/>
-    </el-dialog>
-    <el-dialog v-model="tableCreateDialogVisible" @close="tableCreateDialogVisible = false" :draggable="true"
-        destroy-on-close width="1000px" class="table-structure-dialog">
-        <div class="dialog-toolbar">
-            <el-switch v-model="isTable" class="ml-2" inline-prompt size="large"
-                style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff;margin-right: 10px;"
-                active-text="表" inactive-text="视图" />
-            <el-input v-model="tableName" @keyup.enter="showCreateScript" style="width: 300px;" />
-            <el-button @click="showCreateScript" style="margin-left:12px;" size="small">查看</el-button>
-        </div>
-        <div class="dialog-scroll-body">
-            <TableEditor v-if="isTable" :tableMeta="tableMeta" />
-            <ViewDialog v-else :tableMeta="tableMeta" />
-        </div>
     </el-dialog>
     <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
         style="height:650px;overflow-y: auto;">
@@ -211,8 +196,6 @@ import { dbSchemaProxy } from '../stores/sql'
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
-import TableEditor from './comonents/TableEditor.vue'
-import ViewDialog from './comonents/ViewDialog.vue'
 import SqlSnippetManager from '../components/SqlSnippetManager.vue'
 import QueryBuilderDialog from '../components/QueryBuilderDialog.vue'
 
@@ -272,6 +255,8 @@ const props = defineProps<{
     connId: string,
     schema: string,
     schemaPath: string,
+    tableName?: string,
+    dbType?: string,
 }>()
 
 const emit = defineEmits(['openTableManager', 'openDataBrowser'])
@@ -290,13 +275,6 @@ const executionTime = ref<number | null>(null)
 const snippetVisible = ref(false)
 const queryBuilderVisible = ref(false)
 const currentSelectTable = ref("")
-
-const tableName = ref("")
-const tableCreateDdlRef = ref()
-const tableCreateDialogVisible = ref(false)
-
-const isTable = ref(true)
-const tableMeta = ref({})
 
 const backupDataList = ref([])
 const backupDataTotal = ref(0)
@@ -1414,17 +1392,6 @@ function exportCurrentToSqlUpdate() {
 
 function getSqlLang(): SqlLanguage {
     return getSqlDialect(dbSchemaProxy.getDbType(props.schema))
-}
-
-function showCreateScript() {
-    tableMeta.value = { connId: props.connId, schema: props.schema, tableName: tableName.value }
-}
-
-function copyCreateScript() {
-    copyToClipboard(tableCreateDdlRef.value.innerText,
-        () => ElMessage({ message: "已复制到粘贴板", type: "success" }),
-        () => ElMessage({ message: "复制失败", type: "error" })
-    )
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null

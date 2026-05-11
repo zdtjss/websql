@@ -60,9 +60,6 @@
                     <el-tooltip v-if="data.type === 'schema'" content="ER关系图" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="viewERDiagram(node)"><Connection /></el-icon>
                     </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="表结构对比" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewTableDiff(node)"><Switch /></el-icon>
-                    </el-tooltip>
                     <el-tooltip v-if="data.type === 'schema'" content="表管理" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Grid /></el-icon>
                     </el-tooltip>
@@ -186,13 +183,8 @@
       v-model="erDiagramVisible"
       :conn-id="erDiagramConnId"
       :schema="erDiagramSchema"
+      :db-type="erDiagramDbType"
       @table-click="handleTableClickFromER"
-    />
-
-    <TableDiffDialog
-      v-model="tableDiffVisible"
-      :conn-id="tableDiffConnId"
-      :schema="tableDiffSchema"
     />
   </div>
 </template>
@@ -201,7 +193,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Connection, Document, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, Switch, View } from '@element-plus/icons-vue'
+import { Connection, Document, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, View } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -212,7 +204,6 @@ import TableManager from './TableManager.vue'
 import SchemaObjectsDialog from '../components/SchemaObjectsDialog.vue'
 import ServerStatusPanel from '../components/ServerStatusPanel.vue'
 import ERDiagramDialog from '../components/ERDiagramDialog.vue'
-import TableDiffDialog from '../components/TableDiffDialog.vue'
 import { useTheme } from '@/js/utils/useTheme.ts'
 
 const showLoginBtn = ref(true)
@@ -263,9 +254,7 @@ const serverStatusSchema = ref('')
 const erDiagramVisible = ref(false)
 const erDiagramConnId = ref('')
 const erDiagramSchema = ref('')
-const tableDiffVisible = ref(false)
-const tableDiffConnId = ref('')
-const tableDiffSchema = ref('')
+const erDiagramDbType = ref('')
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
@@ -622,6 +611,10 @@ function getSysModel() {
   })
 }
 
+function refreshNode() {
+  refreshTree()
+}
+
 function refreshTree() {
   if (treeLoading.value) return
   treeLoading.value = true
@@ -666,34 +659,13 @@ function viewERDiagram(node) {
   const conn = findConn(node)
   erDiagramConnId.value = conn.id
   erDiagramSchema.value = node.data.label
+  erDiagramDbType.value = node.data.data?.dbType || ''
   erDiagramVisible.value = true
-}
-
-function viewTableDiff(node) {
-  const conn = findConn(node)
-  tableDiffConnId.value = conn.id
-  tableDiffSchema.value = node.data.label
-  tableDiffVisible.value = true
 }
 
 function handleTableClickFromER(tableName) {
   erDiagramVisible.value = false
-  const node = findTableNode(tableName)
-  if (node) {
-    openDataBrowser(node)
-  }
-}
-
-function findTableNode(tableName) {
-  for (const connNode of treeData.value) {
-    if (!connNode.children) continue
-    for (const schemaNode of connNode.children) {
-      if (!schemaNode.children) continue
-      const tableNode = schemaNode.children.find(t => t.label === tableName)
-      if (tableNode) return tableNode
-    }
-  }
-  return null
+  openDataBrowser({ connId: erDiagramConnId.value, schema: erDiagramSchema.value, tableName })
 }
 
 function openTableManager(node) {
