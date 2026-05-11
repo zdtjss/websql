@@ -1462,6 +1462,17 @@ function onGlobalKeyup(e: KeyboardEvent) {
   }
 }
 
+function extractTablesFromSql(sql: string): string[] {
+  const tables: string[] = []
+  const normalized = sql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+  const pattern = /(?:^|\s)(?:from|join|inner\s+join|left\s+(?:outer\s+)?join|right\s+(?:outer\s+)?join|full\s+(?:outer\s+)?join|cross\s+join)\s+([a-zA-Z_][a-zA-Z0-9_$#]*)/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(normalized)) !== null) {
+    tables.push(match[1])
+  }
+  return tables
+}
+
 function detectTableAtPosition(clientX: number, clientY: number) {
   if (!editorView.value) return
   const pos = editorView.value.posAtCoords({ x: clientX, y: clientY })
@@ -1474,12 +1485,27 @@ function detectTableAtPosition(clientX: number, clientY: number) {
     tableNameUnderCursor.value = ''
     return
   }
-  const wordText = editorView.value.state.sliceDoc(word.from, word.to)
+  const state = editorView.value.state
+  let from = word.from
+  let to = word.to
+  const doc = state.doc
+  while (from > 0 && /[a-zA-Z0-9_$#]/.test(doc.sliceString(from - 1, from))) {
+    from--
+  }
+  while (to < doc.length && /[a-zA-Z0-9_$#]/.test(doc.sliceString(to, to + 1))) {
+    to++
+  }
+  const wordText = state.sliceDoc(from, to)
   const tables = tableList.value
   if (tables.some((t: string) => t.toLowerCase() === wordText.toLowerCase())) {
     tableNameUnderCursor.value = wordText
   } else {
-    tableNameUnderCursor.value = ''
+    const sqlTables = extractTablesFromSql(state.doc.toString())
+    if (sqlTables.some(t => t.toLowerCase() === wordText.toLowerCase())) {
+      tableNameUnderCursor.value = wordText
+    } else {
+      tableNameUnderCursor.value = ''
+    }
   }
 }
 
