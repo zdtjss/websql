@@ -17,13 +17,39 @@ const routes = [
     path: '/classical',
     name: 'ClassicalView',
     component: () => import('@/views/ClassicalView.vue'),
-    meta: { title: '经典视图' }
+    meta: { title: '经典视图', requiresClassicView: true }
   }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+router.beforeEach(async (to, from, next) => {
+  if (to.meta.requiresClassicView) {
+    try {
+      const auth = sessionStorage.getItem('authentication') || ''
+      const apiBase = import.meta.env.VITE_API_URL || ''
+      const resp = await fetch(apiBase + '/canUseClassicView', {
+        headers: { 'Authorization': auth }
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        if (data.data && data.data.allowed) {
+          next()
+        } else {
+          next('/')
+        }
+      } else {
+        next('/')
+      }
+    } catch {
+      next('/')
+    }
+  } else {
+    next()
+  }
 })
 
 export default router

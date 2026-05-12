@@ -9,6 +9,7 @@
         </span>
         <el-divider direction="vertical" />
         <el-button size="small" @click="loadData" :loading="loading" :icon="Refresh">刷新</el-button>
+        <el-button size="small" :icon="InfoFilled" @click="openTableStructure">表结构</el-button>
         <el-dropdown @command="handleAutoRefresh" style="margin-left: -4px;">
           <el-button size="small" :type="autoRefreshInterval > 0 ? 'warning' : ''" :icon="Timer">
             {{ autoRefreshInterval > 0 ? autoRefreshInterval + 's' : '' }}
@@ -358,7 +359,7 @@
 </template>
 
 <script setup>
-import { ArrowDown, ArrowUp, Download, Filter, Grid, Plus, Refresh, Sort, Timer } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Download, Filter, Grid, InfoFilled, Plus, Refresh, Sort, Timer } from '@element-plus/icons-vue'
 import { ElLoading, ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as XLSX from 'xlsx'
@@ -372,6 +373,8 @@ const props = defineProps({
   schema: String,
   tableName: String,
 })
+
+const emit = defineEmits(['viewTableInfo'])
 
 const loading = ref(false)
 const currentPage = ref(1)
@@ -687,11 +690,13 @@ async function fetchTotal() {
   params.append('schema', props.schema)
   params.append('tableName', props.tableName)
   params.append('sql', sql)
+  params.append('maxLine', '1')
   const resp = await http.post('/execSQL', params)
   const data = resp.data.data
   if (data && data.data && data.data.length > 0) {
     const firstRow = data.data[0]
-    total.value = Number(firstRow['cnt'] ?? firstRow['COUNT(*) as cnt'] ?? 0)
+    const firstValue = Object.values(firstRow)[0]
+    total.value = Number(firstValue ?? 0)
   }
 }
 
@@ -1741,6 +1746,14 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
 onMounted(() => {
   loadData()
 })
+
+function openTableStructure() {
+  emit('viewTableInfo', {
+    connId: props.connId,
+    schema: props.schema,
+    tableName: props.tableName,
+  })
+}
 
 watch(
   () => [props.connId, props.schema, props.tableName],

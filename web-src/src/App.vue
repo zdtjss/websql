@@ -314,7 +314,7 @@
                   <DocumentAdd />
                 </el-icon>
               </el-button>
-              <router-link to="/classical" class="switch-view-link" title="经典视图">
+              <router-link v-if="canUseClassicView" to="/classical" class="switch-view-link" title="经典视图">
                 <el-icon>
                   <Switch />
                 </el-icon>
@@ -487,6 +487,7 @@ const msgContainer = ref(null)
 let speechRecognition = null
 
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
+const canUseClassicView = ref(false)
 
 const promptEditDialogVisible = ref(false)
 const editingPromptId = ref('')
@@ -2305,6 +2306,7 @@ function logout() {
     .then((resp) => {
       currentUser.value = {}
       loginSucc.value = false
+      canUseClassicView.value = false
       ElMessage(resp.data.data)
       sessionStorage.removeItem("authentication")
       sessionStorage.removeItem("currentUser")
@@ -2320,6 +2322,7 @@ function showLoginDialog() {
 
 function handleSessionExpired() {
   loginSucc.value = false
+  canUseClassicView.value = false
   sessionStorage.removeItem('authentication')
   sessionStorage.removeItem('currentUser')
   sessionStorage.removeItem('isRemote')
@@ -2345,6 +2348,15 @@ function handleLoginSuccess(userData) {
   loginSucc.value = true
   loadConnList()
   loadPromptList()
+  checkClassicViewPermission()
+}
+
+function checkClassicViewPermission() {
+  http.get('/canUseClassicView').then(resp => {
+    canUseClassicView.value = !!(resp.data.data && resp.data.data.allowed)
+  }).catch(() => {
+    canUseClassicView.value = false
+  })
 }
 
 function loadPromptList() {
@@ -2654,6 +2666,9 @@ onMounted(() => {
     }
   })
   getSysModel()
+  if (loginSucc.value) {
+    checkClassicViewPermission()
+  }
   document.addEventListener('keydown', handleEscKey)
   document.addEventListener('keydown', handleMermaidKeyDown)
   document.addEventListener('keyup', handleMermaidKeyUp)

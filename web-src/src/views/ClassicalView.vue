@@ -54,6 +54,9 @@
                     <el-tooltip v-if="data.type === 'conn'" content="刷新" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="refreshNode(node)"><Refresh /></el-icon>
                     </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="SQL编辑器" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="addTab(node)"><EditPen /></el-icon>
+                    </el-tooltip>
                     <el-tooltip v-if="data.type === 'schema'" content="数据库对象" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="viewSchemaObjects(node)"><Setting /></el-icon>
                     </el-tooltip>
@@ -89,12 +92,12 @@
                   {{ item.title }}
                 </span>
               </template>
-              <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" />
+              <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" @viewTableInfo="viewTableInfoFromChild" />
             </el-tab-pane>
           </el-tabs>
           <div v-else class="empty-workspace">
             <div class="empty-icon">🗄️</div>
-            <div class="empty-text">点击左侧数据库展开表结构</div>
+            <div class="empty-text">展开左侧数据库，点击图标打开功能</div>
           </div>
         </div>
       </el-splitter-panel>
@@ -178,14 +181,6 @@
       :conn-id="serverStatusConnId"
       :schema="serverStatusSchema"
     />
-
-    <ERDiagramDialog
-      v-model="erDiagramVisible"
-      :conn-id="erDiagramConnId"
-      :schema="erDiagramSchema"
-      :db-type="erDiagramDbType"
-      @table-click="handleTableClickFromER"
-    />
   </div>
 </template>
 
@@ -193,7 +188,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Connection, Document, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, View } from '@element-plus/icons-vue'
+import { Connection, Document, EditPen, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, View } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -211,6 +206,7 @@ const showLoginBtn = ref(true)
 const sqlEditor = shallowRef(SQLEditor2)
 const tableManagerComp = shallowRef(TableManager)
 const dataBrowserComp = shallowRef(DataBrowser)
+const erDiagramComp = shallowRef(ERDiagramDialog)
 
 const editableTabsValue = ref('')
 const editableTabs = ref([])
@@ -251,10 +247,6 @@ const schemaObjectsSchema = ref('')
 const serverStatusVisible = ref(false)
 const serverStatusConnId = ref('')
 const serverStatusSchema = ref('')
-const erDiagramVisible = ref(false)
-const erDiagramConnId = ref('')
-const erDiagramSchema = ref('')
-const erDiagramDbType = ref('')
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
@@ -339,6 +331,8 @@ onMounted(() => {
       tab.component = tableManagerComp
     } else if (tab.tabId && tab.tabId.startsWith('databrowser-')) {
       tab.component = dataBrowserComp
+    } else if (tab.tabId && tab.tabId.startsWith('erdiagram-')) {
+      tab.component = erDiagramComp
     } else {
       tab.component = sqlEditor
     }
@@ -426,7 +420,6 @@ function loadTree(node, resolve) {
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
-        addTab(node)
       }
       if (resp.data.data) {
         resolve(resp.data.data.map(e => {
@@ -657,15 +650,23 @@ function viewServerStatus(node) {
 
 function viewERDiagram(node) {
   const conn = findConn(node)
-  erDiagramConnId.value = conn.id
-  erDiagramSchema.value = node.data.label
-  erDiagramDbType.value = node.data.data?.dbType || ''
-  erDiagramVisible.value = true
-}
-
-function handleTableClickFromER(tableName) {
-  erDiagramVisible.value = false
-  openDataBrowser({ connId: erDiagramConnId.value, schema: erDiagramSchema.value, tableName })
+  const tabId = 'erdiagram-' + conn.id + '-' + node.data.label
+  const existing = editableTabs.value.find(t => t.tabId === tabId)
+  if (existing) {
+    editableTabsValue.value = tabId
+    return
+  }
+  editableTabs.value.push({
+    tabId: tabId,
+    title: '🔗 ' + node.data.label,
+    connId: conn.id,
+    connName: conn.label,
+    schema: node.data.label,
+    dbType: node.data.data?.dbType || '',
+    component: erDiagramComp,
+  })
+  editableTabsValue.value = tabId
+  restoreTab()
 }
 
 function openTableManager(node) {
@@ -734,6 +735,12 @@ function openTableManagerFromChild({ connId, schema, schemaPath }) {
     }
   }
   openTableManager(node)
+}
+
+function viewTableInfoFromChild({ connId, schema, tableName }) {
+  tableMgntTitle.value = tableName
+  tableMeta.value = { connId, schema, tableName }
+  tableMgntDialogVisible.value = true
 }
 
 </script>

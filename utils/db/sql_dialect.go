@@ -99,24 +99,24 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 	},
 	"oracle": func(colType *string, val *any, overSign bool) *any {
 		var v any
-		//判断是否为 []byte
 		if b, ok := (*val).([]byte); ok {
 			strVal := string(b)
 			switch *colType {
 			case "NUMBER":
 				i, err := strconv.ParseInt(strVal, 10, 64)
-				if err != nil && strings.Contains(err.Error(), "invalid syntax") {
-					f, err := strconv.ParseFloat(strVal, 64)
-					logutils.PanicErr(err)
-					// js 数字类型上限大小
-					if overSign && f > 9007199254740992 {
-						v = fmt.Sprintf("s:%f", f)
+				if err != nil {
+					f, err2 := strconv.ParseFloat(strVal, 64)
+					if err2 != nil {
+						logutils.PrintErrf("NUMBER类型解析失败: %s", err2)
+						v = strVal
 					} else {
-						v = f
+						if overSign && f > 9007199254740992 {
+							v = fmt.Sprintf("s:%f", f)
+						} else {
+							v = f
+						}
 					}
 				} else {
-					logutils.PanicErr(err)
-					// js 数字类型上限大小
 					if overSign && i > 9007199254740992 {
 						v = fmt.Sprintf("s:%d", i)
 					} else {
@@ -125,12 +125,15 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				}
 			case "INTEGER":
 				i, err := strconv.ParseInt(strVal, 10, 64)
-				logutils.PanicErr(err)
-				// js 数字类型上限大小
-				if overSign && i > 9007199254740992 {
-					v = fmt.Sprintf("s:%d", i)
+				if err != nil {
+					logutils.PrintErrf("INTEGER类型解析失败", err)
+					v = strVal
 				} else {
-					v = i
+					if overSign && i > 9007199254740992 {
+						v = fmt.Sprintf("s:%d", i)
+					} else {
+						v = i
+					}
 				}
 			default:
 				v = string(b)
@@ -138,7 +141,6 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 		} else if t, ok := (*val).(time.Time); ok {
 			v = time.Time(t).Format(time.DateTime)
 		} else {
-			// 其他类型直接返回值（解引用）
 			v = *val
 		}
 		return &v
