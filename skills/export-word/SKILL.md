@@ -1,143 +1,94 @@
 ---
-name: export-word
-description: 生成专业 Word（DOCX）数据分析报告。支持四种工作流：1) 数据驱动编程创建（数据/内容两种模式，含智能统计解读） 2) OOXML 直接文本替换 3) 模板组装多章节拼接 4) OOXML 拆包/编辑/打包+修订追踪。生成包含封面（编制单位/日期/编号/密级）、摘要与指标速览、数据概览、统计分析、可视化、发现与建议、附录及页眉页脚的完整报告。当用户请求生成 Word 文档或数据分析报告时必须使用此技能。
+name: Word 文档生成器
+description: 使用 Python 生成专业数据分析 Word 报告，支持图表、表格、KPI 卡片，科技感配色
+inclusion: manual
 ---
 
-# 专业 Word 数据分析报告导出技能 v3.0
+# Word 文档生成器 Skill
 
-基于 Anthropic docx skill 架构思想重构，融合 OOXML 直接操作 + 模板组装 + 修订追踪 + 编程控制四层能力。
+专业数据分析 Word 报告生成，基于 python-docx + matplotlib，支持图表、表格、KPI 卡片。
 
-## 架构概览
+## 使用前提
 
-```
-export-word/
-├── SKILL.md
-└── scripts/
-    ├── export_word.py         # 主入口 — WordExporter 类（2模式）
-    ├── inventory.py           # 模板结构清单
-    ├── ooxml_replace.py       # OOXML 文本精确替换
-    ├── assemble.py            # 多章节模板组装
-    ├── track_changes.py       # 修订追踪启用
-    ├── chart_generator.py     # 图表生成（→ shared/）
-    ├── word_templates/        # 模板
-    └── word_builders/         # 8 个构建器
+依赖：`pip install python-docx matplotlib numpy Pillow`
 
-shared/
-├── ooxml/scripts/
-│   ├── unpack.py              # OOXML 解包
-│   ├── pack.py                # OOXML 打包
-│   └── validate.py            # OOXML 验证
-```
+## 工作流程
 
-## 四种工作流
+1. 运行本目录下的 `scripts/word_generator.py` 作为模块导入
+2. 调用脚本中 `sys.path/scripts` 指向本 skill 目录
 
-### 工作流 1：数据驱动编程创建
+## 调用模板
 
-```bash
-python export_word.py < input.json
-```
+```python
+import sys, os
+# 指向本 skill 目录（AI 执行时替换为实际路径）
+SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.kiro', 'skills', 'word-generator')
+sys.path.insert(0, SKILL_DIR)
+from word_generator import WordBuilder
 
-两种模式：
-- **data** — 完整分析报告（封面→摘要→指标速览→数据概览→统计分析→可视化→发现与建议→附录→页眉页脚）
-- **content** — 结构化文档（封面→自定义章节，支持 heading1-3/paragraph/list/table/image 块类型）
-
-报告包含智能数据特征解读（3层分析：离散程度→集中趋势→稳定性评估）。
-
-### 工作流 2：OOXML 精确文本替换
-
-直接操作 OOXML XML，保留所有格式（rPr），仅替换文本：
-
-```bash
-python ooxml_replace.py template.docx replacements.json output.docx
+doc = WordBuilder()
+doc.add_cover(title="标题", subtitle="副标题", date="日期", author="作者", org="机构")
+doc.add_toc_placeholder()
+doc.add_heading("一级标题", level=1)
+doc.add_heading("二级标题", level=2)
+doc.add_paragraph("正文内容", bold=False, indent=True)
+doc.add_bullet_list(["要点1", "要点2"], highlight_indices=[0])
+doc.add_numbered_list(["步骤1", "步骤2"])
+doc.add_quote("引用文字")
+doc.add_kpi_table([{"label":"指标", "value":"数值", "change":"+X%", "trend":"up"}])
+doc.add_table(["列1","列2"], [["数据1","数据2"]], caption="表名")
+doc.add_chart("chart_type", data_dict, caption="图表说明")
+doc.add_page_break()
+doc.save("output.docx")
 ```
 
-replacements.json：
-```json
-{
-  "{{TITLE}}": "2024年销售报告",
-  "{{AUTHOR}}": "张明远",
-  "{{DATE}}": "2024年12月31日"
-}
+## 图表类型
+
+line, bar, horizontal\_bar, pie, donut, scatter, radar, heatmap, area, stacked\_bar
+
+## 数据格式（与 PPT skill 一致）
+
+```python
+# 折线/柱状/面积/堆叠
+{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
+# 饼图/环形
+{"title":"", "labels":[...], "values":[...]}
+# 散点
+{"title":"", "x":[...], "y":[...], "x_label":"", "y_label":""}
+# 雷达
+{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
+# 热力图
+{"title":"", "x_labels":[...], "y_labels":[...], "values":[[...]]}
 ```
 
-自动处理 document.xml 和 header/footer XML。
+## 可用 API
 
-### 工作流 3：模板组装多章节拼接
+| 方法                                  | 用途              |
+| ----------------------------------- | --------------- |
+| `add_cover(...)`                    | 封面页             |
+| `add_toc_placeholder()`             | 目录（Word 中更新域生成） |
+| `add_heading(text, level)`          | 标题（1/2/3级）      |
+| `add_paragraph(text, bold, indent)` | 正文段落            |
+| `add_bullet_list(items)`            | 无序列表            |
+| `add_numbered_list(items)`          | 有序列表            |
+| `add_quote(text)`                   | 引用块             |
+| `add_kpi_table(kpis)`               | KPI 指标卡片        |
+| `add_table(headers, rows, caption)` | 数据表格            |
+| `add_chart(type, data, caption)`    | 插入图表            |
+| `add_page_break()`                  | 分页              |
 
-将多个独立章节 .docx 文件拼接为最终文档：
+## 内容要求
 
-```bash
-python assemble.py master.docx output.docx chapter1.docx chapter2.docx chapter3.docx
-```
+- 结构完整：封面→目录→摘要→正文→结论→附录
+- 每章有分析观点，数据+解读结合
+- 图表配文字说明，表格用于精确数据
+- 正文首行缩进，段落间距适当
+- 专业术语准确，逻辑递进
 
-在章节之间自动添加分节符。
+## 典型报告结构
 
-### 工作流 4：OOXML 拆包/编辑/打包 + 修订追踪
+封面 → 目录 → 摘要 → 背景与目标 → 数据概览(KPI) → 详细分析(多章节，含图表) → 问题与风险 → 建议 → 结论 → 附录/参考
 
-```bash
-# 拆包
-python shared/ooxml/scripts/unpack.py input.docx unpacked/
+## 工具脚本参考
 
-# 启用修订追踪
-python track_changes.py input.docx tracked.docx "审核人姓名"
-
-# 手动编辑 XML...
-
-# 验证
-python shared/ooxml/scripts/validate.py unpacked/ --original input.docx
-
-# 打包
-python shared/ooxml/scripts/pack.py unpacked/ output.docx
-```
-
-## 生成文档结构（data 模式）
-
-### 封面页
-- 品牌标识：`WebSQL AI · 智能数据分析平台`
-- 中国红装饰分隔线（#C0392B）
-- 双语标题（中英文 30pt 深蓝加粗）
-- 元信息：编制单位、编制日期（`YYYY年MM月DD日`）、报告编号（`WS-RPT-YYYYMMDD-XXXX`）、密级"内部资料"
-
-### 第一章 · 报告摘要
-- █ + 章标题，中国红装饰块
-- 数据全景描述（字段维度、记录条数）
-- 核心指标速览表（指标名称/样本量/最小值/最大值/均值）
-
-### 数据概览与质量评估
-- 次级标题（┃ 前缀）
-- 数据样例预览表（最大6列×5行）
-
-### 统计分析与核心指标
-- 表1：数值字段描述性统计汇总（字段/有效样本/最小值/最大值/均值/标准差）
-- 智能解读（离散程度→集中趋势→稳定性 → 综合评语）
-
-### 数据可视化分析
-- 嵌入式图表（图1、图2…）+ 数据来源标注
-
-### 关键发现与建议
-- 发现N：中国红前缀 + └ 建议：
-- 支持结构化发现与简单文本发现
-
-### 附录：数据明细
-- 原始数据表（最大8列×20行）+ 截断提示
-
-### 页眉页脚
-- 页眉：`WebSQL · 报告标题` 右对齐
-- 页脚：`— 第 {PAGE} 页 —` Word域代码自动页码
-
-## 模板结构清单
-
-```bash
-python inventory.py template.docx structure.json
-```
-提取段落样式（对齐、行距、字体信息）和表格结构。
-
-## 图表生成
-
-支持 8 种图表类型，与 PPT 技能共用 `shared/chart_generator.py`。
-
-## 依赖
-
-- python-docx>=1.0.0
-- matplotlib>=3.7.0, numpy>=1.24.0
-- lxml>=4.9.0
+\#\[\[file:scripts/word\_generator.py]]

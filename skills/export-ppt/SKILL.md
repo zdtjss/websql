@@ -1,159 +1,77 @@
 ---
-name: export-ppt
-description: 生成专业 PowerPoint（PPTX）演示文稿。支持四种工作流：1) HTML-to-PPTX 快速转换 2) 模板目录提取+重排+替换 3) 数据驱动编程创建（数据/内容/演示三种模式） 4) OOXML 级别拆包编辑打包。配备中国商务经典+科技现代两套模板，支持 8 种图表类型。当用户请求生成 PPT、演示文稿或 PowerPoint 导出时必须使用此技能。
+name: PPT 生成器
+description: 使用 Python 生成科技感数据分析 PPT，支持图文混排、多种图表类型，深色主题配色
+inclusion: manual
 ---
 
-# 专业 PPT 演示文稿导出技能 v3.0
+# PPT 生成器 Skill
 
-基于 Anthropic pptx skill 架构思想重构，融合 OOXML 直接操作 + HTML 快速生成 + 编程控制三层能力。
+科技感数据分析 PPT 生成，基于 python-pptx + matplotlib，支持图文混排。
 
-## 架构概览
+## 使用前提
 
-```
-export-ppt/
-├── SKILL.md
-└── scripts/
-    ├── export_ppt.py          # 主入口 — PPTExporter 类（3模式）
-    ├── html2pptx.py           # HTML → PPTX 快速转换
-    ├── inventory.py           # 模板结构提取
-    ├── rearrange.py           # 模板重排
-    ├── replace.py             # 模板文字替换
-    ├── thumbnail.py           # 缩略图生成
-    ├── chart_generator.py     # 图表生成（→ shared/）
-    ├── ppt_templates/         # 3 套模板
-    └── ppt_builders/          # 7 个构建器
+依赖：`pip install python-pptx matplotlib numpy Pillow`
 
-shared/
-├── ooxml/scripts/
-│   ├── unpack.py              # OOXML 解包
-│   ├── pack.py                # OOXML 打包
-│   └── validate.py            # OOXML 验证
-```
+## 工作流程
 
-## 四种工作流
+1. 运行本目录下的 `pscripts/ppt_generator.py` 作为模块导入
+2. 调用脚本中 `sys.path/scripts` 指向本 skill 目录
 
-### 工作流 1：HTML-to-PPTX 快速转换
-将 HTML 内容直接转为 PPTX，适合 AI 生成幻灯片。
+## 调用模板
 
-```bash
-python html2pptx.py --stdin -o output.pptx < slides.html
-```
+```python
+import sys, os
+# 指向本 skill 目录（AI 执行时替换为实际路径）
+SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.kiro', 'skills', 'ppt-generator')
+sys.path.insert(0, SKILL_DIR)
+from ppt_generator import PPTBuilder
 
-HTML 结构示例：
-```html
-<section class="cover">
-  <h1>2024年度销售运营分析报告</h1>
-  <h2>基于全渠道业务数据的综合分析</h2>
-</section>
-
-<section>
-  <h1>市场概览</h1>
-  <p>全年累计销售额达到 3.8亿元，同比增长 23.5%。</p>
-  <div class="kpi" data-label="年度销售额" data-value="3.8亿" data-trend="↑ 23.5%"></div>
-  <table>
-    <tr><th>季度</th><th>销售额</th></tr>
-    <tr><td>Q1</td><td>0.85亿</td></tr>
-    <tr><td>Q2</td><td>0.92亿</td></tr>
-  </table>
-</section>
-
-<section class="ending">
-  <h1>感谢聆听</h1>
-</section>
+builder = PPTBuilder()
+builder.add_cover(title="标题", subtitle="副标题", date="日期", author="作者")
+builder.add_toc(["章节1", "章节2"])
+builder.add_section_divider("章节标题", "描述")
+builder.add_kpi_page("指标概览", [
+    {"label": "指标名", "value": "数值", "change": "+X%", "trend": "up"},
+])
+builder.add_chart_page("图表标题", "line", data, insights=["要点"], layout="left_chart")
+builder.add_dual_chart_page("双图标题", {"type":"bar","data":{...}}, {"type":"pie","data":{...}})
+builder.add_text_page("标题", ["要点1", "要点2"], highlight_indices=[0])
+builder.add_comparison_page("对比", "左标题", ["左项"], "右标题", ["右项"])
+builder.add_summary_page("总结", ["结论1", "结论2"])
+builder.add_thank_you("感谢聆听", "联系方式")
+builder.save("output.pptx")
 ```
 
-支持的幻灯片类型：`cover` / `section` / `ending` / 普通内容页
-支持的内容元素：h1-h3, p, ul/li, img, table, KPI div
+## 图表类型
 
-### 工作流 2：模板工作流（inventory → rearrange → replace）
+line, bar, horizontal\_bar, pie, donut, scatter, radar, heatmap, area, stacked\_bar
 
-**Step 1: 提取模板结构**
-```bash
-python inventory.py template.pptx inventory.json
-```
-输出每张幻灯片中所有形状的位置、字体、占位符类型等。
+## 数据格式
 
-**Step 2: 重排幻灯片**
-```bash
-python rearrange.py template.pptx output.pptx 0,3,3,5
-```
-按索引选取幻灯片生成新文件（支持重复）。
-
-**Step 3: 替换文字**
-```bash
-python replace.py template.pptx replacement.json output.pptx
-```
-输入 JSON 格式的替换映射，保留原有格式。
-
-### 工作流 3：数据驱动编程创建
-
-```bash
-python export_ppt.py < input.json
+```python
+# 折线/柱状/面积/堆叠
+{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
+# 饼图/环形
+{"title":"", "labels":[...], "values":[...]}
+# 散点
+{"title":"", "x":[...], "y":[...], "x_label":"", "y_label":""}
+# 雷达
+{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
+# 热力图
+{"title":"", "x_labels":[...], "y_labels":[...], "values":[[...]]}
 ```
 
-三种模式：
-- **data** — 数据报告流（封面→图表→数据全景→明细→核心发现→结束页）
-- **content** — 结构化内容流（封面→目录→过渡页+内容页循环→结束页），14种块类型
-- **demo** — 产品演示流（封面→步骤页（支持嵌入图表）→结束页）
+## 布局选项
 
-### 工作流 4：OOXML 级别操作
+left\_chart（左图右文，默认）| full\_chart（全幅）| top\_chart（上图下文）
 
-```bash
-# 解包
-python shared/ooxml/scripts/unpack.py input.pptx unpacked/
+## 内容要求
 
-# 手动编辑 XML...
+- 每页有分析观点，不能只放图不解读
+- 使用具体数字，逻辑递进：现状→趋势→原因→建议
+- 页数 12-18 页，内容丰富
+- 典型结构：封面→目录→背景→KPI→趋势→对比→构成→分布→洞察→风险→建议→总结→致谢
 
-# 验证
-python shared/ooxml/scripts/validate.py unpacked/ --original input.pptx
+## 工具脚本参考
 
-# 打包
-python shared/ooxml/scripts/pack.py unpacked/ output.pptx
-```
-
-适合需要精确控制 OOXML 的高级场景。
-
-## 图表生成
-
-支持 8 种图表类型，通过 stdin JSON：
-
-```bash
-python chart_generator.py < chart_input.json
-```
-
-| 类型 | chartType | 说明 |
-|------|-----------|------|
-| 折线图 | `line` | 数据趋势（带数据标签） |
-| 柱状图 | `bar` | 分类对比（支持分组） |
-| 饼图 | `pie` | 占比分布 |
-| 环形图 | `doughnut` | 带总计中心 |
-| 雷达图 | `radar` | 多维度综合评估 |
-| 散点图 | `scatter` | 相关性分析 |
-| 面积图 | `area` | 累积趋势 |
-| 横向柱状图 | `hbar` | 长标签排行 |
-
-## 缩略图预览
-
-```bash
-python thumbnail.py presentation.pptx thumbnails --cols 4
-```
-生成拼接缩略图网格（需 LibreOffice + poppler-utils）。
-
-## 配色方案
-
-| 方案 | 主色 | 强调色 | 场景 |
-|------|------|--------|------|
-| chinese_business | #1A3C6D | #C0392B | 政府/国企/正式场合 |
-| tech_modern | #1565C0 | #00ACC1 | 互联网/科技企业 |
-| warm_elegant | #8B4513 | #B22222 | 文化/教育/艺术 |
-
-## 幻灯片尺寸
-
-- 16:9 宽屏：13.333 × 7.5 英寸
-
-## 依赖
-
-- python-pptx>=0.6.21
-- matplotlib>=3.7.0, numpy>=1.24.0
-- lxml>=4.9.0, Pillow>=9.0.0
-- LibreOffice + poppler-utils (thumbnail 可选)
+\#\[\[file:scripts/ppt\_generator.py]]
