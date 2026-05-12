@@ -18,9 +18,34 @@ import (
 
 var validTableNameRegex = regexp.MustCompile("^[a-zA-Z0-9_`.]+$")
 
+var dangerousTableNamePatterns = []string{
+	";", "--", "/*", "*/", "'", "\"", "\\",
+	"xp_", "sp_", "0x", "char(", "exec(",
+	"union", "select", "insert", "update", "delete",
+	"drop", "alter", "create", "truncate", "exec",
+}
+
 func isValidTableName(name string) bool {
 	name = strings.TrimSpace(name)
-	return name != "" && len(name) <= 128 && validTableNameRegex.MatchString(name)
+	if name == "" || len(name) > 128 || !validTableNameRegex.MatchString(name) {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, pattern := range dangerousTableNamePatterns {
+		if strings.Contains(lower, pattern) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeQuoteTableName(name string) string {
+	if !isValidTableName(name) {
+		return ""
+	}
+	cleaned := strings.ReplaceAll(name, "`", "")
+	cleaned = strings.ReplaceAll(cleaned, ".", "")
+	return "'" + strings.ReplaceAll(cleaned, "'", "''") + "'"
 }
 
 type QueryInput struct {
@@ -358,10 +383,11 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 		query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
 		args = []any{dbSchema, table}
 	case "sqlite":
-		if !isValidTableName(table) {
+		quoted := safeQuoteTableName(table)
+		if quoted == "" {
 			return sb.String()
 		}
-		query = "PRAGMA table_info('" + strings.ReplaceAll(table, "'", "''") + "')"
+		query = "PRAGMA table_info(" + quoted + ")"
 	case "oracle":
 		if !isValidTableName(table) {
 			return sb.String()
@@ -662,10 +688,11 @@ func getTableColumns(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]strin
 			args = []any{strings.ToUpper(tableName)}
 		}
 	case "sqlite":
-		if !isValidTableName(tableName) {
+		quoted := safeQuoteTableName(tableName)
+		if quoted == "" {
 			return nil, fmt.Errorf("invalid table name: %s", tableName)
 		}
-		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
+		query = "PRAGMA table_info(" + quoted + ")"
 	default:
 		if dbSchema != "" {
 			query = "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION"
@@ -732,10 +759,11 @@ func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string
 			args = []any{strings.ToUpper(tableName)}
 		}
 	case "sqlite":
-		if !isValidTableName(tableName) {
+		quoted := safeQuoteTableName(tableName)
+		if quoted == "" {
 			return nil, fmt.Errorf("invalid table name: %s", tableName)
 		}
-		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
+		query = "PRAGMA table_info(" + quoted + ")"
 		rows, err := conn.Queryx(query)
 		if err != nil {
 			return nil, err

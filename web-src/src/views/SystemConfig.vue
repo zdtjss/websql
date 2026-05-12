@@ -26,7 +26,8 @@
         <el-slider v-model="systemConfig.aiTemperature" :min="0" :max="2" :step="0.1" show-input />
       </el-form-item>
       <el-form-item label="Max Tokens">
-        <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :step="100" placeholder="0=不限" />
+        <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :max="aiMaxTokensMax" :step="100" placeholder="0=不限" />
+        <span v-if="aiMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262144</span>
       </el-form-item>
       <el-form-item label="思考模式">
         <el-switch v-model="systemConfig.aiEnableThinking" />
@@ -128,7 +129,7 @@
 import http from '@/js/utils/httpProxy'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ElMessage } from 'element-plus'
-import { inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 const emit = defineEmits(['config-saved'])
@@ -156,6 +157,20 @@ const systemConfig = ref({
 const aiTesting = ref(false)
 const testingOutterUser = ref(false)
 const savingAll = ref(false)
+
+const aiMaxTokensMax = computed(() => {
+  return systemConfig.value.aiBaseUrl.toLowerCase().startsWith('https://ollama.com')
+    || systemConfig.value.aiBaseUrl.toLowerCase().startsWith('http://ollama.com')
+    ? 262144 : Infinity
+})
+
+watch(() => systemConfig.value.aiBaseUrl, () => {
+  const isOllama = systemConfig.value.aiBaseUrl.toLowerCase().startsWith('https://ollama.com')
+    || systemConfig.value.aiBaseUrl.toLowerCase().startsWith('http://ollama.com')
+  if (isOllama && systemConfig.value.aiMaxTokens > 262144) {
+    systemConfig.value.aiMaxTokens = 262144
+  }
+})
 
 const loadSystemConfig = () => {
   http.get("/system/config/all/get").then((resp) => {

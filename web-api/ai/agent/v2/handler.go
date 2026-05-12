@@ -19,7 +19,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Handler v2 版本的 HTTP Handler
 type Handler struct {
 	sessions *SessionStore
 }
@@ -46,69 +45,27 @@ func (g *writeGuard) tryWrite(fn func()) bool {
 }
 
 func NewHandler() (*Handler, error) {
-	sessions, err := NewSessionStore()
-	if err != nil {
-		return nil, err
-	}
-	return &Handler{sessions: sessions}, nil
+	factory := GetAgentFactory()
+	return &Handler{sessions: factory.GetSessions()}, nil
 }
 
-// ChatStream 流式聊天接口
-func (h *Handler) ChatStream(c *gin.Context) {
-	var req ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Printf("[Handler] 请求参数绑定失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误"})
-		return
-	}
+type sseContext struct {
+	wg         *writeGuard
+	kaStop     chan struct{}
+	flush      func(StreamChunk)
+	runnerCtx  context.Context
+	runnerCancel context.CancelFunc
+}
 
-	// 确认/取消执行请求 → 通过 Runner.ResumeWithParams 恢复
-	if len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
-		h.handleResumeExec(c, req)
-		return
-	}
-
-	cfg := admin.GetAIConfigFromDB()
-	if cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "未配置 AI 服务，请先在系统配置中设置 AI 参数"})
-		return
-	}
-
-	ctx := c.Request.Context()
-
-	user := admin.GetUser(c.GetHeader("Authorization"))
-	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
-		return
-	}
-
-	if req.UserID == "" {
-		req.UserID = user.Id
-	}
-
-	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
-	if len(req.Schemas) > 0 {
-		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
-	}
-	permConnID := req.ConnID
-	if permConnID == "" && len(req.Schemas) > 0 {
-		permConnID = req.Schemas[0].ConnID
-	}
-	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
-	if scope.IsRemote && !scope.HasAnyAccess() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
-		return
-	}
-
-	// SSE 设置
+func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	defer c.Writer.Flush()
 
 	wg := &writeGuard{}
-
 	kaStop := make(chan struct{})
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -134,17 +91,86 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer runnerCancel()
 
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-parentCtx.Done():
 			wg.markDead()
 			runnerCancel()
 		case <-runnerCtx.Done():
 		}
 	}()
 
+	return &sseContext{
+		wg:           wg,
+		kaStop:       kaStop,
+		flush:        flush,
+		runnerCtx:    runnerCtx,
+		runnerCancel: runnerCancel,
+	}
+}
+
+type requestParams struct {
+	cfg       *admin.AIConfig
+	user      *admin.User
+	connID    string
+	dbType    string
+	dbSchema  string
+	dbVersion string
+	schemas   []SchemaRef
+	scope     *PermissionScope
+	auditCtx  *ExecAuditCtx
+}
+
+func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, error) {
+	cfg := admin.GetAIConfigFromDB()
+	if cfg == nil {
+		return nil, fmt.Errorf("未配置 AI 服务")
+	}
+
+	user := admin.GetUser(c.GetHeader("Authorization"))
+	if user == nil || user.Id == "" {
+		return nil, fmt.Errorf("未认证或认证已过期")
+	}
+
+	if req.UserID == "" {
+		req.UserID = user.Id
+	}
+
+	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
+	if len(req.Schemas) > 0 {
+		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
+	}
+	permConnID := req.ConnID
+	if permConnID == "" && len(req.Schemas) > 0 {
+		permConnID = req.Schemas[0].ConnID
+	}
+	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
+
+	connID := req.ConnID
+	if connID == "" && len(req.Schemas) > 0 {
+		connID = req.Schemas[0].ConnID
+	}
+
+	return &requestParams{
+		cfg:       cfg,
+		user:      user,
+		connID:    connID,
+		dbType:    dbType,
+		dbSchema:  dbSchema,
+		dbVersion: dbVersion,
+		schemas:   req.Schemas,
+		scope:     scope,
+		auditCtx: &ExecAuditCtx{
+			ConnID:    connID,
+			UserID:    user.Id,
+			UserName:  user.Name,
+			SessionID: req.SessionID,
+		},
+	}, nil
+}
+
+func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFunc) (*Session, string) {
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = utils.RandomStr()
@@ -152,8 +178,6 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
 
-	// 保存会话上下文（当时选择的 schemas 和 tables）
-	// 使用 MergeContext 避免多轮对话中丢失历史选中的 schema/table
 	if len(req.Schemas) > 0 || len(req.TableContext) > 0 {
 		ctxData := SessionContext{
 			Schemas: req.Schemas,
@@ -164,139 +188,99 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		}
 	}
 
-	connID := req.ConnID
-	if connID == "" && len(req.Schemas) > 0 {
-		connID = req.Schemas[0].ConnID
-	}
-	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, req.Schemas, h.sessions, scope, &ExecAuditCtx{
-		ConnID: connID, UserID: user.Id, UserName: user.Name, SessionID: req.SessionID,
-	})
-	if err != nil {
-		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
-		close(kaStop)
-		flush(StreamChunk{Type: "error", Content: "创建 Agent 失败，请稍后重试"})
-		flush(StreamChunk{Type: "done"})
+	return sess, sessionID
+}
+
+func (h *Handler) createAgent(sse *sseContext, params *requestParams, schemas []SchemaRef) (*SQLAgent, error) {
+	return GetAgentFactory().GetOrCreate(sse.runnerCtx, params.cfg, params.connID, params.dbType, params.dbSchema, params.dbVersion, schemas, params.scope, params.auditCtx)
+}
+
+func (h *Handler) ChatStream(c *gin.Context) {
+	var req ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[Handler] 请求参数绑定失败 - err=%v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误"})
 		return
 	}
 
-	var runErr error
-	sessionID, runErr = agent.RunStream(runnerCtx, req, flush)
-	close(kaStop)
+	if len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
+		h.handleResumeExec(c, req)
+		return
+	}
+
+	params, err := resolveRequestParams(c, &req)
+	if err != nil {
+		switch err.Error() {
+		case "未配置 AI 服务":
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		case "未认证或认证已过期":
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	if params.scope.IsRemote && !params.scope.HasAnyAccess() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
+		return
+	}
+
+	sse := setupSSE(c, c.Request.Context())
+	defer sse.runnerCancel()
+
+	sess, sessionID := h.prepareSession(&req, sse.runnerCancel)
+
+	agent, agentErr := h.createAgent(sse, params, req.Schemas)
+	if agentErr != nil {
+		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", agentErr)
+		close(sse.kaStop)
+		sse.flush(StreamChunk{Type: "error", Content: "创建 Agent 失败，请稍后重试"})
+		sse.flush(StreamChunk{Type: "done"})
+		return
+	}
+
+	sessionID, runErr := agent.RunStream(sse.runnerCtx, req, sse.flush)
+	close(sse.kaStop)
 	sess.ClearCancel()
 
 	if runErr != nil {
 		log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
 		if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
-			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
+			sse.flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		}
 	}
 
-	flush(StreamChunk{Type: "done"})
-	if sessionID != "" {
-		_ = sessionID
-	}
+	sse.flush(StreamChunk{Type: "done"})
+	_ = sessionID
 }
 
-// handleResumeExec 处理用户确认后的恢复执行
-// 通过 Runner.ResumeWithParams 从 CheckPoint 恢复，SQL 从服务端取回，前端无法篡改
 func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
-	user := admin.GetUser(c.GetHeader("Authorization"))
-	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
-		return
-	}
-
-	cfg := admin.GetAIConfigFromDB()
-	if cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "未配置 AI 服务"})
-		return
-	}
-
-	if req.UserID == "" {
-		req.UserID = user.Id
-	}
-
-	ctx := c.Request.Context()
-
-	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
-	if len(req.Schemas) > 0 {
-		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
-	}
-	permConnID := req.ConnID
-	if permConnID == "" && len(req.Schemas) > 0 {
-		permConnID = req.Schemas[0].ConnID
-	}
-	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
-
-	// SSE 设置
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	defer c.Writer.Flush()
-
-	wg := &writeGuard{}
-
-	kaStop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-kaStop:
-				return
-			case <-ticker.C:
-				wg.tryWrite(func() {
-					c.Writer.WriteString("data: \n\n")
-					c.Writer.Flush()
-				})
-			}
-		}
-	}()
-
-	flush := func(chunk StreamChunk) {
-		wg.tryWrite(func() {
-			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
-			c.Writer.Flush()
-		})
-	}
-
-	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer runnerCancel()
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			wg.markDead()
-			runnerCancel()
-		case <-runnerCtx.Done():
-		}
-	}()
-
-	sessionID := req.SessionID
-	if sessionID == "" {
-		sessionID = utils.RandomStr()
-	}
-	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
-	sess.SetCancel(runnerCancel)
-
-	connID := req.ConnID
-	if connID == "" && len(req.Schemas) > 0 {
-		connID = req.Schemas[0].ConnID
-	}
-	agent, err := NewSQLAgent(runnerCtx, cfg, connID, dbType, dbSchema, dbVersion, req.Schemas, h.sessions, scope, &ExecAuditCtx{
-		ConnID:    connID,
-		UserID:    user.Id,
-		UserName:  user.Name,
-		SessionID: req.SessionID,
-	})
+	params, err := resolveRequestParams(c, &req)
 	if err != nil {
-		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
-		close(kaStop)
-		flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
-		flush(StreamChunk{Type: "done"})
+		switch err.Error() {
+		case "未配置 AI 服务":
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		case "未认证或认证已过期":
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
+	}
 
+	sse := setupSSE(c, c.Request.Context())
+	defer sse.runnerCancel()
+
+	sess, _ := h.prepareSession(&req, sse.runnerCancel)
+
+	agent, agentErr := h.createAgent(sse, params, req.Schemas)
+	if agentErr != nil {
+		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", agentErr)
+		close(sse.kaStop)
+		sse.flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
+		sse.flush(StreamChunk{Type: "done"})
+		return
 	}
 
 	targets := make(map[string]bool, len(req.InterruptIDs))
@@ -304,16 +288,15 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		targets[id] = req.Confirmed
 	}
 
-	if err := agent.ResumeStream(runnerCtx, req.CheckPointID, targets, flush, sess); err != nil {
+	if err := agent.ResumeStream(sse.runnerCtx, req.CheckPointID, targets, sse.flush, sess); err != nil {
 		log.Printf("[Handler] resume failed - err=%v\n", err)
-		flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
+		sse.flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
 	}
 	sess.ClearCancel()
-	flush(StreamChunk{Type: "done"})
-	close(kaStop)
+	sse.flush(StreamChunk{Type: "done"})
+	close(sse.kaStop)
 }
 
-// HandleGetSessions 获取当前用户的会话列表
 func (h *Handler) HandleGetSessions(c *gin.Context) {
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
@@ -332,7 +315,6 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sessions": metas})
 }
 
-// HandleGetSession 获取指定会话详情
 func (h *Handler) HandleGetSession(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
@@ -353,7 +335,6 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"session": detail})
 }
 
-// HandleDeleteSession 删除指定会话
 func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
@@ -373,7 +354,6 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
 }
 
-// HandleGetSQLAuditLogs 获取 SQL 审计日志
 func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
@@ -390,11 +370,10 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 		pageSize = 200
 	}
 
-	// 非管理员只能查自己的日志
 	scopeUserID := ""
 	if user.Id != config.AdminId {
 		scopeUserID = user.Id
-		filterUserID = "" // 非管理员忽略 userId 过滤
+		filterUserID = ""
 	}
 
 	logs, total, err := ListSQLAuditLogsFiltered(scopeUserID, filterUserID, startTime, endTime, page, pageSize)
@@ -408,10 +387,6 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": logs, "total": total})
 }
-
-// ──────────────────────────────────────────────
-// 辅助函数
-// ──────────────────────────────────────────────
 
 func getDBInfo(connID string) (string, string, string) {
 	if connID == "" {

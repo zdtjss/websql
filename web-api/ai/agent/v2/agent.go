@@ -118,7 +118,7 @@ func computeSummarizationTrigger(cfg *admin.AIConfig) int {
 }
 
 // 全局 CheckPointStore（单实例共享）
-var globalCheckPointStore = NewInMemoryCheckPointStore()
+var globalCheckPointStore = newAutoCheckPointStore()
 
 type SQLAgent struct {
 	runner   *adk.Runner
@@ -140,11 +140,6 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
-	}
-
-	err = adk.SetLanguage(adk.LanguageChinese)
-	if err != nil {
-		log.Printf("[Agent] 设置语言失败 - err=%v\n", err)
 	}
 
 	triggerTokens := computeSummarizationTrigger(cfg)
@@ -193,11 +188,10 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 
 	var permAgentTool tool.BaseTool
 	if scope.IsRemote && !scope.HasFullConnAccess {
-		permAgent, err := NewPermissionAgent(ctx, cfg, connID, dbType, dbSchema, scope.UserID)
+		permAgentTool, err = GetPermissionAgentCache().GetOrCreate(ctx, cfg, connID, dbType, dbSchema, scope.UserID)
 		if err != nil {
 			log.Printf("[Agent] 创建权限审核 Agent 失败，回退到程序化检查 - err=%v\n", err)
-		} else {
-			permAgentTool = adk.NewAgentTool(ctx, permAgent)
+			permAgentTool = nil
 		}
 	}
 
@@ -209,6 +203,18 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
+		// 中间件执行顺序（Eino: 先注册=内层后执行，后注册=外层先执行）：
+		//
+		// 调用链（从外到内）：
+		//   ToolErrorRecovery  →  DangerousSQLApproval  →  Permission  →  ToolCallLogging  →  [工具]
+		//
+		// 依赖关系：
+		//   1. Permission 必须在 DangerousSQLApproval 之前（内层）：
+		//      权限拒绝时不应触发审批中断，否则用户确认后仍会因权限不足失败
+		//   2. ToolErrorRecovery 必须在最外层（最后注册=最先执行）：
+		//      捕获所有中间件和工具的错误，转为 tool result 让 ReAct 循环继续
+		//   3. ToolCallLogging 在最内层（最先注册=最后执行）：
+		//      只记录最终到达工具的调用，不记录被上游中间件拦截的调用
 		Handlers: []adk.ChatModelAgentMiddleware{
 			&ToolCallLoggingMiddleware{},
 			&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
@@ -373,6 +379,52 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 	return nil
 }
 
+// extractRootErrorMessage 从错误链中提取根错误消息
+func extractRootErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	for {
+		unwrapped := errors.Unwrap(err)
+		if unwrapped == nil {
+			return err.Error()
+		}
+		err = unwrapped
+	}
+}
+
+// logUnwrappedError 逐层解包错误并记录日志
+func logUnwrappedError(err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("[Agent] 错误详情 - err=%v, type=%T\n", err, err)
+	for {
+		unwrapped := errors.Unwrap(err)
+		if unwrapped == nil {
+			break
+		}
+		log.Printf("[Agent] 错误原因 - err=%v, type=%T\n", unwrapped, unwrapped)
+		err = unwrapped
+	}
+	log.Printf("[Agent] 根错误 - err=%q, type=%T\n", err, err)
+
+	// 尝试提取 APIError 的详细信息
+	type apiError interface {
+		GetCode() any
+		GetMessage() string
+		GetType() string
+		GetHTTPStatusCode() int
+	}
+	if ae, ok := err.(apiError); ok {
+		log.Printf("[Agent] APIError - code=%v, message=%q, type=%q, httpStatus=%d\n",
+			ae.GetCode(), ae.GetMessage(), ae.GetType(), ae.GetHTTPStatusCode())
+	}
+
+	// 使用 fmt.Sprintf("%#v") 打印完整结构
+	log.Printf("[Agent] 根错误结构 - %#v\n", err)
+}
+
 // processEvents 处理 Agent 事件流
 func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush func(StreamChunk), sess *Session, checkPointID string) (strings.Builder, bool) {
 	var fullResponse strings.Builder
@@ -385,6 +437,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		}
 		if event.Err != nil {
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
+			logUnwrappedError(event.Err)
 			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
 				break
 			}
@@ -392,7 +445,8 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效，请检查数据或精简问题后重试。"})
 				break
 			}
-			flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
+			errMsg := extractRootErrorMessage(event.Err)
+			flush(StreamChunk{Type: "error", Content: "AI 处理出错：" + errMsg})
 			break
 		}
 
@@ -541,6 +595,15 @@ func NewAuthClient(token string) *http.Client {
 // 模型与工具构建
 // ──────────────────────────────────────────────
 
+var ollamaURLPrefix = "https://ollama.com"
+
+func isOllamaURL(baseURL string) bool {
+	if strings.HasPrefix(strings.ToLower(baseURL), ollamaURLPrefix) {
+		return true
+	}
+	return false
+}
+
 func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCallingChatModel, error) {
 	log.Printf("[ChatModel] 初始化 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
@@ -566,7 +629,11 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 			openaiCfg.Temperature = &t
 		}
 		if cfg.MaxTokens > 0 {
-			openaiCfg.MaxTokens = &cfg.MaxTokens
+			maxTokens := cfg.MaxTokens
+			if isOllamaURL(cfg.BaseURL) && maxTokens > 262144 {
+				maxTokens = 262144
+			}
+			openaiCfg.MaxTokens = &maxTokens
 		}
 		return openai.NewChatModel(ctx, openaiCfg)
 	default:

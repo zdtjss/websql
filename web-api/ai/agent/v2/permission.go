@@ -1033,69 +1033,97 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 	return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
 }
 
+type permCheckResult struct {
+	allowed    bool
+	reason     string
+	deniedObjs []string
+	tables     []string
+	needFilter bool
+}
+
+func (m *PermissionMiddleware) getPermCheckFunc(toolName string) func(ctx context.Context, sql string) (*permCheckResult, error) {
+	return func(ctx context.Context, sql string) (*permCheckResult, error) {
+		if m.Scope.HasFullSchemaAccess {
+			tables := extractTablesFromSQL(sql)
+			needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
+			return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil
+		}
+
+		agentToolName := toolName
+		if toolName != "query_data" && toolName != "exec_sql" {
+			agentToolName = "export"
+		}
+
+		decision, err := m.checkSQLPermissionViaAgent(ctx, sql, agentToolName)
+		if err != nil {
+			return nil, err
+		}
+
+		if !decision.Allowed {
+			return &permCheckResult{
+				allowed:    false,
+				reason:     decision.Reason,
+				deniedObjs: append(decision.DeniedTables, decision.DeniedColumns...),
+			}, nil
+		}
+
+		tables := extractTablesFromSQL(sql)
+		needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
+		return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil
+	}
+}
+
+func (m *PermissionMiddleware) hasColumnRestrictions(tables []string) bool {
+	for _, table := range tables {
+		if m.Scope.GetTableAccessLevel(table) == "column" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 	sql := m.extractSQLFromArgs(args)
 
 	if sql == "" {
 		m.logDeny(toolName+"(stream)", "无法解析SQL参数，拒绝执行", nil)
 		log.Printf("%s [安全] 原始参数(截断) - args=%s\n", m.logPrefix(), truncateForLog(args))
-		sr, sw := schema.Pipe[string](1)
-		sw.Send("权限检查失败：无法解析SQL语句，已拒绝执行", nil)
-		sw.Close()
-		return sr, nil
+		return streamFromStr("权限检查失败：无法解析SQL语句，已拒绝执行"), nil
 	}
 
 	m.logInfo(toolName+"(stream)", "sql=%s", truncateForLog(sql))
 
-	if m.Scope.HasFullSchemaAccess && toolName == "query_data" {
-		m.logAllow(toolName+"(stream)", "schema_full(fast)")
-		tables := extractTablesFromSQL(sql)
-		reader, err := endpoint(ctx, args, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return m.applyStreamQueryResultFilter(reader, tables), nil
-	}
-
-	if m.Scope.HasFullSchemaAccess && toolName != "query_data" {
-		m.logAllow(toolName+"(stream)", "schema_full")
-		return endpoint(ctx, args, opts...)
-	}
-
-	agentToolName := toolName
-	if toolName == "query_data" {
-		agentToolName = "query_data"
-	} else if toolName == "exec_sql" {
-		agentToolName = "exec_sql"
-	} else {
-		agentToolName = "export"
-	}
-
-	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, agentToolName)
+	checkFunc := m.getPermCheckFunc(toolName)
+	result, err := checkFunc(ctx, sql)
 	if err != nil {
 		log.Printf("%s [降级] %s(stream) Agent失败→程序化检查 - err=%v\n", m.logPrefix(), toolName, err)
 		return m.checkStreamSQLAccessFallback(ctx, args, endpoint, toolName, opts...)
 	}
 
-	if !decision.Allowed {
-		m.logDeny(toolName+"(stream)", decision.Reason, nil)
-		sr, sw := schema.Pipe[string](1)
-		sw.Send(fmt.Sprintf("权限不足：%s", decision.Reason), nil)
-		sw.Close()
-		return sr, nil
+	if !result.allowed {
+		m.logDeny(toolName+"(stream)", result.reason, result.deniedObjs)
+		return streamFromStr(fmt.Sprintf("权限不足：%s", result.reason)), nil
 	}
 
 	m.logAllow(toolName+"(stream)", "agent")
-	if toolName == "query_data" {
-		tables := extractTablesFromSQL(sql)
-		reader, err := endpoint(ctx, args, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return m.applyStreamQueryResultFilter(reader, tables), nil
+
+	reader, err := endpoint(ctx, args, opts...)
+	if err != nil {
+		return nil, err
 	}
 
-	return endpoint(ctx, args, opts...)
+	if result.needFilter {
+		return m.applyStreamQueryResultFilter(reader, result.tables), nil
+	}
+
+	return reader, nil
+}
+
+func streamFromStr(s string) *schema.StreamReader[string] {
+	sr, sw := schema.Pipe[string](1)
+	sw.Send(s, nil)
+	sw.Close()
+	return sr
 }
 
 func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
@@ -1112,10 +1140,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 		for _, table := range tables {
 			if !m.Scope.IsTableAllowed(table) {
 				m.logDeny(toolName+"(stream)", "无权访问表", []string{table})
-				sr, sw := schema.Pipe[string](1)
-				sw.Send(fmt.Sprintf("无权访问表：%s", table), nil)
-				sw.Close()
-				return sr, nil
+				return streamFromStr(fmt.Sprintf("无权访问表：%s", table)), nil
 			}
 		}
 
@@ -1138,24 +1163,22 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 			}
 			if hasColumnLevelTable && allDenied {
 				m.logDeny(toolName+"(stream)", "无权访问字段", []string{sc.ColumnName})
-				sr, sw := schema.Pipe[string](1)
-				sw.Send(fmt.Sprintf("无权访问字段：%s", sc.ColumnName), nil)
-				sw.Close()
-				return sr, nil
+				return streamFromStr(fmt.Sprintf("无权访问字段：%s", sc.ColumnName)), nil
 			}
 		}
 	}
 
 	m.logAllow(toolName+"(stream)", "fallback(programmatic)")
-	if toolName == "query_data" {
-		reader, err := endpoint(ctx, args, opts...)
-		if err != nil {
-			return nil, err
-		}
+	reader, err := endpoint(ctx, args, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if toolName == "query_data" && m.hasColumnRestrictions(tables) {
 		return m.applyStreamQueryResultFilter(reader, tables), nil
 	}
 
-	return endpoint(ctx, args, opts...)
+	return reader, nil
 }
 
 func (m *PermissionMiddleware) applyStreamQueryResultFilter(reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {
