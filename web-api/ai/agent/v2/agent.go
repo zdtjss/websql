@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -131,7 +132,14 @@ type SQLAgent struct {
 }
 
 func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
-	export.InitSkillEnv()
+	skillsDir := os.Getenv("SKILLS_DIR")
+	if skillsDir == "" {
+		cwd, _ := os.Getwd()
+		skillsDir = filepath.Join(cwd, "skills")
+	}
+	if err := export.InitSkillEnv(ctx, skillsDir); err != nil {
+		log.Printf("[Agent] 初始化 Skill 环境失败 - err=%v\n", err)
+	}
 
 	cm, err := buildChatModel(ctx, cfg)
 	if err != nil {
@@ -157,33 +165,28 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		return nil, fmt.Errorf("创建摘要中间件失败：%w", err)
 	}
 
-	osfsBackend := export.NewOSFilesystemBackend()
-	skillsDir := filepath.Join(export.GetSkillScriptsBaseDir(), "skills")
+	skillEnv := export.GetSkillEnv()
 
-	fsm, err := filesystem.New(ctx, &filesystem.MiddlewareConfig{
-		Backend:        osfsBackend,
-		StreamingShell: osfsBackend,
-	})
-	if err != nil {
-		log.Printf("[Agent] 创建 Filesystem 中间件失败 - err=%v\n", err)
-		return nil, fmt.Errorf("创建文件系统中间件失败：%w", err)
-	}
+	var fsm adk.ChatModelAgentMiddleware
+	var sm adk.ChatModelAgentMiddleware
 
-	skillBackend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
-		Backend: osfsBackend,
-		BaseDir: skillsDir,
-	})
-	if err != nil {
-		log.Printf("[Agent] 创建 Skill Backend 失败 - err=%v\n", err)
-		return nil, fmt.Errorf("创建 Skill Backend 失败：%w", err)
-	}
+	if skillEnv != nil {
+		fsm, err = filesystem.New(ctx, &filesystem.MiddlewareConfig{
+			Backend:        skillEnv.FilesystemBackend(),
+			StreamingShell: skillEnv.FilesystemBackend(),
+		})
+		if err != nil {
+			log.Printf("[Agent] 创建 Filesystem 中间件失败 - err=%v\n", err)
+			return nil, fmt.Errorf("创建文件系统中间件失败：%w", err)
+		}
 
-	sm, err := skill.NewMiddleware(ctx, &skill.Config{
-		Backend: skillBackend,
-	})
-	if err != nil {
-		log.Printf("[Agent] 创建 Skill 中间件失败 - err=%v\n", err)
-		return nil, fmt.Errorf("创建 Skill 中间件失败：%w", err)
+		sm, err = skill.NewMiddleware(ctx, &skill.Config{
+			Backend: skillEnv.Backend(),
+		})
+		if err != nil {
+			log.Printf("[Agent] 创建 Skill 中间件失败 - err=%v\n", err)
+			return nil, fmt.Errorf("创建 Skill 中间件失败：%w", err)
+		}
 	}
 
 	var permAgentTool tool.BaseTool
@@ -195,6 +198,21 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		}
 	}
 
+	handlers := []adk.ChatModelAgentMiddleware{
+		&ToolCallLoggingMiddleware{},
+		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
+		&ReductionMiddleware{},
+		&DangerousSQLApprovalMiddleware{},
+		&ToolErrorRecoveryMiddleware{},
+		summarizationMW,
+	}
+	if fsm != nil {
+		handlers = append(handlers, fsm)
+	}
+	if sm != nil {
+		handlers = append(handlers, sm)
+	}
+
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
@@ -203,27 +221,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
-		// 中间件执行顺序（Eino: 先注册=内层后执行，后注册=外层先执行）：
-		//
-		// 调用链（从外到内）：
-		//   ToolErrorRecovery  →  DangerousSQLApproval  →  Permission  →  ToolCallLogging  →  [工具]
-		//
-		// 依赖关系：
-		//   1. Permission 必须在 DangerousSQLApproval 之前（内层）：
-		//      权限拒绝时不应触发审批中断，否则用户确认后仍会因权限不足失败
-		//   2. ToolErrorRecovery 必须在最外层（最后注册=最先执行）：
-		//      捕获所有中间件和工具的错误，转为 tool result 让 ReAct 循环继续
-		//   3. ToolCallLogging 在最内层（最先注册=最后执行）：
-		//      只记录最终到达工具的调用，不记录被上游中间件拦截的调用
-		Handlers: []adk.ChatModelAgentMiddleware{
-			&ToolCallLoggingMiddleware{},
-			&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
-			&DangerousSQLApprovalMiddleware{},
-			&ToolErrorRecoveryMiddleware{},
-			summarizationMW,
-			fsm,
-			sm,
-		},
+		Handlers:      handlers,
 		MaxIterations: maxIterations,
 		ModelRetryConfig: &adk.ModelRetryConfig{
 			MaxRetries: 3,
@@ -692,21 +690,46 @@ func estimateTextTokens(text string) int {
 			total += 2
 			i++
 		} else if ch >= 0x3000 && ch <= 0x303F {
+			total += 2
+			i++
+		} else if ch >= 0xFF00 && ch <= 0xFFEF {
+			total += 2
+			i++
+		} else if ch >= 0x2000 && ch <= 0x206F {
+			total += 1
+			i++
+		} else if ch >= 0x0080 {
+			total += 2
+			i++
+		} else if ch == ' ' || ch == '\n' || ch == '\t' {
 			total += 1
 			i++
 		} else {
 			segLen := 1
-			for j := i + 1; j < len(runes) && runes[j] < 0x4E00; j++ {
+			for j := i + 1; j < len(runes) && runes[j] < 0x0080 && runes[j] != ' ' && runes[j] != '\n' && runes[j] != '\t'; j++ {
 				segLen++
 			}
-			total += (segLen + 2) / 3
+			total += (segLen + 3) / 4
 			i += segLen
 		}
+	}
+	if total == 0 && len(text) > 0 {
+		total = (len(text) + 3) / 4
 	}
 	return total
 }
 
 func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef) string {
+	var sb strings.Builder
+
+	sb.WriteString(buildStaticPromptPart(dbType))
+
+	sb.WriteString(buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion, tableContext, scope, schemas))
+
+	return sb.String()
+}
+
+func buildStaticPromptPart(dbType string) string {
 	var sb strings.Builder
 
 	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
@@ -715,9 +738,80 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为富有洞察且具有中国特色的分析结论。")
 	sb.WriteString("\n\n")
 
+	sb.WriteString(`## 行为准则（必须遵守）
+1. 准确性第一：生成 SQL 前必须通过 get_table_schema 验证表名和字段名，禁止臆测
+2. 禁止 SELECT *：必须显式列出所需字段，除非用户明确要求导出全部列
+3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
+4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
+5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
+`)
+
+	sb.WriteString(`
+## 标准工作流程
+执行每个数据分析任务时，按以下步骤推进：
+1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
+2. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
+3. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
+4. 执行查询 — 调用 query_data（读）或 exec_sql（写）
+5. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
+6. 当涉及写操作时，在步骤4之前先向用户说明将要执行的操作，等待系统推送确认
+
+## 工具使用指南
+| 工具 | 用途与约束 |
+|------|-----------|
+| get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
+| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH）。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用 |
+| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。可选参数 connId 指定目标连接（留空默认）。系统会拦截并推送前端确认，你无需额外处理 |
+| export_excel | 导出 Excel，必须传入 sql 参数。必须实际调用此工具，禁止仅文字描述 |
+| export_excel_with_chart | 导出带图表的 Excel，传入 sql。必须实际调用此工具。图表类型根据数据特征自动选择 |
+| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本）避免重复查询。必须实际调用此工具才能生成文件 |
+| export_analysis_docx | 生成 Word 分析报告，优先使用 content 模式。必须实际调用此工具才能生成文件 |
+| import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
+
+## SQL 编写规范（` + dbType + `）
+` + getSQLDialectRules(dbType) + `
+
+## 写操作安全
+- 所有写操作必须通过 exec_sql 工具执行，系统会自动拦截并推送前端由用户确认
+- 生成写操作 SQL 时，尽量包含精确的 WHERE 条件，避免批量误操作
+- DELETE / UPDATE 无 WHERE 子句的语句将被系统标记为高风险
+
+## 数据导入流程
+用户上传 Excel 并要求导入时：
+1. 调用 get_table_schema 了解目标表结构
+2. 向用户明确说明并等待确认：
+   - 目标表名、操作模式（insert / upsert / insert+update）
+   - Excel 列 → 数据库列的映射关系
+   - 预计影响行数
+3. 用户确认后调用 import_data（传入 fileId、tableName、mode），后端自动按列名匹配
+4. 若用户未指定目标表，必须先询问
+
+## 多轮对话
+你拥有完整对话历史。"刚才的""上一个""这个结果"均指上一轮上下文。
+当用户追问时，优先基于已有结果分析，而非重复查询。
+
+## 错误恢复
+工具调用失败时系统会将错误信息反馈给你。请：
+- 仔细阅读错误信息，不要重复使用相同的错误参数
+- 调整 SQL 或参数后重试，最多尝试 3 次
+- 若 3 次均失败，向用户解释原因并建议替代方案
+
+## 迭代次数限制（重要）
+你的每次思考与工具调用都会消耗 1 次迭代，你有 20 次迭代上限。请高效利用：
+- 当 query_data 连续 2 次返回空结果（如不同 schema 下都查不到表），立即停止尝试，直接告知用户该表不存在
+- 不要在同一个问题上反复尝试不同变体（如猜不同的 schema 名、表名变体），这会在几次内耗尽迭代上限
+- 优先使用一次聚合查询获取概况，而非多次明细查询
+- 如果发现在重复踩同一个错误，停下来思考替代方案，而不是继续硬试
+`)
+
+	return sb.String()
+}
+
+func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef) string {
+	var sb strings.Builder
+
 	if len(schemas) > 1 {
 		fmt.Fprintf(&sb, "当前环境 — 数据库：%s，版本：%s\n", dbType, dbVersion)
-		// 按连接分组
 		type connGroup struct {
 			connID  string
 			schemas []string
@@ -747,7 +841,6 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 				fmt.Fprintf(&sb, "    - Schema: %s\n", s)
 			}
 		}
-		// 记录主连接
 		if connID != "" {
 			fmt.Fprintf(&sb, "  ⭐ 默认连接（query_data/exec_sql 不指定 connId 时使用）：连接ID=%s\n", connID)
 		}
@@ -765,16 +858,6 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 	}
 
 	sb.WriteString(scope.DescribeForPrompt())
-
-	sb.WriteString(`
-
-## 行为准则（必须遵守）
-1. 准确性第一：生成 SQL 前必须通过 get_table_schema 验证表名和字段名，禁止臆测
-2. 禁止 SELECT *：必须显式列出所需字段，除非用户明确要求导出全部列
-3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
-4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
-5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
-`)
 
 	if len(schemas) > 1 {
 		sb.WriteString(`
@@ -844,69 +927,9 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
    - 脚本可直接连接各数据库，在数据库中完成聚合计算，只返回分析结论
    - 适用于跨库数据量大于 10 万行或需要进行复杂统计模型计算的场景
    - 触发时机：用户要求"分析"、"对比"、"统计"多个库的数据时，优先考虑使用脚本
-
-## 标准工作流程`)
-	} else {
-		sb.WriteString(`
-## 标准工作流程`)
+`)
 	}
 
-	sb.WriteString(`
-执行每个数据分析任务时，按以下步骤推进：
-1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
-2. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
-3. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
-4. 执行查询 — 调用 query_data（读）或 exec_sql（写）
-5. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
-6. 当涉及写操作时，在步骤4之前先向用户说明将要执行的操作，等待系统推送确认
-
-## 工具使用指南
-| 工具 | 用途与约束 |
-|------|-----------|
-| get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
-| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH）。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用 |
-| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。可选参数 connId 指定目标连接（留空默认）。系统会拦截并推送前端确认，你无需额外处理 |
-| export_excel | 导出 Excel，必须传入 sql 参数。必须实际调用此工具，禁止仅文字描述 |
-| export_excel_with_chart | 导出带图表的 Excel，传入 sql。必须实际调用此工具。图表类型根据数据特征自动选择 |
-| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本）避免重复查询。必须实际调用此工具才能生成文件 |
-| export_analysis_docx | 生成 Word 分析报告，优先使用 content 模式。必须实际调用此工具才能生成文件 |
-| import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
-
-## SQL 编写规范（` + dbType + `）
-` + getSQLDialectRules(dbType) + `
-
-## 写操作安全
-- 所有写操作必须通过 exec_sql 工具执行，系统会自动拦截并推送前端由用户确认
-- 生成写操作 SQL 时，尽量包含精确的 WHERE 条件，避免批量误操作
-- DELETE / UPDATE 无 WHERE 子句的语句将被系统标记为高风险
-
-## 数据导入流程
-用户上传 Excel 并要求导入时：
-1. 调用 get_table_schema 了解目标表结构
-2. 向用户明确说明并等待确认：
-   - 目标表名、操作模式（insert / upsert / insert+update）
-   - Excel 列 → 数据库列的映射关系
-   - 预计影响行数
-3. 用户确认后调用 import_data（传入 fileId、tableName、mode），后端自动按列名匹配
-4. 若用户未指定目标表，必须先询问
-
-## 多轮对话
-你拥有完整对话历史。"刚才的""上一个""这个结果"均指上一轮上下文。
-当用户追问时，优先基于已有结果分析，而非重复查询。
-
-## 错误恢复
-工具调用失败时系统会将错误信息反馈给你。请：
-- 仔细阅读错误信息，不要重复使用相同的错误参数
-- 调整 SQL 或参数后重试，最多尝试 3 次
-- 若 3 次均失败，向用户解释原因并建议替代方案
-
-## 迭代次数限制（重要）
-你的每次思考与工具调用都会消耗 1 次迭代，你有 20 次迭代上限。请高效利用：
-- 当 query_data 连续 2 次返回空结果（如不同 schema 下都查不到表），立即停止尝试，直接告知用户该表不存在
-- 不要在同一个问题上反复尝试不同变体（如猜不同的 schema 名、表名变体），这会在几次内耗尽迭代上限
-- 优先使用一次聚合查询获取概况，而非多次明细查询
-- 如果发现在重复踩同一个错误，停下来思考替代方案，而不是继续硬试
-`)
 	return sb.String()
 }
 

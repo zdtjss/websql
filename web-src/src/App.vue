@@ -261,11 +261,12 @@
                 <label class="table-selector-label" style="padding-top: 2px;">相关表</label>
                 <span v-if="tablesLoading" class="selector-badge loading">加载中...</span>
                 <span v-else-if="selectedTables.length" class="selector-badge">{{ selectedTables.length }} 已选</span>
+                <span v-else-if="tableList.length" class="selector-badge ready">{{ tableList.length }} 可用</span>
               </div>
               <div v-if="tablesLoading" class="selector-skeleton">
                 <div class="skeleton-shimmer"></div>
               </div>
-              <el-select v-else v-model="selectedTables" multiple filterable placeholder="搜索表名..." class="modern-select">
+              <el-select v-else v-model="selectedTables" multiple filterable placeholder="搜索表名..." class="modern-select" collapse-tags collapse-tags-tooltip>
                 <el-option v-for="table in tableList" :key="table.name + (table.schema || '')"
                   :label="table.label || table.name"
                   :value="table.label || table.name">
@@ -640,13 +641,56 @@ function buildSchemaTree(rawList) {
 
 async function loadConnList() {
   schemasLoading.value = true
-  try {
-    const resp = await http.get('/listUserConnSchemas')
-    const rawList = resp.data.data || []
-    connSchemaList.value = rawList
-    connList.value = buildSchemaTree(rawList)
+  const auth = sessionStorage.getItem('authentication') || ''
+  const apiBase = import.meta.env.VITE_API_URL || ''
 
-    // 如果有连接且当前未选择，自动选择第一个（但检查 sessionStorage 中是否有保存的选项）
+  try {
+    const resp = await fetch(apiBase + '/listUserConnSchemasStream', {
+      headers: { 'Authorization': auth }
+    })
+
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        handleSessionExpired()
+        return
+      }
+      throw new Error('HTTP ' + resp.status)
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    const rawList = []
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value && value.length > 0) {
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (!data) continue
+          if (data === '"ok"' || data === '"empty"') continue
+
+          try {
+            const item = JSON.parse(data)
+            if (item.connId) {
+              rawList.push(item)
+              connSchemaList.value = [...rawList]
+              connList.value = buildSchemaTree(connSchemaList.value)
+              if (schemasLoading.value) {
+                schemasLoading.value = false
+              }
+            }
+          } catch (_) {}
+        }
+      }
+      if (done) break
+    }
+
     if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
       const savedSchemas = (() => {
         try {
@@ -656,16 +700,13 @@ async function loadConnList() {
       })()
       if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
         selectedSchemas.value = savedSchemas
-        loadTableListForSchemas()
-      } else {
-        const first = findFirstSelectableSchema(connList.value)
-        if (first) {
-          selectedSchemas.value = [first.value]
-          loadTableListForSchemas()
-        }
       }
     }
   } catch (e) {
+    if (e.response && e.response.status === 401) {
+      handleSessionExpired()
+      return
+    }
     // 降级：使用旧接口
     try {
       const resp = await http.get('/listUserConn')
@@ -689,32 +730,17 @@ async function loadConnList() {
         })()
         if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
           selectedSchemas.value = savedSchemas
-          loadTableListForSchemas()
-        } else {
-          const first = findFirstSelectableSchema(connList.value)
-          if (first) {
-            selectedSchemas.value = [first.value]
-            loadTableListForSchemas()
-          }
         }
       }
     } catch (e2) {
       console.error('加载连接列表失败:', e2)
+      if (e2.response && e2.response.status === 401) {
+        handleSessionExpired()
+      }
     }
   } finally {
     schemasLoading.value = false
   }
-}
-
-function findFirstSelectableSchema(nodes) {
-  for (const node of nodes) {
-    if (!node.disabled && node.isSchemaLeaf) return node
-    if (node.children) {
-      const found = findFirstSelectableSchema(node.children)
-      if (found) return found
-    }
-  }
-  return null
 }
 
 function parseSchemaValue(value) {
@@ -734,22 +760,18 @@ async function loadTableListForSchemas() {
     const schemaRefs = selectedSchemas.value
       .map(v => parseSchemaValue(v))
       .filter(Boolean)
+
+    if (schemaRefs.length === 0) {
+      tableList.value = []
+      tablesLoading.value = false
+      return
+    }
+
     const resp = await http.get('/listTableNames', {
       params: { schemas: JSON.stringify(schemaRefs) }
     })
-    const newTableList = resp.data.data || []
-
-    if (selectedTables.value.length > 0) {
-      const newValues = newTableList.map(t => {
-        if (typeof t === 'string') return t
-        const hasSchema = t.schema && selectedSchemas.value.length > 1
-        return hasSchema ? t.schema + '.' + t.name : t.name
-      })
-      selectedTables.value = selectedTables.value.filter(name => newValues.includes(name))
-    }
-
-    tableList.value = newTableList.map(t => {
-      if (typeof t === 'string') return { name: t, comment: '', schema: '' }
+    const tables = resp.data.data || []
+    const allTables = tables.map(t => {
       const hasSchema = t.schema && selectedSchemas.value.length > 1
       return {
         name: t.name,
@@ -758,9 +780,17 @@ async function loadTableListForSchemas() {
         label: hasSchema ? t.schema + '.' + t.name : t.name,
       }
     })
+    tableList.value = allTables
+
+    if (selectedTables.value.length > 0) {
+      const newValues = allTables.map(t => t.label || t.name)
+      selectedTables.value = selectedTables.value.filter(name => newValues.includes(name))
+    }
   } catch (e) {
-    console.error('加载表列表失败:', e)
     tableList.value = []
+    if (e.response && e.response.status === 401) {
+      handleSessionExpired()
+    }
   } finally {
     tablesLoading.value = false
   }
@@ -795,16 +825,6 @@ async function loadTableList(connId, schema) {
 
 function handleSchemaChange() {
   loadTableListForSchemas()
-}
-
-function handleConnChange() {
-  const firstSchema = selectedSchemas.value[0]
-  if (firstSchema) {
-    const parsed = parseSchemaValue(firstSchema)
-    if (parsed) {
-      loadTableList(parsed.connId, parsed.schema)
-    }
-  }
 }
 
 // 从 selectedSchemas 获取主连接的 connId（向后兼容）
@@ -884,7 +904,6 @@ const confirmOperationType = ref('SELECT')
 const confirmRiskLevel = ref('low')
 const confirmDescription = ref('')
 const confirmTableName = ref('')
-let pendingCallback = null
 let hasShownConfirm = false  // 防止重复弹出
 
 // 多条 SQL 批量确认
@@ -2346,7 +2365,11 @@ function handleSessionExpiredEvent(event) {
 function handleLoginSuccess(userData) {
   currentUser.value = userData
   loginSucc.value = true
-  loadConnList()
+  loadConnList().then(() => {
+    if (selectedSchemas.value.length > 0) {
+      loadTableListForSchemas()
+    }
+  })
   loadPromptList()
   checkClassicViewPermission()
 }
@@ -2643,26 +2666,18 @@ function handleExportLinkClick(e) {
 
 onMounted(() => {
   loadConnList().then(() => {
-    // 从 sessionStorage 恢复上次选择的 schemas 和 tables（仅当 loadConnList 未自动恢复时）
-    if (!sessionId.value && selectedSchemas.value.length === 0) {
-      try {
-        const savedSchemas = sessionStorage.getItem('lastSelectedSchemas')
-        if (savedSchemas) {
-          const parsed = JSON.parse(savedSchemas)
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            selectedSchemas.value = parsed
-            loadTableListForSchemas().then(() => {
-              const savedTables = sessionStorage.getItem('lastSelectedTables')
-              if (savedTables) {
-                const parsedTables = JSON.parse(savedTables)
-                if (Array.isArray(parsedTables) && parsedTables.length > 0) {
-                  selectedTables.value = parsedTables.filter(t => tableList.value.some(tl => tl.label === t || tl.name === t))
-                }
-              }
-            })
-          }
+    if (loginSucc.value || !isRemote.value) {
+      loadTableListForSchemas().then(() => {
+        const savedTables = sessionStorage.getItem('lastSelectedTables')
+        if (savedTables) {
+          try {
+            const parsedTables = JSON.parse(savedTables)
+            if (Array.isArray(parsedTables) && parsedTables.length > 0) {
+              selectedTables.value = parsedTables.filter(t => tableList.value.some(tl => tl.label === t || tl.name === t))
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
+      })
     }
   })
   getSysModel()
@@ -3446,6 +3461,11 @@ onUnmounted(() => {
   letter-spacing: 0.3px;
   transition: all 0.3s ease;
   white-space: nowrap;
+}
+
+.selector-badge.ready {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  color: #2e7d32;
 }
 
 @keyframes badgePulse {

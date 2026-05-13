@@ -159,8 +159,8 @@
                   @blur="commitInlineEdit()"
                 />
               </template>
-              <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="String(scope.row[col.name] ?? '')">
-                <template v-if="scope.row[col.name] !== null && scope.row[col.name] !== undefined && scope.row[col.name] !== ''">{{ scope.row[col.name] }}</template>
+              <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="String(getRowValue(scope.row, col.name) ?? '')">
+                <template v-if="getRowValue(scope.row, col.name) !== null && getRowValue(scope.row, col.name) !== undefined && getRowValue(scope.row, col.name) !== ''">{{ getRowValue(scope.row, col.name) }}</template>
                 <span v-else class="null-placeholder">-</span>
               </span>
             </div>
@@ -478,7 +478,7 @@ function clearRangeSelection() {
 }
 
 function onCellMouseDown(rowIdx, colName, e) {
-  if (isEditingCell.value) return
+  if (editingCell.value) return
   const colIdx = colNameToIndex(colName)
   if (colIdx < 0) return
 
@@ -538,9 +538,12 @@ async function pasteToSelectedRange(e) {
       text = (e.clipboardData || window.clipboardData)?.getData('text') || ''
     } catch { return }
   }
-  if (!text.trim()) return
+  if (!text) return
 
-  const lines = text.split(/\r?\n/).filter(l => l.trim() !== '' || l === '').map(l => l || '\t')
+  const lines = text.split(/\r?\n/)
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop()
+  }
   const rows_data = lines.map(l => l.split('\t'))
   if (rows_data.length === 0) return
 
@@ -548,13 +551,11 @@ async function pasteToSelectedRange(e) {
   const pasteCols = Math.max(...rows_data.map(r => r.length))
   const availableCols = dataColumns.value.length - bounds.colMin
 
-  // Ensure enough rows exist
   const neededRows = bounds.rowMin + pasteRows
   while (rows.value.length < neededRows) {
     addBlankRowSilent()
   }
 
-  // Apply paste values
   for (let r = 0; r < pasteRows; r++) {
     const targetRow = rows.value[bounds.rowMin + r]
     if (!targetRow) continue
@@ -866,46 +867,25 @@ function cancelInlineEdit() {
   editingValue.value = ''
 }
 
-function handlePaste(event) {
-  const text = event.clipboardData?.getData('text/plain')
-  if (!text) return
-
-  let startRowIdx = -1
-  let startColIdx = -1
-
-  if (editingCell.value) {
-    startRowIdx = rows.value.findIndex(r => getRowKey(r) === editingCell.value.rowKey)
-    startColIdx = dataColumns.value.findIndex(c => c.name === editingCell.value.colName)
-  } else if (activeCellIndex.value >= 0 && activeColName.value) {
-    startRowIdx = activeCellIndex.value
-    startColIdx = dataColumns.value.findIndex(c => c.name === activeColName.value)
-  }
-
+function applyPasteGrid(grid, startRowIdx, startColIdx) {
   if (startRowIdx < 0 || startColIdx < 0) return
 
-  const lines = text.split('\n')
-  const grid = []
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed) {
-      grid.push(trimmed.split('\t'))
-    }
-  }
-  if (grid.length === 0) return
-
-  event.preventDefault()
-
-  // Save snapshot for Ctrl+Z undo
   const snapshot = {
     changedRows: JSON.parse(JSON.stringify(changedRows.value)),
     restoredCells: []
   }
 
-  cancelInlineEdit()
-
   for (let ri = 0; ri < grid.length; ri++) {
-    const targetRowIdx = startRowIdx + ri
-    if (targetRowIdx >= rows.value.length) break
+    let targetRowIdx = startRowIdx + ri
+    if (targetRowIdx >= rows.value.length) {
+      const blank = { _rowUid: nextRowUid++, _autoExpanded: true }
+      dataColumns.value.forEach(col => { blank[col.name] = '' })
+      rows.value.push(blank)
+      const key = getRowKey(blank)
+      if (!originalRows.value[key]) {
+        originalRows.value[key] = {}
+      }
+    }
     const targetRow = rows.value[targetRowIdx]
     const rowKey = getRowKey(targetRow)
 
@@ -913,13 +893,11 @@ function handlePaste(event) {
       const targetColIdx = startColIdx + ci
       if (targetColIdx >= dataColumns.value.length) break
       const colName = dataColumns.value[targetColIdx].name
-      const targetRow = rows.value[targetRowIdx]
       if (!isNewRow(targetRow) && pkColumns.value.includes(colName)) continue
 
-      const newVal = grid[ri][ci].trim()
+      const newVal = grid[ri][ci]
       const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
 
-      // Record old value for undo
       const oldChanged = changedRows.value[rowKey]?.[colName]
       snapshot.restoredCells.push({
         rowKey,
@@ -951,6 +929,56 @@ function handlePaste(event) {
   activeColName.value = ''
 }
 
+function parsePasteGrid(text) {
+  const lines = text.split(/\r?\n/)
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  return lines.map(line => line.split('\t'))
+}
+
+function handlePaste(event) {
+  if (editingCell.value) return
+
+  event.preventDefault()
+
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text) return
+
+  let startRowIdx = -1
+  let startColIdx = -1
+
+  if (activeCellIndex.value >= 0 && activeColName.value) {
+    startRowIdx = activeCellIndex.value
+    startColIdx = dataColumns.value.findIndex(c => c.name === activeColName.value)
+  }
+
+  const grid = parsePasteGrid(text)
+  if (grid.length === 0) return
+
+  applyPasteGrid(grid, startRowIdx, startColIdx)
+}
+
+async function handleEditPaste() {
+  const cell = editingCell.value
+  if (!cell) return
+
+  const startRowIdx = rows.value.findIndex(r => getRowKey(r) === cell.rowKey)
+  const startColIdx = dataColumns.value.findIndex(c => c.name === cell.colName)
+
+  let text = ''
+  try {
+    text = await navigator.clipboard.readText()
+  } catch { return }
+  if (!text) return
+
+  const grid = parsePasteGrid(text)
+  if (grid.length === 0) return
+
+  cancelInlineEdit()
+  applyPasteGrid(grid, startRowIdx, startColIdx)
+}
+
 function onTableKeydown(event) {
   // Ctrl+Z: undo paste
   if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
@@ -960,8 +988,16 @@ function onTableKeydown(event) {
       return
     }
   }
+  // Ctrl+V during inline edit: paste into the editing cell
+  if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+    if (editingCell.value) {
+      event.preventDefault()
+      handleEditPaste()
+      return
+    }
+  }
   // Range selection keyboard shortcuts
-  if (isEditingCell.value) return
+  if (editingCell.value) return
   const bounds = selectionBounds.value
   if (!bounds) return
 
@@ -1002,10 +1038,10 @@ async function saveInlineChanges() {
   if (rowKeys.length === 0 && newRowUids.value.size === 0) return
 
   savingInline.value = true
-  let successCount = 0
-  let errorCount = 0
 
   try {
+    const sqlStatements = []
+
     for (const rowKey of newKeys) {
       const changed = changedRows.value[rowKey]
       const row = rows.value.find(r => getRowKey(r) === rowKey)
@@ -1026,24 +1062,7 @@ async function saveInlineChanges() {
       const colList = insertCols.map(c => '`' + c.name + '`').join(', ')
       const valList = insertCols.map(c => fmtVal(merged[c.name])).join(', ')
 
-      const sql = `INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`
-
-      const params = new URLSearchParams()
-      params.append('connId', props.connId)
-      params.append('schema', props.schema)
-      params.append('sql', sql)
-
-      try {
-        const resp = await http.post('/execSQL', params)
-        const respData = resp.data.data
-        if (respData && respData.msg) {
-          errorCount++
-        } else {
-          successCount++
-        }
-      } catch {
-        errorCount++
-      }
+      sqlStatements.push(`INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`)
     }
 
     for (const rowKey of existingKeys) {
@@ -1064,32 +1083,32 @@ async function saveInlineChanges() {
         .map(k => `\`${k}\` = ${fmtVal(orig[k])}`)
         .join(' AND ')
 
-      const sql = `UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`
-
-      const params = new URLSearchParams()
-      params.append('connId', props.connId)
-      params.append('schema', props.schema)
-      params.append('sql', sql)
-
-      try {
-        const resp = await http.post('/execSQL', params)
-        const respData = resp.data.data
-        if (respData && respData.msg) {
-          errorCount++
-        } else {
-          successCount++
-        }
-      } catch {
-        errorCount++
-      }
+      sqlStatements.push(`UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
     }
 
-    if (errorCount === 0) {
-      ElMessage({ message: `成功保存 ${successCount} 条记录`, type: 'success' })
+    if (sqlStatements.length === 0) {
+      ElMessage({ message: '没有需要保存的更改', type: 'warning' })
+      return
+    }
+
+    const batchSql = sqlStatements.join('; ')
+    const params = new URLSearchParams()
+    params.append('connId', props.connId)
+    params.append('schema', props.schema)
+    params.append('sql', batchSql)
+
+    const resp = await http.post('/execSQL', params)
+    const respData = resp.data.data
+
+    if (respData && respData.msg) {
+      ElMessage({ message: '保存失败，请检查数据', type: 'error' })
     } else {
-      ElMessage({ message: `保存完成: ${successCount} 成功, ${errorCount} 失败`, type: 'warning' })
+      ElMessage({ message: `成功保存 ${sqlStatements.length} 条记录`, type: 'success' })
     }
     await loadData()
+  } catch (err) {
+    console.error('[DataBrowser] 保存失败:', err)
+    ElMessage({ message: '保存失败', type: 'error' })
   } finally {
     savingInline.value = false
   }
@@ -1162,6 +1181,15 @@ function removeNewRow(row) {
 
 function isNewRow(row) {
   return row._rowUid && newRowUids.value.has(row._rowUid)
+}
+
+function getRowValue(row, colName) {
+  const key = getRowKey(row)
+  const changed = changedRows.value[key]
+  if (changed && changed[colName] !== undefined) {
+    return changed[colName]
+  }
+  return row[colName]
 }
 
 function openColumnFilter(col, event) {

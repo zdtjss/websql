@@ -1,5 +1,5 @@
 ---
-name: Word 文档生成器
+name: export-word
 description: 使用 Python 生成专业数据分析 Word 报告，支持图表、表格、KPI 卡片，科技感配色
 inclusion: manual
 ---

@@ -474,4 +474,88 @@ class PPTBuilder:
             except OSError:
                 pass
         self._temp_files.clear()
-        print(f"✅ PPT 已生成: {filepath}")
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    from datetime import datetime
+
+    try:
+        raw = sys.stdin.read()
+        if not raw:
+            print(json.dumps({"success": False, "error": "stdin 为空"}))
+            sys.exit(1)
+        data = json.loads(raw)
+    except Exception as e:
+        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"}))
+        sys.exit(1)
+
+    try:
+        mode = data.get("mode", "data")
+        title = data.get("title", "数据报告")
+        output_path = data.get("outputPath", "exports/output.pptx")
+        builder = PPTBuilder()
+
+        builder.add_cover(title, subtitle="数据分析报告", date=datetime.now().strftime("%Y-%m-%d"))
+
+        if mode == "content":
+            sections = data.get("sections", [])
+            section_titles = []
+            for sec in sections:
+                sec_title = sec.get("title", "")
+                section_titles.append(sec_title)
+                builder.add_section_divider(sec_title)
+                blocks = sec.get("blocks", [])
+                content_lines = []
+                for b in blocks:
+                    line = b.get("content", "")
+                    if b.get("type") == "bullet":
+                        line = f"▸ {line}"
+                    content_lines.append(line)
+                if content_lines:
+                    builder.add_text_page(sec_title, content_lines)
+        else:
+            columns = data.get("columns", [])
+            rows = data.get("data", [])
+            summary = data.get("summary", {})
+            highlights = data.get("highlights", [])
+            chart_paths = data.get("chartPaths", [])
+
+            if highlights:
+                builder.add_text_page("核心发现", highlights, highlight_indices=[0])
+
+            if columns and rows:
+                headers = columns
+                display_rows = []
+                for row in rows:
+                    display_rows.append([str(row.get(c, "")) for c in columns])
+                # 限制表格数据量
+                if len(display_rows) > 20:
+                    display_rows = display_rows[:20]
+                builder.add_chart_page("数据概览", "bar", {
+                    "title": "数据分布",
+                    "categories": [str(r[0])[:12] for r in display_rows[:10]],
+                    "series": [{"name": columns[1] if len(columns) > 1 else "Value",
+                                "values": [float(str(r[1]).replace(",", "")) if len(r) > 1 and str(r[1]).replace(".", "").replace("-", "").replace(",", "").isdigit() else 0 for r in display_rows[:10]]}]
+                })
+                builder.add_text_page("数据明细", [f"{h}: 共 {len(rows)} 条记录" for h in headers[:5]],
+                                       highlight_indices=[0])
+
+            if chart_paths:
+                for cp in chart_paths[:3]:
+                    if os.path.exists(cp):
+                        slide = builder._blank_slide()
+                        builder._add_text(slide, "图表分析", Inches(0.8), Inches(0.3), Inches(8), Inches(0.7),
+                                          size=Pt(26), color=Theme.WHITE, bold=True)
+                        builder._add_line(slide, Inches(0.8), Inches(0.95), Inches(2))
+                        slide.shapes.add_picture(cp, Inches(1.5), Inches(1.5), Inches(10), Inches(5))
+
+        builder.add_thank_you()
+        builder.save(output_path)
+
+        slide_count = len(builder.prs.slides)
+        print(json.dumps({"success": True, "slideCount": slide_count, "outputPath": output_path}))
+    except Exception as e:
+        print(json.dumps({"success": False, "error": str(e)}))
+        sys.exit(1)

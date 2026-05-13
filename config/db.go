@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"go-web/logutils"
 	"log"
 	"sync"
@@ -40,20 +41,23 @@ func GetConn(param *DBParam) *sqlx.DB {
 		return val
 	}
 
-	dbMapMu.Lock()
-	defer dbMapMu.Unlock()
-
-	if val, ok := DBMap[key]; ok {
-		return val
-	}
-
 	db, err := sqlx.Connect(param.DbType, *makeDsn(param))
 	if err != nil {
 		logutils.PanicErrf("连接数据库失败", err)
 	}
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	dbMapMu.Lock()
+	if existing, ok := DBMap[key]; ok {
+		dbMapMu.Unlock()
+		db.Close()
+		return existing
+	}
 	DBMap[key] = db
+	dbMapMu.Unlock()
+
 	log.Printf("数据库连接成功, env = %s, db = %s", param.Name, param.User)
 
 	go func() {
@@ -77,9 +81,12 @@ func GetConn(param *DBParam) *sqlx.DB {
 
 func makeDsn(param *DBParam) *string {
 	dsn := ""
-	if param.DbType == "oracle" {
+	switch param.DbType {
+	case "oracle":
 		dsn = "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
-	} else {
+	case "mysql":
+		dsn = fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
+	default:
 		dsn = param.User + ":" + param.Pwd + "@" + param.Url
 	}
 	return &dsn
@@ -88,6 +95,9 @@ func makeDsn(param *DBParam) *string {
 func RealseConn(param *DBParam) {
 	key := createKey(param)
 	dbMapMu.Lock()
+	if db, ok := DBMap[key]; ok {
+		db.Close()
+	}
 	delete(DBMap, key)
 	dbMapMu.Unlock()
 }

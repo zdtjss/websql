@@ -516,4 +516,141 @@ class WordBuilder:
             except OSError:
                 pass
         self._temp_files.clear()
-        print(f"✅ Word 文档已生成: {filepath}")
+
+
+def parse_markdown_table(md_text):
+    """解析 Markdown 表格文本为 [headers, ...rows] 格式"""
+    lines = [l.strip() for l in md_text.strip().split("\n") if l.strip()]
+    if len(lines) < 2:
+        return None
+
+    def split_cells(line):
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        return cells
+
+    headers = split_cells(lines[0])
+    if not headers:
+        return None
+
+    data_start = 1
+    # 跳过分隔行 (|---|---|)
+    if data_start < len(lines):
+        sep = split_cells(lines[data_start])
+        if all(c.replace("-", "").replace(":", "").replace(" ", "") == "" for c in sep):
+            data_start += 1
+
+    rows = []
+    for line in lines[data_start:]:
+        cells = split_cells(line)
+        rows.append(cells)
+
+    return [headers] + rows
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    from datetime import datetime
+
+    try:
+        raw = sys.stdin.read()
+        if not raw:
+            print(json.dumps({"success": False, "error": "stdin 为空"}))
+            sys.exit(1)
+        data = json.loads(raw)
+    except Exception as e:
+        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"}))
+        sys.exit(1)
+
+    try:
+        mode = data.get("mode", "data")
+        title = data.get("title", "数据分析报告")
+        output_path = data.get("outputPath", "exports/output.docx")
+        builder = WordBuilder(title=title)
+
+        builder.add_cover(title, date=datetime.now().strftime("%Y-%m-%d"))
+        builder.add_toc_placeholder()
+
+        if mode == "content":
+            sections = data.get("sections", [])
+            for sec in sections:
+                sec_title = sec.get("title", "")
+                builder.add_heading(sec_title, level=2)
+                blocks = sec.get("blocks", [])
+                for b in blocks:
+                    content = b.get("content", "")
+                    block_type = b.get("type", "text")
+                    if block_type == "text":
+                        builder.add_paragraph(content)
+                    elif block_type == "bullet":
+                        builder.add_bullet_list([content])
+                    elif block_type == "h1" or block_type == "h2":
+                        builder.add_heading(content, level=2 if block_type == "h2" else 1)
+                    elif block_type == "table":
+                        rows_data = parse_markdown_table(content)
+                        if rows_data:
+                            headers = rows_data[0]
+                            body = rows_data[1:]
+                            builder.add_table(headers, body, caption="")
+                    else:
+                        builder.add_paragraph(content)
+        else:
+            columns = data.get("columns", [])
+            rows = data.get("data", [])
+            findings = data.get("findings", [])
+            numeric_stats = data.get("numericStats", [])
+            chart_paths = data.get("chartPaths", [])
+            include_charts = data.get("includeCharts", False)
+
+            builder.add_heading("数据概览", level=1)
+            builder.add_paragraph(f"本次分析共返回 {len(rows)} 条记录，包含 {len(columns)} 个字段。")
+
+            if numeric_stats:
+                builder.add_heading("关键指标", level=2)
+                for ns in numeric_stats:
+                    col_name = ns.get("column", "")
+                    builder.add_paragraph(
+                        f"{col_name}: 计数={ns.get('count', 0)}, "
+                        f"均值={ns.get('avg', 0):.2f}, "
+                        f"最小={ns.get('min', 0):.2f}, "
+                        f"最大={ns.get('max', 0):.2f}, "
+                        f"标准差={ns.get('stddev', 0):.2f}"
+                    )
+
+            if findings:
+                builder.add_heading("分析洞察", level=2)
+                builder.add_bullet_list(findings)
+
+            if columns and rows:
+                builder.add_heading("数据明细", level=2)
+                headers = columns
+                display_rows = []
+                for row in rows:
+                    display_rows.append([str(row.get(c, "")) for c in columns])
+                if len(display_rows) > 50:
+                    display_rows = display_rows[:50]
+                    builder.add_paragraph("（仅展示前 50 条记录）")
+                if headers and display_rows:
+                    builder.add_table(headers, display_rows, caption="数据明细表")
+
+            if include_charts and chart_paths:
+                builder.add_heading("图表分析", level=2)
+                for cp in chart_paths:
+                    if os.path.exists(cp):
+                        builder.add_chart("bar", {
+                            "title": "",
+                            "categories": [],
+                            "series": []
+                        }, caption=os.path.basename(cp))
+                        # 实际图表通过 Go 端生成的图片文件插入
+                        p = builder.doc.add_paragraph()
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        run = p.add_run()
+                        run.add_picture(cp, width=Inches(5.5))
+                        builder.doc.add_paragraph()
+
+        builder.save(output_path)
+        print(json.dumps({"success": True, "outputPath": output_path}))
+    except Exception as e:
+        print(json.dumps({"success": False, "error": str(e)}))
+        sys.exit(1)

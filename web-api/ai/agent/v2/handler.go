@@ -34,12 +34,18 @@ func (g *writeGuard) markDead() {
 	g.mu.Unlock()
 }
 
-func (g *writeGuard) tryWrite(fn func()) bool {
+func (g *writeGuard) tryWrite(fn func()) (ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.dead {
 		return false
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			g.dead = true
+			ok = false
+		}
+	}()
 	fn()
 	return true
 }
@@ -65,6 +71,7 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 
 	wg := &writeGuard{}
 	kaStop := make(chan struct{})
+	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -72,6 +79,8 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 		for {
 			select {
 			case <-kaStop:
+				return
+			case <-runnerCtx.Done():
 				return
 			case <-ticker.C:
 				wg.tryWrite(func() {
@@ -89,8 +98,6 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 			c.Writer.Flush()
 		})
 	}
-
-	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 	go func() {
 		select {
@@ -293,8 +300,8 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 		sse.flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
 	}
 	sess.ClearCancel()
-	sse.flush(StreamChunk{Type: "done"})
 	close(sse.kaStop)
+	sse.flush(StreamChunk{Type: "done"})
 }
 
 func (h *Handler) HandleGetSessions(c *gin.Context) {

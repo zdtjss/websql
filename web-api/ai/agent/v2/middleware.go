@@ -360,8 +360,9 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 			return nil, err
 		}
 
-		// 包装流式读取器，在流结束时记录日志
+		var contentBuf strings.Builder
 		wrapped := schema.StreamReaderWithConvert(reader, func(s string) (string, error) {
+			contentBuf.WriteString(s)
 			return s, nil
 		})
 
@@ -370,7 +371,9 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 				_, err := wrapped.Recv()
 				if err != nil {
 					elapsed := time.Since(startTime)
-					log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v\n", tCtx.Name, elapsed)
+					content := contentBuf.String()
+					log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v, resultLen=%d, result=%s\n",
+						tCtx.Name, elapsed, len(content), truncateStr(content, 500))
 					return
 				}
 			}
@@ -386,4 +389,85 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// ──────────────────────────────────────────────
+// ReductionMiddleware — 工具返回结果精简
+// ──────────────────────────────────────────────
+//
+// 对 query_data 返回的大量数据行自动截断，只保留前 MaxRows 行 + 总行数提示。
+// 显著减少 LLM 上下文中的 Token 消耗。
+
+const defaultReductionMaxRows = 10
+
+type ReductionMiddleware struct {
+	*adk.BaseChatModelAgentMiddleware
+	MaxRows int
+}
+
+func (m *ReductionMiddleware) maxRows() int {
+	if m.MaxRows > 0 {
+		return m.MaxRows
+	}
+	return defaultReductionMaxRows
+}
+
+func (m *ReductionMiddleware) WrapInvokableToolCall(
+	_ context.Context,
+	endpoint adk.InvokableToolCallEndpoint,
+	tCtx *adk.ToolContext,
+) (adk.InvokableToolCallEndpoint, error) {
+	if tCtx.Name != "query_data" {
+		return endpoint, nil
+	}
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		result, err := endpoint(ctx, argumentsInJSON, opts...)
+		if err != nil {
+			return result, err
+		}
+		return m.reduceQueryResult(result), nil
+	}, nil
+}
+
+func (m *ReductionMiddleware) WrapStreamableToolCall(
+	_ context.Context,
+	endpoint adk.StreamableToolCallEndpoint,
+	tCtx *adk.ToolContext,
+) (adk.StreamableToolCallEndpoint, error) {
+	if tCtx.Name != "query_data" {
+		return endpoint, nil
+	}
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+		reader, err := endpoint(ctx, argumentsInJSON, opts...)
+		if err != nil {
+			return nil, err
+		}
+		var sb strings.Builder
+		for {
+			chunk, recvErr := reader.Recv()
+			if recvErr != nil {
+				break
+			}
+			sb.WriteString(chunk)
+		}
+		reduced := m.reduceQueryResult(sb.String())
+		return schema.StreamReaderFromArray([]string{reduced}), nil
+	}, nil
+}
+
+func (m *ReductionMiddleware) reduceQueryResult(result string) string {
+	var output QueryOutput
+	if err := json.Unmarshal([]byte(result), &output); err != nil {
+		return result
+	}
+	maxRows := m.maxRows()
+	if len(output.Data) <= maxRows {
+		return result
+	}
+	totalRows := len(output.Data)
+	output.Data = output.Data[:maxRows]
+	output.Count = totalRows
+	reducedJSON, _ := json.Marshal(output)
+	log.Printf("[Reduction] query_data 结果精简 - 原始行数=%d, 保留行数=%d\n", totalRows, maxRows)
+	return string(reducedJSON)
 }

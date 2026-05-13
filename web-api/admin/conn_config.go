@@ -2,15 +2,17 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	"log"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -275,8 +277,9 @@ func ListUserConn(c *gin.Context) {
 	utils.WriteJson(c.Writer, dtoList)
 }
 
-// ListUserConnSchemas 返回连接及其可用 schema 列表（支持前端构建 schema 级树）
-func ListUserConnSchemas(c *gin.Context) {
+// ListUserConnSchemasStream 流式返回连接及其可用 schema 列表（SSE）
+// 每个连接查询到 schema 后立即推送给前端，避免因个别连接不可用导致整体阻塞
+func ListUserConnSchemasStream(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	userPower := GetUserPower(authorization)
 
@@ -294,13 +297,16 @@ func ListUserConnSchemas(c *gin.Context) {
 		Available bool        `json:"available"`
 	}
 
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Writer.Flush()
+
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select c.id, c.name, c.db_schema, c.db_type, t.label as dir_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
 	appendPmsn(&sql, "c.id", &param, userPower)
 	sql.WriteString(" order by t.label, c.name ")
-
-	var wg sync.WaitGroup
 
 	type rawRow struct {
 		ConnId   string  `db:"id"`
@@ -311,43 +317,75 @@ func ListUserConnSchemas(c *gin.Context) {
 	}
 	rows := []rawRow{}
 	err := config.Mngtdb.Select(&rows, sql.String(), param...)
-	logutils.PanicErr(err)
+	if err != nil {
+		logutils.PanicErr(err)
+		return
+	}
 
-	dtoList := make([]UserConnSchemaDTO, len(rows))
+	if len(rows) == 0 {
+		fmt.Fprintf(c.Writer, "event: done\ndata: \"empty\"\n\n")
+		c.Writer.Flush()
+		return
+	}
+
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer queryCancel()
+
+	ch := make(chan json.RawMessage, len(rows))
 
 	for i, row := range rows {
-		wg.Add(1)
 		go func(idx int, r rawRow) {
-			defer wg.Done()
-			schemas := []SchemaDTO{}
-			available := true
 			func() {
 				defer func() {
 					if rc := recover(); rc != nil {
-						log.Printf("[ListUserConnSchemas] 获取连接 %s %s 的 schema 列表失败: %v", r.ConnId, r.Name, rc)
-						available = false
+						log.Printf("[ListUserConnSchemasStream] goroutine panic %s %s: %v", r.ConnId, r.Name, rc)
+						data, _ := json.Marshal(UserConnSchemaDTO{
+							ConnId:    r.ConnId,
+							Name:      r.Name,
+							DbSchema:  r.DbSchema,
+							DirName:   r.DirName,
+							DbType:    r.DbType,
+							Schemas:   []SchemaDTO{},
+							Available: false,
+						})
+						ch <- json.RawMessage(data)
 					}
 				}()
+
+				schemas := []SchemaDTO{}
 				schemaTrees := listSchema(r.ConnId, authorization)
 				for _, st := range schemaTrees {
 					schemas = append(schemas, SchemaDTO{Name: st.Label})
 				}
+
+				data, _ := json.Marshal(UserConnSchemaDTO{
+					ConnId:    r.ConnId,
+					Name:      r.Name,
+					DbSchema:  r.DbSchema,
+					DirName:   r.DirName,
+					DbType:    r.DbType,
+					Schemas:   schemas,
+					Available: true,
+				})
+				ch <- json.RawMessage(data)
 			}()
-			dtoList[idx] = UserConnSchemaDTO{
-				ConnId:    r.ConnId,
-				Name:      r.Name,
-				DbSchema:  r.DbSchema,
-				DirName:   r.DirName,
-				DbType:    r.DbType,
-				Schemas:   schemas,
-				Available: available,
-			}
 		}(i, row)
 	}
 
-	wg.Wait()
+	for i := 0; i < len(rows); i++ {
+		select {
+		case data := <-ch:
+			fmt.Fprintf(c.Writer, "event: schema\ndata: %s\n\n", string(data))
+			c.Writer.Flush()
+		case <-queryCtx.Done():
+			log.Printf("[ListUserConnSchemasStream] 查询超时")
+			fmt.Fprintf(c.Writer, "event: schema\ndata: {\"err\":\"timeout\"}\n\n")
+			c.Writer.Flush()
+		}
+	}
 
-	utils.WriteJson(c.Writer, dtoList)
+	fmt.Fprintf(c.Writer, "event: done\ndata: \"ok\"\n\n")
+	c.Writer.Flush()
 }
 
 // SchemaRef 多 schema 查询中的单个 schema 引用
@@ -356,20 +394,18 @@ type SchemaRef struct {
 	Schema string `json:"schema"`
 }
 
+type tableNameDTO struct {
+	Name    string `json:"name"`
+	Comment string `json:"comment"`
+	Schema  string `json:"schema,omitempty"`
+}
+
 func ListTableNames(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	connId := c.Query("connId")
 	schema := c.Query("schema")
 	schemasJSON := c.Query("schemas")
 
-	// 返回包含表名和注释的对象列表
-	type TableNameDTO struct {
-		Name    string `json:"name"`
-		Comment string `json:"comment"`
-		Schema  string `json:"schema,omitempty"`
-	}
-
-	// 多 schema 模式：schemas 参数为 JSON 数组 [{connId, schema}, ...]
 	if schemasJSON != "" {
 		var refs []SchemaRef
 		if err := json.Unmarshal([]byte(schemasJSON), &refs); err != nil || len(refs) == 0 {
@@ -378,7 +414,7 @@ func ListTableNames(c *gin.Context) {
 		}
 		userPower := GetUserPower(authorization)
 		seen := make(map[string]bool)
-		result := []TableNameDTO{}
+		result := []tableNameDTO{}
 		for _, ref := range refs {
 			if ref.ConnId == "" || ref.Schema == "" {
 				continue
@@ -391,7 +427,7 @@ func ListTableNames(c *gin.Context) {
 			tables := queryTableInfo(ref.ConnId, ref.Schema, authorization)
 			filteredTables := filterTablesByPermission(tables, ref.ConnId, ref.Schema, userPower)
 			for _, table := range filteredTables {
-				result = append(result, TableNameDTO{
+				result = append(result, tableNameDTO{
 					Name:    table.Name,
 					Comment: table.Comment,
 					Schema:  ref.Schema,
@@ -407,7 +443,6 @@ func ListTableNames(c *gin.Context) {
 		return
 	}
 
-	// 当 schema 为空时，从数据库连接获取实际 schema
 	if schema == "" {
 		dc := GetConn(connId, authorization)
 		switch dc.DriverName() {
@@ -424,9 +459,9 @@ func ListTableNames(c *gin.Context) {
 	tables := queryTableInfo(connId, schema, authorization)
 	filteredTables := filterTablesByPermission(tables, connId, schema, userPower)
 
-	result := make([]TableNameDTO, len(filteredTables))
+	result := make([]tableNameDTO, len(filteredTables))
 	for i, table := range filteredTables {
-		result[i] = TableNameDTO{Name: table.Name, Comment: table.Comment}
+		result[i] = tableNameDTO{Name: table.Name, Comment: table.Comment}
 	}
 
 	utils.WriteJson(c.Writer, result)

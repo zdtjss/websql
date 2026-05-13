@@ -177,7 +177,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 			if len(schemaNames) > 0 {
 				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
 			}
-			return nil, fmt.Errorf(msg)
+			return nil, fmt.Errorf("%s", msg)
 		}
 		sql := strings.TrimSpace(input.SQL)
 		stripped := stripSQLComments(sql)
@@ -198,7 +198,9 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
 			sql = applyRowLimit(sql, conn.DriverName(), 2000)
 		}
-		rows, err := conn.Queryx(sql)
+		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		rows, err := conn.QueryxContext(queryCtx, sql)
 		if err != nil {
 			return nil, fmt.Errorf("query failed: %w", err)
 		}
@@ -238,7 +240,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 			if len(schemaNames) > 0 {
 				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
 			}
-			return nil, fmt.Errorf(msg)
+			return nil, fmt.Errorf("%s", msg)
 		}
 
 		// 审计日志
@@ -246,7 +248,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 		sqlType := detectSQLType(sql)
 		riskLevel := detectRiskLevel(sql)
 
-		result, err := conn.Exec(sql)
+		result, err := conn.ExecContext(ctx, sql)
 		if err != nil {
 			if auditCtx != nil {
 				InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, targetConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "failed", 0, err.Error())
@@ -283,6 +285,9 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 			return c, t, connId
 		}
 
+		schemaCtx, schemaCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer schemaCancel()
+
 		var sb strings.Builder
 		for _, table := range input.Tables {
 			if !isValidTableName(table) {
@@ -297,7 +302,7 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 				if len(schemaNames) > 0 {
 					msg += fmt.Sprintf("。可用 schema 名：%v", schemaNames)
 				}
-				logutils.PrintErr(fmt.Errorf(msg))
+				logutils.PrintErr(fmt.Errorf("%s", msg))
 				continue
 			}
 
@@ -330,11 +335,9 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 			var err error
 			switch actualDBType {
 			case "sqlite":
-				rows, err = tableConn.Queryx(schemaSQL, table)
-			case "oracle":
-				rows, err = tableConn.Queryx(schemaSQL)
+				rows, err = tableConn.QueryxContext(schemaCtx, schemaSQL, table)
 			default:
-				rows, err = tableConn.Queryx(schemaSQL)
+				rows, err = tableConn.QueryxContext(schemaCtx, schemaSQL)
 			}
 			if err != nil {
 				logutils.PrintErr(fmt.Errorf("get schema failed %s: %w", table, err))

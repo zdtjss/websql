@@ -70,6 +70,7 @@ type Session struct {
 
 	debounceTimer *time.Timer
 	pendingSave   bool
+	lastAccess    time.Time
 }
 
 // Append 追加消息并持久化到数据库
@@ -291,14 +292,64 @@ func (s *Session) doSave() error {
 // SessionStore — 会话存储管理器
 // ──────────────────────────────────────────────
 
+const (
+	sessionMaxIdleTime = 30 * time.Minute
+	sessionCleanInterval = 5 * time.Minute
+	sessionMaxCacheSize = 500
+)
+
 type SessionStore struct {
 	mu      sync.Mutex
 	cache   map[string]*Session
 	cancels map[string]context.CancelFunc
+	stopCh  chan struct{}
 }
 
 func NewSessionStore() (*SessionStore, error) {
-	return &SessionStore{cache: make(map[string]*Session), cancels: make(map[string]context.CancelFunc)}, nil
+	ss := &SessionStore{
+		cache:   make(map[string]*Session),
+		cancels: make(map[string]context.CancelFunc),
+		stopCh:  make(chan struct{}),
+	}
+	go ss.cleanLoop()
+	return ss, nil
+}
+
+func (s *SessionStore) cleanLoop() {
+	ticker := time.NewTicker(sessionCleanInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.evictIdleSessions()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *SessionStore) evictIdleSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var evicted int
+	for id, sess := range s.cache {
+		sess.mu.Lock()
+		idle := now.Sub(sess.lastAccess)
+		sess.mu.Unlock()
+		if idle > sessionMaxIdleTime {
+			sess.Cancel()
+			delete(s.cache, id)
+			evicted++
+		}
+	}
+	if evicted > 0 {
+		log.Printf("[SessionStore] 清理不活跃会话 - evicted=%d, remaining=%d\n", evicted, len(s.cache))
+	}
+}
+
+func (s *SessionStore) Close() {
+	close(s.stopCh)
 }
 
 // GetOrCreate 获取或创建会话
@@ -307,26 +358,55 @@ func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 	defer s.mu.Unlock()
 
 	if sess, ok := s.cache[id]; ok {
+		sess.mu.Lock()
+		sess.lastAccess = time.Now()
+		sess.mu.Unlock()
 		return sess, nil
 	}
 
-	// 尝试从数据库加载
+	if len(s.cache) >= sessionMaxCacheSize {
+		s.evictOldestUnlocked()
+	}
+
 	sess, err := loadSessionFromDB(id)
 	if err != nil || sess == nil {
-		// 不存在，创建新会话
 		sess = &Session{
-			ID:        id,
-			UserID:    userID,
-			CreatedAt: time.Now(),
-			messages:  make([]SessionMessage, 0),
+			ID:         id,
+			UserID:     userID,
+			CreatedAt:  time.Now(),
+			messages:   make([]SessionMessage, 0),
+			lastAccess: time.Now(),
 		}
 		if err := createSessionInDB(id, userID); err != nil {
 			log.Printf("[SessionStore] 创建会话记录失败 - id=%s, err=%v\n", id, err)
 		}
+	} else {
+		sess.lastAccess = time.Now()
 	}
 
 	s.cache[id] = sess
 	return sess, nil
+}
+
+func (s *SessionStore) evictOldestUnlocked() {
+	var oldestID string
+	var oldestTime time.Time
+	for id, sess := range s.cache {
+		sess.mu.Lock()
+		la := sess.lastAccess
+		sess.mu.Unlock()
+		if oldestID == "" || la.Before(oldestTime) {
+			oldestID = id
+			oldestTime = la
+		}
+	}
+	if oldestID != "" {
+		if sess, ok := s.cache[oldestID]; ok {
+			sess.Cancel()
+		}
+		delete(s.cache, oldestID)
+		log.Printf("[SessionStore] 缓存满淘汰 - evicted=%s\n", oldestID)
+	}
 }
 
 // ListByUserID 获取用户的会话列表

@@ -42,7 +42,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/connBaseTree", admin.ConnBaseTree)
 	routerGroup.GET("/listConn2", admin.ListConn2)
 	routerGroup.GET("/listUserConn", admin.ListUserConn)
-	routerGroup.GET("/listUserConnSchemas", admin.ListUserConnSchemas)
+	routerGroup.GET("/listUserConnSchemasStream", admin.ListUserConnSchemasStream)
 	routerGroup.GET("/userPermissions", admin.UserPermissions)
 	routerGroup.GET("/listTableNames", admin.ListTableNames)
 	routerGroup.GET("/showTree", admin.ShowTree)

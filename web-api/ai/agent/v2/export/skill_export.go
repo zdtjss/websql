@@ -17,17 +17,30 @@ const (
 	exportPPTSkill  = "export-ppt"
 )
 
+func mustGetSkillEnv() (*SkillEnv, error) {
+	env := GetSkillEnv()
+	if env == nil {
+		return nil, fmt.Errorf("Skill 环境未初始化")
+	}
+	return env, nil
+}
+
 func SkillExportWord(ctx context.Context, qr *QueryResult, title, fileName string, includeChart bool, chartImagePaths []string) (string, error) {
 	if !IsPythonAvailable() {
 		return "", fmt.Errorf("Python 不可用，请使用 Go 原生实现")
 	}
 
-	scriptPath := filepath.Join(GetSkillScriptsBaseDir(), "skills", exportWordSkill, "scripts", "export_word.py")
-	if !fileExists(scriptPath) {
-		return "", fmt.Errorf("Skill 脚本不存在: %s", scriptPath)
+	env, err := mustGetSkillEnv()
+	if err != nil {
+		return "", err
 	}
 
-	if err := CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
+	scriptPath, err := env.ResolveScriptPath(ctx, exportWordSkill, "word_generator.py")
+	if err != nil {
+		return "", err
+	}
+
+	if err := env.CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
 		log.Printf("[SkillExport] 依赖安装失败，回退 Go 实现: %v", err)
 		return "", err
 	}
@@ -83,12 +96,17 @@ func SkillExportPPT(ctx context.Context, qr *QueryResult, title, fileName string
 		return "", 0, fmt.Errorf("Python 不可用，请使用 Go 原生实现")
 	}
 
-	scriptPath := filepath.Join(GetSkillScriptsBaseDir(), "skills", exportPPTSkill, "scripts", "export_ppt.py")
-	if !fileExists(scriptPath) {
-		return "", 0, fmt.Errorf("Skill 脚本不存在: %s", scriptPath)
+	env, err := mustGetSkillEnv()
+	if err != nil {
+		return "", 0, err
 	}
 
-	if err := CheckAndInstallDeps(ctx, exportPPTSkill); err != nil {
+	scriptPath, err := env.ResolveScriptPath(ctx, exportPPTSkill, "export_ppt.py")
+	if err != nil {
+		return "", 0, err
+	}
+
+	if err := env.CheckAndInstallDeps(ctx, exportPPTSkill); err != nil {
 		log.Printf("[SkillExport] PPT 依赖安装失败，回退 Go 实现: %v", err)
 		return "", 0, err
 	}
@@ -149,12 +167,17 @@ func SkillExportWordFromContent(ctx context.Context, content, title, fileName st
 		return "", fmt.Errorf("Python 不可用，请使用 Go 原生实现")
 	}
 
-	scriptPath := filepath.Join(GetSkillScriptsBaseDir(), "skills", exportWordSkill, "scripts", "export_word.py")
-	if !fileExists(scriptPath) {
-		return "", fmt.Errorf("Skill 脚本不存在: %s", scriptPath)
+	env, err := mustGetSkillEnv()
+	if err != nil {
+		return "", err
 	}
 
-	if err := CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
+	scriptPath, err := env.ResolveScriptPath(ctx, exportWordSkill, "word_generator.py")
+	if err != nil {
+		return "", err
+	}
+
+	if err := env.CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
 		return "", err
 	}
 
@@ -198,12 +221,17 @@ func SkillExportPPTFromContent(ctx context.Context, content, title, fileName str
 		return "", 0, fmt.Errorf("Python 不可用，请使用 Go 原生实现")
 	}
 
-	scriptPath := filepath.Join(GetSkillScriptsBaseDir(), "skills", exportPPTSkill, "scripts", "export_ppt.py")
-	if !fileExists(scriptPath) {
-		return "", 0, fmt.Errorf("Skill 脚本不存在: %s", scriptPath)
+	env, err := mustGetSkillEnv()
+	if err != nil {
+		return "", 0, err
 	}
 
-	if err := CheckAndInstallDeps(ctx, exportPPTSkill); err != nil {
+	scriptPath, err := env.ResolveScriptPath(ctx, exportPPTSkill, "export_ppt.py")
+	if err != nil {
+		return "", 0, err
+	}
+
+	if err := env.CheckAndInstallDeps(ctx, exportPPTSkill); err != nil {
 		return "", 0, err
 	}
 
@@ -248,15 +276,22 @@ func SkillGenerateChart(ctx context.Context, seriesList []ChartSeries, chartType
 		return "", fmt.Errorf("Python 不可用")
 	}
 
-	scriptPath := filepath.Join(GetSkillScriptsBaseDir(), "skills", exportWordSkill, "scripts", "chart_generator.py")
-	if !fileExists(scriptPath) {
-		scriptPath = filepath.Join(GetSkillScriptsBaseDir(), "skills", exportPPTSkill, "scripts", "chart_generator.py")
-		if !fileExists(scriptPath) {
-			return "", fmt.Errorf("图表生成脚本不存在")
+	env, err := mustGetSkillEnv()
+	if err != nil {
+		return "", err
+	}
+
+	var scriptPath string
+	var scriptErr error
+	scriptPath, scriptErr = env.ResolveScriptPath(ctx, exportWordSkill, "chart_generator.py")
+	if scriptErr != nil {
+		scriptPath, scriptErr = env.ResolveScriptPath(ctx, exportPPTSkill, "chart_generator.py")
+		if scriptErr != nil {
+			return "", fmt.Errorf("图表生成脚本不存在: %v", scriptErr)
 		}
 	}
 
-	if err := CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
+	if err := env.CheckAndInstallDeps(ctx, exportWordSkill); err != nil {
 		return "", err
 	}
 

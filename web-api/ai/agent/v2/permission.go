@@ -254,31 +254,35 @@ func (s *PermissionScope) DescribeForPrompt() string {
 	return sb.String()
 }
 
+var (
+	rePrimaryTable  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
+	reCommaTable    = regexp.MustCompile(`\s*,\s*(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
+	reMetadataTable = regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
+	reCTE           = regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
+	reStopClause    = regexp.MustCompile(`(?i)\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|VALUES|SET|ON|LATERAL)\b`)
+	reAsAlias       = regexp.MustCompile(`(?i)^AS\s+\w+`)
+	reIdent         = regexp.MustCompile(`^\w+`)
+)
+
 func extractTablesFromSQL(sql string) []string {
 	tables := make(map[string]bool)
 
-	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
-	commaRegex := regexp.MustCompile(`\s*,\s*(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
-	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
-	cteRegex := regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
-
 	cteNames := make(map[string]bool)
-	for _, match := range cteRegex.FindAllStringSubmatch(sql, -1) {
+	for _, match := range reCTE.FindAllStringSubmatch(sql, -1) {
 		if len(match) > 1 {
 			cteNames[strings.ToLower(match[1])] = true
 		}
 	}
 
-	for _, idx := range primaryRegex.FindAllStringSubmatchIndex(sql, -1) {
+	for _, idx := range rePrimaryTable.FindAllStringSubmatchIndex(sql, -1) {
 		if len(idx) >= 4 {
 			tableName := stripBackticks(sql[idx[2]:idx[3]])
-			if !isSQLKeyword(tableName) && !cteNames[strings.ToLower(tableName)] {
+			if isValidTableNameExtract(tableName) && !cteNames[strings.ToLower(tableName)] {
 				tables[tableName] = true
 			}
 
 			afterMatch := sql[idx[1]:]
-			stopRegex := regexp.MustCompile(`(?i)\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|VALUES|SET|ON)\b`)
-			if stopMatch := stopRegex.FindStringIndex(afterMatch); stopMatch != nil {
+			if stopMatch := reStopClause.FindStringIndex(afterMatch); stopMatch != nil {
 				afterMatch = afterMatch[:stopMatch[0]]
 			}
 
@@ -289,12 +293,12 @@ func extractTablesFromSQL(sql string) []string {
 				if !strings.HasPrefix(trimmed, ",") {
 					break
 				}
-				commaMatch := commaRegex.FindStringSubmatch(trimmed)
+				commaMatch := reCommaTable.FindStringSubmatch(trimmed)
 				if len(commaMatch) < 2 {
 					break
 				}
 				commaTableName := stripBackticks(commaMatch[1])
-				if !isSQLKeyword(commaTableName) && !cteNames[strings.ToLower(commaTableName)] {
+				if isValidTableNameExtract(commaTableName) && !cteNames[strings.ToLower(commaTableName)] {
 					remainingAfterTable := trimmed[len(commaMatch[0]):]
 					if len(remainingAfterTable) == 0 || remainingAfterTable[0] != '(' {
 						tables[commaTableName] = true
@@ -305,10 +309,10 @@ func extractTablesFromSQL(sql string) []string {
 		}
 	}
 
-	for _, match := range metadataRegex.FindAllStringSubmatch(sql, -1) {
+	for _, match := range reMetadataTable.FindAllStringSubmatch(sql, -1) {
 		if len(match) > 1 {
 			tableName := stripBackticks(match[1])
-			if !isSQLKeyword(tableName) {
+			if isValidTableNameExtract(tableName) {
 				tables[tableName] = true
 			}
 		}
@@ -321,15 +325,23 @@ func extractTablesFromSQL(sql string) []string {
 	return result
 }
 
+func isValidTableNameExtract(name string) bool {
+	if name == "" || isSQLKeyword(name) {
+		return false
+	}
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		return false
+	}
+	return true
+}
+
 func skipTableAlias(s string) string {
 	s = strings.TrimLeft(s, " \t\n\r")
-	asRegex := regexp.MustCompile(`(?i)^AS\s+\w+`)
-	if loc := asRegex.FindStringIndex(s); loc != nil {
+	if loc := reAsAlias.FindStringIndex(s); loc != nil {
 		return s[loc[1]:]
 	}
 	if len(s) > 0 && s[0] != ',' && s[0] != '(' && s[0] != ')' {
-		identRegex := regexp.MustCompile(`^\w+`)
-		if loc := identRegex.FindStringIndex(s); loc != nil {
+		if loc := reIdent.FindStringIndex(s); loc != nil {
 			word := s[:loc[1]]
 			if !isSQLKeyword(word) {
 				return s[loc[1]:]
@@ -632,37 +644,8 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 		}
 	}
 
-	selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(input.SQL)))
-	if len(selectCols) > 0 {
-		for _, sc := range selectCols {
-			if sc.IsStar {
-				continue
-			}
-			colName := sc.ColumnName
-			allDenied := false
-			hasColumnLevelTable := false
-			for _, table := range tables {
-				if m.Scope.GetTableAccessLevel(table) == "column" {
-					hasColumnLevelTable = true
-					if m.Scope.IsColumnAllowed(table, colName) {
-						allDenied = false
-						break
-					}
-					allDenied = true
-				}
-			}
-			if hasColumnLevelTable && allDenied {
-				displayName := colName
-				if sc.TableAlias != "" {
-					displayName = sc.TableAlias + "." + colName
-				}
-				m.logDeny("query_data", "无权访问字段", []string{displayName})
-				return "", &PermissionError{
-					Message: fmt.Sprintf("无权访问字段 %s", displayName),
-					Objects: []string{displayName},
-				}
-			}
-		}
+	if err := m.checkSelectColumnAccess(input.SQL, tables, "query_data"); err != nil {
+		return "", err
 	}
 
 	m.logAllow("query_data", "fallback(programmatic)")
@@ -804,33 +787,8 @@ func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, ar
 		}
 	}
 
-	selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(input.SQL)))
-	if len(selectCols) > 0 {
-		for _, sc := range selectCols {
-			if sc.IsStar {
-				continue
-			}
-			colName := sc.ColumnName
-			allDenied := false
-			hasColumnLevelTable := false
-			for _, table := range tables {
-				if m.Scope.GetTableAccessLevel(table) == "column" {
-					hasColumnLevelTable = true
-					if m.Scope.IsColumnAllowed(table, colName) {
-						allDenied = false
-						break
-					}
-					allDenied = true
-				}
-			}
-			if hasColumnLevelTable && allDenied {
-				m.logDeny("export", "无权导出字段", []string{colName})
-				return "", &PermissionError{
-					Message: fmt.Sprintf("无权导出字段 %s", colName),
-					Objects: []string{colName},
-				}
-			}
-		}
+	if err := m.checkSelectColumnAccess(input.SQL, tables, "export"); err != nil {
+		return "", err
 	}
 
 	m.logAllow("export", "fallback(programmatic)")
@@ -1082,6 +1040,40 @@ func (m *PermissionMiddleware) hasColumnRestrictions(tables []string) bool {
 	return false
 }
 
+func (m *PermissionMiddleware) checkSelectColumnAccess(sql string, tables []string, toolName string) error {
+	selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(sql)))
+	for _, sc := range selectCols {
+		if sc.IsStar {
+			continue
+		}
+		colName := sc.ColumnName
+		allDenied := false
+		hasColumnLevelTable := false
+		for _, table := range tables {
+			if m.Scope.GetTableAccessLevel(table) == "column" {
+				hasColumnLevelTable = true
+				if m.Scope.IsColumnAllowed(table, colName) {
+					allDenied = false
+					break
+				}
+				allDenied = true
+			}
+		}
+		if hasColumnLevelTable && allDenied {
+			displayName := colName
+			if sc.TableAlias != "" {
+				displayName = sc.TableAlias + "." + colName
+			}
+			m.logDeny(toolName, "无权访问字段", []string{displayName})
+			return &PermissionError{
+				Message: fmt.Sprintf("无权访问字段 %s", displayName),
+				Objects: []string{displayName},
+			}
+		}
+	}
+	return nil
+}
+
 func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 	sql := m.extractSQLFromArgs(args)
 
@@ -1134,9 +1126,8 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 	}
 
 	sqlStr, _ := raw["sql"].(string)
-	tables := []string{}
+	tables := extractTablesFromSQL(sqlStr)
 	if sqlStr != "" {
-		tables = extractTablesFromSQL(sqlStr)
 		for _, table := range tables {
 			if !m.Scope.IsTableAllowed(table) {
 				m.logDeny(toolName+"(stream)", "无权访问表", []string{table})
@@ -1144,27 +1135,8 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 			}
 		}
 
-		selectCols := admin.ExtractSelectColumns(admin.StripComments(strings.TrimSpace(sqlStr)))
-		for _, sc := range selectCols {
-			if sc.IsStar {
-				continue
-			}
-			allDenied := false
-			hasColumnLevelTable := false
-			for _, table := range tables {
-				if m.Scope.GetTableAccessLevel(table) == "column" {
-					hasColumnLevelTable = true
-					if m.Scope.IsColumnAllowed(table, sc.ColumnName) {
-						allDenied = false
-						break
-					}
-					allDenied = true
-				}
-			}
-			if hasColumnLevelTable && allDenied {
-				m.logDeny(toolName+"(stream)", "无权访问字段", []string{sc.ColumnName})
-				return streamFromStr(fmt.Sprintf("无权访问字段：%s", sc.ColumnName)), nil
-			}
+		if err := m.checkSelectColumnAccess(sqlStr, tables, toolName+"(stream)"); err != nil {
+			return streamFromStr(err.Error()), nil
 		}
 	}
 
