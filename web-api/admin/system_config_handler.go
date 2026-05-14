@@ -18,6 +18,9 @@ type SystemConfigAll struct {
 	SelectedModelId string        `json:"selectedModelId"`
 	OutterUser      string        `json:"outterUser"`
 	AllowedIP       []string      `json:"allowedIP"`
+	RedisAddr       string        `json:"redisAddr"`
+	RedisPassword   string        `json:"redisPassword"`
+	RedisDB         int           `json:"redisDB"`
 }
 
 // AIModelItem 单个 AI 模型配置
@@ -60,6 +63,12 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 	cfg := &SystemConfigAll{
 		OutterUser:      GetSystemConfigValue("system.outterUser"),
 		SelectedModelId: GetSystemConfigValue("ai.selectedModelId"),
+		RedisAddr:       GetSystemConfigValue("system.redisAddr"),
+		RedisPassword:   GetSystemConfigValue("system.redisPassword"),
+	}
+	redisDBStr := GetSystemConfigValue("system.redisDB")
+	if redisDBStr != "" {
+		fmt.Sscanf(redisDBStr, "%d", &cfg.RedisDB)
 	}
 
 	// 获取模型列表
@@ -171,6 +180,16 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 	ipJSON, _ := json.Marshal(cfg.AllowedIP)
 	SaveSystemConfig(&SystemConfigSave{
 		ConfigKey: "system.allowedIP", ConfigValue: string(ipJSON), ConfigType: "system", Remark: "允许的 IP 地址列表",
+	})
+
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "system.redisAddr", ConfigValue: cfg.RedisAddr, ConfigType: "system", Remark: "Redis 地址",
+	})
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "system.redisPassword", ConfigValue: cfg.RedisPassword, ConfigType: "system", Remark: "Redis 密码",
+	})
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "system.redisDB", ConfigValue: fmt.Sprintf("%d", cfg.RedisDB), ConfigType: "system", Remark: "Redis 数据库编号",
 	})
 
 	utils.WriteJson(c.Writer, "")

@@ -26,9 +26,37 @@ func InitMngtDbConn() {
 		panic(err)
 	}
 	if Cfg.DB.DriverName == "sqlite" {
-		sqlxDb.SetMaxOpenConns(1)
+		sqlxDb.SetMaxOpenConns(2)
+		sqlxDb.SetMaxIdleConns(2)
+		sqlxDb.SetConnMaxLifetime(0)
+		initSQLitePragma(sqlxDb)
+	} else {
+		mngtMaxOpen := Cfg.DB.MaxOpenConns
+		if mngtMaxOpen <= 0 {
+			mngtMaxOpen = 20
+		}
+		mngtMaxIdle := Cfg.DB.MaxIdleConns
+		if mngtMaxIdle <= 0 {
+			mngtMaxIdle = 10
+		}
+		sqlxDb.SetMaxOpenConns(mngtMaxOpen)
+		sqlxDb.SetMaxIdleConns(mngtMaxIdle)
+		sqlxDb.SetConnMaxLifetime(30 * time.Minute)
 	}
 	Mngtdb = sqlxDb
+}
+
+func initSQLitePragma(db *sqlx.DB) {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA cache_size=-64000",
+		"PRAGMA temp_store=MEMORY",
+	}
+	for _, p := range pragmas {
+		db.Exec(p)
+	}
 }
 
 func GetConn(param *DBParam) *sqlx.DB {
@@ -45,9 +73,22 @@ func GetConn(param *DBParam) *sqlx.DB {
 	if err != nil {
 		logutils.PanicErrf("连接数据库失败", err)
 	}
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	maxOpen := 50
+	if Cfg.DB.MaxOpenConns > 0 {
+		maxOpen = Cfg.DB.MaxOpenConns
+	}
+	maxIdle := 25
+	if Cfg.DB.MaxIdleConns > 0 {
+		maxIdle = Cfg.DB.MaxIdleConns
+	}
+	connMaxLife := 10 * time.Minute
+	if Cfg.DB.ConnMaxLifeMin > 0 {
+		connMaxLife = time.Duration(Cfg.DB.ConnMaxLifeMin) * time.Minute
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(connMaxLife)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	dbMapMu.Lock()
 	if existing, ok := DBMap[key]; ok {

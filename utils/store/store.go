@@ -4,67 +4,133 @@ import (
 	"bytes"
 	"go-web/logutils"
 	"go-web/utils"
+	"hash/fnv"
 	"sync"
 	"time"
 
 	"github.com/duke-git/lancet/v2/convertor"
 )
 
-// storeItem 带过期时间的存储项
+const (
+	numShards  = 64
+	defaultTTL = 30 * time.Minute
+)
+
 type storeItem struct {
 	value     any
 	expiresAt time.Time
 }
 
-var (
-	store   = make(map[string]*storeItem, 10)
-	storeMu sync.RWMutex
-)
+type shard struct {
+	mu   sync.RWMutex
+	data map[string]*storeItem
+}
 
-const defaultTTL = 30 * time.Minute
+type shardedStore struct {
+	shards [numShards]*shard
+}
+
+func newShardedStore() *shardedStore {
+	s := &shardedStore{}
+	for i := 0; i < numShards; i++ {
+		s.shards[i] = &shard{data: make(map[string]*storeItem, 16)}
+	}
+	return s
+}
+
+func (s *shardedStore) getShard(key string) *shard {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return s.shards[h.Sum32()%numShards]
+}
+
+func (s *shardedStore) add(key string, val any) {
+	sh := s.getShard(key)
+	sh.mu.Lock()
+	sh.data[key] = &storeItem{value: val, expiresAt: time.Now().Add(defaultTTL)}
+	sh.mu.Unlock()
+}
+
+func (s *shardedStore) remove(key string) {
+	sh := s.getShard(key)
+	sh.mu.Lock()
+	delete(sh.data, key)
+	sh.mu.Unlock()
+}
+
+func (s *shardedStore) get(key string, dist any) {
+	if key == "" {
+		return
+	}
+	sh := s.getShard(key)
+	sh.mu.RLock()
+	item, ok := sh.data[key]
+	sh.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	if time.Now().After(item.expiresAt) {
+		sh.mu.Lock()
+		if item2, ok2 := sh.data[key]; ok2 && item2 == item {
+			delete(sh.data, key)
+		}
+		sh.mu.Unlock()
+		return
+	}
+
+	sh.mu.Lock()
+	item.expiresAt = time.Now().Add(defaultTTL)
+	sh.mu.Unlock()
+
+	utils.UnmarshalJson(bytes.NewBuffer(utils.ToJsonString(item.value)), &dist)
+}
+
+func (s *shardedStore) cleanExpired() {
+	now := time.Now()
+	for i := 0; i < numShards; i++ {
+		sh := s.shards[i]
+		sh.mu.Lock()
+		for k, v := range sh.data {
+			if now.After(v.expiresAt) {
+				delete(sh.data, k)
+			}
+		}
+		sh.mu.Unlock()
+	}
+}
+
+var localStore = newShardedStore()
 
 func init() {
-	// 启动后台清理过期 key 的协程
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			cleanExpired()
+			localStore.cleanExpired()
 		}
 	}()
-}
-
-func cleanExpired() {
-	storeMu.Lock()
-	defer storeMu.Unlock()
-	now := time.Now()
-	for k, v := range store {
-		if now.After(v.expiresAt) {
-			delete(store, k)
-		}
-	}
 }
 
 func Add(key string, val any) {
 	if RDB != nil {
 		fval := convertor.ToString(val)
 		err := RDB.Set(ctx, key, fval, defaultTTL).Err()
-		logutils.PanicErrf("key:%s 缓存失败", err, key)
-	} else {
-		storeMu.Lock()
-		store[key] = &storeItem{value: val, expiresAt: time.Now().Add(defaultTTL)}
-		storeMu.Unlock()
+		if err != nil {
+			logutils.PrintErrf("Redis 写入失败 key:%s，降级到本地缓存", err, key)
+			localStore.add(key, val)
+			return
+		}
 	}
+	localStore.add(key, val)
 }
 
 func Remove(key string) {
 	if RDB != nil {
 		RDB.Del(ctx, key)
-	} else {
-		storeMu.Lock()
-		delete(store, key)
-		storeMu.Unlock()
 	}
+	localStore.remove(key)
 }
 
 func Get(key string, dist any) {
@@ -73,31 +139,14 @@ func Get(key string, dist any) {
 	}
 	if RDB != nil {
 		val, err := RDB.Get(ctx, key).Result()
-		logutils.PrintErr(err)
-		RDB.Expire(ctx, key, defaultTTL)
-		err = utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
-		if err != nil && val != "" {
-			dist = val
-		} else if err != nil {
-			logutils.PrintErrf("获取key:%s 失败,", err, key)
-		}
-	} else {
-		storeMu.RLock()
-		item, ok := store[key]
-		storeMu.RUnlock()
-		if !ok || time.Now().After(item.expiresAt) {
-			if ok {
-				// 已过期，清理
-				storeMu.Lock()
-				delete(store, key)
-				storeMu.Unlock()
+		if err == nil {
+			RDB.Expire(ctx, key, defaultTTL)
+			err2 := utils.UnmarshalJson2(bytes.NewBufferString(val), &dist)
+			if err2 != nil && val != "" {
+				dist = val
 			}
 			return
 		}
-		// 续期（滑动过期）
-		storeMu.Lock()
-		item.expiresAt = time.Now().Add(defaultTTL)
-		storeMu.Unlock()
-		utils.UnmarshalJson(bytes.NewBuffer(utils.ToJsonString(item.value)), &dist)
 	}
+	localStore.get(key, dist)
 }

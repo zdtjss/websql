@@ -12,17 +12,34 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 )
 
 // 不需要以/结尾
 var destAddr string = "http://localhost:8083"
 
+var proxyHttpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func MainRegister(router *gin.Engine) {
 
 	router.Use(CustomRecovery())
+	router.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPaths([]string{"/assets/"}),
+		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
+	))
 	router.Use(LoginRateLimitMiddleware())
+	router.Use(APIRateLimitMiddleware())
+	router.Use(CircuitBreakerMiddleware())
 	router.Use(AuthMiddleware())
 
 	router.Use(hostCheck())
@@ -137,15 +154,6 @@ func MainRegister(router *gin.Engine) {
 
 	routerGroup.Any("/ext/", proxy)
 
-	// router.NoRoute(notFound())
-
-	// 启用 gzip，排除静态文件
-	/* router.Use(gzip.Gzip(gzip.DefaultCompression,
-		gzip.WithExcludedPaths([]string{"/static/"}),
-		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
-	)) */
-
-	// 2. 注册静态文件（可选，用于明确的静态资源）
 	router.Static("/assets", "./static/assets")
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
@@ -165,7 +173,7 @@ func proxy(c *gin.Context) {
 	}
 	defer c.Request.Body.Close()
 	req.Header = c.Request.Header.Clone()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxyHttpClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "代理请求失败"})
 		return
@@ -208,7 +216,6 @@ func CORSMiddleware() gin.HandlerFunc {
 // AuthMiddleware 登录验证中间件，使用 gin 中间件模式
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 跳过不需要认证的路径
 		skipPaths := []string{
 			"/api/login",
 			"/api/logout",
@@ -243,8 +250,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 验证 token 是否有效
-		user := admin.GetUser(authorization)
+		user, userPower := admin.GetCachedUserAndPower(authorization)
 		if user == nil || user.Id == "" {
 			c.Abort()
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -254,9 +260,9 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 将用户信息存入上下文，后续可以通过 c.Get() 获取
 		c.Set("currentUser", user)
 		c.Set("userId", user.Id)
+		c.Set("userPower", userPower)
 		c.Next()
 	}
 }

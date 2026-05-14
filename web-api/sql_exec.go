@@ -11,12 +11,127 @@ import (
 	admin "go-web/web-api/admin"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+type historyRecord struct {
+	Id            string
+	User          string
+	ConnId        string
+	OperationType string
+	ExecTime      time.Time
+	ExecSql       string
+	Data          string
+}
+
+type asyncHistoryWriter struct {
+	ch     chan *historyRecord
+	once   sync.Once
+	closed bool
+	mu     sync.Mutex
+}
+
+var historyWriter = &asyncHistoryWriter{
+	ch: make(chan *historyRecord, 4096),
+}
+
+func init() {
+	go historyWriter.consume()
+}
+
+func (w *asyncHistoryWriter) enqueue(record *historyRecord) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+
+	select {
+	case w.ch <- record:
+	default:
+		logutils.PrintErrf("历史记录队列已满，丢弃记录: %s", nil, record.ExecSql[:min(100, len(record.ExecSql))])
+	}
+}
+
+func (w *asyncHistoryWriter) consume() {
+	batch := make([]*historyRecord, 0, 64)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case record, ok := <-w.ch:
+			if !ok {
+				w.flushBatch(batch)
+				return
+			}
+			batch = append(batch, record)
+			if len(batch) >= 64 {
+				w.flushBatch(batch)
+				batch = batch[:0]
+			}
+		case <-ticker.C:
+			if len(batch) > 0 {
+				w.flushBatch(batch)
+				batch = batch[:0]
+			}
+		}
+	}
+}
+
+func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
+	if len(batch) == 0 || config.Mngtdb == nil {
+		return
+	}
+
+	tx, err := config.Mngtdb.Beginx()
+	if err != nil {
+		logutils.PrintErrf("历史记录事务创建失败", err)
+		return
+	}
+
+	hasData := false
+	insertSQL := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
+	stmt, err := tx.Preparex(insertSQL)
+	if err != nil {
+		tx.Rollback()
+		logutils.PrintErrf("历史记录 Prepare 失败", err)
+		return
+	}
+	defer stmt.Close()
+
+	for _, r := range batch {
+		dataVal := r.Data
+		if dataVal == "" {
+			dataVal = "NULL"
+		} else {
+			hasData = true
+		}
+		_, err := stmt.Exec(r.Id, r.User, r.ConnId, r.OperationType, r.ExecTime, r.ExecSql, dataVal)
+		if err != nil {
+			logutils.PrintErrf("历史记录写入失败: %s", err, r.ExecSql[:min(100, len(r.ExecSql))])
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logutils.PrintErrf("历史记录事务提交失败", err)
+	}
+
+	_ = hasData
+}
+
+func ShutdownHistoryWriter() {
+	historyWriter.mu.Lock()
+	historyWriter.closed = true
+	historyWriter.mu.Unlock()
+	close(historyWriter.ch)
+}
 
 func ExecSQL(c *gin.Context) {
 
@@ -40,7 +155,8 @@ func ExecSQL(c *gin.Context) {
 
 	authorization := c.GetHeader("Authorization")
 	conn := admin.GetConn(connId, authorization)
-	user := admin.GetUser(authorization)
+	userVal, _ := c.Get("currentUser")
+	user, _ := userVal.(*admin.User)
 
 	// 当 schema 为空时，从数据库连接获取实际 schema
 	// 确保权限检查使用的 schema 与实际查询的 schema 一致
@@ -85,12 +201,9 @@ func ExecSQL(c *gin.Context) {
 	}
 
 	if checkPrefx(sqlStr, []string{"update", "delete"}) {
-		if err := backup(sqlStr, user, connId, conn); err != nil {
-			writeSQLError(c, err)
-			return
-		}
+		go asyncBackup(sqlStr, user, connId, conn)
 	} else {
-		recordHistory(sqlStr, user, connId)
+		asyncRecordHistory(sqlStr, user, connId)
 	}
 
 	sqlStr = strings.Join([]string{sqlStr[0:min(blankIdx, nlIdx)], sqlStr[min(blankIdx, nlIdx):]}, "")
@@ -152,15 +265,7 @@ func ExecSQL(c *gin.Context) {
 		// 适用于单表查询场景
 		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
 			columnMap = admin.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
-
-			tx, err := conn.Beginx()
-			if err == nil {
-				defer tx.Rollback()
-				keys, err = admin.QueryPrimaryKey(schema, realTableName, tx)
-				if err != nil {
-					keys = []string{}
-				}
-			}
+			keys = admin.QueryPrimaryKeyCached(connId, schema, realTableName, conn)
 		}
 
 		for idx, val := range cts {
@@ -177,7 +282,9 @@ func ExecSQL(c *gin.Context) {
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
 		if analysis.OperationType == "SELECT" {
-			rspData = filterResultByPermission(rspData, connId, analysis, authorization)
+			userPowerVal, _ := c.Get("userPower")
+			userPower, _ := userPowerVal.(*admin.UserPower)
+			rspData = filterResultByPermission(rspData, connId, analysis, authorization, userPower)
 		}
 
 		utils.WriteJson(c.Writer, rspData)
@@ -258,7 +365,7 @@ func batchExec(sql *string, db *sqlx.DB) ([]map[string]any, error) {
 	return resultData, nil
 }
 
-func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error {
+func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
 	operationType := ""
 	backupSql := bytes.NewBufferString("select * from ")
 	lowerSql := strings.ToLower(ddlSql)
@@ -268,7 +375,7 @@ func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error
 		tmp := strings.TrimSpace(strings.TrimPrefix(lowerSql, "update "))
 		spaceIdx := strings.Index(tmp, " ")
 		if spaceIdx == -1 {
-			return fmt.Errorf("无法解析 UPDATE 语句的表名")
+			return
 		}
 		backupSql.WriteString(tmp[:spaceIdx])
 	} else if strings.HasPrefix(lowerSql, "delete ") {
@@ -276,48 +383,46 @@ func backup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) error
 		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(lowerSql, "delete ")), "from ")
 		spaceIdx := strings.Index(tmp, " ")
 		if spaceIdx == -1 {
-			return fmt.Errorf("无法解析 DELETE 语句的表名")
+			return
 		}
 		backupSql.WriteString(tmp[:spaceIdx])
 	}
 
 	whereIdx := strings.Index(lowerSql, " where ")
 	if whereIdx == -1 {
-		return fmt.Errorf("UPDATE/DELETE 操作必须包含 WHERE 条件")
+		return
 	}
 	backupSql.WriteString(ddlSql[whereIdx:])
 
 	rows, err := conn.Queryx(backupSql.String())
 	if err != nil {
-		return err
+		logutils.PrintErrf("备份数据查询失败", err)
+		return
 	}
 	defer rows.Close()
 	data := dbutils.GetResultRows(conn.DriverName(), rows)
-	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
-	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	time.Sleep(time.Microsecond)
-	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, operationType, time.Now(), ddlSql, string(utils.ToJsonString(data)))
-	if err3 != nil {
-		return err3
-	}
-	return nil
+
+	historyWriter.enqueue(&historyRecord{
+		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
+		User:          user.LoginName,
+		ConnId:        connId,
+		OperationType: operationType,
+		ExecTime:      time.Now(),
+		ExecSql:       ddlSql,
+		Data:          string(utils.ToJsonString(data)),
+	})
 }
 
-func recordHistory(ddlSql string, user *admin.User, connId string) {
-	backupInsertSql := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql) values(?,?,?,?,?,?)"
-	stmt, err := config.Mngtdb.Preparex(backupInsertSql)
-	if err != nil {
-		logutils.PrintErr(err)
-		return
-	}
-	defer stmt.Close()
-	time.Sleep(time.Microsecond)
-	_, err3 := stmt.Exec(time.Now().UnixMicro(), user.LoginName, connId, "select", time.Now(), ddlSql)
-	logutils.PrintErr(err3)
+func asyncRecordHistory(ddlSql string, user *admin.User, connId string) {
+	historyWriter.enqueue(&historyRecord{
+		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
+		User:          user.LoginName,
+		ConnId:        connId,
+		OperationType: "select",
+		ExecTime:      time.Now(),
+		ExecSql:       ddlSql,
+		Data:          "",
+	})
 }
 
 func checkPrefx(src string, prefix []string) bool {
@@ -376,12 +481,11 @@ type TableDataList struct {
 	Keys    []string         `json:"keys"`
 }
 
-func filterResultByPermission(data *TableDataList, connId string, analysis *admin.SQLAnalysis, authorization string) *TableDataList {
+func filterResultByPermission(data *TableDataList, connId string, analysis *admin.SQLAnalysis, authorization string, userPower *admin.UserPower) *TableDataList {
 	if !config.Cfg.IsRemote {
 		return data
 	}
 
-	userPower := admin.GetUserPower(authorization)
 	if userPower == nil {
 		return data
 	}

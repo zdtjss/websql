@@ -49,12 +49,18 @@ func main() {
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
 	}
-
 	// https 默认端口 443
 	if *isHttps && *port == "80" {
 		*port = "443"
 	}
-	server := &http.Server{Addr: ":" + *port, Handler: router}
+	server := &http.Server{
+		Addr:           ":" + *port,
+		Handler:        router,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   0,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
 
 	// 启动服务
 	go startServer(server, isHttps, port)
@@ -69,6 +75,7 @@ func main() {
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, os.Interrupt)
 	s := <-c
 	log.Printf("服务正在关闭 %s......", s)
+	webapi.ShutdownHistoryWriter()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"go-web/logutils"
 	"log"
 	"os"
@@ -31,15 +32,22 @@ func LoadConfigFromDB() {
 		return
 	}
 
-	// 使用 admin 包中的函数加载配置（避免循环依赖）
-	// 这里我们通过查询系统配置表来加载
 	loadSystemConfigValue("system.outterUser", &Cfg.OutterUser)
 	loadSystemConfigValue("system.allowedIP", &Cfg.AllowedIP)
 	loadSystemConfigValue("ai.provider", &Cfg.AI.Provider)
 	loadSystemConfigValue("ai.baseUrl", &Cfg.AI.BaseURL)
 	loadSystemConfigValue("ai.model", &Cfg.AI.Model)
 	loadSystemConfigValue("ai.apiKey", &Cfg.AI.ApiKey)
-	// temperature, maxTokens, enableThinking 通过 GetAIConfigFromDB() 加载
+
+	loadSystemConfigValue("system.redisAddr", &Cfg.Redis.Addr)
+	loadSystemConfigValue("system.redisPassword", &Cfg.Redis.Password)
+	var redisDBStr string
+	loadSystemConfigValue("system.redisDB", &redisDBStr)
+	if redisDBStr != "" {
+		var dbVal int
+		fmt.Sscanf(redisDBStr, "%d", &dbVal)
+		Cfg.Redis.DB = dbVal
+	}
 }
 
 func loadSystemConfigValue(key string, target interface{}) {
@@ -86,9 +94,12 @@ func FindFile(fileName string) string {
 type Config struct {
 	// true：远程模式，有严格的权限管理；false 本地模式，没有权限管理
 	IsRemote bool `json:"isRemote"`
-	DB       struct {
+	DB struct {
 		DriverName     string `json:"type"`
 		DataSourceName string `json:"dsn"`
+		MaxOpenConns   int    `json:"maxOpenConns"`
+		MaxIdleConns   int    `json:"maxIdleConns"`
+		ConnMaxLifeMin int    `json:"connMaxLifeMin"`
 	} `json:"db"`
 	Redis struct {
 		Addr     string `json:"addr"`

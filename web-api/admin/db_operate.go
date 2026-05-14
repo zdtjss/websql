@@ -11,10 +11,80 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+type metaCacheEntry struct {
+	columnMap map[string]string
+	primaryKeys []string
+	expiresAt   time.Time
+}
+
+type metaCache struct {
+	mu      sync.RWMutex
+	entries map[string]*metaCacheEntry
+}
+
+var tableMetaCache = &metaCache{
+	entries: make(map[string]*metaCacheEntry, 256),
+}
+
+const metaCacheTTL = 5 * time.Minute
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			tableMetaCache.mu.Lock()
+			now := time.Now()
+			for k, v := range tableMetaCache.entries {
+				if now.After(v.expiresAt) {
+					delete(tableMetaCache.entries, k)
+				}
+			}
+			tableMetaCache.mu.Unlock()
+		}
+	}()
+}
+
+func metaCacheKey(connId, schema, table string) string {
+	return connId + ":" + schema + ":" + table
+}
+
+func (c *metaCache) getColumnMap(key string) (map[string]string, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.columnMap, true
+}
+
+func (c *metaCache) getPrimaryKeys(key string) ([]string, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.primaryKeys, true
+}
+
+func (c *metaCache) set(key string, columnMap map[string]string, primaryKeys []string) {
+	c.mu.Lock()
+	c.entries[key] = &metaCacheEntry{
+		columnMap:   columnMap,
+		primaryKeys: primaryKeys,
+		expiresAt:   time.Now().Add(metaCacheTTL),
+	}
+	c.mu.Unlock()
+}
 
 func listSchema(key string, authorization string) []*Tree {
 	schemaName := ""
@@ -519,7 +589,31 @@ func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 }
 
 func ColumnMapFiltered(table, schema, connId, authorization string, conn *sqlx.DB) map[string]string {
+	cacheKey := metaCacheKey(connId, schema, table)
+	if cached, ok := tableMetaCache.getColumnMap(cacheKey); ok {
+		access := GetTableColumnAccess(connId, schema, table, authorization)
+		if access.Level == AccessFull {
+			return cached
+		}
+		if access.Level == AccessNone {
+			return map[string]string{}
+		}
+		filtered := make(map[string]string)
+		for name, comment := range cached {
+			if access.AllowedColumns[name] {
+				filtered[name] = comment
+			}
+		}
+		return filtered
+	}
+
 	fullMap := ColumnMap(table, schema, conn)
+
+	var pks []string
+	if cachedPks, ok := tableMetaCache.getPrimaryKeys(cacheKey); ok {
+		pks = cachedPks
+	}
+	tableMetaCache.set(cacheKey, fullMap, pks)
 
 	access := GetTableColumnAccess(connId, schema, table, authorization)
 	if access.Level == AccessFull {
@@ -556,6 +650,42 @@ func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
 		return nil, errors.New(msg)
 	}
 	return primaryKeys, nil
+}
+
+func QueryPrimaryKeyCached(connId, schema, table string, conn *sqlx.DB) []string {
+	cacheKey := metaCacheKey(connId, schema, table)
+	if cached, ok := tableMetaCache.getPrimaryKeys(cacheKey); ok {
+		return cached
+	}
+
+	primaryKeys := make([]string, 0)
+	stmt, err := conn.Prepare(dbutils.SQL_DIALECT[conn.DriverName()]["QueryPrimaryKey"])
+	if err != nil {
+		return primaryKeys
+	}
+	schemaVal := schema
+	tableVal := table
+	if conn.DriverName() == "oracle" {
+		schemaVal = strings.ToUpper(schema)
+		tableVal = strings.ToUpper(table)
+	}
+	rs, err2 := stmt.Query(schemaVal, tableVal)
+	if err2 != nil {
+		return primaryKeys
+	}
+	var name string
+	for rs.Next() {
+		rs.Scan(&name)
+		primaryKeys = append(primaryKeys, name)
+	}
+
+	var cachedColMap map[string]string
+	if entry, ok := tableMetaCache.getColumnMap(cacheKey); ok {
+		cachedColMap = entry
+	}
+	tableMetaCache.set(cacheKey, cachedColMap, primaryKeys)
+
+	return primaryKeys
 }
 
 func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {

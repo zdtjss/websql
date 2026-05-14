@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"compress/gzip"
 	"encoding/json"
 	"go-web/logutils"
 	"io"
@@ -31,15 +30,8 @@ func WriteJson(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	data := ToJsonString(Result{Code: 200, Data: v})
 	length := len(data)
-	if length >= 20 {
-		w.Header().Set("Content-Encoding", "gzip")
-		gw, _ := gzip.NewWriterLevel(w, 1)
-		defer gw.Close()
-		gw.Write(data)
-	} else {
-		w.Header().Add("Content-Length", strconv.Itoa(length))
-		w.Write(data)
-	}
+	w.Header().Set("Content-Length", strconv.Itoa(length))
+	w.Write(data)
 }
 
 func UnmarshalJson[T any](r io.Reader, v *T) {

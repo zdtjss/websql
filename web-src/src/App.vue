@@ -529,7 +529,16 @@ const loginDialogVisible = ref(false)
 const loginForm = ref({ name: "", password: "" })
 const loginName = ref()
 const loginFormRef = ref()
-const currentUser = ref(sessionStorage.getItem("currentUser") ? JSON.parse(sessionStorage.getItem("currentUser")) : { id: "", name: "", isAdmin: false })
+function parseCurrentUser() {
+  try {
+    const stored = sessionStorage.getItem("currentUser")
+    return stored ? JSON.parse(stored) : { id: "", name: "", isAdmin: false }
+  } catch {
+    return { id: "", name: "", isAdmin: false }
+  }
+}
+
+const currentUser = ref(parseCurrentUser())
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 const logining = ref(false)
 
@@ -2446,7 +2455,7 @@ function openSystemManagement() {
 
 function getSysModel() {
   http.get("/sysMode").then((resp) => {
-    isRemote.value = resp.data.data.isRemote
+    isRemote.value = resp.data?.isRemote ?? resp.data?.data?.isRemote ?? false
     sessionStorage.setItem("isRemote", isRemote.value.toString())
     if (!loginSucc.value && isRemote.value) {
       loginDialogVisible.value = true
