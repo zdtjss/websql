@@ -13,7 +13,7 @@
 
 </div>
 
----
+***
 
 > 用一句话描述你想查什么，AI 替你写 SQL、执行、画图、出报告——这就是 WebSQL。
 
@@ -26,41 +26,43 @@
 >
 > **注意**：演示服务器带宽有限，首次加载可能较慢，请耐心等待。请文明使用，不要进行破坏性操作。
 
-WebSQL 是一个融合 AI 智能体的 Web 数据库管理平台。它基于字节跳动开源的 [CloudWeGo Eino ADK](https://github.com/cloudwego/eino) 构建了完整的 ReAct SQL Agent，支持自然语言查询、多轮对话、流式输出（含思维链）、智能导出（Excel / PPT / Word / 图表），同时内置四级 RBAC 权限体系、AI 权限审核 Agent、WebAuthn 生物识别、防篡改审批流、登录限流与审计日志。编译产物为单个可执行文件，无任何运行时依赖。
+***
+
+WebSQL 是一个融合 AI 智能体的 Web 数据库管理平台。它基于字节跳动开源的 [CloudWeGo Eino ADK](https://github.com/cloudwego/eino) 构建了完整的 ReAct SQL Agent 与双智能体协作架构，支持自然语言查询、多轮对话、流式输出（含思维链）、智能导出（Excel / PPT / Word / 图表），同时内置四级 RBAC 权限体系、AI 权限审核 Agent、WebAuthn 生物识别、防篡改审批流、登录限流与审计日志。编译产物为单个可执行文件，无任何运行时依赖。
 
 ## 亮点速览
 
-| 特性 | 说明 |
-|------|------|
-| 双 Agent 架构 | 主 SQL Agent（ReAct + 8 工具）+ 权限审核 Agent，两级智能体协作 |
-| AI 权限审核 | 独立的 PermissionAgent 通过 LLM 判断 SQL 是否在授权范围内，程序化检查兜底 |
-| 防篡改审批流 | Eino Runner + CheckPointStore：危险 SQL 中断 → 服务端保存 → 用户确认 → 恢复执行 |
-| 四级 RBAC | 连接 → Schema → 表 → 列，双重防线：SQL 解析拦截 + 结果集过滤兜底 |
-| 树可见性控制 | 独立于数据权限的 showTree 可见性标志，向上传播，跨角色去重 |
-| 零依赖 Office 生成 | DOCX / PPTX 直接构建 Office Open XML，不依赖任何第三方文档库 |
-| 写操作自动备份 | UPDATE / DELETE 执行前自动备份原始数据到历史表，支持回溯 |
-| 语音输入 | 浏览器原生 Web Speech API，中文语音识别，说完即查 |
-| 单文件部署 | Go 编译为单个二进制，`docker run` 或直接运行，零外部依赖 |
-| SSE 流式输出 | 实时输出思维链 + 正文，Mermaid 图表流式渲染，5 秒心跳保活 |
-| 登录限流 | IP 级别限流，每分钟最多 10 次登录尝试，防止暴力破解 |
-| Skill 系统 | Python 脚本 Skill 扩展框架，自动检测环境、安装依赖、执行与回退，已内置 PPT/Word/跨库分析 3 个 Skill |
-| 跨库操作 | 多 Schema/连接同时操作，AI 感知连接拓扑并自动拆分/路由 SQL，支持跨库对比与大数据量聚合分析 |
+| 特性                | 说明                                                                     |
+| ----------------- | ---------------------------------------------------------------------- |
+| **双 Agent 架构**    | 主 SQL Agent（ReAct + 9 工具）+ 权限审核 Agent，两级智能体协作                          |
+| **AI 权限审核**       | 独立的 PermissionAgent 通过 LLM 判断 SQL 是否在授权范围内，程序化检查兜底                     |
+| **防篡改审批流**        | Eino Runner + CheckPointStore：危险 SQL 中断 → 服务端保存 → 用户确认 → 恢复执行          |
+| **四级 RBAC**       | 连接 → Schema → 表 → 列，双重防线：SQL 解析拦截 + 结果集过滤兜底                            |
+| **树可见性控制**        | 独立于数据权限的 showTree 可见性标志，向上传播，跨角色去重                                     |
+| **零依赖 Office 生成** | DOCX / PPTX 直接构建 Office Open XML，不依赖任何第三方文档库                           |
+| **写操作自动备份**       | UPDATE / DELETE 执行前自动备份原始数据到历史表，支持回溯                                   |
+| **语音输入**          | 浏览器原生 Web Speech API，中文语音识别，说完即查                                       |
+| **单文件部署**         | Go 编译为单个二进制，`docker run` 或直接运行，零外部依赖                                   |
+| **SSE 流式输出**      | 实时输出思维链 + 正文，Mermaid 图表流式渲染，5 秒心跳保活                                    |
+| **登录限流**          | IP 级别限流，每分钟最多 10 次登录尝试，防止暴力破解                                          |
+| **Skill 系统**      | Python 脚本 Skill 扩展框架，自动检测环境、安装依赖、执行与回退，已内置 PPT / Word / 跨库分析 3 个 Skill |
+| **跨库操作**          | 多 Schema/连接同时操作，AI 感知连接拓扑并自动拆分/路由 SQL，支持跨库对比与大数据量聚合分析                  |
 
 ## 为什么不是 Navicat / DBeaver / phpMyAdmin？
 
-| | 传统工具 | WebSQL |
-|---|---|---|
-| 查询方式 | 手写 SQL | 自然语言 → AI 自动生成并执行 |
-| 报告产出 | 手动导出 → Excel → 做图 → 粘贴 | 一句话生成带图表的 Excel / PPT / Word |
-| 写操作安全 | 执行前靠自觉 | AI 中间件自动拦截，前端二次确认，审计日志全程记录 |
-| 权限粒度 | 连接级 | 连接 → Schema → 表 → 列，四级 RBAC + AI 权限审核 |
-| 登录方式 | 账号密码 | 密码 / 指纹面容 / 第三方 Token |
-| 部署形态 | 安装包 / JVM | 单文件，`docker run` 即用 |
-| 协作方式 | 各自安装客户端 | 浏览器打开，团队共享 |
-| 错误处理 | SQL 报错 → 手动改 | AI 自动分析错误 → 调整参数重试（ReAct 循环） |
-| 长对话 | 上下文溢出 | 超过 10 万 Token 自动摘要压缩 |
-| 跨库查询 | 逐个连接切换、手动合并 | AI 感知连接拓扑，自动拆分/路由 SQL，跨库对比分析 |
-| 文档产出 | 第三方库或手动拼接 | 内置 Python Skill 引擎，专业级 PPT/Word 一键生成 |
+| <br /> | 传统工具                   | WebSQL                                |
+| ------ | ---------------------- | ------------------------------------- |
+| 查询方式   | 手写 SQL                 | 自然语言 → AI 自动生成并执行                     |
+| 报告产出   | 手动导出 → Excel → 做图 → 粘贴 | 一句话生成带图表的 Excel / PPT / Word          |
+| 写操作安全  | 执行前靠自觉                 | AI 中间件自动拦截，前端二次确认，审计日志全程记录            |
+| 权限粒度   | 连接级                    | 连接 → Schema → 表 → 列，四级 RBAC + AI 权限审核 |
+| 登录方式   | 账号密码                   | 密码 / 指纹面容 / 第三方 Token                 |
+| 部署形态   | 安装包                    | 单文件，`docker run` 即用                   |
+| 协作方式   | 各自安装客户端                | 浏览器打开，团队共享                            |
+| 错误处理   | SQL 报错 → 手动改           | AI 自动分析错误 → 调整参数重试（ReAct 循环）          |
+| 长对话    | 上下文溢出                  | 超过模型上下文窗口 85% 自动摘要压缩                  |
+| 跨库查询   | 逐个连接切换、手动合并            | AI 感知连接拓扑，自动拆分/路由 SQL，跨库对比分析          |
+| 文档产出   | 第三方库或手动拼接              | 内置 Python Skill 引擎，专业级 PPT/Word 一键生成  |
 
 ## 核心能力
 
@@ -70,31 +72,35 @@ WebSQL 采用**双 Agent 协作架构**：主 SQL Agent 负责生成并执行 SQ
 
 ```mermaid
 flowchart TD
-    A["用户输入"] --> B["SQLAgent - ChatModelAgent / ReAct Loop"]
+    A["用户输入"] --> B["SQLAgent — ChatModelAgent / ReAct Loop"]
 
     B --> B1["System Prompt<br/>数据库类型 / Schema / 权限描述 / 安全规则"]
-    B1 --> B2["8 个内置工具"]
-    B2 --> B2a["query_data - SELECT / SHOW 等"]
-    B2 --> B2b["exec_sql - INSERT / UPDATE / DELETE"]
-    B2 --> B2c["get_table_schema - 建表语句 & 结构"]
-    B2 --> B2d["export_excel - 纯数据 Excel"]
-    B2 --> B2e["export_excel_with_chart - Excel + 图表"]
-    B2 --> B2f["export_ppt - PPTX 演示文稿"]
-    B2 --> B2g["export_analysis_docx - Word 数据报告"]
-    B2 --> B2h["import_data - Excel 导入"]
-    B2 --> B3["4 层中间件链"]
-    B3 --> B3a["PermissionMiddleware - 调用权限审核 Agent"]
-    B3 --> B3b["DangerousSQLApproval - 写操作中断确认"]
-    B3 --> B3c["ToolErrorRecovery - 工具错误自动重试"]
-    B3 --> B3d["Summarization - 超 10 万 Token 摘要"]
+    B1 --> B2["9 个内置工具"]
+    B2 --> B2a["query_data — SELECT / SHOW 等"]
+    B2 --> B2b["exec_sql — INSERT / UPDATE / DELETE"]
+    B2 --> B2c["get_table_schema — 建表语句 & 结构"]
+    B2 --> B2d["export_excel — 纯数据 Excel"]
+    B2 --> B2e["export_excel_with_chart — Excel + 图表"]
+    B2 --> B2f["export_ppt — PPTX 演示文稿"]
+    B2 --> B2g["export_analysis_docx — Word 数据报告"]
+    B2 --> B2h["import_data — Excel 导入"]
+    B2 --> B2i["get_current_date_info — 日期与时间"]
+    B2 --> B3["7 层中间件链"]
+    B3 --> B3a["ToolCallLogging — 统一调用日志"]
+    B3 --> B3b["PermissionMiddleware — AI 权限审核"]
+    B3 --> B3c["Reduction — 查询结果精简（Token 优化）"]
+    B3 --> B3d["DangerousSQLApproval — 写操作中断确认"]
+    B3 --> B3e["ToolErrorRecovery — 工具错误自动重试"]
+    B3 --> B3f["Summarization — 上下文窗口溢出自动摘要"]
+    B3 --> B3g["Filesystem + Skill — Python Skill 扩展"]
 
-    B3a --> C["每次工具调用"]
+    B3b --> C["每次工具调用"]
 
-    C --> D["PermissionAgent - 权限审核智能体"]
+    C --> D["PermissionAgent — 权限审核智能体"]
     D --> D1["System Prompt<br/>四级权限规则 / 最具体优先 / 判断速查"]
     D1 --> D2["2 个工具"]
-    D2 --> D2a["get_table_structure - 查询目标表的列结构"]
-    D2 --> D2b["get_user_permissions - 获取用户数据权限配置"]
+    D2 --> D2a["get_table_structure — 查询目标表的列结构"]
+    D2 --> D2b["get_user_permissions — 获取用户数据权限配置"]
     D2 --> D3["输出: allowed, deniedTables, deniedColumns"]
     D3 --> D4["失败时自动降级 → 程序化权限检查<br/>正则 + 查表"]
 
@@ -105,26 +111,26 @@ flowchart TD
 
 PermissionAgent 是一个独立的 `ChatModelAgent`，作为 `PermissionMiddleware` 的内部工具被主 Agent 调用。每次 SQL 工具（`query_data` / `exec_sql` / `export_*`）被调用前，权限中间件将 SQL 和工具名发送给 PermissionAgent：
 
-1. **解析 SQL**：PermissionAgent 从 SQL 中提取所有涉及的表和字段（含 CTE 识别、子查询、SELECT * 检测）
+1. **解析 SQL**：PermissionAgent 从 SQL 中提取所有涉及的表和字段（含 CTE 识别、子查询、`SELECT *` 检测）
 2. **查询结构**：调用 `get_table_structure` 获取目标表的列信息
 3. **查询权限**：调用 `get_user_permissions` 获取用户在此连接上的权限配置
-4. **逐表逐字段比对**：按 **最具体优先原则**（table/column 级权限存在时，conn/schema 级权限自动降级）
+4. **逐表逐字段比对**：按**最具体优先原则**（table/column 级权限存在时，conn/schema 级权限自动降级）
 
 当 PermissionAgent 调用失败（如 LLM 临时不可用），自动降级为**程序化权限检查**（正则提取表名 + 查 `t_power` 表），确保安全底线不被 LLM 可用性影响。
 
 #### 权限检查覆盖矩阵
 
-| 入口 | 连接级 | 表级 | 列级(读) | 列级(写) | 结果集过滤 | 树可见性 |
-|------|--------|------|----------|----------|-----------|---------|
-| `/execSQL` | OK | OK | OK | OK | OK | — |
-| `/exportXlsxBySql` | OK | OK | OK | — | OK | — |
-| `/importXlsx` | OK | OK | — | OK | — | — |
-| `/showTree` | OK | OK | OK | — | — | OK |
-| AI `query_data` (流式/非流式) | OK | OK | OK | — | OK | — |
-| AI `exec_sql` | OK | OK | — | OK | — | — |
-| AI `get_table_schema` | OK | OK | OK DDL过滤 | — | — | — |
-| AI `export_*` | OK | OK | OK | — | — | — |
-| AI `import_data` | OK | OK | — | OK Mapping列 | — | — |
+| 入口                       | 连接级 | 表级 | 列级(读)   | 列级(写)      | 结果集过滤 | 树可见性 |
+| ------------------------ | --- | -- | ------- | ---------- | ----- | ---- |
+| `/execSQL`               | ✅   | ✅  | ✅       | ✅          | ✅     | —    |
+| `/exportXlsxBySql`       | ✅   | ✅  | ✅       | —          | ✅     | —    |
+| `/importXlsx`            | ✅   | ✅  | —       | ✅          | —     | —    |
+| `/showTree`              | ✅   | ✅  | ✅       | —          | —     | ✅    |
+| AI `query_data` (流式/非流式) | ✅   | ✅  | ✅       | —          | ✅     | —    |
+| AI `exec_sql`            | ✅   | ✅  | —       | ✅          | —     | —    |
+| AI `get_table_schema`    | ✅   | ✅  | ✅ DDL过滤 | —          | —     | —    |
+| AI `export_*`            | ✅   | ✅  | ✅       | —          | —     | —    |
+| AI `import_data`         | ✅   | ✅  | —       | ✅ Mapping列 | —     | —    |
 
 > **双重防线**：第一道（SQL 解析拦截）在工具调用前检查 SQL 文本中的表和字段；第二道（结果集过滤）在查询返回后过滤未授权列的数据，作为兜底保护。**流式与非流式两条路径均已覆盖。**
 
@@ -146,11 +152,11 @@ flowchart TD
 
 #### 内置 Skill
 
-| Skill | 脚本入口 | 核心能力 |
-|-------|---------|---------|
-| **export-ppt** | `skills/export-ppt/scripts/export_ppt.py` | 专业 PPT 生成，支持 HTML 转 PPTX、模板驱动、数据驱动编程创建、OOXML 级操作 4 种工作流，8 种图表类型，3 套配色方案 |
-| **export-word** | `skills/export-word/scripts/export_word.py` | 专业 Word 报告生成，支持数据驱动创建、OOXML 文本替换、多章节模板组装、修订追踪 4 种工作流，含封面/摘要/统计/可视化/建议完整结构 |
-| **cross-db-analysis** | `skills/cross-db-analysis/scripts/analyze.py` | 跨数据库大数据量分析，多数据源连接、SQL 聚合下推、跨库对比、分块处理、JSON 结构化输出 |
+| Skill                 | 脚本入口                                           | 核心能力                                                                      |
+| --------------------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
+| **export-ppt**        | `skills/export-ppt/scripts/export_ppt.py`      | 专业 PPT 生成，支持 HTML 转 PPTX、模板驱动、数据驱动编程创建、OOXML 级操作 4 种工作流，8 种图表类型，3 套配色方案   |
+| **export-word**       | `skills/export-word/scripts/word_generator.py` | 专业 Word 报告生成，支持数据驱动创建、OOXML 文本替换、多章节模板组装、修订追踪 4 种工作流，含封面/摘要/统计/可视化/建议完整结构 |
+| **cross-db-analysis** | `skills/cross-db-analysis/scripts/analyze.py`  | 跨数据库大数据量分析，多数据源连接、SQL 聚合下推、跨库对比、分块处理、JSON 结构化输出                           |
 
 #### Skill 框架特性
 
@@ -183,13 +189,13 @@ flowchart TD
 
 #### 跨库规则（注入 Agent 系统提示词）
 
-| 规则 | 说明 |
-|------|------|
-| **连接分组** | 同连接下的 Schema 可 JOIN/UNION，不同连接必须分步查询 |
-| **connId 自动路由** | `query_data` / `exec_sql` 支持可选 `connId` 参数，根据 Schema 名自动路由到正确连接 |
-| **写操作隔离** | 不同连接各自维护事务，无法跨连接回滚，Agent 需告知用户操作原子性 |
-| **来源标注** | 跨库分析结果须明确标注每条数据的来源（连接+Schema） |
-| **大数据量防范** | 跨库组合可能产生极大结果集，强制要求 LIMIT 或聚合，或使用 `export_excel` 导出 |
+| 规则              | 说明                                                                   |
+| --------------- | -------------------------------------------------------------------- |
+| **连接分组**        | 同连接下的 Schema 可 JOIN/UNION，不同连接必须分步查询                                 |
+| **connId 自动路由** | `query_data` / `exec_sql` 支持可选 `connId` 参数，根据 Schema 名自动路由到正确连接      |
+| **写操作隔离**       | 不同连接各自维护事务，无法跨连接回滚，Agent 需告知用户操作原子性                                  |
+| **来源标注**        | 跨库分析结果须明确标注每条数据的来源（连接+Schema）                                        |
+| **大数据量防范**      | 跨库组合可能产生极大结果集，强制要求 LIMIT 或聚合，或使用 `export_excel` 导出                   |
 | **Python 脚本增强** | 超过 10 万行场景，Agent 自动调用 `cross-db-analysis` Skill，在数据库端完成聚合，仅返回结论 JSON |
 
 #### 跨库分析 Skill（cross-db-analysis）
@@ -229,11 +235,11 @@ python scripts/analyze.py \
 
 三种登录方式，满足不同场景：
 
-| 方式 | 实现 | 场景 |
-|------|------|------|
-| 密码登录 | MD5 + 盐值哈希 | 传统场景 |
-| 生物识别 | WebAuthn 指纹 / 面容 | 安全便捷 |
-| 第三方 Token | OAuth 对接外部认证接口 | 企业集成 |
+| 方式        | 实现               | 场景   |
+| --------- | ---------------- | ---- |
+| 密码登录      | MD5 + 盐值哈希       | 传统场景 |
+| 生物识别      | WebAuthn 指纹 / 面容 | 安全便捷 |
+| 第三方 Token | OAuth 对接外部认证接口   | 企业集成 |
 
 #### 防篡改审批流
 
@@ -247,7 +253,7 @@ flowchart TD
         C{"isDangerousSQL?"}
         C -->|false| D["直接执行"]
         C -->|true| E["tool.StatefulInterrupt()"]
-        E --> F["原始参数保存到 CheckPointStore\n(15分钟过期)"]
+        E --> F["原始参数保存到 CheckPointStore<br/>(15分钟过期)"]
         F --> G["推送 danger_confirm 事件到前端"]
     end
 
@@ -258,7 +264,7 @@ flowchart TD
     J --> K
 
     subgraph K["Runner.ResumeWithParams()"]
-        L["从 CheckPointStore 取回服务端保存的原始参数\n前端无法篡改 SQL"]
+        L["从 CheckPointStore 取回服务端保存的原始参数<br/>前端无法篡改 SQL"]
         L --> M{"用户决定"}
         M -->|批准| N["使用服务端参数执行"]
         M -->|拒绝| O["返回拒绝信息"]
@@ -299,7 +305,7 @@ flowchart TB
     subgraph Frontend["前端 (Vue 3)"]
         direction LR
         F1["AI 对话<br/>(SSE流式)"]
-        F2["SQL 编辑器<br/>(CodeMirror)"]
+        F2["SQL 编辑器<br/>(CodeMirror 6)"]
         F3["数据浏览<br/>(可视化)"]
         F4["系统管理<br/>(权限/连接/配置)"]
     end
@@ -310,7 +316,7 @@ flowchart TB
         direction TB
         subgraph Agent["Eino ADK 双 Agent 体系 (v2)"]
             direction LR
-            A1["SQLAgent<br/>ReAct主Agent / 8工具 / MaxIter 20"]
+            A1["SQLAgent<br/>ReAct主Agent / 9工具 / MaxIter 50"]
             A2["PermissionAgent<br/>权限审核Agent / 2工具 / MaxIter 8"]
             A1 --> A2
         end
@@ -343,38 +349,41 @@ flowchart TB
         direction LR
         DB1["MySQL / MariaDB"]
         DB2["Oracle"]
-        DB3["SQLite"]
+        DB3["PostgreSQL"]
+        DB4["SQLite"]
     end
 ```
 
 ### 后端技术栈
 
-| 组件 | 技术 | 说明 |
-|------|------|------|
-| Web 框架 | Gin | HTTP 路由、中间件、SSE |
-| AI 框架 | Eino ADK v0.8 | 双 Agent、Runner、CheckPointStore、StatefulInterrupt |
-| LLM 接入 | OpenAI / Ollama | 通过 eino-ext 适配器，支持任何 OpenAI 兼容接口 |
-| 数据库驱动 | sqlx + mysql/oracle/sqlite | 多数据库方言支持 |
-| Excel | excelize/v2 | 读写 Excel、内嵌图表、StreamWriter 流式写入 |
-| 图表 | go-chart/v2 | PNG 图表渲染（折线/柱状/饼图/散点） |
-| Office | 原生 Open XML | DOCX/PPTX **零依赖**生成，直接构建 OOXML |
-| 管理库 | SQLite (modernc, CGO-free) | 用户/连接/会话/审计，纯 Go 实现 |
-| 缓存 | 内存 + Redis (可选) | 支持滑动过期，Redis 分布式 Session 30 分钟 TTL |
-| 加密 | AES-ECB | 数据库连接密码加密存储 |
-| ID | 雪花算法 | 分布式唯一 ID，单节点每毫秒 4096 个 |
-| Skill 引擎 | Python 3 + pip | 自动环境检测、按需依赖安装、Go 回退双重引擎 |
+| 组件       | 技术                         | 说明                                               |
+| -------- | -------------------------- | ------------------------------------------------ |
+| Web 框架   | Gin                        | HTTP 路由、中间件、SSE                                  |
+| AI 框架    | Eino ADK v0.8              | 双 Agent、Runner、CheckPointStore、StatefulInterrupt |
+| LLM 接入   | OpenAI / Ollama            | 通过 eino-ext 适配器，支持任何 OpenAI 兼容接口                 |
+| 数据库驱动    | sqlx + mysql/oracle/sqlite | 多数据库方言支持                                         |
+| Excel    | excelize/v2                | 读写 Excel、内嵌图表、StreamWriter 流式写入                  |
+| 图表       | go-chart/v2                | PNG 图表渲染（折线/柱状/饼图/散点）                            |
+| Office   | 原生 Open XML                | DOCX/PPTX **零依赖**生成，直接构建 OOXML                   |
+| 管理库      | SQLite (modernc, CGO-free) | 用户/连接/会话/审计，纯 Go 实现                              |
+| 缓存       | 内存 + Redis (可选)            | 支持滑动过期，Redis 分布式 Session 30 分钟 TTL               |
+| 加密       | AES-ECB                    | 数据库连接密码加密存储                                      |
+| ID       | 雪花算法                       | 分布式唯一 ID，单节点每毫秒 4096 个                           |
+| Skill 引擎 | Python 3 + pip             | 自动环境检测、按需依赖安装、Go 回退双重引擎                          |
 
 ### 前端技术栈
 
-| 组件 | 技术 | 说明 |
-|------|------|------|
-| 框架 | Vue 3 + Composition API | 响应式、组合式 API |
-| UI | Element Plus | 中文 locale，虚拟滚动表格 |
-| SQL 编辑器 | CodeMirror 6 | 语法高亮、Schema 自动补全、格式化 |
-| Markdown | markdown-it + mermaid | AI 回复渲染，Mermaid 流式渲染 |
-| 认证 | @passwordless-id/webauthn | 指纹 / 面容生物识别 |
-| 语音 | Web Speech API | 中文语音输入 |
-| 构建 | Vite | 快速开发与构建 |
+| 组件       | 技术                          | 说明                   |
+| -------- | --------------------------- | -------------------- |
+| 框架       | Vue 3 + Composition API     | 响应式、组合式 API          |
+| UI       | Element Plus                | 中文 locale，虚拟滚动表格     |
+| SQL 编辑器  | CodeMirror 6                | 语法高亮、Schema 自动补全、格式化 |
+| Markdown | markdown-it + mermaid       | AI 回复渲染，Mermaid 流式渲染 |
+| 数学公式     | KaTeX + markdown-it-texmath | 数学公式渲染               |
+| ER 图     | @antv/x6 + @antv/layout     | 实体关系图可视化             |
+| 认证       | @passwordless-id/webauthn   | 指纹 / 面容生物识别          |
+| 语音       | Web Speech API              | 中文语音输入               |
+| 构建       | Vite                        | 快速开发与构建              |
 
 ## 项目结构
 
@@ -393,7 +402,7 @@ websql/
 │   ├── ratelimit.go              # 登录限流中间件（IP级别，10次/分钟）
 │   ├── admin/                    # 管理 API
 │   │   ├── admin.go              # 用户 CRUD、密码哈希、树可见性聚合
-│   │   ├── login.go              # 三种登录方式
+│   │   ├── login.go              # 三种登录方式（密码/生物识别/Token）
 │   │   ├── conn_config.go        # 连接配置管理（AES 加密存储）
 │   │   ├── db_operate.go         # 数据库操作 API（含表级/列级权限过滤）
 │   │   ├── sql_analyzer.go       # SQL 分析器：提取操作类型、表、写列
@@ -416,8 +425,10 @@ websql/
 │           │   ├── docx.go       # DOCX Open XML 生成（零依赖）
 │           │   ├── chart.go      # go-chart PNG 图表渲染
 │           │   ├── markdown.go   # Markdown 导出
+│           │   ├── skill_detector.go  # Python 环境检测 & Skill 生命周期
+│           │   ├── skill_export.go    # Skill 导出（PPT/Word/跨库分析）
 │           │   └── types.go      # 导出数据类型定义
-│           ├── middleware.go     # 中间件：防篡改审批 / 工具错误恢复 / 调用日志
+│           ├── middleware.go     # 中间件：防篡改审批 / 错误恢复 / 调用日志 / 结果精简
 │           ├── permission.go     # PermissionScope + PermissionMiddleware（双重防线）
 │           ├── permission_agent.go       # PermissionAgent：LLM 驱动的权限审核智能体
 │           ├── permission_agent_tools.go # PermissionAgent 工具：表结构 + 用户权限查询
@@ -452,7 +463,9 @@ websql/
 │       │   └── ...                     # 更多管理页面
 │       ├── components/           # 组件
 │       │   ├── SQLConfirmInline.vue    # 危险 SQL 确认（风险等级 + 关键字高亮）
-│       │   └── ImportPreviewDialog.vue # Excel 导入预览（字段映射 + 预览）
+│       │   ├── ERDiagramDialog.vue     # ER 图可视化
+│       │   ├── ImportPreviewDialog.vue # Excel 导入预览（字段映射 + 预览）
+│       │   └── ...
 │       └── utils/
 │           ├── sqlRiskAssessment.js    # SQL 风险评估（前端）
 │           ├── errorHandler.js         # 错误脱敏
@@ -508,13 +521,13 @@ npm run build  # 构建到 static/
 
 ```json
 {
-  "isRemote": true,          // true=远程模式(启用权限), false=本地模式(无权限)
+  "isRemote": true,
   "db": {
-    "type": "sqlite",         // 管理库类型: sqlite / mysql
+    "type": "sqlite",
     "dsn": "./nway.sqlite3.db"
   },
   "redis": {
-    "addr": "",               // 可选，分布式 Session
+    "addr": "",
     "password": "",
     "db": 0
   },
@@ -530,30 +543,31 @@ npm run build  # 构建到 static/
 
 通过系统管理界面配置，支持：
 
-| 参数 | 说明 |
-|------|------|
-| provider | `openai` 或 `ollama` |
-| baseUrl | API 地址（支持任何 OpenAI 兼容接口） |
-| model | 模型名称 |
-| apiKey | API 密钥 |
-| temperature | 温度参数 |
-| maxTokens | 最大 token 数 |
-| enableThinking | 是否启用思考过程（Ollama） |
+| 参数               | 说明                       |
+| ---------------- | ------------------------ |
+| provider         | `openai` 或 `ollama`      |
+| baseUrl          | API 地址（支持任何 OpenAI 兼容接口） |
+| model            | 模型名称                     |
+| apiKey           | API 密钥                   |
+| temperature      | 温度参数                     |
+| maxTokens        | 最大 token 数               |
+| maxContextTokens | 模型上下文窗口大小（用于自动摘要触发计算）    |
+| enableThinking   | 是否启用思考过程（Ollama）         |
 
 ### 双模式运行
 
-| 模式 | isRemote | 权限管理 | 适用场景 |
-|------|----------|---------|---------|
-| 本地模式 | false | 无（所有用户可访问所有连接） | 个人开发、内网使用 |
-| 远程模式 | true | 严格 RBAC + AI 权限审核 + IP 白名单 + 登录限流 | 团队协作、生产环境 |
+| 模式   | isRemote | 权限管理                              | 适用场景      |
+| ---- | -------- | --------------------------------- | --------- |
+| 本地模式 | false    | 无（所有用户可访问所有连接）                    | 个人开发、内网使用 |
+| 远程模式 | true     | 严格 RBAC + AI 权限审核 + IP 白名单 + 登录限流 | 团队协作、生产环境 |
 
 ## 数据库支持
 
-| 数据库 | 查询 | 写操作 | 可视化编辑 | 导入导出 | AI 方言适配 |
-|--------|------|--------|-----------|---------|------------|
-| MySQL / MariaDB | OK | OK | OK | OK | OK |
-| Oracle | OK | OK | 部分 | OK | OK |
-| SQLite | OK | OK | OK | OK | OK |
+| 数据库             | 查询 | 写操作 | 可视化编辑 | 导入导出 | AI 方言适配 |
+| --------------- | -- | --- | ----- | ---- | ------- |
+| MySQL / MariaDB | ✅  | ✅   | ✅     | ✅    | ✅       |
+| Oracle          | ✅  | ✅   | 部分    | ✅    | ✅       |
+| SQLite          | ✅  | ✅   | ✅     | ✅    | ✅       |
 
 ## License
 
