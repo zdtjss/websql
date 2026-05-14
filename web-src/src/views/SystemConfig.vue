@@ -75,6 +75,27 @@
 
     <el-divider content-position="left">
       <el-icon>
+        <Coin />
+      </el-icon>
+      Redis 配置
+    </el-divider>
+    <el-form label-width="120px" :model="systemConfig">
+      <el-form-item label="Redis 地址">
+        <el-input v-model="systemConfig.redisAddr" placeholder="127.0.0.1:6379" />
+      </el-form-item>
+      <el-form-item label="Redis 密码">
+        <el-input v-model="systemConfig.redisPassword" placeholder="可选" show-password />
+      </el-form-item>
+      <el-form-item label="Redis DB">
+        <el-input-number v-model="systemConfig.redisDB" :min="0" :max="15" :step="1" />
+        <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+          💡 Redis 数据库编号，范围 0-15
+        </div>
+      </el-form-item>
+    </el-form>
+
+    <el-divider content-position="left">
+      <el-icon>
         <User />
       </el-icon>
       生物识别配置
@@ -165,7 +186,7 @@
 <script setup>
 import http from '@/js/utils/httpProxy'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Check, Connection, Delete, Edit, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
+import { Check, Coin, Connection, Delete, Edit, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -184,7 +205,10 @@ const systemConfig = ref({
   outterUser: '',
   allowedIP: '127.0.0.1\n::1',
   aiModelList: [],
-  selectedModelId: ''
+  selectedModelId: '',
+  redisAddr: '127.0.0.1:6379',
+  redisPassword: '',
+  redisDB: 0
 })
 
 const aiModelList = ref([])
@@ -225,6 +249,9 @@ const loadSystemConfig = () => {
       const data = resp.data.data
       systemConfig.value.outterUser = data.outterUser || ''
       systemConfig.value.selectedModelId = data.selectedModelId || ''
+      systemConfig.value.redisAddr = data.redisAddr || '127.0.0.1:6379'
+      systemConfig.value.redisPassword = data.redisPassword || ''
+      systemConfig.value.redisDB = data.redisDB !== undefined ? data.redisDB : 0
 
       if (data.allowedIP && Array.isArray(data.allowedIP)) {
         systemConfig.value.allowedIP = data.allowedIP.join('\n')
@@ -249,7 +276,10 @@ const saveAllConfig = () => {
     aiModelList: aiModelList.value,
     selectedModelId: systemConfig.value.selectedModelId,
     outterUser: systemConfig.value.outterUser,
-    allowedIP: ips
+    allowedIP: ips,
+    redisAddr: systemConfig.value.redisAddr,
+    redisPassword: systemConfig.value.redisPassword,
+    redisDB: systemConfig.value.redisDB
   }).then(() => {
     ElMessage.success("保存成功")
     emit('config-saved', systemConfig.value)
