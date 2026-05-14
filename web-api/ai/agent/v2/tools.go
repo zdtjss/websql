@@ -16,10 +16,10 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-var validTableNameRegex = regexp.MustCompile("^[a-zA-Z0-9_`.]+$")
+var validTableNameRegex = regexp.MustCompile("^[a-zA-Z0-9_`\".]+$")
 
 var dangerousTableNamePatterns = []string{
-	";", "--", "/*", "*/", "'", "\"", "\\",
+	";", "--", "/*", "*/", "'", "\\",
 	"xp_", "sp_", "0x", "char(", "exec(",
 	"union", "select", "insert", "update", "delete",
 	"drop", "alter", "create", "truncate", "exec",
@@ -44,6 +44,7 @@ func safeQuoteTableName(name string) string {
 		return ""
 	}
 	cleaned := strings.ReplaceAll(name, "`", "")
+	cleaned = strings.ReplaceAll(cleaned, `"`, "")
 	cleaned = strings.ReplaceAll(cleaned, ".", "")
 	return "'" + strings.ReplaceAll(cleaned, "'", "''") + "'"
 }
@@ -326,9 +327,9 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 				}
 			default:
 				if schemaName != "" {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schemaName, tableName)
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\".\"%s\"", schemaName, tableName)
 				} else {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\"", tableName)
 				}
 			}
 			var rows *sqlx.Rows
@@ -902,6 +903,10 @@ func quoteIdent(dbType, name string) string {
 	switch dbType {
 	case "oracle":
 		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	case "postgresql", "postgres":
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	case "sqlserver", "mssql":
+		return "[" + strings.ReplaceAll(name, "]", "]]") + "]"
 	default: // mysql, mariadb, sqlite
 		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 	}

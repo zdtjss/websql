@@ -185,7 +185,7 @@
 <script lang="ts" setup>
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter } from '@codemirror/view'
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark"
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
@@ -250,6 +250,10 @@ function getEditorTheme() {
   return currentTheme.value === 'dark' ? darkEditorTheme : lightEditorTheme
 }
 
+const sqlCompartment = new Compartment()
+const themeCompartment = new Compartment()
+const highlightCompartment = new Compartment()
+
 const props = defineProps<{
     tabId: string,
     connId: string,
@@ -259,7 +263,7 @@ const props = defineProps<{
     dbType?: string,
 }>()
 
-const emit = defineEmits(['openTableManager', 'openDataBrowser'])
+const emit = defineEmits(['openTableManager', 'openDataBrowser', 'viewTableInfo'])
 
 const sqlAreaRef:any = ref(null)
 
@@ -457,8 +461,7 @@ onMounted(() => {
     window.addEventListener('keyup', onGlobalKeyup)
     dbSchemaProxy.registLsn((schema: any) => {
         if (schema === props.schema) {
-            let doc = (editorView.value as EditorView).state.doc.toString() ?? '';
-            createEditor(codemirror, doc);
+            reconfigureSql()
         }
     })
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
@@ -472,8 +475,7 @@ onBeforeUnmount(() => {
 })
 
 watch(currentTheme, () => {
-    const doc = getEditorDoc()
-    createEditor(codemirror, doc)
+    reconfigureTheme()
 })
 
 watch(canModify, (can) => {
@@ -484,8 +486,11 @@ watch(canModify, (can) => {
 })
 
 function createEditor(editorContainer: any, doc: any) {
-    if (typeof editorView.value !== 'undefined') {
+    if (editorView.value) {
         editorView.value.destroy();
+    }
+    if (editorContainer.value) {
+        editorContainer.value.innerHTML = '';
     }
     const isDark = currentTheme.value === 'dark'
     const cleanKeymap = standardKeymap.filter(
@@ -499,17 +504,17 @@ function createEditor(editorContainer: any, doc: any) {
                 { key: "Mod-Shift-z", run: redo, preventDefault: true },
                 { key: 'Tab', run: insertTab, preventDefault: true },
             ]),
-        sql({
+        sqlCompartment.of(sql({
             dialect: dbSchemaProxy.getDialect(props.schema),
             schema: <any>dbSchemaProxy.getAll(props.schema),
-        }),
+        })),
         history(),
         lineNumbers(),
         highlightActiveLineGutter(),
         autocompletion(),
         EditorView.editable.of(true),
-        getEditorTheme(),
-        syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle),
+        themeCompartment.of(getEditorTheme()),
+        highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
     ]
     const startState = EditorState.create({
         doc: doc,
@@ -519,6 +524,27 @@ function createEditor(editorContainer: any, doc: any) {
         state: startState,
         parent: editorContainer.value,
     });
+}
+
+function reconfigureSql() {
+    if (!editorView.value) return
+    editorView.value.dispatch({
+        effects: sqlCompartment.reconfigure(sql({
+            dialect: dbSchemaProxy.getDialect(props.schema),
+            schema: <any>dbSchemaProxy.getAll(props.schema),
+        }))
+    })
+}
+
+function reconfigureTheme() {
+    if (!editorView.value) return
+    const isDark = currentTheme.value === 'dark'
+    editorView.value.dispatch({
+        effects: [
+            themeCompartment.reconfigure(getEditorTheme()),
+            highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
+        ]
+    })
 }
 //获取编辑器里的文本内容
 const getEditorDoc = (): string => {

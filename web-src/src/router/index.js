@@ -26,7 +26,7 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach(async (to, from, next) => {
+router.beforeEach(async (to, from) => {
   if (to.meta.requiresClassicView) {
     try {
       const auth = sessionStorage.getItem('authentication') || ''
@@ -37,19 +37,18 @@ router.beforeEach(async (to, from, next) => {
       if (resp.ok) {
         const data = await resp.json()
         if (data.data && data.data.allowed) {
-          next()
+          return true
         } else {
-          next('/')
+          return '/'
         }
       } else {
-        next('/')
+        return '/'
       }
     } catch {
-      next('/')
+      return '/'
     }
-  } else {
-    next()
   }
+  return true
 })
 
 export default router

@@ -4,44 +4,42 @@
       <el-icon>
         <Monitor />
       </el-icon>
-      AI 服务配置
+      AI 模型管理
     </el-divider>
-    <el-form label-width="120px" :model="systemConfig">
-      <el-form-item label="AI 提供商">
-        <el-radio-group v-model="systemConfig.aiProvider">
-          <el-radio value="ollama">Ollama</el-radio>
-          <el-radio value="openai">OpenAI</el-radio>
-        </el-radio-group>
-      </el-form-item>
-      <el-form-item label="Base URL">
-        <el-input v-model="systemConfig.aiBaseUrl" placeholder="https://ollama.com" />
-      </el-form-item>
-      <el-form-item label="Model">
-        <el-input v-model="systemConfig.aiModel" placeholder="qwen3.5:2b" />
-      </el-form-item>
-      <el-form-item label="API Key">
-        <el-input v-model="systemConfig.aiApiKey" placeholder="sk-..." />
-      </el-form-item>
-      <el-form-item label="Temperature">
-        <el-slider v-model="systemConfig.aiTemperature" :min="0" :max="2" :step="0.1" show-input />
-      </el-form-item>
-      <el-form-item label="Max Tokens">
-        <el-input-number v-model="systemConfig.aiMaxTokens" :min="0" :max="aiMaxTokensMax" :step="100" placeholder="0=不限" />
-        <span v-if="aiMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262144</span>
-      </el-form-item>
-      <el-form-item label="思考模式">
-        <el-switch v-model="systemConfig.aiEnableThinking" />
-        <span style="margin-left: 10px; font-size: 12px; color: #909399;">启用后模型会输出思考过程</span>
-      </el-form-item>
-      <el-form-item>
-        <el-button type="primary" @click="testAiConfig" :loading="aiTesting">
-          <el-icon>
-            <Connection />
-          </el-icon>
-          测试 AI 配置
+    <div class="model-list-section">
+      <div class="model-list-header">
+        <span>已配置的模型</span>
+        <el-button type="primary" size="small" @click="showAddModelDialog">
+          <el-icon><Plus /></el-icon>
+          添加模型
         </el-button>
-      </el-form-item>
-    </el-form>
+      </div>
+      <el-empty v-if="aiModelList.length === 0" description="暂无配置模型，请添加" />
+      <div v-else class="model-list">
+        <div v-for="model in aiModelList" :key="model.id"
+          :class="['model-item', { 'is-selected': systemConfig.selectedModelId === model.id }]">
+          <div class="model-item-info">
+            <span class="model-model">{{ model.model }}</span>
+            <span class="model-provider">{{ model.provider }}</span>
+          </div>
+          <div class="model-item-actions">
+            <el-tag v-if="systemConfig.selectedModelId === model.id" type="success" size="small">当前使用</el-tag>
+            <el-button size="small" text @click="selectModel(model)">
+              <el-icon><Check /></el-icon>
+              设为默认
+            </el-button>
+            <el-button size="small" text type="primary" @click="showEditModelDialog(model)">
+              <el-icon><Edit /></el-icon>
+              编辑
+            </el-button>
+            <el-button size="small" text type="danger" @click="removeModel(model)">
+              <el-icon><Delete /></el-icon>
+              删除
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <el-divider content-position="left">
       <el-icon>
@@ -122,13 +120,53 @@
         保存所有配置
       </el-button>
     </div>
+
+    <el-dialog v-model="modelDialogVisible" :title="editingModel ? '编辑模型' : '添加模型'" width="600px" append-to-body>
+      <el-form :model="modelForm" label-width="120px">
+        <el-form-item label="AI 提供商">
+          <el-radio-group v-model="modelForm.provider">
+            <el-radio value="ollama">Ollama</el-radio>
+            <el-radio value="openai">OpenAI</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="Base URL">
+          <el-input v-model="modelForm.baseUrl" placeholder="https://ollama.com" />
+        </el-form-item>
+        <el-form-item label="Model">
+          <el-input v-model="modelForm.model" placeholder="qwen3.5:2b" />
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="modelForm.apiKey" placeholder="sk-...（OpenAI 必填，Ollama 可留空）" show-password />
+        </el-form-item>
+        <el-form-item label="Temperature">
+          <el-slider v-model="modelForm.temperature" :min="0" :max="2" :step="0.1" show-input />
+        </el-form-item>
+        <el-form-item label="Max Tokens">
+          <el-input-number v-model="modelForm.maxTokens" :min="0" :max="modelMaxTokensMax" :step="100" placeholder="0=不限" />
+          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262144</span>
+        </el-form-item>
+        <el-form-item label="思考模式">
+          <el-switch v-model="modelForm.enableThinking" />
+          <span style="margin-left: 10px; font-size: 12px; color: #909399;">启用后模型会输出思考过程</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="modelDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="testModelConfig" :loading="modelTesting">
+          <el-icon><Connection /></el-icon>
+          测试配置
+        </el-button>
+        <el-button type="primary" @click="saveModel">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import http from '@/js/utils/httpProxy'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ElMessage } from 'element-plus'
+import { Check, Connection, Delete, Edit, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -143,32 +181,41 @@ const bioRegistering = ref(false)
 const bioRemoving = ref(false)
 
 const systemConfig = ref({
-  aiProvider: 'ollama',
-  aiBaseUrl: '',
-  aiModel: '',
-  aiApiKey: '',
-  aiTemperature: 0.7,
-  aiMaxTokens: 0,
-  aiEnableThinking: false,
   outterUser: '',
-  allowedIP: '127.0.0.1\n::1'
+  allowedIP: '127.0.0.1\n::1',
+  aiModelList: [],
+  selectedModelId: ''
 })
 
-const aiTesting = ref(false)
+const aiModelList = ref([])
+const modelDialogVisible = ref(false)
+const editingModel = ref(null)
+const modelTesting = ref(false)
 const testingOutterUser = ref(false)
 const savingAll = ref(false)
 
-const aiMaxTokensMax = computed(() => {
-  return systemConfig.value.aiBaseUrl.toLowerCase().startsWith('https://ollama.com')
-    || systemConfig.value.aiBaseUrl.toLowerCase().startsWith('http://ollama.com')
+const modelForm = ref({
+  id: '',
+  provider: 'ollama',
+  baseUrl: '',
+  model: '',
+  apiKey: '',
+  temperature: 0.7,
+  maxTokens: 0,
+  enableThinking: false
+})
+
+const modelMaxTokensMax = computed(() => {
+  return modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
+    || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
     ? 262144 : Infinity
 })
 
-watch(() => systemConfig.value.aiBaseUrl, () => {
-  const isOllama = systemConfig.value.aiBaseUrl.toLowerCase().startsWith('https://ollama.com')
-    || systemConfig.value.aiBaseUrl.toLowerCase().startsWith('http://ollama.com')
-  if (isOllama && systemConfig.value.aiMaxTokens > 262144) {
-    systemConfig.value.aiMaxTokens = 262144
+watch(() => modelForm.value.baseUrl, () => {
+  const isOllama = modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
+    || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
+  if (isOllama && modelForm.value.maxTokens > 262144) {
+    modelForm.value.maxTokens = 262144
   }
 })
 
@@ -176,17 +223,19 @@ const loadSystemConfig = () => {
   http.get("/system/config/all/get").then((resp) => {
     if (resp.data && resp.data.data) {
       const data = resp.data.data
-      systemConfig.value.aiProvider = data.aiProvider || 'ollama'
-      systemConfig.value.aiBaseUrl = data.aiBaseUrl || ''
-      systemConfig.value.aiModel = data.aiModel || ''
-      systemConfig.value.aiApiKey = data.aiApiKey || ''
-      systemConfig.value.aiTemperature = parseFloat(data.aiTemperature) || 0.7
-      systemConfig.value.aiMaxTokens = parseInt(data.aiMaxTokens) || 0
-      systemConfig.value.aiEnableThinking = data.aiEnableThinking === 'true'
       systemConfig.value.outterUser = data.outterUser || ''
+      systemConfig.value.selectedModelId = data.selectedModelId || ''
 
       if (data.allowedIP && Array.isArray(data.allowedIP)) {
         systemConfig.value.allowedIP = data.allowedIP.join('\n')
+      }
+
+      if (data.aiModelList && Array.isArray(data.aiModelList)) {
+        aiModelList.value = data.aiModelList
+        systemConfig.value.aiModelList = data.aiModelList
+      } else {
+        aiModelList.value = []
+        systemConfig.value.aiModelList = []
       }
     }
   })
@@ -197,13 +246,8 @@ const saveAllConfig = () => {
   const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
 
   http.post("/system/config/all/save", {
-    aiProvider: systemConfig.value.aiProvider,
-    aiBaseUrl: systemConfig.value.aiBaseUrl,
-    aiModel: systemConfig.value.aiModel,
-    aiApiKey: systemConfig.value.aiApiKey,
-    aiTemperature: String(systemConfig.value.aiTemperature),
-    aiMaxTokens: String(systemConfig.value.aiMaxTokens),
-    aiEnableThinking: String(systemConfig.value.aiEnableThinking),
+    aiModelList: aiModelList.value,
+    selectedModelId: systemConfig.value.selectedModelId,
     outterUser: systemConfig.value.outterUser,
     allowedIP: ips
   }).then(() => {
@@ -214,17 +258,92 @@ const saveAllConfig = () => {
   })
 }
 
-const testAiConfig = () => {
-  aiTesting.value = true
+const showAddModelDialog = () => {
+  editingModel.value = null
+  modelForm.value = {
+    id: '',
+    provider: 'ollama',
+    baseUrl: '',
+    model: '',
+    apiKey: '',
+    temperature: 0.7,
+    maxTokens: 0,
+    enableThinking: false
+  }
+  modelDialogVisible.value = true
+}
+
+const showEditModelDialog = (model) => {
+  editingModel.value = model
+  modelForm.value = {
+    id: model.id,
+    provider: model.provider,
+    baseUrl: model.baseUrl,
+    model: model.model,
+    apiKey: model.apiKey || '',
+    temperature: model.temperature || 0.7,
+    maxTokens: model.maxTokens || 0,
+    enableThinking: model.enableThinking || false
+  }
+  modelDialogVisible.value = true
+}
+
+const saveModel = () => {
+  if (!modelForm.value.baseUrl) {
+    ElMessage.warning('请输入 Base URL')
+    return
+  }
+  if (!modelForm.value.model) {
+    ElMessage.warning('请输入 Model 名称')
+    return
+  }
+
+  if (editingModel.value) {
+    const idx = aiModelList.value.findIndex(m => m.id === editingModel.value.id)
+    if (idx !== -1) {
+      aiModelList.value[idx] = { ...modelForm.value }
+    }
+  } else {
+    const newModel = {
+      ...modelForm.value,
+      id: 'model_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8)
+    }
+    aiModelList.value.push(newModel)
+  }
+  modelDialogVisible.value = false
+  ElMessage.success(editingModel.value ? '模型已更新' : '模型已添加')
+}
+
+const removeModel = (model) => {
+  ElMessageBox.confirm(
+    `确定要删除模型 "${model.model}" 吗？`,
+    '确认删除',
+    { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+  ).then(() => {
+    aiModelList.value = aiModelList.value.filter(m => m.id !== model.id)
+    if (systemConfig.value.selectedModelId === model.id) {
+      systemConfig.value.selectedModelId = aiModelList.value.length > 0 ? aiModelList.value[0].id : ''
+    }
+    ElMessage.success('模型已删除')
+  }).catch(() => {})
+}
+
+const selectModel = (model) => {
+  systemConfig.value.selectedModelId = model.id
+  ElMessage.success(`已选择模型：${model.model}`)
+}
+
+const testModelConfig = () => {
+  modelTesting.value = true
   http.post("/ai/config/test", {
-    provider: systemConfig.value.aiProvider,
-    baseUrl: systemConfig.value.aiBaseUrl,
-    model: systemConfig.value.aiModel,
-    apiKey: systemConfig.value.aiApiKey
+    provider: modelForm.value.provider,
+    baseUrl: modelForm.value.baseUrl,
+    model: modelForm.value.model,
+    apiKey: modelForm.value.apiKey
   }).then(() => {
     ElMessage.success("连接成功")
   }).finally(() => {
-    aiTesting.value = false
+    modelTesting.value = false
   })
 }
 
@@ -324,6 +443,74 @@ onMounted(() => {
   padding: 20px;
   max-height: calc(100vh - 150px);
   overflow-y: auto;
+}
+
+.model-list-section {
+  margin-bottom: 20px;
+}
+
+.model-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafafa;
+  transition: all 0.2s ease;
+}
+
+.model-item:hover {
+  border-color: #409eff;
+  background: #f5f7fa;
+}
+
+.model-item.is-selected {
+  border-color: #67c23a;
+  background: #f0f9ff;
+}
+
+.model-item-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.model-model {
+  font-weight: 600;
+  color: #303133;
+  font-size: 14px;
+  font-family: monospace;
+}
+
+.model-provider {
+  font-size: 12px;
+  color: #909399;
+  background: #f0f0f0;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.model-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .config-actions {

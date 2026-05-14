@@ -102,7 +102,7 @@
         <div class="tm-search">
           <el-input
             v-model="searchKeyword"
-            placeholder="搜索表名..."
+            placeholder="搜索表名或注释..."
             clearable
             size="small"
             :prefix-icon="Search"
@@ -179,6 +179,8 @@ const props = defineProps({
   connId: String,
   schema: String,
   dbType: String,
+  tabId: String,
+  schemaPath: String,
 })
 
 const emit = defineEmits(['openDataBrowser'])
@@ -255,7 +257,7 @@ function loadTables() {
 }
 
 function onTableClick(row) {
-  selectedTable.value = row.name
+  onBrowseData(row)
 }
 
 // ── 新建表 ──────────────────────────────────────────────

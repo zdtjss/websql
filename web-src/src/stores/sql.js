@@ -25,7 +25,10 @@ export const dbSchemaProxy = {
         localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(this.schemaProxy))
     },
     getTable(schema) {
-        let schemas = this.schemaProxy[schema]['tables']
+        const entry = this.schemaProxy[schema]
+        if (!entry) return []
+        let schemas = entry['tables']
+        if (!schemas) return []
         const schemaNames = Object.keys(schemas).map(n => {
             return {
                 label: n,
@@ -38,7 +41,9 @@ export const dbSchemaProxy = {
         return entry ? entry.dbType : null
     },
     getDialect(schema) {
-        const dbType = this.schemaProxy[schema]["dbType"]
+        const entry = this.schemaProxy[schema]
+        if (!entry) return StandardSQL
+        const dbType = entry["dbType"]
         if (dbType === "mysql") {
             return MySQL
         } else if (dbType === "oracle") {
@@ -47,7 +52,9 @@ export const dbSchemaProxy = {
         return StandardSQL
     },
     getAll(schemaName) {
-        return this.schemaProxy[schemaName]["tables"]
+        const entry = this.schemaProxy[schemaName]
+        if (!entry) return {}
+        return entry["tables"] || {}
     },
     cleanCache() {
         localStorage.removeItem("go-web-sql-dbSchemaProxy")

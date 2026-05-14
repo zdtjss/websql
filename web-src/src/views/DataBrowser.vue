@@ -204,7 +204,7 @@
         layout="total, sizes, prev, pager, next"
         @current-change="onPageChange"
         @size-change="onSizeChange"
-        small
+        size="small"
       />
     </div>
 
@@ -213,7 +213,7 @@
   <!-- Column filter popover -->
   <el-popover
     ref="columnFilterPopoverRef"
-    v-model:visible="columnFilterDialogVisible"
+    :visible="columnFilterDialogVisible"
     placement="bottom"
     :width="350"
     trigger="click"
@@ -372,9 +372,12 @@ const props = defineProps({
   connId: String,
   schema: String,
   tableName: String,
+  tabId: String,
+  dbType: String,
+  schemaPath: String,
 })
 
-const emit = defineEmits(['viewTableInfo'])
+const emit = defineEmits(['viewTableInfo', 'openDataBrowser', 'openTableManager'])
 
 const loading = ref(false)
 const currentPage = ref(1)
@@ -1212,9 +1215,8 @@ function openColumnFilter(col, event) {
 }
 
 function handlePopoverVisibleChange(visible) {
-  // 当 popover 即将关闭时，如果有未完成的输入，保持显示
+  columnFilterDialogVisible.value = visible
   if (!visible && currentColumn.value) {
-    // 用户点击了外部区域或按了 ESC，允许关闭
   }
 }
 

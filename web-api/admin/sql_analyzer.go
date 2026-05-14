@@ -449,9 +449,9 @@ func ExtractTablesFromSQL(sql string) []string {
 	sql = StripComments(sql)
 	tables := make(map[string]bool)
 
-	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))`)
-	commaRegex := regexp.MustCompile(`\s*,\s*((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))`)
-	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))`)
+	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
+	commaRegex := regexp.MustCompile(`\s*,\s*((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
+	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
 	cteRegex := regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
 
 	cteNames := make(map[string]bool)
@@ -533,8 +533,11 @@ func skipTableAlias(s string) string {
 
 func stripBackticks(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
-		return s[1 : len(s)-1]
+	if len(s) >= 2 {
+		if (s[0] == '`' && s[len(s)-1] == '`') ||
+			(s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
 	}
 	return s
 }

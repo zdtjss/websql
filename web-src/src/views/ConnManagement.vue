@@ -6,12 +6,12 @@
           <el-input v-model="connQuery.name" placeholder="请输入连接名称" clearable />
         </el-form-item>
         <el-form-item label="所属层级">
-          <el-tree-select 
-            v-model="connQuery.parentId" 
-            :data="conCfgTreeData" 
-            clearable 
-            value-key="id" 
-            placeholder="请选择" 
+          <el-tree-select
+            v-model="connQuery.parentId"
+            :data="conCfgTreeData"
+            clearable
+            value-key="id"
+            placeholder="请选择"
             style="width: 180px"
           />
         </el-form-item>
@@ -21,92 +21,73 @@
         </el-form-item>
       </el-form>
     </div>
-    
-    <el-table :data="connList" style="width: 100%">
+
+    <el-table :data="connList" style="width: 100%" @cell-dblclick="onCellDblClick">
       <el-table-column type="index" width="50" resizable />
       <el-table-column prop="name" label="连接名称" width="180" resizable>
         <template #default="scope">
-          <el-input v-if="scope.row.editing" v-model="scope.row.name" />
-          <span v-else>{{ scope.row.name }}</span>
+          <el-input v-if="isCellEditing(scope.row, 'name')" v-model="scope.row.name"
+            v-focus size="small" @blur="exitCellEditing(scope.row, 'name')" @keyup.enter="exitCellEditing(scope.row, 'name')" />
+          <span v-else class="cell-text">{{ scope.row.name }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="dbType" label="数据库类型" width="120" resizable>
         <template #default="scope">
-          <span v-if="!scope.row.editing">{{ getDbTypeLabel(scope.row.dbType) }}</span>
-          <el-select v-else v-model="scope.row.dbType" placeholder="请选择">
+          <el-select v-if="isCellEditing(scope.row, 'dbType')" v-model="scope.row.dbType"
+            v-focus size="small" @change="exitCellEditing(scope.row, 'dbType')">
             <el-option v-for="item in dbTypeList" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+          <span v-else class="cell-text">{{ getDbTypeLabel(scope.row.dbType) }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="parentId" label="所属层级" width="150" resizable>
         <template #default="scope">
-          <span v-if="!scope.row.editing">{{ scope.row.parentName || '未指定' }}</span>
-          <el-tree-select 
-            v-else
-            v-model="scope.row.parentId" 
-            :data="conCfgTreeData" 
-            clearable 
-            value-key="id" 
-            placeholder="未指定" 
+          <el-tree-select v-if="isCellEditing(scope.row, 'parentId')"
+            v-model="scope.row.parentId"
+            :data="conCfgTreeData"
+            clearable
+            value-key="id"
+            placeholder="未指定"
+            size="small"
+            @change="onParentIdChange(scope.row)"
           />
+          <span v-else class="cell-text">{{ scope.row.parentName || '未指定' }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="user" label="用户名" width="180" resizable>
         <template #default="scope">
-          <el-input v-if="scope.row.editing" v-model="scope.row.user" />
-          <span v-else>{{ scope.row.user }}</span>
+          <el-input v-if="isCellEditing(scope.row, 'user')" v-model="scope.row.user"
+            v-focus size="small" @blur="exitCellEditing(scope.row, 'user')" @keyup.enter="exitCellEditing(scope.row, 'user')" />
+          <span v-else class="cell-text">{{ scope.row.user }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="pwd" label="密码" width="120" resizable>
         <template #default="scope">
-          <el-input v-if="scope.row.editing" v-model="scope.row.pwd" type="password" />
-          <span v-else>******</span>
+          <el-input v-if="isCellEditing(scope.row, 'pwd')" v-model="scope.row.pwd" type="password"
+            v-focus size="small" @blur="exitCellEditing(scope.row, 'pwd')" @keyup.enter="exitCellEditing(scope.row, 'pwd')" />
+          <span v-else class="cell-text">******</span>
         </template>
       </el-table-column>
       <el-table-column prop="url" label="连接信息" min-width="200" resizable>
         <template #default="scope">
-          <el-input v-if="scope.row.editing" v-model="scope.row.url" type="textarea" :rows="2" />
-          <span v-else>{{ scope.row.url }}</span>
+          <el-input v-if="isCellEditing(scope.row, 'url')" v-model="scope.row.url" type="textarea" :rows="2"
+            size="small" @blur="exitCellEditing(scope.row, 'url')" />
+          <span v-else class="cell-text">{{ scope.row.url }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right" resizable>
+      <el-table-column label="操作" width="100" fixed="right" resizable>
         <template #default="scope">
-          <el-button 
-            v-if="!scope.row.editing" 
-            type="success" 
-            size="small"
-            @click="startEditConn(scope.row)"
-          >
-            编辑
-          </el-button>
-          <el-button 
-            v-if="scope.row.editing" 
-            type="success" 
-            size="small"
-            @click="testDbConn(scope.row)"
-            :loading="scope.row.testing"
-          >
-            测试
-          </el-button>
-          <el-button 
-            v-if="scope.row.editing" 
-            type="primary" 
-            size="small"
-            @click="saveConnCfg(scope.row)"
-          >
-            保存
-          </el-button>
-          <el-button 
-            v-if="scope.row.editing" 
-            type="warning" 
-            size="small"
-            @click="scope.row.editing = false"
-          >
-            取消
-          </el-button>
+          <el-tooltip v-if="isRowEditing(scope.row)" content="保存" placement="top">
+            <el-icon class="action-icon" @click="saveConnCfg(scope.row)"><CircleCheck /></el-icon>
+          </el-tooltip>
+          <el-tooltip content="测试连接" placement="top">
+            <el-icon class="action-icon" :class="{ 'is-loading': scope.row.testing }" @click="testDbConn(scope.row)"><Connection /></el-icon>
+          </el-tooltip>
           <el-popconfirm title="确定要删除这个连接吗？" @confirm="delConnCfg(scope.row)">
             <template #reference>
-              <el-button type="danger" size="small">删除</el-button>
+              <el-tooltip content="删除" placement="top">
+                <el-icon class="action-icon action-icon--danger"><Delete /></el-icon>
+              </el-tooltip>
             </template>
           </el-popconfirm>
         </template>
@@ -130,6 +111,7 @@
 import { ref } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage } from 'element-plus'
+import { CircleCheck, Connection, Delete } from '@element-plus/icons-vue'
 
 const emit = defineEmits(['conn-saved', 'conn-deleted'])
 
@@ -137,9 +119,19 @@ const connList = ref([])
 const conCfgTreeData = ref([])
 const connQuery = ref({ name: "", parentId: "" })
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
+const editingCell = ref(null)
+
+const EDITABLE_FIELDS = new Set(['name', 'dbType', 'parentId', 'user', 'pwd', 'url'])
+
+const vFocus = {
+  mounted(el) {
+    const input = el.querySelector('input') || el.querySelector('textarea')
+    if (input) input.focus()
+  }
+}
 
 const dbTypeList = ref([
-  { label: "MySQL", value: "mysql" }, 
+  { label: "MySQL", value: "mysql" },
   { label: "Oracle", value: "oracle" },
   { label: "SQLite", value: "sqlite" },
   { label: "MariaDB", value: "mariadb" }
@@ -148,6 +140,51 @@ const dbTypeList = ref([
 const getDbTypeLabel = (dbType) => {
   const item = dbTypeList.value.find(t => t.value === dbType)
   return item ? item.label : dbType
+}
+
+function isCellEditing(row, field) {
+  if (!row.id) return true
+  return editingCell.value?.row === row && editingCell.value?.field === field
+}
+
+function isRowEditing(row) {
+  if (!row.id) return true
+  return editingCell.value?.row === row
+}
+
+function onCellDblClick(row, column) {
+  if (!row.id) return
+  const field = column.property
+  if (!EDITABLE_FIELDS.has(field)) return
+  editingCell.value = { row, field }
+}
+
+function exitCellEditing(row, field) {
+  if (editingCell.value?.row === row && editingCell.value?.field === field) {
+    editingCell.value = null
+  }
+}
+
+function onParentIdChange(row) {
+  const pid = row.parentId
+  if (pid) {
+    row.parentName = findLabelInTree(conCfgTreeData.value, pid)
+  } else {
+    row.parentName = null
+  }
+  exitCellEditing(row, 'parentId')
+}
+
+function findLabelInTree(nodes, id) {
+  if (!nodes) return null
+  for (const node of nodes) {
+    if (node.id === id || node.value === id) return node.label
+    if (node.children) {
+      const found = findLabelInTree(node.children, id)
+      if (found) return found
+    }
+  }
+  return null
 }
 
 const listDirTree = () => {
@@ -165,7 +202,7 @@ const listConnCfg = () => {
   param.append("pageSize", pagination.value.pageSize)
   http.get("/listConn2", { params: param }).then((resp) => {
     const result = resp.data.data || resp.data
-    connList.value = (result.data || []).map(e => Object.assign({ editing: false }, e))
+    connList.value = result.data || []
     pagination.value.total = result.total || 0
   })
 }
@@ -182,17 +219,20 @@ const handleCurrentChange = (page) => {
 }
 
 const addConn = () => {
-  connList.value.unshift({ dbType: "mysql", editing: true })
-}
-
-const startEditConn = (row) => {
-  row.editing = true
+  connList.value.unshift({ dbType: "mysql" })
 }
 
 const saveConnCfg = (row) => {
-  http.post("/saveConn", row).then(() => {
+  http.post("/saveConn", row).then((resp) => {
     ElMessage.success("保存成功")
-    row.editing = false
+    editingCell.value = null
+    const saved = resp.data
+    if (saved && saved.id) {
+      const idx = connList.value.indexOf(row)
+      if (idx !== -1) {
+        connList.value[idx] = saved
+      }
+    }
     emit('conn-saved', row)
   })
 }
@@ -246,6 +286,10 @@ listConnCfg()
   margin-bottom: 16px;
 }
 
+.cell-text {
+  cursor: default;
+}
+
 :deep(.el-table) {
   font-size: 14px;
 }
@@ -256,7 +300,29 @@ listConnCfg()
   font-weight: 600;
 }
 
-:deep(.el-table-column--fixed) .el-button + .el-button {
-  margin-left: 8px;
+.action-icon {
+  font-size: 18px;
+  cursor: pointer;
+  color: #909399;
+  margin-right: 8px;
+  vertical-align: middle;
+  transition: color 0.2s;
+}
+
+.action-icon:hover {
+  color: #409eff;
+}
+
+.action-icon--danger:hover {
+  color: #f56c6c;
+}
+
+.action-icon.is-loading {
+  animation: rotating 1.5s linear infinite;
+}
+
+@keyframes rotating {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

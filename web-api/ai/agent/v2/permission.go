@@ -255,9 +255,9 @@ func (s *PermissionScope) DescribeForPrompt() string {
 }
 
 var (
-	rePrimaryTable  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
-	reCommaTable    = regexp.MustCompile(`\s*,\s*(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
-	reMetadataTable = regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
+	rePrimaryTable  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
+	reCommaTable    = regexp.MustCompile(`\s*,\s*(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
+	reMetadataTable = regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
 	reCTE           = regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
 	reStopClause    = regexp.MustCompile(`(?i)\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|VALUES|SET|ON|LATERAL)\b`)
 	reAsAlias       = regexp.MustCompile(`(?i)^AS\s+\w+`)
@@ -353,8 +353,11 @@ func skipTableAlias(s string) string {
 
 func stripBackticks(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
-		return s[1 : len(s)-1]
+	if len(s) >= 2 {
+		if (s[0] == '`' && s[len(s)-1] == '`') ||
+			(s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
 	}
 	return s
 }

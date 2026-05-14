@@ -210,11 +210,91 @@ func LoadSystemConfigToMemory() {
 	config.Cfg.OutterUser = GetOutterUserFromDB()
 	config.Cfg.AllowedIP = GetAllowedIPFromDB()
 
-	aiCfg := GetAIConfigFromDB()
-	if aiCfg != nil {
-		config.Cfg.AI.Provider = aiCfg.Provider
-		config.Cfg.AI.BaseURL = aiCfg.BaseURL
-		config.Cfg.AI.Model = aiCfg.Model
-		config.Cfg.AI.ApiKey = aiCfg.ApiKey
+	// 从新结构中加载 AI 配置
+	selectedId := GetSystemConfigValue("ai.selectedModelId")
+	if selectedId != "" {
+		modelListJSON := GetSystemConfigValue("ai.modelList")
+		if modelListJSON != "" && modelListJSON != "[]" {
+			var modelList []AIModelItem
+			err := json.Unmarshal([]byte(modelListJSON), &modelList)
+			if err == nil {
+				for _, m := range modelList {
+					if m.Id == selectedId {
+						config.Cfg.AI.Provider = m.Provider
+						config.Cfg.AI.BaseURL = m.BaseURL
+						config.Cfg.AI.Model = m.Model
+						config.Cfg.AI.ApiKey = m.ApiKey
+						return
+					}
+				}
+			}
+		}
 	}
+
+	// 如果没有选中模型，使用第一个模型
+	modelListJSON := GetSystemConfigValue("ai.modelList")
+	if modelListJSON != "" && modelListJSON != "[]" {
+		var modelList []AIModelItem
+		err := json.Unmarshal([]byte(modelListJSON), &modelList)
+		if err == nil && len(modelList) > 0 {
+			config.Cfg.AI.Provider = modelList[0].Provider
+			config.Cfg.AI.BaseURL = modelList[0].BaseURL
+			config.Cfg.AI.Model = modelList[0].Model
+			config.Cfg.AI.ApiKey = modelList[0].ApiKey
+		}
+	}
+}
+
+// GetSelectedModelConfig 获取当前选中的模型配置
+// 如果 modelId 为空，则使用全局选中的模型
+// 如果 modelId 有值，则查找该模型
+func GetSelectedModelConfig(modelId string) *AIConfig {
+	targetId := modelId
+	if targetId == "" {
+		targetId = GetSystemConfigValue("ai.selectedModelId")
+	}
+
+	if targetId != "" {
+		modelListJSON := GetSystemConfigValue("ai.modelList")
+		if modelListJSON != "" && modelListJSON != "[]" {
+			var modelList []AIModelItem
+			err := json.Unmarshal([]byte(modelListJSON), &modelList)
+			if err == nil {
+				for _, m := range modelList {
+					if m.Id == targetId {
+						return &AIConfig{
+							Provider:       m.Provider,
+							BaseURL:        m.BaseURL,
+							Model:          m.Model,
+							ApiKey:         m.ApiKey,
+							Temperature:    m.Temperature,
+							MaxTokens:      m.MaxTokens,
+							EnableThinking: m.EnableThinking,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 未找到指定模型或无选中模型，使用第一个可用模型
+	modelListJSON := GetSystemConfigValue("ai.modelList")
+	if modelListJSON != "" && modelListJSON != "[]" {
+		var modelList []AIModelItem
+		err := json.Unmarshal([]byte(modelListJSON), &modelList)
+		if err == nil && len(modelList) > 0 {
+			m := modelList[0]
+			return &AIConfig{
+				Provider:       m.Provider,
+				BaseURL:        m.BaseURL,
+				Model:          m.Model,
+				ApiKey:         m.ApiKey,
+				Temperature:    m.Temperature,
+				MaxTokens:      m.MaxTokens,
+				EnableThinking: m.EnableThinking,
+			}
+		}
+	}
+
+	return nil
 }

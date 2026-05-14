@@ -130,7 +130,7 @@ type requestParams struct {
 }
 
 func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, error) {
-	cfg := admin.GetAIConfigFromDB()
+	cfg := admin.GetSelectedModelConfig(req.ModelId)
 	if cfg == nil {
 		return nil, fmt.Errorf("未配置 AI 服务")
 	}

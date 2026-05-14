@@ -22,7 +22,7 @@
                       <span style="color: #303133; font-weight: 500;">{{ currentUser.name || '用户' }}</span>
                     </el-dropdown-item>
                     <el-dropdown-item divided command="changePassword">🔑 修改密码</el-dropdown-item>
-                    <el-dropdown-item v-if="currentUser.isAdmin" command="systemManagement">⚙️ 系统管理</el-dropdown-item>
+                    <el-dropdown-item v-if="currentUser.isAdmin || !isRemote" command="systemManagement">⚙️ 系统管理</el-dropdown-item>
                     <el-dropdown-item command="registerBio">🖐️ 注册指纹</el-dropdown-item>
                     <el-dropdown-item divided command="logout" style="color: #f56c6c;">🚪 退出登录</el-dropdown-item>
                   </el-dropdown-menu>

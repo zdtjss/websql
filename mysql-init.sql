@@ -113,11 +113,9 @@ CREATE TABLE IF NOT EXISTS t_sql_audit (
 );
 
 insert ignore into t_system_config (id, config_key, config_value, config_type, remark) values 
-('825683877400000001', 'ai.provider', 'ollama', 'ai', 'AI 服务提供商：ollama, openai 等'),
-('825683877400000002', 'ai.baseUrl', 'https://ollama.com', 'ai', 'AI 服务基础 URL'),
-('825683877400000003', 'ai.model', 'deepseek-v3.2', 'ai', 'AI 模型名称'),
-('825683877400000004', 'ai.apiKey', '41bb5b5119d6429e963994921a238d30.IdjfzCmn3goAL8VNT34XITiq', 'ai', 'AI API 密钥'),
-('825683877400000005', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
+('825683877400000001', 'ai.modelList', '[{"id":"model_default_001","provider":"ollama","baseUrl":"https://ollama.com","model":"deepseek-v3.2","apiKey":"","temperature":0.7,"maxTokens":0,"enableThinking":false,"isDefault":true}]', 'ai', 'AI 模型配置列表'),
+('825683877400000002', 'ai.selectedModelId', 'model_default_001', 'ai', '当前选中的模型ID'),
+('825683877400000003', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
 ('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）');
 
 CREATE TABLE IF NOT EXISTS t_prompt (

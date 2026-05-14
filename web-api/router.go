@@ -96,6 +96,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/system/config/outterUser/test", admin.TestOutterUserHandler)
 	routerGroup.GET("/system/config/allowedIP/get", admin.GetAllowedIPHandler)
 	routerGroup.POST("/system/config/allowedIP/save", admin.SaveAllowedIPHandler)
+	routerGroup.GET("/system/config/ai/models", admin.GetAIModelListHandler)
 
 	routerGroup.POST("/ai/config/save", ai.HandleSaveConfig)
 	routerGroup.GET("/ai/config/get", ai.HandleGetConfig)

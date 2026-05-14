@@ -78,7 +78,7 @@
         layout="total, sizes, prev, pager, next"
         @current-change="loadLogs"
         @size-change="onSizeChange"
-        small
+        size="small"
       />
     </div>
   </div>

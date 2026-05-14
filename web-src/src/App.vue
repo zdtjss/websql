@@ -278,6 +278,22 @@
                 </el-option>
               </el-select>
             </div>
+            <div class="table-selector-container model-selector-container">
+              <div class="selector-header">
+                <label class="table-selector-label" style="padding-top: 2px;">AI 模型</label>
+                <span v-if="selectedModel" class="selector-badge ready">{{ selectedModelName }}</span>
+              </div>
+              <el-select v-model="selectedModel" filterable placeholder="选择模型..." class="modern-select">
+                <el-option v-for="model in aiModelList" :key="model.id"
+                  :label="model.model"
+                  :value="model.id">
+                  <div class="model-option-content">
+                    <span class="model-option-name">{{ model.model }}</span>
+                    <span v-if="model.provider" class="model-option-provider">{{ model.provider }}</span>
+                  </div>
+                </el-option>
+              </el-select>
+            </div>
           </div>
 
           <div class="input-action-row">
@@ -532,9 +548,14 @@ const loginRules = reactive({
 const selectedSchemas = ref([])
 const tableList = ref([])
 const connList = ref([])
-const connSchemaList = ref([]) // 原始连接+schema数据列表
+const connSchemaList = ref([])
 const schemasLoading = ref(false)
 const tablesLoading = ref(false)
+
+// AI 模型配置
+const aiModelList = ref([])
+const selectedModel = ref('')
+const modelLoading = ref(false)
 
 // 计算属性：处理后的 schema 级树结构
 const processedConnList = computed(() => {
@@ -843,6 +864,34 @@ function buildRequestSchemas() {
     .filter(Boolean)
     .map(p => ({ connId: p.connId, schema: p.schema }))
 }
+
+// AI 模型相关
+function loadModelList() {
+  modelLoading.value = true
+  http.get("/system/config/ai/models").then((resp) => {
+    if (resp.data && resp.data.data) {
+      const data = resp.data.data
+      if (data.aiModelList && Array.isArray(data.aiModelList) && data.aiModelList.length > 0) {
+        aiModelList.value = data.aiModelList
+        selectedModel.value = data.selectedModelId || data.aiModelList[0].id
+      } else {
+        aiModelList.value = []
+        selectedModel.value = ''
+      }
+    }
+  }).catch(() => {
+    aiModelList.value = []
+    selectedModel.value = ''
+  }).finally(() => {
+    modelLoading.value = false
+  })
+}
+
+const selectedModelName = computed(() => {
+  if (!selectedModel.value || aiModelList.value.length === 0) return ''
+  const model = aiModelList.value.find(m => m.id === selectedModel.value)
+  return model ? model.model : ''
+})
 
 // 从用户输入中自动提取 schema.表名 引用（数据权限验证辅助）
 const extractedSchemaHints = computed(() => {
@@ -1412,6 +1461,7 @@ async function sendMessage() {
       schemas,
       question: messageContent,
       tableContext: selectedTables.value,
+      modelId: selectedModel.value,
     }
     if (excelContext) {
       body.excelData = excelContext
@@ -2523,54 +2573,6 @@ function handleClickSession(id) {
   }, 100)
 }
 
-// 登录相关方法
-async function handleLogin() {
-  if (!loginForm.value.username || !loginForm.value.password) {
-    ElMessage({ message: '请输入用户名和密码', type: 'warning' })
-    return
-  }
-
-  loginLoading.value = true
-  const apiBase = import.meta.env.VITE_API_URL || ''
-  const url = apiBase + '/auth/login'
-
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(loginForm.value)
-    })
-
-    if (!resp.ok) {
-      throw new Error(`登录失败：${resp.status}`)
-    }
-
-    const data = await resp.json()
-    if (data.token) {
-      sessionStorage.setItem('authentication', data.token)
-      userInfo.value = data.user
-      isLoggedIn.value = true
-      loginDialogVisible.value = false
-      ElMessage({ message: '登录成功', type: 'success' })
-      loginForm.value = { username: '', password: '' }
-    } else {
-      throw new Error('未获取到 token')
-    }
-  } catch (e) {
-    console.error('[App] 登录失败:', e)
-    ElMessage({ message: '登录失败', type: 'error' })
-  } finally {
-    loginLoading.value = false
-  }
-}
-
-function handleLogout() {
-  sessionStorage.removeItem('authentication')
-  isLoggedIn.value = false
-  userInfo.value = null
-  ElMessage({ message: '已退出登录', type: 'info' })
-}
-
 async function loadSession(id) {
   const apiBase = import.meta.env.VITE_API_URL || ''
   const url = apiBase + '/ai/agent/session?sessionId=' + encodeURIComponent(id)
@@ -2665,6 +2667,8 @@ function handleExportLinkClick(e) {
 }
 
 onMounted(() => {
+  getSysModel()
+  loadModelList()
   loadConnList().then(() => {
     if (loginSucc.value || !isRemote.value) {
       loadTableListForSchemas().then(() => {
@@ -2680,7 +2684,6 @@ onMounted(() => {
       })
     }
   })
-  getSysModel()
   if (loginSucc.value) {
     checkClassicViewPermission()
   }
@@ -3415,12 +3418,16 @@ onUnmounted(() => {
   flex: 0 0 calc(20% - 8px);
 }
 
-.table-selector-row .table-selector-container:last-child {
-  flex: 0 0 calc(80% - 8px);
+.table-selector-row .table-selector-container:nth-child(2) {
+  flex: 0 0 calc(50% - 8px);
+}
+
+.table-selector-row .model-selector-container {
+  flex: 0 0 calc(30% - 8px);
 }
 
 .table-selector-row .table-selector-container.full-width {
-  flex: 0 0 100%;
+  flex: 1;
 }
 
 .table-selector-container {
@@ -3555,6 +3562,30 @@ onUnmounted(() => {
   padding: 1px 6px;
   border-radius: 4px;
   font-weight: 500;
+  flex-shrink: 0;
+}
+
+.model-option-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.model-option-name {
+  font-weight: 600;
+  color: #1a202c;
+  font-size: 13px;
+  flex: 1;
+}
+
+.model-option-provider {
+  font-size: 11px;
+  color: #909399;
+  background: #f0f0f0;
+  padding: 1px 6px;
+  border-radius: 4px;
   flex-shrink: 0;
 }
 

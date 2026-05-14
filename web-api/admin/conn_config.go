@@ -28,14 +28,17 @@ func SaveConn(c *gin.Context) {
 
 	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
 
+	var savedId string
 	if cfg.Id == "" {
+		savedId = utils.RandomStr()
 		stmt, _ := config.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url, db_schema, db_version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		pwdEncoded := ""
 		if cfg.Pwd != nil {
 			pwdEncoded = utils.AESEncode(*cfg.Pwd)
 		}
-		stmt.Exec(utils.RandomStr(), cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
+		stmt.Exec(savedId, cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
 	} else {
+		savedId = cfg.Id
 		if cfg.Pwd == nil || *cfg.Pwd == "" {
 			stmt, _ := config.Mngtdb.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
 			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, dbSchema, dbVersion, cfg.Id)
@@ -46,7 +49,16 @@ func SaveConn(c *gin.Context) {
 		}
 		config.RealseConn(dbParam)
 	}
-	utils.WriteJson(c.Writer, "")
+
+	saved := []ConnCfg{}
+	err := config.Mngtdb.Select(&saved, "select c.*, t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id where c.id = ?", savedId)
+	logutils.PanicErr(err)
+	if len(saved) > 0 {
+		saved[0].Pwd = nil
+		utils.WriteJson(c.Writer, saved[0])
+	} else {
+		utils.WriteJson(c.Writer, "")
+	}
 }
 
 func TestDbConn(c *gin.Context) {
@@ -212,15 +224,14 @@ func ListConn2(c *gin.Context) {
 	sql.WriteString("select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
 	if name != "" {
 		sql.WriteString(" and c.name like '%" + name + "%'")
-	} else if parentId != "" {
-		sql.WriteString(" and c.parent_id = ?")
-
+	}
+	if parentId != "" {
 		if parentId == "none" {
-			param = append(param, "")
+			sql.WriteString(" and (c.parent_id = '' or c.parent_id is null)")
 		} else {
+			sql.WriteString(" and c.parent_id = ?")
 			param = append(param, parentId)
 		}
-
 	}
 
 	// 查询总数

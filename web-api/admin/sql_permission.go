@@ -336,7 +336,7 @@ func isFunctionCall(expr string) bool {
 func extractColumnsFromExpression(expr string) []SelectColumn {
 	var cols []SelectColumn
 	// 提取括号内的内容
-	re := regexp.MustCompile(`(?i)(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)\.(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)`)
+	re := regexp.MustCompile(`(?i)(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
 	matches := re.FindAllString(expr, -1)
 	for _, m := range matches {
 		sc := parseColumnRef(m)
@@ -407,19 +407,26 @@ func parseColumnRef(ref string) SelectColumn {
 	}
 }
 
-// splitDottedIdentifier 按点号分割标识符（考虑反引号）
+// splitDottedIdentifier 按点号分割标识符（考虑反引号和双引号）
 func splitDottedIdentifier(s string) []string {
 	var parts []string
 	current := strings.Builder{}
-	inBacktick := false
+	inQuote := false
+	quoteChar := byte(0)
 
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == '`' {
-			inBacktick = !inBacktick
+		if (c == '`' || c == '"') && !inQuote {
+			inQuote = true
+			quoteChar = c
 			continue
 		}
-		if c == '.' && !inBacktick {
+		if inQuote && c == quoteChar {
+			inQuote = false
+			quoteChar = 0
+			continue
+		}
+		if c == '.' && !inQuote {
 			parts = append(parts, current.String())
 			current.Reset()
 			continue

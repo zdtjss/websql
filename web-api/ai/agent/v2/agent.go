@@ -55,6 +55,7 @@ type ChatRequest struct {
 	InterruptIDs []string    `json:"interruptIds,omitempty"` // 确认时回传（支持多条）
 	CheckPointID string      `json:"checkPointId,omitempty"` // 确认时回传
 	ExcelData    *ExcelData  `json:"excelData,omitempty"`
+	ModelId      string      `json:"modelId,omitempty"` // 选中的模型 ID
 }
 
 // SchemaRef 单个 schema 引用
@@ -934,12 +935,12 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 }
 
 func getSQLDialectRules(dbType string) string {
-	base := "- 字段名和表名若含特殊字符或关键字，使用反引号包裹\n"
-	base += "- 字符串比较注意字符集和排序规则\n"
+	base := "- 字符串比较注意字符集和排序规则\n"
 
 	switch strings.ToLower(dbType) {
 	case "mysql", "mariadb":
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用反引号包裹\n" +
+			base +
 			"- 优先使用 EXPLAIN 分析执行计划，检查是否走索引\n" +
 			"- 字符串模糊匹配优先 LIKE 'prefix%'（可利用索引），避免 LIKE '%middle%'\n" +
 			"- 日期函数使用 DATE_FORMAT、DATE_ADD、DATEDIFF 等\n" +
@@ -947,7 +948,8 @@ func getSQLDialectRules(dbType string) string {
 			"- 注意 ONLY_FULL_GROUP_BY 模式，GROUP BY 的字段必须在 SELECT 中出现或使用聚合函数\n" +
 			"- 多表 JOIN 时注意驱动表选择，小表驱动大表\n"
 	case "oracle":
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用双引号包裹，禁止使用反引号\n" +
+			base +
 			"- 使用 EXPLAIN PLAN FOR 分析执行计划\n" +
 			"- 分页使用 ROWNUM 或 OFFSET/FETCH（12c+），注意 ROWNUM 是在排序前计算的\n" +
 			"- 日期函数使用 TO_DATE、TO_CHAR、ADD_MONTHS 等\n" +
@@ -955,29 +957,32 @@ func getSQLDialectRules(dbType string) string {
 			"- 注意空字符串在 Oracle 中等价于 NULL\n" +
 			"- Dual 表用于无表查询，如 SELECT SYSDATE FROM DUAL\n"
 	case "postgresql", "postgres":
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用双引号包裹，禁止使用反引号\n" +
+			base +
 			"- 使用 EXPLAIN ANALYZE 分析实际执行计划\n" +
-			"- 字段名和表名使用双引号包裹（若含大写或特殊字符）\n" +
 			"- 分页使用 LIMIT count OFFSET offset\n" +
 			"- 日期函数使用 TO_CHAR、DATE_TRUNC、AGE 等\n" +
 			"- 字符串拼接使用 || 或 CONCAT\n" +
 			"- 注意 PostgreSQL 的 MVCC 特性，大量更新后建议 VACUUM\n"
 	case "sqlite":
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用反引号或双引号包裹\n" +
+			base +
 			"- 使用 EXPLAIN QUERY PLAN 分析查询计划\n" +
 			"- 日期函数使用 strftime、date、time、datetime\n" +
 			"- 字符串拼接使用 ||\n" +
 			"- AUTOINCREMENT 仅用于 INTEGER PRIMARY KEY\n" +
 			"- 写操作会锁定整个数据库，避免长事务\n"
 	case "sqlserver", "mssql":
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用方括号 [] 包裹，禁止使用反引号\n" +
+			base +
 			"- 使用 SET STATISTICS IO ON 查看 IO 统计\n" +
 			"- 分页使用 OFFSET/FETCH（2012+）或 ROW_NUMBER() OVER()\n" +
 			"- 日期函数使用 FORMAT、DATEADD、DATEDIFF 等\n" +
 			"- 使用 TOP 限制返回行数（旧版本），新版本用 OFFSET/FETCH\n" +
 			"- 字符串拼接使用 + 或 CONCAT（2012+）\n"
 	default:
-		return base +
+		return "- 字段名和表名若含特殊字符或关键字，使用双引号包裹\n" +
+			base +
 			"- 使用 EXPLAIN 分析执行计划\n" +
 			"- 遵循标准 SQL 语法，避免数据库特有的非标准扩展\n"
 	}
