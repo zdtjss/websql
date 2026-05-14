@@ -2420,8 +2420,9 @@ function handleLoginSuccess(userData) {
       loadTableListForSchemas()
     }
   })
-  loadPromptList()
+  loadModelList()
   checkClassicViewPermission()
+  loadPromptList()
 }
 
 function checkClassicViewPermission() {
