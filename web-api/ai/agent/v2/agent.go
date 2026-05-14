@@ -629,8 +629,8 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 		}
 		if cfg.MaxTokens > 0 {
 			maxTokens := cfg.MaxTokens
-			if isOllamaURL(cfg.BaseURL) && maxTokens > 262144 {
-				maxTokens = 262144
+			if isOllamaURL(cfg.BaseURL) && maxTokens > 262100 {
+				maxTokens = 262100
 			}
 			openaiCfg.MaxTokens = &maxTokens
 		}

@@ -143,7 +143,7 @@
         </el-form-item>
         <el-form-item label="Max Tokens">
           <el-input-number v-model="modelForm.maxTokens" :min="0" :max="modelMaxTokensMax" :step="100" placeholder="0=不限" />
-          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262144</span>
+          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262100</span>
         </el-form-item>
         <el-form-item label="思考模式">
           <el-switch v-model="modelForm.enableThinking" />
@@ -208,14 +208,14 @@ const modelForm = ref({
 const modelMaxTokensMax = computed(() => {
   return modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
     || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
-    ? 262144 : Infinity
+    ? 262100 : Infinity
 })
 
 watch(() => modelForm.value.baseUrl, () => {
   const isOllama = modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
     || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
-  if (isOllama && modelForm.value.maxTokens > 262144) {
-    modelForm.value.maxTokens = 262144
+  if (isOllama && modelForm.value.maxTokens > 262100) {
+    modelForm.value.maxTokens = 262100
   }
 })
 
