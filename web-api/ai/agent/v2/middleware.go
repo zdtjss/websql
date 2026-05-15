@@ -398,7 +398,7 @@ func truncateStr(s string, maxLen int) string {
 // 对 query_data 返回的大量数据行自动截断，只保留前 MaxRows 行 + 总行数提示。
 // 显著减少 LLM 上下文中的 Token 消耗。
 
-const defaultReductionMaxRows = 10
+const defaultReductionMaxRows = 50
 
 type ReductionMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
@@ -470,4 +470,114 @@ func (m *ReductionMiddleware) reduceQueryResult(result string) string {
 	reducedJSON, _ := json.Marshal(output)
 	log.Printf("[Reduction] query_data 结果精简 - 原始行数=%d, 保留行数=%d\n", totalRows, maxRows)
 	return string(reducedJSON)
+}
+
+// ──────────────────────────────────────────────
+// repairToolMessageSequence — 历史消息序列修复
+// ──────────────────────────────────────────────
+//
+// 修复截断历史后 tool/assistant(tool_calls) 不匹配的问题，确保符合 OpenAI API 规范：
+//   - 每个 role=tool 消息必须紧跟在含 tool_calls 的 assistant 消息之后
+//   - tool_call_id 必须与前面 assistant 的某个 tool_call.id 匹配
+//   - assistant(tool_calls) 的每个 tool_call 都必须有对应的 tool 响应
+//
+// 注意：此函数仅在 RunStream 入口对历史消息调用一次，
+// 不可在 BeforeModelRewriteState 中使用，否则会破坏 ReAct 循环内部状态。
+
+func repairToolMessageSequence(msgs []*schema.Message) []*schema.Message {
+	if len(msgs) <= 1 {
+		return msgs
+	}
+
+	validToolCallIDs := make(map[string]bool, len(msgs))
+	for _, msg := range msgs {
+		if msg.Role == schema.Assistant {
+			for _, tc := range msg.ToolCalls {
+				validToolCallIDs[tc.ID] = true
+			}
+		}
+	}
+
+	var filtered []*schema.Message
+	for _, msg := range msgs {
+		if msg.Role != schema.Tool {
+			filtered = append(filtered, msg)
+		} else if msg.ToolCallID != "" && validToolCallIDs[msg.ToolCallID] {
+			filtered = append(filtered, msg)
+		} else {
+			log.Printf("[MessageRepair] 跳过孤立 tool 消息 - toolCallID=%s, toolName=%s\n",
+				msg.ToolCallID, msg.ToolName)
+		}
+	}
+
+	ordered := repairToolMessageOrder(filtered)
+
+	return repairUnansweredToolCalls(ordered)
+}
+
+func repairToolMessageOrder(msgs []*schema.Message) []*schema.Message {
+	var result []*schema.Message
+	for _, msg := range msgs {
+		if msg.Role != schema.Tool {
+			result = append(result, msg)
+			continue
+		}
+
+		if len(result) == 0 {
+			log.Printf("[MessageRepair] 跳过首条 tool 消息 - toolCallID=%s\n", msg.ToolCallID)
+			continue
+		}
+
+		prev := result[len(result)-1]
+		if prev.Role == schema.Assistant && len(prev.ToolCalls) > 0 {
+			result = append(result, msg)
+		} else if prev.Role == schema.Tool {
+			result = append(result, msg)
+		} else {
+			log.Printf("[MessageRepair] 跳过位置不当的 tool 消息 - toolCallID=%s, prevRole=%s\n",
+				msg.ToolCallID, prev.Role)
+		}
+	}
+	return result
+}
+
+func repairUnansweredToolCalls(msgs []*schema.Message) []*schema.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+
+	answeredToolCalls := make(map[string]bool, len(msgs))
+	for _, msg := range msgs {
+		if msg.Role == schema.Tool && msg.ToolCallID != "" {
+			answeredToolCalls[msg.ToolCallID] = true
+		}
+	}
+
+	var result []*schema.Message
+	for _, msg := range msgs {
+		if msg.Role != schema.Assistant || len(msg.ToolCalls) == 0 {
+			result = append(result, msg)
+			continue
+		}
+
+		var remaining []schema.ToolCall
+		for _, tc := range msg.ToolCalls {
+			if answeredToolCalls[tc.ID] {
+				remaining = append(remaining, tc)
+			}
+		}
+
+		switch {
+		case len(remaining) == 0:
+			result = append(result, schema.AssistantMessage(msg.Content, nil))
+			log.Printf("[MessageRepair] 移除无响应的 assistant tool_calls - content=%q\n",
+				truncateStr(msg.Content, 50))
+		case len(remaining) < len(msg.ToolCalls):
+			result = append(result, schema.AssistantMessage(msg.Content, remaining))
+		default:
+			result = append(result, msg)
+		}
+	}
+
+	return result
 }

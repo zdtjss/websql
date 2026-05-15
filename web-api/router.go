@@ -6,6 +6,14 @@ import (
 	admin "go-web/web-api/admin"
 	"go-web/web-api/ai"
 	aiagentv2 "go-web/web-api/ai/agent/v2"
+	"go-web/web-api/backup"
+	"go-web/web-api/datadict"
+	"go-web/web-api/modeler"
+	"go-web/web-api/monitor"
+	"go-web/web-api/search"
+
+	"go-web/web-api/sqlopt"
+	syncdb "go-web/web-api/sync"
 	"io"
 	"log"
 	"net/http"
@@ -132,6 +140,51 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	routerGroup.GET("/ai/agent/audit/logs", agentHandler.HandleGetSQLAuditLogs)
 	routerGroup.GET("/exports/:filename", handleExportDownload) // AI 导出文件下载（下载后自动删除）
+
+	// 数据同步与结构同步
+	routerGroup.POST("/sync/compareSchema", syncdb.CompareSchema)
+	routerGroup.POST("/sync/compareData", syncdb.CompareData)
+	routerGroup.POST("/sync/applySchemaDiff", syncdb.ApplySchemaDiff)
+	routerGroup.POST("/sync/applyDataSync", syncdb.ApplyDataSync)
+	routerGroup.POST("/sync/generateSyncSQL", syncdb.GenerateSyncSQL)
+	routerGroup.GET("/sync/targets", syncdb.GetSyncTargets)
+
+	// 数据建模与ER图
+	routerGroup.POST("/modeler/reverse", modeler.ReverseEngineer)
+	routerGroup.POST("/modeler/forward", modeler.ForwardEngineer)
+	routerGroup.POST("/modeler/export", modeler.ExportModel)
+
+	// 备份恢复体系
+	routerGroup.POST("/backup/create", backup.CreateBackup)
+	routerGroup.GET("/backup/list", backup.ListBackups)
+	routerGroup.POST("/backup/restore", backup.RestoreBackup)
+	routerGroup.POST("/backup/delete", backup.DeleteBackup)
+	routerGroup.GET("/backup/tables", backup.GetBackupTables)
+	routerGroup.GET("/backup/download", backup.DownloadBackup)
+
+	// 数据字典
+	routerGroup.POST("/datadict/generate", datadict.GenerateDict)
+	routerGroup.POST("/datadict/export/html", datadict.ExportDictHTML)
+	routerGroup.POST("/datadict/export/pdf", datadict.ExportDictPDF)
+	routerGroup.GET("/datadict/tables", datadict.GetDictTables)
+
+	// SQL编辑器增强 - AI优化建议
+	routerGroup.POST("/sqlopt/explain", sqlopt.ExplainSQL)
+	routerGroup.POST("/sqlopt/optimize", sqlopt.OptimizeSQL)
+	routerGroup.POST("/sqlopt/suggestions", sqlopt.AnalyzeSQLSuggestions)
+
+	// 监控面板增强
+	routerGroup.GET("/monitor/metrics", monitor.GetMetrics)
+	routerGroup.GET("/monitor/metrics/history", monitor.GetMetricsHistory)
+	routerGroup.GET("/monitor/resources", monitor.GetResources)
+	routerGroup.GET("/monitor/processes", monitor.GetProcesses)
+	routerGroup.GET("/monitor/variables", monitor.GetServerVariables)
+
+	// 全局数据库搜索
+	routerGroup.GET("/search/objects", search.SearchObjects)
+	routerGroup.GET("/search/data", search.SearchData)
+	routerGroup.GET("/search/all", search.SearchAll)
+	routerGroup.GET("/search/tables", search.GetSearchTables)
 
 	routerGroup.GET("/sysMode", func(c *gin.Context) {
 		utils.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})

@@ -175,9 +175,9 @@
         <el-button @click="modelDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="testModelConfig" :loading="modelTesting">
           <el-icon><Connection /></el-icon>
-          测试配置
+          测试
         </el-button>
-        <el-button type="primary" @click="saveModel">保存</el-button>
+        <el-button type="primary" @click="saveModel">确定</el-button>
       </template>
     </el-dialog>
   </div>

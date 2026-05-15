@@ -28,6 +28,7 @@ var (
 )
 
 func main() {
+	gin.SetMode(gin.ReleaseMode)
 
 	port = flag.String("port", "80", "")
 	isHttps = flag.Bool("https", false, "")

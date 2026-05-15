@@ -10,6 +10,7 @@
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
                     <el-button @click="explainSql" title="查看执行计划">EXPLAIN</el-button>
+                    <el-button type="success" @click="toggleOptimizePanel" title="AI SQL优化建议">AI优化</el-button>
                     <el-divider direction="vertical" />
                     <el-dropdown @command="handleExportResult">
                       <el-button :disabled="result.length === 0">
@@ -180,6 +181,14 @@
     @execute="onQueryBuilderExecute"
     @insert="onQueryBuilderInsert"
   />
+
+  <SQLOptimizePanel
+    v-model:visible="optimizePanelVisible"
+    :conn-id="props.connId"
+    :schema="props.schema"
+    :sql="getEditorDoc()"
+    :db-type="props.dbType"
+  />
 </template>
 
 <script lang="ts" setup>
@@ -198,6 +207,7 @@ import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '../components/SqlSnippetManager.vue'
 import QueryBuilderDialog from '../components/QueryBuilderDialog.vue'
+import SQLOptimizePanel from '../components/SQLOptimizePanel.vue'
 
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -278,6 +288,7 @@ const exectingSql = ref(false)
 const executionTime = ref<number | null>(null)
 const snippetVisible = ref(false)
 const queryBuilderVisible = ref(false)
+const optimizePanelVisible = ref(false)
 const currentSelectTable = ref("")
 
 const backupDataList = ref([])
@@ -513,6 +524,20 @@ function createEditor(editorContainer: any, doc: any) {
         highlightActiveLineGutter(),
         autocompletion(),
         EditorView.editable.of(true),
+        EditorView.domEventHandlers({
+            paste() {
+                setTimeout(() => {
+                    if (editorView.value) {
+                        editorView.value.dispatch({
+                            effects: sqlCompartment.reconfigure(sql({
+                                dialect: dbSchemaProxy.getDialect(props.schema),
+                                schema: <any>dbSchemaProxy.getAll(props.schema),
+                            }))
+                        })
+                    }
+                }, 50)
+            }
+        }),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
     ]
@@ -567,6 +592,10 @@ function formatSql() {
     }
     const editorState = <EditorState>editorView.value?.state
     editorView.value?.dispatch(editorState.replaceSelection(format(sql || "", { language: getSqlLang() }) + "\n"))
+}
+
+function toggleOptimizePanel() {
+  optimizePanelVisible.value = !optimizePanelVisible.value
 }
 
 function explainSql() {

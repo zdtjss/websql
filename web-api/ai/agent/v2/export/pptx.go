@@ -27,9 +27,51 @@ func GeneratePptx(qr *QueryResult, title string, chartPaths []string, outputPath
 	zw := zip.NewWriter(f)
 	defer zw.Close()
 
+	groupCol := ""
+	for _, c := range qr.Columns {
+		if groupColumnNames[c] {
+			groupCol = c
+			break
+		}
+	}
+
+	type groupEntry struct {
+		name string
+		rows []map[string]any
+	}
+	var groups []groupEntry
+	var otherCols []string
+
+	if groupCol != "" {
+		groupIndex := map[string]int{}
+		for _, row := range qr.Data {
+			gk := fmt.Sprintf("%v", row[groupCol])
+			if idx, ok := groupIndex[gk]; ok {
+				groups[idx].rows = append(groups[idx].rows, row)
+			} else {
+				groupIndex[gk] = len(groups)
+				groups = append(groups, groupEntry{name: gk, rows: []map[string]any{row}})
+			}
+		}
+		otherCols = make([]string, 0, len(qr.Columns)-1)
+		for _, c := range qr.Columns {
+			if c != groupCol {
+				otherCols = append(otherCols, c)
+			}
+		}
+	}
+
 	hasChart := len(chartPaths) > 0
 	hasHighlights := len(qr.Data) > 5
-	slideCount := 3 + boolInt(hasChart) + boolInt(hasHighlights)
+
+	groupSlideCount := 0
+	if groupCol != "" {
+		for _, g := range groups {
+			groupSlideCount += 1 + (len(g.rows)-1)/15
+		}
+	}
+
+	slideCount := 3 + boolInt(hasChart) + boolInt(hasHighlights) + groupSlideCount
 
 	writeZipEntry(zw, "[Content_Types].xml", pptxContentTypes(slideCount))
 	writeZipEntry(zw, "_rels/.rels", pptxTopRels())
@@ -58,9 +100,19 @@ func GeneratePptx(qr *QueryResult, title string, chartPaths []string, outputPath
 	writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
 	currentSlide++
 
-	writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxTableSlideEnhanced(qr, currentSlide))
-	writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
-	currentSlide++
+	if groupCol != "" {
+		for _, g := range groups {
+			subQr := &QueryResult{Columns: otherCols, Data: g.rows}
+			writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide),
+				pptxGroupTableSlide(groupCol, g.name, len(g.rows), subQr, currentSlide))
+			writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
+			currentSlide++
+		}
+	} else {
+		writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxTableSlideEnhanced(qr, currentSlide))
+		writeZipEntry(zw, fmt.Sprintf("ppt/slides/_rels/slide%d.xml.rels", currentSlide), pptxSlideRels())
+		currentSlide++
+	}
 
 	if hasHighlights {
 		writeZipEntry(zw, fmt.Sprintf("ppt/slides/slide%d.xml", currentSlide), pptxHighlightSlideEnhanced(qr, currentSlide))
@@ -218,9 +270,6 @@ func pptxTableSlideEnhanced(qr *QueryResult, pageNum int) string {
 	sb.WriteString(pptxTextBox(2, 1000000, 250000, 10200000, 700000, "数据明细", 2600, true, PptxPrimaryColor))
 
 	numCols := len(qr.Columns)
-	if numCols > 8 {
-		numCols = 8
-	}
 	numRows := maxRows + 1
 
 	tableWidth := int64(10500000)
@@ -271,6 +320,87 @@ func pptxTableSlideEnhanced(qr *QueryResult, pageNum int) string {
 
 	if len(qr.Data) > 15 {
 		hint := fmt.Sprintf("\u203B \u5171 %d \u884C\u6570\u636E\uFF0C\u4EE5\u4E0A\u4EC5\u5C55\u793A\u524D 15 \u884C", len(qr.Data))
+		sb.WriteString(pptxTextBox(21, 1000000, tableCy+1300000, tableWidth, 350000, hint, 1200, false, "757575"))
+	}
+
+	sb.WriteString(pptxSlideNumber(22, pageNum))
+	sb.WriteString("</p:spTree></p:cSld>\n</p:sld>")
+	return sb.String()
+}
+
+func pptxGroupTableSlide(groupCol, groupName string, totalRows int, qr *QueryResult, pageNum int) string {
+	maxRows := len(qr.Data)
+	if maxRows > 15 {
+		maxRows = 15
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<p:cSld>
+  <p:bg><p:bgPr><a:solidFill><a:srgbClr val="F8F9FA"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>
+  <p:spTree>
+  <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+  <p:grpSpPr/>
+`)
+
+	sb.WriteString(pptxColorBarEnhanced(5, 0, 0, 12192000, 80000, PptxAccentColor))
+	sb.WriteString(pptxTextBox(2, 1000000, 250000, 10200000, 700000,
+		fmt.Sprintf("%s: %s（%d 条）", groupCol, groupName, totalRows), 2400, true, PptxPrimaryColor))
+
+	numCols := len(qr.Columns)
+	numRows := maxRows + 1
+
+	tableWidth := int64(10500000)
+	colWidth := tableWidth / int64(numCols)
+	rowHeight := int64(330000)
+	tableCy := int64(numRows) * rowHeight
+
+	sb.WriteString(fmt.Sprintf(`<p:graphicFrame>
+  <p:nvGraphicFramePr><p:cNvPr id="10" name="Table"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>
+  <p:xfrm><a:off x="1000000" y="1100000"/><a:ext cx="%d" cy="%d"/></p:xfrm>
+  <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+  <a:tbl>
+    <a:tblPr firstRow="1" bandRow="0"/>
+    <a:tblGrid>`, tableWidth, tableCy))
+
+	for i := 0; i < numCols; i++ {
+		fmt.Fprintf(&sb, `<a:gridCol w="%d"/>`, colWidth)
+	}
+	sb.WriteString("</a:tblGrid>\n")
+
+	sb.WriteString("<a:tr h=\"380000\">")
+	for i := 0; i < numCols; i++ {
+		fmt.Fprintf(&sb, `<a:tc><a:txBody><a:bodyPr lIns="50000" rIns="50000" tIns="25000" bIns="25000"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="1100" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/></a:rPr><a:t>%s</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="1A237E"/></a:solidFill></a:tcPr></a:tc>`, xmlEscape(qr.Columns[i]))
+	}
+	sb.WriteString("</a:tr>\n")
+
+	for r := 0; r < maxRows; r++ {
+		row := qr.Data[r]
+		sb.WriteString(fmt.Sprintf("<a:tr h=\"%d\">", rowHeight))
+		for c := 0; c < numCols; c++ {
+			val := ""
+			if v, ok := row[qr.Columns[c]]; ok {
+				val = fmt.Sprintf("%v", v)
+			}
+			if len([]rune(val)) > 28 {
+				val = string([]rune(val)[:28]) + "\u2026"
+			}
+			fillColor := "FFFFFF"
+			if r%2 == 1 {
+				fillColor = "F0F4FF"
+			}
+			fmt.Fprintf(&sb, `<a:tc><a:txBody><a:bodyPr lIns="50000" rIns="50000" tIns="18000" bIns="18000"/><a:p><a:r><a:rPr lang="zh-CN" sz="1050"><a:solidFill><a:srgbClr val="212121"/></a:solidFill><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/></a:rPr><a:t>%s</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="%s"/></a:solidFill></a:tcPr></a:tc>`, xmlEscape(val), fillColor)
+		}
+		sb.WriteString("</a:tr>\n")
+	}
+
+	sb.WriteString("</a:tbl></a:graphicData></a:graphic></p:graphicFrame>\n")
+
+	if len(qr.Data) > 15 {
+		hint := fmt.Sprintf("\u203B \u5171 %d \u884C\uFF0C\u4EE5\u4E0A\u4EC5\u5C55\u793A\u524D 15 \u884C", len(qr.Data))
 		sb.WriteString(pptxTextBox(21, 1000000, tableCy+1300000, tableWidth, 350000, hint, 1200, false, "757575"))
 	}
 

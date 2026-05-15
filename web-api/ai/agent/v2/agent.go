@@ -334,6 +334,11 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
+	// 修复历史消息序列：截断后可能出现孤立的 tool 消息，
+	// 必须在传入 Runner 前修复，否则 OpenAI API 会拒绝请求。
+	// 注意：不可在 middleware 中修复，否则会破坏 ReAct 循环内部状态。
+	messages = repairToolMessageSequence(messages)
+
 	// 使用 Runner.Run 执行，传入 CheckPointID 以支持中断恢复
 	// CheckPointID 使用 sessionID，确保同一会话的中断可以恢复
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
@@ -438,10 +443,21 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
 			logUnwrappedError(event.Err)
 			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
+				sess.RemoveTrailingIncompleteToolCalls()
+				if fullResponse.Len() > 0 {
+					_ = sess.SaveToDB()
+				}
+				if errors.Is(event.Err, context.DeadlineExceeded) {
+					flush(StreamChunk{Type: "error", Content: "AI 处理超时，部分操作可能未完成。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
+				}
 				break
 			}
 			if errors.Is(event.Err, adk.ErrExceedMaxIterations) || strings.Contains(event.Err.Error(), "exceeds max iterations") {
-				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效，请检查数据或精简问题后重试。"})
+				sess.RemoveTrailingIncompleteToolCalls()
+				if fullResponse.Len() > 0 {
+					_ = sess.SaveToDB()
+				}
+				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				break
 			}
 			errMsg := extractRootErrorMessage(event.Err)
@@ -622,6 +638,7 @@ func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCalling
 	case "openai":
 		openaiCfg := &openai.ChatModelConfig{
 			BaseURL: cfg.BaseURL, Model: cfg.Model, APIKey: cfg.ApiKey,
+			Timeout: 30 * time.Minute,
 		}
 		if cfg.Temperature > 0 {
 			t := cfg.Temperature

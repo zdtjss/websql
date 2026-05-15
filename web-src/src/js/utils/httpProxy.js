@@ -21,66 +21,9 @@ function dispatchSessionExpired(detail) {
     }, 3000);
 }
 
-const pendingRequests = new Map();
-
-function generateRequestKey(config) {
-    const { method, url, params, data } = config;
-    return [method, url, JSON.stringify(params), JSON.stringify(data)].join('&');
-}
-
-function removePendingRequest(config) {
-    const key = generateRequestKey(config);
-    if (pendingRequests.has(key)) {
-        const cancel = pendingRequests.get(key);
-        cancel('canceled_by_duplicate');
-        pendingRequests.delete(key);
-    }
-}
-
-function addPendingRequest(config) {
-    const key = generateRequestKey(config);
-    if (pendingRequests.has(key)) {
-        const cancel = pendingRequests.get(key);
-        cancel('canceled_by_duplicate');
-        pendingRequests.delete(key);
-    }
-    config.cancelToken = new axios.CancelToken((cancel) => {
-        pendingRequests.set(key, cancel);
-    });
-}
-
-const throttleMap = new Map();
-
-function throttleRequest(config, minInterval = 300) {
-    const key = generateRequestKey(config);
-    const now = Date.now();
-    const lastTime = throttleMap.get(key) || 0;
-    if (now - lastTime < minInterval) {
-        return false;
-    }
-    throttleMap.set(key, now);
-    return true;
-}
-
 http.interceptors.request.use((config) => {
     config.url = env.VITE_API_URL + config.url
     config.headers['Authorization'] = sessionStorage.getItem("authentication") || ""
-
-    if (config.method === 'post' && config.url.includes('/execSQL')) {
-        if (!throttleRequest(config, 200)) {
-            return Promise.reject(new axios.Cancel('canceled_by_throttle'));
-        }
-    }
-
-    if (config.url.includes('/listTableNames') || config.url.includes('/showTree')) {
-        if (!throttleRequest(config, 500)) {
-            return Promise.reject(new axios.Cancel('canceled_by_throttle'));
-        }
-    }
-
-    if (config.url.includes('/ai/agent/chatStream')) {
-        removePendingRequest(config);
-    }
 
     return config
 });

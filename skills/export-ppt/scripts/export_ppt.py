@@ -250,6 +250,53 @@ class PPTBuilder:
             self._add_text(slide, f"▸ {item}", Inches(1.2), y, Inches(11), Inches(0.7),
                            size=Pt(16), color=color)
 
+    def add_table_page(self, title, headers, rows, total=None):
+        slide = self._blank_slide()
+        self._add_text(slide, title, Inches(0.8), Inches(0.3), Inches(11), Inches(0.7),
+                       size=Pt(24), color=Theme.WHITE, bold=True)
+        self._add_line(slide, Inches(0.8), Inches(0.95), Inches(2))
+
+        num_rows = len(rows) + 1
+        num_cols = len(headers)
+        if num_cols == 0 or num_rows <= 1:
+            return
+
+        col_width = Inches(11.5 / num_cols)
+        tbl_width = col_width * num_cols
+        row_height = Cm(0.7)
+        tbl_height = row_height * num_rows
+
+        table_shape = slide.shapes.add_table(num_rows, num_cols, Inches(0.9), Inches(1.3), tbl_width, tbl_height)
+        table = table_shape.table
+
+        for i, h in enumerate(headers):
+            cell = table.cell(0, i)
+            cell.text = h
+            for p in cell.text_frame.paragraphs:
+                p.font.size = Pt(11)
+                p.font.bold = True
+                p.font.color.rgb = Theme.WHITE
+                p.alignment = PP_ALIGN.CENTER
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor(0x1A, 0x23, 0x7E)
+
+        for r_idx, row in enumerate(rows):
+            for c_idx, val in enumerate(row):
+                cell = table.cell(r_idx + 1, c_idx)
+                cell.text = str(val)[:28]
+                for p in cell.text_frame.paragraphs:
+                    p.font.size = Pt(10)
+                    p.font.color.rgb = RGBColor(0x21, 0x21, 0x21)
+                    p.alignment = PP_ALIGN.CENTER
+                if r_idx % 2 == 1:
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = RGBColor(0xF0, 0xF4, 0xFF)
+
+        if total is not None and total > len(rows):
+            self._add_text(slide, f"※ 共 {total} 行，以上仅展示前 {len(rows)} 行",
+                           Inches(0.9), Inches(1.3) + tbl_height + Cm(0.3), Inches(8), Inches(0.5),
+                           size=Pt(12), color=Theme.GRAY)
+
     def add_comparison_page(self, title, left_title, left_items, right_title, right_items):
         """左右对比页"""
         slide = self._blank_slide()
@@ -526,21 +573,46 @@ if __name__ == "__main__":
                 builder.add_text_page("核心发现", highlights, highlight_indices=[0])
 
             if columns and rows:
-                headers = columns
-                display_rows = []
-                for row in rows:
-                    display_rows.append([str(row.get(c, "")) for c in columns])
-                # 限制表格数据量
-                if len(display_rows) > 20:
-                    display_rows = display_rows[:20]
-                builder.add_chart_page("数据概览", "bar", {
-                    "title": "数据分布",
-                    "categories": [str(r[0])[:12] for r in display_rows[:10]],
-                    "series": [{"name": columns[1] if len(columns) > 1 else "Value",
-                                "values": [float(str(r[1]).replace(",", "")) if len(r) > 1 and str(r[1]).replace(".", "").replace("-", "").replace(",", "").isdigit() else 0 for r in display_rows[:10]]}]
-                })
-                builder.add_text_page("数据明细", [f"{h}: 共 {len(rows)} 条记录" for h in headers[:5]],
-                                       highlight_indices=[0])
+                GROUP_COLUMNS = {"表名", "table_name", "TABLE_NAME", "表名称"}
+                group_col = None
+                for c in columns:
+                    if c in GROUP_COLUMNS:
+                        group_col = c
+                        break
+
+                if group_col:
+                    from collections import OrderedDict
+                    groups = OrderedDict()
+                    for row in rows:
+                        gk = str(row.get(group_col, ""))
+                        groups.setdefault(gk, []).append(row)
+
+                    other_cols = [c for c in columns if c != group_col]
+                    for gk, gk_rows in groups.items():
+                        display_rows = []
+                        for row in gk_rows:
+                            display_rows.append([str(row.get(c, "")) for c in other_cols])
+                        if len(display_rows) > 15:
+                            display_rows = display_rows[:15]
+                        builder.add_table_page(
+                            f"{group_col}: {gk}（{len(gk_rows)} 条）",
+                            other_cols, display_rows,
+                            total=len(gk_rows)
+                        )
+                else:
+                    display_rows = []
+                    for row in rows:
+                        display_rows.append([str(row.get(c, "")) for c in columns])
+                    if len(display_rows) > 20:
+                        display_rows = display_rows[:20]
+                    builder.add_chart_page("数据概览", "bar", {
+                        "title": "数据分布",
+                        "categories": [str(r[0])[:12] for r in display_rows[:10]],
+                        "series": [{"name": columns[1] if len(columns) > 1 else "Value",
+                                    "values": [float(str(r[1]).replace(",", "")) if len(r) > 1 and str(r[1]).replace(".", "").replace("-", "").replace(",", "").isdigit() else 0 for r in display_rows[:10]]}]
+                    })
+                    builder.add_text_page("数据明细", [f"{h}: 共 {len(rows)} 条记录" for h in headers[:5]],
+                                           highlight_indices=[0])
 
             if chart_paths:
                 for cp in chart_paths[:3]:

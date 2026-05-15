@@ -203,6 +203,24 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		defer cancel()
 		rows, err := conn.QueryxContext(queryCtx, sql)
 		if err != nil {
+			if input.ConnID == "" && targetConnID == connId {
+				if altConnID, altConn := tryAlternativeConn(sql, connLookup, connId); altConn != nil {
+					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, input.ConnID)
+					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
+					defer altCancel()
+					if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
+						sql = applyRowLimit(sql, altConn.DriverName(), 2000)
+					}
+					altRows, altErr := altConn.QueryxContext(altQueryCtx, sql)
+					if altErr == nil {
+						defer altRows.Close()
+						cols, _ := altRows.Columns()
+						data := dbutils.GetResultRows(altConn.DriverName(), altRows)
+						return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
+					}
+					log.Printf("[Tool:query_data] 自动路由查询也失败: %v，返回原始错误\n", altErr)
+				}
+			}
 			return nil, fmt.Errorf("query failed: %w", err)
 		}
 		defer rows.Close()
@@ -210,6 +228,35 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		data := dbutils.GetResultRows(conn.DriverName(), rows)
 		return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
 	}
+}
+
+func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string) (string, *sqlx.DB) {
+	schema := extractSchemaFromSQL(sql)
+	if schema == "" {
+		return "", nil
+	}
+	altConnID, ok := connLookup[strings.ToUpper(schema)]
+	if !ok || altConnID == defaultConnID {
+		return "", nil
+	}
+	altConn, _ := GetConn(altConnID)
+	if altConn == nil {
+		return "", nil
+	}
+	return altConnID, altConn
+}
+
+func extractSchemaFromSQL(sql string) string {
+	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:` + "`" + `([^` + "`" + `]+)` + "`" + `|\"([^\"]+)\"|\[([^\]]+)\]|(\w+))\s*\.\s*(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\"[^\"]+\"|\[[^\]]+\]|\w+)`)
+	matches := re.FindStringSubmatch(sql)
+	if len(matches) > 1 {
+		for i := 1; i < len(matches); i++ {
+			if matches[i] != "" {
+				return matches[i]
+			}
+		}
+	}
+	return ""
 }
 
 // ExecAuditCtx holds context for audit logging within exec_sql tool

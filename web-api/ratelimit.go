@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"hash/fnv"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,30 +11,45 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const numLimiterShards = 64
+
 type ipLimiter struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
 }
 
-type ipLimiterStore struct {
-	limiters map[string]*ipLimiter
+type ipLimiterShard struct {
 	mu       sync.RWMutex
+	limiters map[string]*ipLimiter
+}
+
+type ipLimiterStore struct {
+	shards [numLimiterShards]*ipLimiterShard
 }
 
 func newIPLimiterStore() *ipLimiterStore {
-	return &ipLimiterStore{
-		limiters: make(map[string]*ipLimiter),
+	s := &ipLimiterStore{}
+	for i := 0; i < numLimiterShards; i++ {
+		s.shards[i] = &ipLimiterShard{limiters: make(map[string]*ipLimiter)}
 	}
+	return s
+}
+
+func (s *ipLimiterStore) getShard(ip string) *ipLimiterShard {
+	h := fnv.New32a()
+	h.Write([]byte(ip))
+	return s.shards[h.Sum32()%numLimiterShards]
 }
 
 func (s *ipLimiterStore) getLimiter(ip string, rps float64, burst int) *rate.Limiter {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.getShard(ip)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-	entry, exists := s.limiters[ip]
+	entry, exists := sh.limiters[ip]
 	if !exists {
 		limiter := rate.NewLimiter(rate.Limit(rps), burst)
-		s.limiters[ip] = &ipLimiter{limiter: limiter, lastSeen: time.Now()}
+		sh.limiters[ip] = &ipLimiter{limiter: limiter, lastSeen: time.Now()}
 		return limiter
 	}
 	entry.lastSeen = time.Now()
@@ -41,13 +57,16 @@ func (s *ipLimiterStore) getLimiter(ip string, rps float64, burst int) *rate.Lim
 }
 
 func (s *ipLimiterStore) cleanup(maxAge time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
-	for ip, entry := range s.limiters {
-		if now.Sub(entry.lastSeen) > maxAge {
-			delete(s.limiters, ip)
+	for i := 0; i < numLimiterShards; i++ {
+		sh := s.shards[i]
+		sh.mu.Lock()
+		for ip, entry := range sh.limiters {
+			if now.Sub(entry.lastSeen) > maxAge {
+				delete(sh.limiters, ip)
+			}
 		}
+		sh.mu.Unlock()
 	}
 }
 

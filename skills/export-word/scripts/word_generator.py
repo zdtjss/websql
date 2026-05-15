@@ -232,11 +232,40 @@ class WordBuilder:
         run.font.italic = True
         run.font.color.rgb = Theme.GRAY
 
+    def add_code_block(self, code):
+        """添加代码块"""
+        for line in code.split("\n"):
+            p = self.doc.add_paragraph()
+            pPr = p._element.get_or_add_pPr()
+            shd = pPr.makeelement(qn('w:shd'), {
+                qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): 'F5F5F5'
+            })
+            pPr.append(shd)
+            ind = pPr.makeelement(qn('w:ind'), {qn('w:left'): '360'})
+            pPr.append(ind)
+            spacing = pPr.makeelement(qn('w:spacing'), {
+                qn('w:before'): '20', qn('w:after'): '20'
+            })
+            pPr.append(spacing)
+            run = p.add_run(line)
+            run.font.size = Pt(9)
+            run.font.name = 'Courier New'
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+
     def add_kpi_table(self, kpis):
         """添加 KPI 指标表格，kpis: list of {label, value, change, trend}"""
         n = len(kpis)
         table = self.doc.add_table(rows=2, cols=n)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.style = 'Table Grid'
+
+        tbl = table._tbl
+        tblPr = tbl.tblPr if tbl.tblPr is not None else tbl._add_tblPr()
+        existing = tblPr.find(qn('w:tblLayout'))
+        if existing is not None:
+            tblPr.remove(existing)
+        tblLayout = tblPr.makeelement(qn('w:tblLayout'), {qn('w:type'): 'autofit'})
+        tblPr.append(tblLayout)
 
         # 表头行（指标名）
         for i, kpi in enumerate(kpis):
@@ -287,8 +316,16 @@ class WordBuilder:
 
         table = self.doc.add_table(rows=1 + len(rows), cols=len(headers))
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.style = 'Table Grid'
 
-        # 表头
+        tbl = table._tbl
+        tblPr = tbl.tblPr if tbl.tblPr is not None else tbl._add_tblPr()
+        existing = tblPr.find(qn('w:tblLayout'))
+        if existing is not None:
+            tblPr.remove(existing)
+        tblLayout = tblPr.makeelement(qn('w:tblLayout'), {qn('w:type'): 'autofit'})
+        tblPr.append(tblLayout)
+
         for i, h in enumerate(headers):
             cell = table.rows[0].cells[i]
             cell.text = ''
@@ -298,12 +335,13 @@ class WordBuilder:
             run.font.size = Pt(10)
             run.font.bold = True
             run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            run.font.name = '微软雅黑'
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
             shading = cell._element.makeelement(qn('w:shd'), {
                 qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): Theme.TABLE_HEADER_BG
             })
             cell._element.get_or_add_tcPr().append(shading)
 
-        # 数据行
         for r_idx, row in enumerate(rows):
             for c_idx, val in enumerate(row):
                 cell = table.rows[r_idx + 1].cells[c_idx]
@@ -312,7 +350,8 @@ class WordBuilder:
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 run = p.add_run(str(val))
                 run.font.size = Pt(10)
-                # 交替行背景
+                run.font.name = '微软雅黑'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
                 if r_idx % 2 == 1:
                     shading = cell._element.makeelement(qn('w:shd'), {
                         qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): Theme.TABLE_ROW_ALT
@@ -583,15 +622,23 @@ if __name__ == "__main__":
                     if block_type == "text":
                         builder.add_paragraph(content)
                     elif block_type == "bullet":
-                        builder.add_bullet_list([content])
+                        items = [item for item in content.split("\n") if item.strip()]
+                        builder.add_bullet_list(items)
+                    elif block_type == "list":
+                        items = [item for item in content.split("\n") if item.strip()]
+                        builder.add_bullet_list(items)
                     elif block_type == "h1" or block_type == "h2":
                         builder.add_heading(content, level=2 if block_type == "h2" else 1)
+                    elif block_type == "h3":
+                        builder.add_heading(content, level=3)
                     elif block_type == "table":
                         rows_data = parse_markdown_table(content)
                         if rows_data:
                             headers = rows_data[0]
                             body = rows_data[1:]
                             builder.add_table(headers, body, caption="")
+                    elif block_type == "code":
+                        builder.add_code_block(content)
                     else:
                         builder.add_paragraph(content)
         else:
@@ -622,16 +669,45 @@ if __name__ == "__main__":
                 builder.add_bullet_list(findings)
 
             if columns and rows:
-                builder.add_heading("数据明细", level=2)
-                headers = columns
-                display_rows = []
-                for row in rows:
-                    display_rows.append([str(row.get(c, "")) for c in columns])
-                if len(display_rows) > 50:
-                    display_rows = display_rows[:50]
-                    builder.add_paragraph("（仅展示前 50 条记录）")
-                if headers and display_rows:
-                    builder.add_table(headers, display_rows, caption="数据明细表")
+                GROUP_COLUMNS = {"表名", "table_name", "TABLE_NAME", "表名称"}
+                group_col = None
+                for c in columns:
+                    if c in GROUP_COLUMNS:
+                        group_col = c
+                        break
+
+                if group_col:
+                    from collections import OrderedDict
+                    groups = OrderedDict()
+                    for row in rows:
+                        gk = str(row.get(group_col, ""))
+                        groups.setdefault(gk, []).append(row)
+
+                    builder.add_heading("数据明细", level=2)
+                    builder.add_paragraph(
+                        f"共 {len(rows)} 条记录，按「{group_col}」分为 {len(groups)} 组展示。"
+                    )
+
+                    other_cols = [c for c in columns if c != group_col]
+                    for gk, gk_rows in groups.items():
+                        builder.add_heading(f"{group_col}: {gk}（{len(gk_rows)} 条）", level=3)
+                        display_rows = []
+                        for row in gk_rows:
+                            display_rows.append([str(row.get(c, "")) for c in other_cols])
+                        if other_cols and display_rows:
+                            builder.add_table(other_cols, display_rows, caption="")
+                else:
+                    builder.add_heading("数据明细", level=2)
+                    headers = columns
+                    display_rows = []
+                    for row in rows:
+                        display_rows.append([str(row.get(c, "")) for c in columns])
+                    max_display = 8000
+                    if len(display_rows) > max_display:
+                        display_rows = display_rows[:max_display]
+                        builder.add_paragraph(f"（仅展示前 {max_display} 条记录，共 {len(rows)} 条）")
+                    if headers and display_rows:
+                        builder.add_table(headers, display_rows, caption="数据明细表")
 
             if include_charts and chart_paths:
                 builder.add_heading("图表分析", level=2)

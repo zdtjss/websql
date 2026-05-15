@@ -255,6 +255,35 @@ func (s *Session) SaveToDB() error {
 	return s.doSave()
 }
 
+// RemoveTrailingIncompleteToolCalls 移除末尾不完整的 tool_calls 消息链。
+// 当 context 被取消时，session 中可能包含 assistant(tool_calls) 但没有对应的 tool 响应，
+// 或包含 tool 消息但前面的 assistant(tool_calls) 不完整。
+// 必须在 SaveToDB 之前调用，否则不完整的消息会被持久化到数据库。
+func (s *Session) RemoveTrailingIncompleteToolCalls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for len(s.messages) > 0 {
+		last := s.messages[len(s.messages)-1]
+		switch last.Role {
+		case "tool":
+			s.messages = s.messages[:len(s.messages)-1]
+		case "assistant":
+			if len(last.ToolCalls) > 0 {
+				if last.Content == "" {
+					s.messages = s.messages[:len(s.messages)-1]
+				} else {
+					last.ToolCalls = nil
+					s.messages[len(s.messages)-1] = last
+				}
+			}
+			return
+		default:
+			return
+		}
+	}
+}
+
 func (s *Session) doSave() error {
 	data, err := json.Marshal(s.messages)
 	if err != nil {

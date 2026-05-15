@@ -321,6 +321,12 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 			}
 		}
 
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		sw.Send(&filesystem.ExecuteResponse{
 			Output:   strings.TrimSpace(output.String()),
 			ExitCode: &exitCode,

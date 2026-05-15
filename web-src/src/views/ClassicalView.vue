@@ -6,6 +6,9 @@
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
             <div class="sidebar-header-actions">
+              <el-button text size="small" class="theme-toggle-btn" @click="openGlobalSearch" title="全局搜索">
+                <el-icon :size="14"><Search /></el-icon>
+              </el-button>
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
@@ -51,6 +54,9 @@
                     <el-tooltip v-if="data.type === 'conn'" content="服务器状态" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="viewServerStatus(node)"><Monitor /></el-icon>
                     </el-tooltip>
+                    <el-tooltip v-if="data.type === 'conn'" content="实时监控" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openMonitorPanel(node)"><Odometer /></el-icon>
+                    </el-tooltip>
                     <el-tooltip v-if="data.type === 'conn'" content="刷新" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="refreshNode(node)"><Refresh /></el-icon>
                     </el-tooltip>
@@ -65,6 +71,18 @@
                     </el-tooltip>
                     <el-tooltip v-if="data.type === 'schema'" content="表管理" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Grid /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="数据同步" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openSyncDialog(node)"><Connection /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="备份恢复" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openBackupDialog(node)"><FolderOpened /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="数据字典" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openDictDialog(node)"><Reading /></el-icon>
+                    </el-tooltip>
+                    <el-tooltip v-if="data.type === 'schema'" content="结构比较" placement="top" :show-after="400">
+                      <el-icon :size="14" class="tree-action-icon" @click.stop="openCompareDialog(node)"><Search /></el-icon>
                     </el-tooltip>
                     <el-tooltip v-if="data.type === 'table'" content="查看表结构" placement="top" :show-after="400">
                       <el-icon :size="14" class="tree-action-icon" @click.stop="viewTableInfo(node)"><InfoFilled /></el-icon>
@@ -181,6 +199,18 @@
       :conn-id="serverStatusConnId"
       :schema="serverStatusSchema"
     />
+
+    <EnhancedMonitorPanel
+      v-model:visible="monitorPanelVisible"
+      :conn-id="monitorConnId"
+      :schema="monitorSchema"
+    />
+
+    <DataSyncDialog v-model="syncDialogVisible" :conn-id="syncConnId" :schema="syncSchema" />
+    <BackupRestoreDialog v-model="backupDialogVisible" :conn-id="backupConnId" :schema="backupSchema" />
+    <DataDictDialog v-model="dictDialogVisible" :conn-id="dictConnId" :schema="dictSchema" />
+    <SchemaCompareDialog v-model="compareDialogVisible" :conn-id="compareConnId" :schema="compareSchema" />
+    <GlobalSearchDialog v-model="searchDialogVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
   </div>
 </template>
 
@@ -188,7 +218,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Connection, Document, EditPen, Grid, InfoFilled, Monitor, Moon, Refresh, Setting, Sunny, View } from '@element-plus/icons-vue'
+import { Connection, Document, EditPen, FolderOpened, Grid, InfoFilled, Monitor, Moon, Odometer, Reading, Refresh, Search, Setting, Sunny, View } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -198,7 +228,13 @@ import SQLEditor2 from './SQLEditor2.vue'
 import TableManager from './TableManager.vue'
 import SchemaObjectsDialog from '../components/SchemaObjectsDialog.vue'
 import ServerStatusPanel from '../components/ServerStatusPanel.vue'
+import EnhancedMonitorPanel from '../components/EnhancedMonitorPanel.vue'
 import ERDiagramDialog from '../components/ERDiagramDialog.vue'
+import DataSyncDialog from '../components/DataSyncDialog.vue'
+import BackupRestoreDialog from '../components/BackupRestoreDialog.vue'
+import DataDictDialog from '../components/DataDictDialog.vue'
+import SchemaCompareDialog from '../components/SchemaCompareDialog.vue'
+import GlobalSearchDialog from '../components/GlobalSearchDialog.vue'
 import { useTheme } from '@/js/utils/useTheme.ts'
 
 const showLoginBtn = ref(true)
@@ -247,6 +283,24 @@ const schemaObjectsSchema = ref('')
 const serverStatusVisible = ref(false)
 const serverStatusConnId = ref('')
 const serverStatusSchema = ref('')
+const monitorPanelVisible = ref(false)
+const monitorConnId = ref('')
+const monitorSchema = ref('')
+const syncDialogVisible = ref(false)
+const syncConnId = ref('')
+const syncSchema = ref('')
+const backupDialogVisible = ref(false)
+const backupConnId = ref('')
+const backupSchema = ref('')
+const dictDialogVisible = ref(false)
+const dictConnId = ref('')
+const dictSchema = ref('')
+const compareDialogVisible = ref(false)
+const compareConnId = ref('')
+const compareSchema = ref('')
+const searchDialogVisible = ref(false)
+const searchConnId = ref('')
+const searchSchema = ref('')
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
@@ -741,6 +795,64 @@ function viewTableInfoFromChild({ connId, schema, tableName }) {
   tableMgntTitle.value = tableName
   tableMeta.value = { connId, schema, tableName }
   tableMgntDialogVisible.value = true
+}
+
+function openSyncDialog(node) {
+  const conn = findConn(node)
+  syncConnId.value = conn.id
+  syncSchema.value = node.data.label
+  syncDialogVisible.value = true
+}
+
+function openMonitorPanel(node) {
+  monitorConnId.value = node.data.id
+  const schemas = node.childNodes || []
+  monitorSchema.value = schemas.length > 0 ? schemas[0].data.label : ''
+  monitorPanelVisible.value = true
+}
+
+function openBackupDialog(node) {
+  const conn = findConn(node)
+  backupConnId.value = conn.id
+  backupSchema.value = node.data.label
+  backupDialogVisible.value = true
+}
+
+function openDictDialog(node) {
+  const conn = findConn(node)
+  dictConnId.value = conn.id
+  dictSchema.value = node.data.label
+  dictDialogVisible.value = true
+}
+
+function openCompareDialog(node) {
+  const conn = findConn(node)
+  compareConnId.value = conn.id
+  compareSchema.value = node.data.label
+  compareDialogVisible.value = true
+}
+
+function openGlobalSearch() {
+  const activeTab = editableTabs.value.find(t => t.tabId === editableTabsValue.value)
+  if (activeTab) {
+    searchConnId.value = activeTab.connId
+    searchSchema.value = activeTab.schema
+  }
+  searchDialogVisible.value = true
+}
+
+function onSearchSelect(obj) {
+  if (obj.type === 'table') {
+    const connId = searchConnId.value
+    const schema = searchSchema.value || obj.schema
+    const tableName = obj.name.split('.')[0]
+    openDataBrowser({ connId, schema, tableName })
+  } else if (obj.type === 'column') {
+    const parts = obj.name.split('.')
+    if (parts.length >= 2) {
+      viewTableInfoFromChild({ connId: searchConnId.value, schema: searchSchema.value || obj.schema, tableName: parts[0] })
+    }
+  }
 }
 
 </script>

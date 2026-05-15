@@ -31,10 +31,17 @@ type SkillStatus struct {
 	Dependencies    map[string]bool `json:"dependencies"`
 }
 
+const (
+	maxConcurrentPython = 3
+	stdinSizeThreshold  = 1 * 1024 * 1024
+)
+
 var (
 	pythonAvailable bool
 	pythonPath      string
 	pythonCheckOnce sync.Once
+
+	pythonSem = make(chan struct{}, maxConcurrentPython)
 
 	defaultSkillEnv     *SkillEnv
 	defaultSkillEnvOnce sync.Once
@@ -139,6 +146,7 @@ func (e *SkillEnv) CheckAndInstallDeps(ctx context.Context, skillName string) er
 		e.depsCheckMu.Unlock()
 		return nil
 	}
+	e.depsChecked[skillName] = true
 	e.depsCheckMu.Unlock()
 
 	reqFilePath, err := e.ResolveFilePath(ctx, skillName, "scripts/requirements.txt")
@@ -148,9 +156,6 @@ func (e *SkillEnv) CheckAndInstallDeps(ctx context.Context, skillName string) er
 
 	if _, statErr := os.Stat(reqFilePath); os.IsNotExist(statErr) {
 		log.Printf("[SkillDep] Skill [%s] 无 requirements.txt, 跳过", skillName)
-		e.depsCheckMu.Lock()
-		e.depsChecked[skillName] = true
-		e.depsCheckMu.Unlock()
 		return nil
 	}
 
@@ -169,9 +174,6 @@ func (e *SkillEnv) CheckAndInstallDeps(ctx context.Context, skillName string) er
 		log.Printf("[SkillDep] [%s] 依赖已就绪", skillName)
 	}
 
-	e.depsCheckMu.Lock()
-	e.depsChecked[skillName] = true
-	e.depsCheckMu.Unlock()
 	return nil
 }
 
@@ -252,18 +254,56 @@ func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (
 		return "", fmt.Errorf("Python 不可用")
 	}
 
+	select {
+	case pythonSem <- struct{}{}:
+		defer func() { <-pythonSem }()
+	case <-ctx.Done():
+		return "", fmt.Errorf("等待 Python 执行槽位超时: %w", ctx.Err())
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, pythonPath, scriptPath)
-	cmd.Stdin = strings.NewReader(inputJSON)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+
+	var tmpFilePath string
+	var tmpFileReader *os.File
+	if len(inputJSON) > stdinSizeThreshold {
+		tmpFile, err := os.CreateTemp("", "websql-skill-*.json")
+		if err != nil {
+			return "", fmt.Errorf("创建临时文件失败: %w", err)
+		}
+		tmpFilePath = tmpFile.Name()
+
+		if _, err := tmpFile.WriteString(inputJSON); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpFilePath)
+			return "", fmt.Errorf("写入临时文件失败: %w", err)
+		}
+		tmpFile.Close()
+
+		tmpFileReader, err = os.Open(tmpFilePath)
+		if err != nil {
+			os.Remove(tmpFilePath)
+			return "", fmt.Errorf("打开临时文件失败: %w", err)
+		}
+		cmd.Stdin = tmpFileReader
+	} else {
+		cmd.Stdin = strings.NewReader(inputJSON)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+
+	if tmpFilePath != "" {
+		tmpFileReader.Close()
+		os.Remove(tmpFilePath)
+	}
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("Python 脚本执行超时")
@@ -284,7 +324,6 @@ func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (
 			}
 			return "", fmt.Errorf("Python 脚本未输出 JSON 结果（stderr: %s）", stderrStr)
 		}
-		// stdout 和 stderr 都为空，可能是依赖缺失导致 import 失败
 		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
