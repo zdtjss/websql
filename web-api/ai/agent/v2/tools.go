@@ -197,7 +197,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 			}
 		}
 		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
-			sql = applyRowLimit(sql, conn.DriverName(), 2000)
+			sql = applyRowLimit(sql, conn.DriverName(), 500)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
@@ -209,8 +209,8 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
 					if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
-						sql = applyRowLimit(sql, altConn.DriverName(), 2000)
-					}
+					sql = applyRowLimit(sql, altConn.DriverName(), 500)
+				}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, sql)
 					if altErr == nil {
 						defer altRows.Close()

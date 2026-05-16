@@ -60,11 +60,18 @@ CREATE INDEX IF NOT EXISTS idx_t_power_role_id ON t_power(role_id);
 CREATE INDEX IF NOT EXISTS idx_t_conn_parent_id ON t_conn(parent_id);
 
 create table if not exists t_backup (
-	id text  primary key,
-	user text,
-	exec_time timestamp,
-	exec_sql text,
-	data JSON
+	id text primary key,
+	name text,
+	conn_id text,
+	schema_name text,
+	db_type text,
+	size_bytes integer default 0,
+	backup_type text default 'full',
+	encrypted integer default 0,
+	created_at text,
+	description text,
+	status text default 'completed',
+	file_path text
 );
 
 create table if not exists t_history (

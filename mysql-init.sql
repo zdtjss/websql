@@ -55,11 +55,17 @@ INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('8256838773673861
 
 create table if not exists t_backup (
 	id varchar(36) primary key,
-	user varchar(30),
+	name varchar(128),
 	conn_id varchar(36),
-	exec_time datetime,
-	exec_sql text,
-	data json
+	schema_name varchar(128),
+	db_type varchar(32),
+	size_bytes bigint default 0,
+	backup_type varchar(32) default 'full',
+	encrypted tinyint default 0,
+	created_at datetime,
+	description text,
+	status varchar(32) default 'completed',
+	file_path varchar(512)
 );
 
 create table if not exists t_history (

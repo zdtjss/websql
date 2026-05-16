@@ -144,6 +144,7 @@ func MainRegister(router *gin.Engine) {
 	// 数据同步与结构同步
 	routerGroup.POST("/sync/compareSchema", syncdb.CompareSchema)
 	routerGroup.POST("/sync/compareData", syncdb.CompareData)
+	routerGroup.POST("/sync/compareDataChunked", syncdb.CompareDataChunked)
 	routerGroup.POST("/sync/applySchemaDiff", syncdb.ApplySchemaDiff)
 	routerGroup.POST("/sync/applyDataSync", syncdb.ApplyDataSync)
 	routerGroup.POST("/sync/generateSyncSQL", syncdb.GenerateSyncSQL)

@@ -129,6 +129,8 @@ let graph = null
 const allNodes = ref([])
 const allEdges = ref([])
 let maxZIndex = 1
+let mousedownHandler = null
+let lastHeaderClick = { tableId: null, time: 0 }
 
 const filteredNodes = computed(() => {
   let nodes
@@ -288,6 +290,10 @@ async function loadSqliteData() {
 }
 
 function destroyGraph() {
+  if (mousedownHandler && containerRef.value) {
+    containerRef.value.removeEventListener('mousedown', mousedownHandler, true)
+    mousedownHandler = null
+  }
   if (graph) {
     graph.dispose()
     graph = null
@@ -328,10 +334,10 @@ function rebuildGraph() {
     interacting: { nodeMovable: true },
   })
 
-  containerRef.value.addEventListener('mousedown', (e) => {
+  mousedownHandler = (e) => {
     const header = e.target.closest('.er-table-header')
     if (header) {
-      const nodeEl = header.closest('.er-node-container')
+      const nodeEl = header.closest('[data-node-id]')
       const nodeId = nodeEl?.getAttribute('data-node-id')
       if (nodeId) {
         const node = graph.getCellById(nodeId)
@@ -340,15 +346,27 @@ function rebuildGraph() {
           node.setZIndex(maxZIndex)
         }
       }
-    } else if (e.target.closest('.er-node-container')) {
-      graph.disablePanning()
-      const onUp = () => {
-        graph.enablePanning()
-        document.removeEventListener('mouseup', onUp)
+      const tableId = header.getAttribute('data-table-id')
+      const now = Date.now()
+      if (tableId && lastHeaderClick.tableId === tableId && (now - lastHeaderClick.time) < 400) {
+        lastHeaderClick = { tableId: null, time: 0 }
+        emit('openDataBrowser', { connId: props.connId, schema: props.schema, tableName: tableId })
+        return
       }
-      document.addEventListener('mouseup', onUp)
+      lastHeaderClick = { tableId, time: now }
+    } else {
+      lastHeaderClick = { tableId: null, time: 0 }
+      if (e.target.closest('[data-node-id]')) {
+        graph.disablePanning()
+        const onUp = () => {
+          graph.enablePanning()
+          document.removeEventListener('mouseup', onUp)
+        }
+        document.addEventListener('mouseup', onUp)
+      }
     }
-  }, true)
+  }
+  containerRef.value.addEventListener('mousedown', mousedownHandler, true)
 
   maxZIndex = 1
 
@@ -423,25 +441,6 @@ function rebuildGraph() {
     maxZIndex++
     node.setZIndex(maxZIndex)
   })
-
-  containerRef.value.addEventListener('dblclick', (e) => {
-    const header = e.target.closest('.er-table-header')
-    if (header) {
-      const tableId = header.getAttribute('data-table-id')
-      if (tableId) {
-        emit('openDataBrowser', { connId: props.connId, schema: props.schema, tableName: tableId })
-      }
-    } else {
-      const nodeContainer = e.target.closest('.er-node-container')
-      if (nodeContainer) {
-        const range = document.createRange()
-        range.selectNodeContents(nodeContainer)
-        const sel = window.getSelection()
-        sel.removeAllRanges()
-        sel.addRange(range)
-      }
-    }
-  }, true)
 
   graph.on('node:mouseenter', ({ node }) => {
     const el = containerRef.value?.querySelector(`[data-node-id="${node.id}"]`)

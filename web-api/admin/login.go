@@ -7,6 +7,7 @@ import (
 	"go-web/logutils"
 	"go-web/utils"
 	"go-web/utils/store"
+	"net/http"
 	"sync"
 	"time"
 
@@ -101,21 +102,25 @@ func Login(c *gin.Context) {
 	case "pwd":
 		user = findByLoginName(loginName)
 		if user == nil || user.Pwd != Md5sum(pwd) {
-			logutils.PanicErr(errors.New("用户名或密码不正确"))
+			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "用户名或密码不正确"})
+			return
 		}
 		user.LoginName = loginName
 	case "bio":
 		user = findByBio(key)
 		if user == nil {
-			logutils.PanicErr(errors.New("无效的指纹/面容信息"))
+			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "无效的指纹/面容信息"})
+			return
 		}
 	case "token":
 		user = findByToken(key)
 		if user == nil {
-			logutils.PanicErr(errors.New("传入的登录信息无效"))
+			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "传入的登录信息无效"})
+			return
 		}
 	default:
-		logutils.PanicErr(errors.New("不支持的登录方式"))
+		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "不支持的登录方式"})
+		return
 	}
 	power := findUserPower(user.Id)
 	token := utils.SecureRandomToken()

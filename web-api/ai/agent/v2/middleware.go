@@ -398,7 +398,7 @@ func truncateStr(s string, maxLen int) string {
 // 对 query_data 返回的大量数据行自动截断，只保留前 MaxRows 行 + 总行数提示。
 // 显著减少 LLM 上下文中的 Token 消耗。
 
-const defaultReductionMaxRows = 50
+const defaultReductionMaxRows = 100
 
 type ReductionMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware

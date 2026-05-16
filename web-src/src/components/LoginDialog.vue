@@ -78,13 +78,17 @@ function login() {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
       }).then((resp) => {
+        if (resp.data.code !== 200) {
+          ElMessage.error(resp.data.msg || '登录失败')
+          return
+        }
         sessionStorage.setItem('authentication', resp.headers.get('authentication'))
         sessionStorage.setItem('currentUser', JSON.stringify(resp.data.data))
         loginForm.value = {}
-        logining.value = false
         emit('update:modelValue', false)
         emit('login-success', resp.data.data)
         ElMessage('登陆成功')
+      }).catch(() => {
       }).finally(() => {
         logining.value = false
       })
@@ -107,12 +111,12 @@ function loginByToken(token) {
       ElMessage('登陆成功')
     } else {
       console.error('[LoginDialog] 登录失败 - code:', resp.data.code)
-      ElMessage('登录失败')
+      ElMessage.error(resp.data.msg || '登录失败')
       emit('update:modelValue', true)
     }
   }).catch((error) => {
     console.error('[LoginDialog] 登录异常:', error)
-    ElMessage('登录失败')
+    ElMessage.error('登录失败')
     emit('update:modelValue', true)
   })
 }
@@ -138,12 +142,12 @@ async function loginBio() {
       ElMessage('登陆成功')
     } else {
       console.error('[LoginDialog] bio登录失败 - code:', resp.data.code)
-      ElMessage('登录失败')
+      ElMessage.error(resp.data.msg || '登录失败')
       emit('update:modelValue', true)
     }
   }).catch((error) => {
     console.error('[LoginDialog] bio登录异常:', error)
-    ElMessage('登录失败')
+    ElMessage.error('登录失败')
     emit('update:modelValue', true)
   })
 }
