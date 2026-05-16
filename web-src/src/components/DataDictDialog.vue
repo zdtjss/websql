@@ -1,5 +1,18 @@
 <template>
-  <el-dialog v-model="visible" title="数据字典" width="1100px" :close-on-click-modal="false" @opened="loadTables">
+  <el-dialog v-model="visible" width="1100px" :close-on-click-modal="false" :fullscreen="isFullscreen" :draggable="!isFullscreen" :show-close="false" @opened="loadTables">
+    <template #header="{ close }">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:18px;font-weight:600">数据字典</span>
+        <div style="display:flex;gap:4px">
+          <el-button text @click="toggleFullscreen" :title="isFullscreen ? '还原' : '全屏'">
+            <el-icon><FullScreen /></el-icon>
+          </el-button>
+          <el-button text @click="close" title="关闭">
+            <el-icon><Close /></el-icon>
+          </el-button>
+        </div>
+      </div>
+    </template>
     <el-row style="margin-bottom:15px">
       <el-col :span="12">
         <el-button type="primary" @click="generateDict" :loading="generating" :disabled="!selectedCount">生成字典</el-button>
@@ -14,7 +27,7 @@
 
     <el-row :gutter="15">
       <el-col :span="6">
-        <el-card shadow="never" style="max-height:600px;overflow:auto">
+        <el-card shadow="never" :style="{maxHeight: contentMaxHeight, overflow: 'auto'}">
           <template #header><span style="font-weight:bold">表列表</span></template>
           <el-input v-model="tableFilter" placeholder="搜索表..." size="small" clearable style="margin-bottom:10px" />
           <el-checkbox v-for="t in filteredTables" :key="t.name" v-model="t.checked" style="display:block;margin:4px 0">
@@ -29,7 +42,7 @@
           <el-icon :size="50"><Document /></el-icon>
           <p style="margin-top:10px">选择表后点击"生成字典"</p>
         </div>
-        <div v-else style="max-height:560px;overflow:auto;padding-right:10px">
+        <div v-else :style="{maxHeight: dictMaxHeight, overflow: 'auto', paddingRight: '10px'}">
           <div v-for="table in dictData.tables" :key="table.name" style="margin-bottom:25px">
             <h3 style="color:#409EFF;border-bottom:2px solid #409EFF;padding-bottom:5px">
               {{ table.name }}
@@ -75,7 +88,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document } from '@element-plus/icons-vue'
+import { Document, FullScreen, Close } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
 
 const props = defineProps({
@@ -91,6 +104,11 @@ const dictData = ref(null)
 const generating = ref(false)
 const tableFilter = ref('')
 const selectAllTables = ref(false)
+const isFullscreen = ref(false)
+
+function toggleFullscreen() {
+  isFullscreen.value = !isFullscreen.value
+}
 
 const filteredTables = computed(() => {
   if (!tableFilter.value) return tables.value
@@ -102,6 +120,9 @@ const filteredTables = computed(() => {
 })
 
 const selectedCount = computed(() => tables.value.filter(t => t.checked).length)
+
+const contentMaxHeight = computed(() => isFullscreen.value ? 'calc(100vh - 150px)' : '600px')
+const dictMaxHeight = computed(() => isFullscreen.value ? 'calc(100vh - 160px)' : '560px')
 
 function toggleSelectAll() {
   selectAllTables.value = !selectAllTables.value

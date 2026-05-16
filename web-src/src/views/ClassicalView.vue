@@ -51,48 +51,60 @@
                   </span>
                   <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
                   <span class="tree-node-actions">
-                    <el-tooltip v-if="data.type === 'conn'" content="服务器状态" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewServerStatus(node)"><Monitor /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'conn'" content="实时监控" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openMonitorPanel(node)"><Odometer /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'conn'" content="刷新" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="refreshNode(node)"><Refresh /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="SQL编辑器" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="addTab(node)"><EditPen /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="数据库对象" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewSchemaObjects(node)"><Setting /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="ER关系图" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewERDiagram(node)"><Connection /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="表管理" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Grid /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="数据同步" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openSyncDialog(node)"><Connection /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="备份恢复" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openBackupDialog(node)"><FolderOpened /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="数据字典" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openDictDialog(node)"><Reading /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'schema'" content="结构比较" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openCompareDialog(node)"><Search /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'table'" content="查看表结构" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewTableInfo(node)"><InfoFilled /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'table'" content="浏览数据" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="openDataBrowserFromNode(node)"><Document /></el-icon>
-                    </el-tooltip>
-                    <el-tooltip v-if="data.type === 'view'" content="查看视图" placement="top" :show-after="400">
-                      <el-icon :size="14" class="tree-action-icon" @click.stop="viewViewInfo(node)"><View /></el-icon>
-                    </el-tooltip>
+                    <template v-if="data.type === 'conn'">
+                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
+                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="viewServerStatus">🖥️ 服务器状态</el-dropdown-item>
+                            <el-dropdown-item command="openMonitorPanel">📊 实时监控</el-dropdown-item>
+                            <el-dropdown-item command="refreshNode" divided>🔄 刷新</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </template>
+                    <template v-if="data.type === 'schema'">
+                      <el-tooltip content="SQL编辑器" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" @click.stop="addTab(node)"><ChatLineSquare /></el-icon>
+                      </el-tooltip>
+                      <el-tooltip content="表管理" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Tickets /></el-icon>
+                      </el-tooltip>
+                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
+                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="viewSchemaObjects">⚙️ 数据库对象</el-dropdown-item>
+                            <el-dropdown-item command="viewERDiagram">🔗 ER关系图</el-dropdown-item>
+                            <el-dropdown-item command="openSyncDialog">🔄 数据同步</el-dropdown-item>
+                            <el-dropdown-item command="openBackupDialog">📦 备份恢复</el-dropdown-item>
+                            <el-dropdown-item command="openDictDialog">📖 数据字典</el-dropdown-item>
+                            <el-dropdown-item command="openCompareDialog" divided>🔍 结构比较</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </template>
+                    <template v-if="data.type === 'table'">
+                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
+                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="viewTableInfo">ℹ️ 查看表结构</el-dropdown-item>
+                            <el-dropdown-item command="openDataBrowserFromNode">📄 浏览数据</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </template>
+                    <template v-if="data.type === 'view'">
+                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
+                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="viewViewInfo">👁️ 查看视图</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </template>
                   </span>
                 </div>
               </template>
@@ -218,7 +230,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Connection, Document, EditPen, FolderOpened, Grid, InfoFilled, Monitor, Moon, Odometer, Reading, Refresh, Search, Setting, Sunny, View } from '@element-plus/icons-vue'
+import { ChatLineSquare, MoreFilled, Moon, Refresh, Search, Sunny, Tickets } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -830,6 +842,23 @@ function openCompareDialog(node) {
   compareConnId.value = conn.id
   compareSchema.value = node.data.label
   compareDialogVisible.value = true
+}
+
+function handleTreeDropdownAction(node, command) {
+  switch (command) {
+    case 'refreshNode': refreshTree(); break
+    case 'viewServerStatus': viewServerStatus(node); break
+    case 'openMonitorPanel': openMonitorPanel(node); break
+    case 'viewSchemaObjects': viewSchemaObjects(node); break
+    case 'viewERDiagram': viewERDiagram(node); break
+    case 'openSyncDialog': openSyncDialog(node); break
+    case 'openBackupDialog': openBackupDialog(node); break
+    case 'openDictDialog': openDictDialog(node); break
+    case 'openCompareDialog': openCompareDialog(node); break
+    case 'viewTableInfo': viewTableInfo(node); break
+    case 'openDataBrowserFromNode': openDataBrowserFromNode(node); break
+    case 'viewViewInfo': viewViewInfo(node); break
+  }
 }
 
 function openGlobalSearch() {
