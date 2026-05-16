@@ -44,12 +44,12 @@
       :append-to-body="true"
       destroy-on-close
     >
-      <el-form label-width="60px" size="small">
-        <el-form-item label="名称">
-          <el-input v-model="newName" placeholder="片段名称" />
+      <el-form ref="formRef" :model="formData" label-width="60px" size="small" :rules="rules">
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="formData.name" placeholder="片段名称" />
         </el-form-item>
-        <el-form-item label="SQL">
-          <el-input v-model="newSql" type="textarea" :rows="6" placeholder="SQL 语句" />
+        <el-form-item label="SQL" prop="sql">
+          <el-input v-model="formData.sql" type="textarea" :rows="6" placeholder="SQL 语句" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -81,8 +81,14 @@ const visible = computed({
 const snippets = ref([])
 const searchText = ref('')
 const addDialogVisible = ref(false)
-const newName = ref('')
-const newSql = ref('')
+const formRef = ref(null)
+
+const formData = ref({ name: '', sql: '' })
+
+const rules = {
+  name: [{ required: true, message: '请输入片段名称', trigger: 'blur' }],
+  sql: [{ required: true, message: '请输入 SQL 语句', trigger: 'blur' }],
+}
 
 const filteredSnippets = computed(() => {
   const kw = searchText.value.trim().toLowerCase()
@@ -105,20 +111,23 @@ function saveAll() {
 }
 
 function showAddSnippet() {
-  newName.value = ''
-  newSql.value = props.currentSql || ''
+  formData.value.name = ''
+  formData.value.sql = props.currentSql || ''
   addDialogVisible.value = true
 }
 
 function saveSnippet() {
-  if (!newSql.value.trim()) return
-  snippets.value.push({
-    id: Date.now().toString(36),
-    name: newName.value.trim() || '未命名',
-    sql: newSql.value.trim(),
+  formRef.value.validate((valid) => {
+    if (!valid) return
+    snippets.value.push({
+      id: Date.now().toString(36),
+      name: formData.value.name.trim(),
+      sql: formData.value.sql.trim(),
+    })
+    saveAll()
+    addDialogVisible.value = false
+    formRef.value.resetFields()
   })
-  saveAll()
-  addDialogVisible.value = false
 }
 
 function deleteSnippet(id) {

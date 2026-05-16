@@ -9,8 +9,7 @@
                     </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
-                    <el-button @click="explainSql" title="查看执行计划">EXPLAIN</el-button>
-                    <el-button type="success" @click="toggleOptimizePanel" title="AI SQL优化建议">AI优化</el-button>
+                    <el-button type="success" @click="toggleOptimizePanel" title="AI SQL优化建议">优化</el-button>
                     <el-divider direction="vertical" />
                     <el-dropdown @command="handleExportResult">
                       <el-button :disabled="result.length === 0">
@@ -39,12 +38,6 @@
                     >
                       <el-button title="执行 SQL 文件">执行文件</el-button>
                     </el-upload>
-                    <el-divider v-if="canModify" direction="vertical" />
-                    <template v-if="canModify">
-                      <el-button size="small" @click="execTransaction('BEGIN')" :disabled="exectingSql" style="color: #67c23a;">BEGIN</el-button>
-                      <el-button size="small" @click="execTransaction('COMMIT')" :disabled="exectingSql" style="color: #409eff;">COMMIT</el-button>
-                      <el-button size="small" @click="execTransaction('ROLLBACK')" :disabled="exectingSql" style="color: #f56c6c;">ROLLBACK</el-button>
-                    </template>
                 </div>
                 <div class="toolbar-right">
                     <span v-if="executionTime !== null" class="exec-time">{{ executionTime }}ms</span>
@@ -186,7 +179,7 @@
     v-model:visible="optimizePanelVisible"
     :conn-id="props.connId"
     :schema="props.schema"
-    :sql="getEditorDoc()"
+    :sql="optimizeSql"
     :db-type="props.dbType"
   />
 </template>
@@ -289,6 +282,7 @@ const executionTime = ref<number | null>(null)
 const snippetVisible = ref(false)
 const queryBuilderVisible = ref(false)
 const optimizePanelVisible = ref(false)
+const optimizeSql = ref('')
 const currentSelectTable = ref("")
 
 const backupDataList = ref([])
@@ -360,20 +354,6 @@ function showSqlHistory() {
         .then((resp: any) => {
             sqlHistoryList.value = resp.data.data.data || []
             sqlHistoryDrawerShow.value = true
-        })
-}
-
-function execTransaction(command: string) {
-    const params = new URLSearchParams()
-    params.append("connId", props.connId)
-    params.append("schema", props.schema)
-    params.append("sql", command)
-    http.post("/execSQL", params)
-        .then(() => {
-            ElMessage({ message: command + ' 执行成功', type: 'success' })
-        })
-        .catch(() => {
-            ElMessage({ message: command + ' 执行失败', type: 'error' })
         })
 }
 
@@ -595,172 +575,13 @@ function formatSql() {
 }
 
 function toggleOptimizePanel() {
-  optimizePanelVisible.value = !optimizePanelVisible.value
-}
-
-function explainSql() {
-    const sqlExec = getSelection()?.toString()
-    if (!sqlExec) {
-        ElMessage({ message: "请先选择SQL", type: "error" })
-        return
-    }
-    const effectiveSql = extractEffectiveSql(sqlExec)
-    if (effectiveSql.toLowerCase().startsWith('explain ')) {
-        ElMessage({ message: "语句已包含 EXPLAIN", type: "warning" })
-        return
-    }
-    const explainStmt = 'EXPLAIN ' + effectiveSql
-    currentSelectTable.value = extractTableName(sqlExec)
-    exectingSql.value = true
-    executionTime.value = null
-    const startTime = performance.now()
-    const params = new URLSearchParams()
-    params.append("connId", props.connId)
-    params.append("schema", props.schema)
-    params.append("tableName", currentSelectTable.value)
-    params.append("sql", explainStmt)
-    params.append("maxLine", maxLine.value)
-    http.post("/execSQL", params)
-        .then((resp) => {
-            executionTime.value = Math.round(performance.now() - startTime)
-            canEdit.value = false
-            tableKeys.value = resp.data.data.keys || []
-            columns.value = resp.data.data.columns.map((col: any) => {
-                const colDef: any = {
-                    key: col.name,
-                    title: col.name,
-                    dataKey: col.name,
-                    comment: col.comment,
-                    dataType: col.type,
-                    width: 150,
-                    minWidth: 150,
-                    headerCellRenderer: ({ column }: { column: any }) => {
-                        return h('div', { 
-                            class: "header-box",
-                            onDragenter: (e: any) => e.preventDefault(),
-                            onMouseenter: (e: any) => {
-                                const dragLine = e.target.querySelector('.drag-line')
-                                if (dragLine) dragLine.style.opacity = '1'
-                            },
-                            onMouseleave: (e: any) => {
-                                const dragLine = e.target.querySelector('.drag-line')
-                                if (dragLine) dragLine.style.opacity = '0'
-                            }
-                        }, [
-                            h('div', { 
-                                class: "header-text",
-                                title: col.comment 
-                            }, col.name),
-                            h('div', { 
-                                class: "drag-line",
-                                draggable: true,
-                                style: {
-                                    position: 'absolute',
-                                    right: '-4px',
-                                    top: 0,
-                                    bottom: 0,
-                                    width: '8px',
-                                    cursor: 'ew-resize',
-                                    backgroundColor: 'transparent',
-                                    borderRight: '1px solid #409eff',
-                                    zIndex: 999,
-                                    transform: 'translateZ(999px)',
-                                    opacity: 0,
-                                    transition: 'opacity 0.2s'
-                                },
-                                onDragstart: (e: any) => dragStart(e),
-                                onDragend: (e: any) => dragEnd(e),
-                                onMouseenter: (e: any) => {
-                                    e.target.style.opacity = '1'
-                                },
-                                onMouseleave: (e: any) => {
-                                    e.target.style.opacity = '0'
-                                }
-                            })
-                        ])
-                    },
-                    cellRenderer: ({ cellData, rowData, column, rowIndex }: { cellData: any, rowData: any, column: any, rowIndex: number }) => {
-                        const colKey = column.dataKey as string
-                        const isEditing = isEditingCell(rowIndex, colKey)
-                        const isChanged = isCellChanged(rowIndex, colKey)
-                        const colType = col.type
-                        
-                        if (isEditing) {
-                            if (isDateType(colType)) {
-                                return h('input', {
-                                    type: 'datetime-local',
-                                    value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
-                                    style: {
-                                        width: '100%', height: '28px', border: '1px solid #409eff',
-                                        borderRadius: '4px', padding: '0 4px', fontSize: '12px',
-                                        background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                        boxSizing: 'border-box'
-                                    },
-                                    onInput: (e: Event) => {
-                                        const target = e.target as HTMLInputElement
-                                        editingCellValue.value = target.value + ':00'
-                                    },
-                                    onKeyup: (e: KeyboardEvent) => {
-                                        if (e.key === 'Enter') commitInlineEdit()
-                                        if (e.key === 'Escape') cancelInlineEdit()
-                                    },
-                                    onBlur: () => commitInlineEdit()
-                                })
-                            }
-                            return h('input', {
-                                value: editingCellValue.value,
-                                style: {
-                                    width: '100%', height: '28px', border: '1px solid #409eff',
-                                    borderRadius: '4px', padding: '0 4px', fontSize: '12px',
-                                    background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                    boxSizing: 'border-box'
-                                },
-                                onInput: (e: Event) => {
-                                    const target = e.target as HTMLInputElement
-                                    editingCellValue.value = target.value
-                                },
-                                onKeyup: (e: KeyboardEvent) => {
-                                    if (e.key === 'Enter') commitInlineEdit()
-                                    if (e.key === 'Escape') cancelInlineEdit()
-                                },
-                                onBlur: () => commitInlineEdit()
-                            })
-                        }
-                        
-                        const displayVal = cellData != null ? String(cellData) : ''
-                        const changedStyle = isChanged ? {
-                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px', 
-                            borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
-                            cursor: 'pointer'
-                        } : { cursor: 'pointer' }
-                        
-                        if (cellData === null || cellData === undefined || cellData === '') {
-                            return h('span', {
-                                title: '(空)',
-                                style: { ...changedStyle, color: 'var(--text-tertiary, #bbb)', fontStyle: 'italic' },
-                                onClick: () => { activeCellRow2.value = rowIndex; activeCellCol2.value = colKey },
-                                onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
-                            }, '-')
-                        }
-                        
-                        return h('span', {
-                            title: displayVal,
-                            style: changedStyle,
-                            onClick: () => { activeCellRow2.value = rowIndex; activeCellCol2.value = colKey },
-                            onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
-                        }, displayVal)
-                    }
-                }
-                return colDef
-            })
-            result.value = resp.data.data.data
-            inlineChanges.value = new Map()
-            exectingSql.value = false
-        })
-        .catch((error) => {
-            console.log(error);
-            exectingSql.value = false
-        });
+  const sqlExec = getSelection()?.toString()
+  if (!sqlExec?.trim()) {
+    ElMessage({ message: '请先选择要优化的 SQL', type: 'warning' })
+    return
+  }
+  optimizeSql.value = sqlExec
+  optimizePanelVisible.value = true
 }
 
 function listBackupData() {

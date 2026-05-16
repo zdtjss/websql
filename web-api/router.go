@@ -172,7 +172,6 @@ func MainRegister(router *gin.Engine) {
 	// SQL编辑器增强 - AI优化建议
 	routerGroup.POST("/sqlopt/explain", sqlopt.ExplainSQL)
 	routerGroup.POST("/sqlopt/optimize", sqlopt.OptimizeSQL)
-	routerGroup.POST("/sqlopt/suggestions", sqlopt.AnalyzeSQLSuggestions)
 
 	// 监控面板增强
 	routerGroup.GET("/monitor/metrics", monitor.GetMetrics)
