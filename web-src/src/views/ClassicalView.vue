@@ -6,9 +6,14 @@
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
             <div class="sidebar-header-actions">
-              <el-button text size="small" class="theme-toggle-btn" @click="openGlobalSearch" title="全局搜索">
-                <el-icon :size="14"><Search /></el-icon>
-              </el-button>
+              <el-popover ref="searchPopoverRef" placement="bottom-start" :width="560" trigger="click" :show-arrow="false" :offset="4" popper-class="global-search-popover" @show="onSearchPopoverShow" @hide="onSearchPopoverHide">
+                <template #reference>
+                  <el-button text size="small" class="theme-toggle-btn" title="全局搜索">
+                    <el-icon :size="14"><Search /></el-icon>
+                  </el-button>
+                </template>
+                <GlobalSearchDialog :visible="searchPopoverVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
+              </el-popover>
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
@@ -52,16 +57,15 @@
                   <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
                   <span class="tree-node-actions">
                     <template v-if="data.type === 'conn'">
-                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
-                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
-                        <template #dropdown>
-                          <el-dropdown-menu>
-                            <el-dropdown-item command="viewServerStatus">🖥️ 服务器状态</el-dropdown-item>
-                            <el-dropdown-item command="openMonitorPanel">📊 实时监控</el-dropdown-item>
-                            <el-dropdown-item command="refreshNode" divided>🔄 刷新</el-dropdown-item>
-                          </el-dropdown-menu>
-                        </template>
-                      </el-dropdown>
+                      <el-tooltip content="服务器状态" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" @click.stop="viewServerStatus(node)"><Monitor /></el-icon>
+                      </el-tooltip>
+                      <el-tooltip content="实时监控" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" @click.stop="openMonitorPanel(node)"><TrendCharts /></el-icon>
+                      </el-tooltip>
+                      <el-tooltip content="刷新" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" @click.stop="refreshTree()"><Refresh /></el-icon>
+                      </el-tooltip>
                     </template>
                     <template v-if="data.type === 'schema'">
                       <el-tooltip content="SQL编辑器" placement="top" :show-after="400">
@@ -222,7 +226,6 @@
     <BackupRestoreDialog v-model="backupDialogVisible" :conn-id="backupConnId" :schema="backupSchema" />
     <DataDictDialog v-model="dictDialogVisible" :conn-id="dictConnId" :schema="dictSchema" />
     <SchemaCompareDialog v-model="compareDialogVisible" :conn-id="compareConnId" :schema="compareSchema" />
-    <GlobalSearchDialog v-model="searchDialogVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
   </div>
 </template>
 
@@ -230,7 +233,7 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, MoreFilled, Moon, Refresh, Search, Sunny, Tickets } from '@element-plus/icons-vue'
+import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
@@ -310,7 +313,8 @@ const dictSchema = ref('')
 const compareDialogVisible = ref(false)
 const compareConnId = ref('')
 const compareSchema = ref('')
-const searchDialogVisible = ref(false)
+const searchPopoverRef = ref(null)
+const searchPopoverVisible = ref(false)
 const searchConnId = ref('')
 const searchSchema = ref('')
 const tableMeta = ref({})
@@ -861,25 +865,33 @@ function handleTreeDropdownAction(node, command) {
   }
 }
 
-function openGlobalSearch() {
+function onSearchPopoverShow() {
+  searchPopoverVisible.value = true
   const activeTab = editableTabs.value.find(t => t.tabId === editableTabsValue.value)
   if (activeTab) {
     searchConnId.value = activeTab.connId
     searchSchema.value = activeTab.schema
+  } else {
+    searchConnId.value = ''
+    searchSchema.value = ''
   }
-  searchDialogVisible.value = true
+}
+
+function onSearchPopoverHide() {
+  searchPopoverVisible.value = false
 }
 
 function onSearchSelect(obj) {
-  if (obj.type === 'table') {
-    const connId = searchConnId.value
-    const schema = searchSchema.value || obj.schema
-    const tableName = obj.name.split('.')[0]
+  searchPopoverRef.value?.hide()
+  const connId = obj.connId || searchConnId.value
+  const schema = obj.schema || searchSchema.value
+  if (obj.type === 'table' || obj.type === 'view') {
+    const tableName = obj.name.includes('.') ? obj.name.split('.')[0] : obj.name
     openDataBrowser({ connId, schema, tableName })
   } else if (obj.type === 'column') {
     const parts = obj.name.split('.')
     if (parts.length >= 2) {
-      viewTableInfoFromChild({ connId: searchConnId.value, schema: searchSchema.value || obj.schema, tableName: parts[0] })
+      viewTableInfoFromChild({ connId, schema, tableName: parts[0] })
     }
   }
 }
@@ -1136,5 +1148,15 @@ function onSearchSelect(obj) {
 }
 :deep(.el-tree-node.is-current > .el-tree-node__content) {
   background-color: var(--tree-node-active);
+}
+</style>
+
+<style>
+.global-search-popover {
+  padding: 12px 14px !important;
+}
+.global-search-popover .el-scrollbar {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
 }
 </style>

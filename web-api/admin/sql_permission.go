@@ -34,13 +34,13 @@ func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPe
 	return CheckAnalysisPermission(analysis, connId, authorization)
 }
 
-// CheckAnalysisPermission 基于已分析的 SQL 进行权限校验
+// CheckAnalysisPermission 基于已分析的 SQL 进行权限校验（仅表级）
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
 
 	// 1. 检查读表权限
 	for _, t := range analysis.ReadTables {
-		access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
+		access := GetTableAccessDowngraded(connId, t.Schema, t.Name, authorization)
 		if access.Level == AccessNone {
 			result.Allowed = false
 			result.DeniedTables = append(result.DeniedTables, t.Name)
@@ -49,7 +49,7 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 
 	// 2. 检查写表权限
 	for _, t := range analysis.WriteTables {
-		access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
+		access := GetTableAccessDowngraded(connId, t.Schema, t.Name, authorization)
 		if access.Level == AccessNone {
 			result.Allowed = false
 			result.DeniedTables = append(result.DeniedTables, t.Name)
@@ -59,72 +59,6 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 	if !result.Allowed {
 		result.Message = fmt.Sprintf("无权访问表: %s", strings.Join(result.DeniedTables, ", "))
 		return result
-	}
-
-	// 3. 检查写列权限（INSERT/UPDATE 中指定的列）
-	if len(analysis.WriteColumns) > 0 && len(analysis.WriteTables) > 0 {
-		writeTable := analysis.WriteTables[0]
-		access := GetTableColumnAccess(connId, writeTable.Schema, writeTable.Name, authorization)
-		if access.Level == AccessColumn {
-			for _, col := range analysis.WriteColumns {
-				if !access.AllowedColumns[col.ColumnName] {
-					result.Allowed = false
-					result.DeniedColumns = append(result.DeniedColumns, writeTable.Name+"."+col.ColumnName)
-				}
-			}
-			if !result.Allowed {
-				result.Message = fmt.Sprintf("无权操作字段: %s", strings.Join(result.DeniedColumns, ", "))
-				return result
-			}
-		}
-	}
-
-	// 4. 检查 SELECT 中显式引用的列（仅当有列级限制时）
-	if analysis.OperationType == "SELECT" || analysis.OperationType == "UNKNOWN" {
-		selectCols := ExtractSelectColumns(StripComments(strings.TrimSpace(analysis.OriginalSQL)))
-		// 检查是否全部为 * （SELECT * 由结果集过滤兜底）
-		allStar := true
-		for _, sc := range selectCols {
-			if !sc.IsStar {
-				allStar = false
-				break
-			}
-		}
-		if len(selectCols) > 0 && !allStar {
-			for _, sc := range selectCols {
-				if sc.IsStar {
-					continue // SELECT * / table.* 由结果集过滤兜底
-				}
-				colName := sc.ColumnName
-				// 策略：只有当所有有列级限制的表都不允许该列时才拒绝
-				// 原因：无法可靠地将别名映射到真实表名，且结果集过滤是最终兜底
-				allDenied := false
-				hasColumnLevelTable := false
-				for _, t := range analysis.ReadTables {
-					access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-					if access.Level == AccessColumn {
-						hasColumnLevelTable = true
-						if access.AllowedColumns[colName] {
-							allDenied = false
-							break
-						}
-						allDenied = true
-					}
-				}
-				if hasColumnLevelTable && allDenied {
-					result.Allowed = false
-					displayName := colName
-					if sc.TableAlias != "" {
-						displayName = sc.TableAlias + "." + colName
-					}
-					result.DeniedColumns = append(result.DeniedColumns, displayName)
-				}
-			}
-			if !result.Allowed {
-				result.Message = fmt.Sprintf("无权访问字段: %s", strings.Join(result.DeniedColumns, ", "))
-				return result
-			}
-		}
 	}
 
 	return result

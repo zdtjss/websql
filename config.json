@@ -4,11 +4,6 @@
     "type": "sqlite",
     "dsn": "./nway.sqlite3.db"
   },
-  "redis": {
-    "addr": "",
-    "password": "",
-    "db": 0
-  },
   "https": {
     "enable": true,
     "organization": "Nway",

@@ -241,26 +241,6 @@ func listTable(key string, schema, authorization string) []*Tree {
 	// 权限过滤：只返回用户有权限访问的表
 	filteredTables := filterTreeTablesByPermission(allTables, key, schema, authorization)
 
-	// 列级权限过滤：过滤表数据中的列信息
-	if config.Cfg.IsRemote {
-		for _, t := range filteredTables {
-			if cols, ok := t.Data["columns"].([]Column); ok {
-				access := GetTableColumnAccess(key, schema, t.Label, authorization)
-				if access.Level == AccessColumn {
-					filteredCols := make([]Column, 0, len(cols))
-					for _, col := range cols {
-						if access.AllowedColumns[col.Name] {
-							filteredCols = append(filteredCols, col)
-						}
-					}
-					t.Data["columns"] = filteredCols
-				} else if access.Level == AccessNone {
-					t.Data["columns"] = []Column{}
-				}
-			}
-		}
-	}
-
 	return filteredTables
 }
 
@@ -396,22 +376,14 @@ func listColumns(key string, table, schema, authorization string) []*Tree {
 	if schema == "" {
 		schema = getCurrentSchema(dc)
 	}
-	access := GetTableColumnAccess(connId, schema, table, authorization)
+	access := GetTableAccessDowngraded(connId, schema, table, authorization)
 	if access.Level == AccessFull {
 		return tree
 	}
 	if access.Level == AccessNone {
 		return []*Tree{}
 	}
-
-	filtered := make([]*Tree, 0, len(tree))
-	for _, t := range tree {
-		colName := strings.SplitN(t.Label, " ", 2)[0]
-		if access.AllowedColumns[colName] {
-			filtered = append(filtered, t)
-		}
-	}
-	return filtered
+	return tree
 }
 
 func getCurrentSchema(dc *sqlx.DB) string {
@@ -465,25 +437,14 @@ func listTableColumns(connId, tableName, schema, authorization string) []map[str
 	logutils.PanicErr(err)
 	result := dbutils.GetResultRows(dc.DriverName(), rows)
 
-	access := GetTableColumnAccess(connId, schema, tableName, authorization)
+	access := GetTableAccessDowngraded(connId, schema, tableName, authorization)
 	if access.Level == AccessFull {
 		return result
 	}
 	if access.Level == AccessNone {
 		return []map[string]any{}
 	}
-
-	filtered := make([]map[string]any, 0, len(result))
-	for _, row := range result {
-		colName, _ := row["COLUMN_NAME"].(string)
-		if colName == "" {
-			colName, _ = row["column_name"].(string)
-		}
-		if colName != "" && access.AllowedColumns[colName] {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
+	return result
 }
 
 func ListTableFat(c *gin.Context) {
@@ -591,20 +552,11 @@ func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
 func ColumnMapFiltered(table, schema, connId, authorization string, conn *sqlx.DB) map[string]string {
 	cacheKey := metaCacheKey(connId, schema, table)
 	if cached, ok := tableMetaCache.getColumnMap(cacheKey); ok {
-		access := GetTableColumnAccess(connId, schema, table, authorization)
-		if access.Level == AccessFull {
-			return cached
-		}
+		access := GetTableAccessDowngraded(connId, schema, table, authorization)
 		if access.Level == AccessNone {
 			return map[string]string{}
 		}
-		filtered := make(map[string]string)
-		for name, comment := range cached {
-			if access.AllowedColumns[name] {
-				filtered[name] = comment
-			}
-		}
-		return filtered
+		return cached
 	}
 
 	fullMap := ColumnMap(table, schema, conn)
@@ -615,21 +567,11 @@ func ColumnMapFiltered(table, schema, connId, authorization string, conn *sqlx.D
 	}
 	tableMetaCache.set(cacheKey, fullMap, pks)
 
-	access := GetTableColumnAccess(connId, schema, table, authorization)
-	if access.Level == AccessFull {
-		return fullMap
-	}
+	access := GetTableAccessDowngraded(connId, schema, table, authorization)
 	if access.Level == AccessNone {
 		return map[string]string{}
 	}
-
-	filtered := make(map[string]string)
-	for name, comment := range fullMap {
-		if access.AllowedColumns[name] {
-			filtered[name] = comment
-		}
-	}
-	return filtered
+	return fullMap
 }
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {

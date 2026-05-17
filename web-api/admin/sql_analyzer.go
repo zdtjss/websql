@@ -346,6 +346,17 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 	return &TableColumnAccess{Level: AccessNone}
 }
 
+// GetTableAccessDowngraded 经典模式专用的表级权限查询
+// 将列级权限 (AccessColumn) 降级为表级权限 (AccessFull)
+// 经典模式下不区分列级权限，有表级/列级权限即可访问整表
+func GetTableAccessDowngraded(connId, schemaName, tableName, authorization string) *TableColumnAccess {
+	access := GetTableColumnAccess(connId, schemaName, tableName, authorization)
+	if access.Level == AccessColumn {
+		access.Level = AccessFull
+	}
+	return access
+}
+
 func FilterColumnsByPermission(columnNames []string, access *TableColumnAccess) []string {
 	if access.Level == AccessFull {
 		return columnNames
@@ -430,9 +441,6 @@ func CheckTableWritePermission(connId string, schemaName string, tableName strin
 	}
 	checkSchemaAccess(connId, schemaName, authorization)
 	checkTableAccess(connId, schemaName, tableName, authorization)
-	for _, col := range columns {
-		checkColumnAccess(connId, schemaName, tableName, col, authorization)
-	}
 }
 
 func StripComments(sql string) string {

@@ -1,5 +1,5 @@
 <template>
-  <el-drawer v-model="drawerVisible" title="数据库监控" direction="rtl" size="520px" @opened="onOpen" @close="onClose">
+  <el-dialog v-model="drawerVisible" title="数据库监控" width="560px" :close-on-click-modal="false" @opened="onOpen" @close="onClose">
     <div style="padding:0 5px">
       <el-row :gutter="10" style="margin-bottom:12px">
         <el-col :span="12">
@@ -140,7 +140,7 @@
 
       <el-empty v-if="!metrics && !resources && !refreshing" description="点击刷新获取监控数据" :image-size="60" />
     </div>
-  </el-drawer>
+  </el-dialog>
 </template>
 
 <script setup>

@@ -19,7 +19,7 @@ export const dbSchemaProxy = {
                     type: "property"
                 })
             }
-            tableObj[n.label] = { self: { label: n.label, type: "table", detail: n.data.text }, children: columnsInfo }
+            tableObj[n.label] = { self: { label: n.label, type: n.type || "table", detail: n.data.text }, children: columnsInfo }
         })
         this.schemaProxy[schema] = { tables: tableObj, dbType: dbType }
         localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(this.schemaProxy))

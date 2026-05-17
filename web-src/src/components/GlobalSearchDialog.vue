@@ -1,152 +1,415 @@
 <template>
-  <el-dialog v-model="visible" title="全局搜索" width="900px" :close-on-click-modal="false" @opened="onOpen">
-    <div style="margin-bottom:15px;display:flex;gap:10px;align-items:center">
-      <el-select v-model="connId" placeholder="选择连接" style="width:180px" @change="onConnChange">
-        <el-option v-for="c in connections" :key="c.id" :label="c.name" :value="c.id" />
+  <div class="global-search-content">
+    <div class="search-filters">
+      <el-select v-model="connId" placeholder="不限连接" clearable filterable :teleported="false" style="width:220px" @change="onConnChange">
+        <el-option v-for="c in connections" :key="c.id" :label="c.name || c.id" :value="c.id">
+          <span>{{ c.name || c.id }}</span>
+          <span class="option-extra">{{ c.dbType || '' }}</span>
+        </el-option>
       </el-select>
-      <el-select v-model="schema" placeholder="选择Schema" style="width:150px">
-        <el-option v-for="s in schemas" :key="s" :label="s" :value="s" />
+      <el-select v-model="schema" placeholder="不限Schema" clearable :teleported="false" style="width:180px" @change="onSchemaChange">
+        <el-option v-for="s in schemas" :key="s.label" :label="s.label" :value="s.label">
+          <span>{{ s.label }}</span>
+          <span class="option-extra">{{ s.data?.dbType || '' }}</span>
+        </el-option>
       </el-select>
     </div>
 
-    <div style="margin-bottom:15px;display:flex;gap:10px">
-      <el-input v-model="keyword" placeholder="输入搜索关键词..." size="large" clearable @keyup.enter="doSearch" style="flex:1">
+    <div class="search-bar">
+      <el-input v-model="keyword" placeholder="输入搜索关键词..." size="default" clearable @keyup.enter="doSearch" @clear="onKeywordClear" style="flex:1">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-select v-model="searchType" style="width:130px">
-        <el-option label="全部" value="all" />
+      <el-select v-model="searchType" :teleported="false" style="width:100px" @change="onSearchTypeChange">
         <el-option label="表" value="table" />
+        <el-option label="视图" value="view" />
         <el-option label="列" value="column" />
         <el-option label="索引" value="index" />
-        <el-option label="视图" value="view" />
       </el-select>
-      <el-button type="primary" @click="doSearch" :loading="searching">搜索</el-button>
+      <el-button v-if="searchType === 'column' || searchType === 'index'" type="primary" @click="doSearch" :loading="searching">搜索</el-button>
     </div>
 
-    <div style="margin-bottom:10px;color:#909399;font-size:13px" v-if="lastQuery">
+    <div class="search-summary" v-if="lastQuery">
       搜索 "{{lastQuery}}" 找到 {{totalResults}} 个结果
     </div>
 
-    <el-tabs v-model="resultTab" v-if="results.length || dataResults.length">
-      <el-tab-pane label="对象" name="objects">
-        <el-scrollbar max-height="400">
-          <div v-for="r in results" :key="r.type+r.name" style="padding:8px 12px;border-bottom:1px solid #ebeef5;cursor:pointer;display:flex;align-items:center" @click="selectObject(r)">
-            <el-tag :type="getTypeColor(r.type)" size="small" style="margin-right:8px;width:50px;text-align:center">{{r.type}}</el-tag>
-            <span style="flex:1;font-weight:500">{{r.name}}</span>
-            <span style="color:#909399;font-size:12px;max-width:300px;text-align:right">{{r.comment}}</span>
-          </div>
-        </el-scrollbar>
-      </el-tab-pane>
-      <el-tab-pane label="数据" name="data">
-        <el-scrollbar max-height="400">
-          <div v-for="r in dataResults" :key="r.table+'.'+r.column" style="padding:8px 12px;border-bottom:1px solid #ebeef5;cursor:pointer" @click="selectDataResult(r)">
-            <el-tag type="primary" size="small" style="margin-right:8px">data</el-tag>
-            <span style="font-weight:500">{{r.table}}</span>
-            <span style="color:#909399;margin:0 4px">.</span>
-            <span style="color:#409EFF">{{r.column}}</span>
-            <el-tag size="small" type="info" style="margin-left:8px">{{r.rowCount}} 行匹配</el-tag>
-            <span style="color:#909399;font-size:12px;margin-left:8px">匹配: {{r.matchText}}</span>
-          </div>
-        </el-scrollbar>
-      </el-tab-pane>
-    </el-tabs>
+    <el-scrollbar max-height="280" v-if="results.length">
+      <div v-for="r in results" :key="r.type+'_'+r.name+'_'+r.schema"
+        class="search-result-item"
+        @click="selectObject(r)">
+        <el-tag :type="getTypeColor(r.type)" size="small" class="result-tag">{{r.typeLabel || r.type}}</el-tag>
+        <span class="result-name">{{r.name}}</span>
+        <span v-if="r.schema" class="result-schema">{{r.schema}}</span>
+        <span v-if="r.comment" class="result-comment" :title="r.comment">{{r.comment}}</span>
+      </div>
+    </el-scrollbar>
 
-    <el-empty v-if="!searching && searched && !results.length && !dataResults.length" description="未找到结果" />
-  </el-dialog>
+    <div class="search-hint" v-if="isTableOrView && !keyword.trim() && hasPreloadedSchema">
+      输入关键词即可实时匹配表名
+    </div>
+
+    <el-empty v-if="!searching && searched && !results.length" description="未找到结果" :image-size="60" />
+  </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
+import { dbSchemaProxy } from '@/stores/sql'
 
 const props = defineProps({
-  modelValue: Boolean,
+  visible: Boolean,
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:modelValue', 'select'])
-const visible = computed({ get: () => props.modelValue, set: v => emit('update:modelValue', v) })
+const emit = defineEmits(['select'])
 
 const connId = ref('')
 const schema = ref('')
 const connections = ref([])
 const schemas = ref([])
 const keyword = ref('')
-const searchType = ref('all')
+const searchType = ref('table')
 const searching = ref(false)
 const searched = ref(false)
 const lastQuery = ref('')
 const results = ref([])
-const dataResults = ref([])
-const resultTab = ref('objects')
 const totalResults = ref(0)
+const hasPreloadedSchema = ref(false)
 
-async function onOpen() {
+let debounceTimer = null
+
+const isTableOrView = computed(() => searchType.value === 'table' || searchType.value === 'view')
+
+const typeLabelMap = {
+  table: '表',
+  view: '视图',
+  column: '列',
+  index: '索引'
+}
+
+watch(() => props.visible, (val) => {
+  if (val) {
+    init()
+  } else {
+    cleanup()
+  }
+})
+
+watch(keyword, (val) => {
+  if (!isTableOrView.value) return
+  clearTimeout(debounceTimer)
+  if (!val.trim()) {
+    results.value = []
+    totalResults.value = 0
+    return
+  }
+  debounceTimer = setTimeout(() => {
+    results.value = searchTablesLocally(val.trim(), searchType.value)
+    totalResults.value = results.value.length
+  }, 200)
+})
+
+async function init() {
   keyword.value = ''
   results.value = []
-  dataResults.value = []
   searched.value = false
+  lastQuery.value = ''
+  totalResults.value = 0
+  searchType.value = 'table'
+  connId.value = ''
+  schema.value = ''
+  schemas.value = []
+  hasPreloadedSchema.value = false
+
   try {
-    const res = await http.get('/listConn2')
-    connections.value = res.data || []
+    const res = await http.get('/listConn2', { params: { pageSize: 1000 } })
+    const result = (res.data && res.data.data ? res.data.data : res.data) || {}
+    connections.value = result.data || []
   } catch (e) {}
+
   if (props.connId) {
     connId.value = props.connId
-    onConnChange()
+    await onConnChange()
+    if (props.schema) {
+      schema.value = props.schema
+      await loadSchemaTables(props.schema)
+    }
   }
-  if (props.schema) schema.value = props.schema
+}
+
+function cleanup() {
+  clearTimeout(debounceTimer)
+  connId.value = ''
+  schema.value = ''
+  schemas.value = []
+  results.value = []
+  searched.value = false
+  keyword.value = ''
+  lastQuery.value = ''
+  totalResults.value = 0
+  hasPreloadedSchema.value = false
 }
 
 async function onConnChange() {
+  schemas.value = []
+  hasPreloadedSchema.value = false
+  if (connId.value) {
+    schema.value = props.schema && props.connId === connId.value ? props.schema : ''
+  } else {
+    schema.value = ''
+  }
   if (!connId.value) return
   try {
-    const res = await http.get('/sync/targets', { params: { connId: connId.value } })
-    schemas.value = res.data.schemas || []
+    const res = await http.get('/showTree', { params: { connId: connId.value, key: '', type: 'conn', level: '2' } })
+    schemas.value = res.data && res.data.data ? res.data.data : (Array.isArray(res.data) ? res.data : [])
   } catch (e) {}
 }
 
+async function onSchemaChange() {
+  hasPreloadedSchema.value = false
+  if (schema.value && connId.value) {
+    await loadSchemaTables(schema.value)
+  }
+}
+
+async function loadSchemaTables(schemaName) {
+  if (!connId.value || !schemaName) return
+  try {
+    const res = await http.get('/showTree', { params: { connId: connId.value, key: schemaName, type: 'schema', level: '3' } })
+    const schemaObj = schemas.value.find(s => s.label === schemaName)
+    const dbType = schemaObj?.data?.dbType || ''
+    if (res.data && res.data.data) {
+      dbSchemaProxy.addTable(schemaName, dbType, res.data.data)
+      hasPreloadedSchema.value = true
+    }
+  } catch (e) {}
+}
+
+function onSearchTypeChange() {
+  results.value = []
+  totalResults.value = 0
+  searched.value = false
+  lastQuery.value = ''
+  if (isTableOrView.value && keyword.value.trim()) {
+    debounceTimer = setTimeout(() => {
+      results.value = searchTablesLocally(keyword.value.trim(), searchType.value)
+      totalResults.value = results.value.length
+    }, 100)
+  }
+}
+
+function onKeywordClear() {
+  results.value = []
+  totalResults.value = 0
+  lastQuery.value = ''
+}
+
 function getTypeColor(type) {
-  const map = { table: 'primary', column: 'success', index: 'warning', view: 'info' }
+  const map = { table: 'primary', view: 'success', column: 'warning', index: 'info' }
   return map[type] || ''
 }
 
 async function doSearch() {
   if (!keyword.value.trim()) { ElMessage.warning('请输入搜索关键词'); return }
-  if (!connId.value) { ElMessage.warning('请选择连接'); return }
+
+  if (isTableOrView.value) {
+    searching.value = true
+    lastQuery.value = keyword.value
+    try {
+      await searchTablesRemotely(keyword.value.trim(), searchType.value)
+    } finally {
+      searching.value = false
+    }
+    return
+  }
+
+  if (!connId.value) { ElMessage.warning('搜索列或索引需要先选择连接'); return }
+
   searching.value = true
   searched.value = false
   lastQuery.value = keyword.value
+
   try {
-    if (searchType.value === 'all') {
-      const res = await http.get('/search/all', { params: { connId: connId.value, schema: schema.value, keyword: keyword.value } })
-      results.value = res.data.objectResults || []
-      dataResults.value = res.data.dataResults || []
-      totalResults.value = res.data.totalResults || 0
-    } else {
-      const res = await http.get('/search/objects', { params: { connId: connId.value, schema: schema.value, keyword: keyword.value, searchType: searchType.value } })
-      results.value = res.data.results || []
-      dataResults.value = []
-      totalResults.value = res.data.totalResults || 0
-    }
+    await searchRemotely(keyword.value.trim(), searchType.value)
     searched.value = true
-    if (dataResults.value.length) resultTab.value = 'data'
-    else resultTab.value = 'objects'
   } catch (e) {
-    ElMessage.error('搜索失败')
   } finally {
     searching.value = false
   }
 }
 
-function selectObject(obj) {
-  emit('select', { ...obj, connId: connId.value, schema: schema.value })
-  visible.value = false
+function searchTablesLocally(keyword, type) {
+  const keywordLower = keyword.toLowerCase()
+  const matched = []
+  const schemasToSearch = schema.value
+    ? [schema.value]
+    : Object.keys(dbSchemaProxy.schemaProxy)
+
+  for (const schemaName of schemasToSearch) {
+    const allTables = dbSchemaProxy.getAll(schemaName)
+    if (!allTables) continue
+    const tableNames = Object.keys(allTables)
+    for (const tableName of tableNames) {
+      const tableInfo = allTables[tableName]
+      const self = tableInfo.self || {}
+      const nodeType = self.type || 'table'
+      if (nodeType !== type) continue
+      if (tableName.toLowerCase().indexOf(keywordLower) !== -1
+        || (self.detail && self.detail.toLowerCase().indexOf(keywordLower) !== -1)) {
+        matched.push({
+          type: nodeType,
+          typeLabel: typeLabelMap[nodeType] || '表',
+          name: tableName,
+          schema: schemaName,
+          comment: self.detail || '',
+          connId: connId.value || props.connId || ''
+        })
+      }
+    }
+  }
+  return matched
 }
 
-function selectDataResult(r) {
-  emit('select', { type: 'table', name: r.table, connId: connId.value, schema: schema.value })
-  visible.value = false
+async function searchTablesRemotely(keyword, type) {
+  if (!connId.value) return
+  try {
+    const res = await http.get('/search/objects', {
+      params: { connId: connId.value, schema: schema.value, keyword, searchType: type }
+    })
+    const payload = res.data
+    const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
+    if (remoteResults.length > 0) {
+      const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema))
+      const newResults = remoteResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema))
+        .map(r => ({
+          ...r,
+          typeLabel: typeLabelMap[r.type] || r.type,
+          connId: connId.value,
+          schema: r.schema || schema.value
+        }))
+      results.value = [...results.value, ...newResults]
+      totalResults.value = results.value.length
+    }
+    if (!results.value.length) {
+      searched.value = true
+    }
+  } catch (e) {}
+}
+
+async function searchRemotely(keyword, type) {
+  try {
+    const res = await http.get('/search/objects', {
+      params: { connId: connId.value, schema: schema.value, keyword, searchType: type }
+    })
+    const payload = res.data
+    const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
+    results.value = remoteResults.map(r => ({
+      ...r,
+      typeLabel: typeLabelMap[r.type] || r.type,
+      connId: connId.value,
+      schema: r.schema || schema.value
+    }))
+    totalResults.value = results.value.length
+    searched.value = true
+  } catch (e) {
+  }
+}
+
+function selectObject(obj) {
+  emit('select', {
+    type: obj.type,
+    name: obj.name,
+    schema: obj.schema,
+    comment: obj.comment,
+    connId: obj.connId || connId.value
+  })
 }
 </script>
+
+<style scoped>
+.global-search-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.search-bar {
+  display: flex;
+  gap: 10px;
+}
+
+.search-summary {
+  color: #909399;
+  font-size: 13px;
+}
+
+.search-hint {
+  color: #c0c4cc;
+  font-size: 13px;
+  text-align: center;
+  padding: 12px 0;
+}
+
+.search-result-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid #ebeef5;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.search-result-item:hover {
+  background: #f5f7fa;
+}
+.search-result-item:last-child {
+  border-bottom: none;
+}
+
+.result-tag {
+  margin-right: 8px;
+  min-width: 50px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.result-name {
+  flex: 1;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-schema {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 8px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.result-comment {
+  color: #909399;
+  font-size: 12px;
+  max-width: 200px;
+  margin-left: 8px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option-extra {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 6px;
+}
+</style>

@@ -2,7 +2,6 @@ package webapi
 
 import (
 	"fmt"
-	"go-web/config"
 	"go-web/logutils"
 	admin "go-web/web-api/admin"
 	"io"
@@ -41,28 +40,10 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	allColumns, err := rows.Columns()
 	logutils.PanicErr(err)
 
-	tableNameOnly := table
-	if strings.Contains(table, ".") {
-		tableNameOnly = table[strings.Index(table, ".")+1:]
-	}
-
-	access := admin.GetTableColumnAccess(connId, schema, tableNameOnly, authorization)
-	var allowedColumns map[string]bool
-	if access.Level == admin.AccessColumn {
-		allowedColumns = access.AllowedColumns
-	} else if access.Level == admin.AccessNone {
-		return
-	}
-
 	columnComment := make([]string, 0)
 	columnMap := admin.ColumnMapFiltered(table, schema, connId, authorization, connCtx)
 
-	var filteredColumns []string
 	for i := 0; i < len(allColumns); i++ {
-		if allowedColumns != nil && !allowedColumns[allColumns[i]] {
-			continue
-		}
-		filteredColumns = append(filteredColumns, allColumns[i])
 		columnComment = append(columnComment, columnMap[allColumns[i]])
 	}
 
@@ -72,13 +53,6 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
 		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
-	}
-
-	allowedIdx := make(map[int]bool)
-	for i, col := range allColumns {
-		if allowedColumns == nil || allowedColumns[col] {
-			allowedIdx[i] = true
-		}
 	}
 
 	excel := excelize.NewFile()
@@ -92,9 +66,9 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	streamWriter, err := excel.NewStreamWriter("Sheet1")
 	logutils.PanicErr(err)
 
-	var columns2 = make([]any, len(filteredColumns))
-	for idx := range filteredColumns {
-		columns2[idx] = filteredColumns[idx]
+	var columns2 = make([]any, len(allColumns))
+	for idx := range allColumns {
+		columns2[idx] = allColumns[idx]
 	}
 	var columnComment2 = make([]any, len(columnComment))
 	for idx := range columnComment {
@@ -115,12 +89,10 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 		err = rows.Scan(scanArgs...)
 		logutils.PanicErr(err)
 
-		var row = make([]any, 0, len(filteredColumns))
+		var row = make([]any, 0, len(allColumns))
 		for i := range allColumns {
-			if allowedIdx[i] {
-				colType := colTypeMap[allColumns[i]]
-				row = append(row, *admin.ConvertCol(&driverName, &colType, &values[i], false))
-			}
+			colType := colTypeMap[allColumns[i]]
+			row = append(row, *admin.ConvertCol(&driverName, &colType, &values[i], false))
 		}
 
 		count++
@@ -193,50 +165,6 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
 	}
 
-	analysis := admin.AnalyzeSQL(sqlStr, "")
-	anyColumnLevel := false
-	if config.Cfg.IsRemote {
-		userPower := admin.GetUserPower(authorization)
-		if userPower != nil && userPower.UserId != config.AdminId {
-			for _, t := range analysis.ReadTables {
-				access := admin.GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-				if access.Level == admin.AccessColumn {
-					anyColumnLevel = true
-					break
-				}
-			}
-		}
-	}
-
-	allowedSet := make(map[string]bool)
-	if anyColumnLevel {
-		for _, t := range analysis.ReadTables {
-			access := admin.GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-			if access.Level == admin.AccessFull {
-				for _, col := range columns {
-					allowedSet[col] = true
-				}
-			} else if access.Level == admin.AccessColumn {
-				for _, col := range columns {
-					if access.AllowedColumns[col] {
-						allowedSet[col] = true
-					}
-				}
-			}
-		}
-	}
-
-	var filteredColumns []string
-	if anyColumnLevel {
-		for _, col := range columns {
-			if allowedSet[col] {
-				filteredColumns = append(filteredColumns, col)
-			}
-		}
-	} else {
-		filteredColumns = columns
-	}
-
 	excel := excelize.NewFile()
 	defer func() {
 		if err := excel.Close(); err != nil {
@@ -247,9 +175,9 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 	streamWriter, err := excel.NewStreamWriter("Sheet1")
 	logutils.PanicErr(err)
 
-	var columns2 = make([]any, len(filteredColumns))
-	for idx := range filteredColumns {
-		columns2[idx] = filteredColumns[idx]
+	var columns2 = make([]any, len(columns))
+	for idx := range columns {
+		columns2[idx] = columns[idx]
 	}
 	streamWriter.SetRow("A1", columns2)
 
@@ -265,12 +193,10 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 		err = rows.Scan(scanArgs...)
 		logutils.PanicErr(err)
 
-		var row = make([]any, 0, len(filteredColumns))
+		var row = make([]any, 0, len(columns))
 		for i, col := range columns {
-			if !anyColumnLevel || allowedSet[col] {
-				colType := colTypeMap[col]
-				row = append(row, *admin.ConvertCol(&driverName, &colType, &values[i], false))
-			}
+			colType := colTypeMap[col]
+			row = append(row, *admin.ConvertCol(&driverName, &colType, &values[i], false))
 		}
 
 		count++

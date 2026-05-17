@@ -188,10 +188,10 @@ const modifyCount = computed(() => schemaDiffs.value.filter(d => d.diffType === 
 async function onOpen() {
   try {
     const res = await http.get('/listConn2')
-    connections.value = (res.data || []).filter(c => c && c.id)
+    connections.value = (res.data.data || []).filter(c => c && c.id)
   } catch (e) {}
   if (props.connId) { sourceConn.value = props.connId; targetConn.value = props.connId }
-  if (props.connId) onSourceConnChange()
+  if (props.connId) { onSourceConnChange(); onTargetConnChange() }
   if (props.schema) { sourceSchema.value = props.schema; targetSchema.value = props.schema }
 }
 
