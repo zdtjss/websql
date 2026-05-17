@@ -142,7 +142,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 		log.Printf("[Agent] 初始化 Skill 环境失败 - err=%v\n", err)
 	}
 
-	cm, err := buildChatModel(ctx, cfg)
+	cm, err := BuildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
@@ -619,7 +619,7 @@ func isOllamaURL(baseURL string) bool {
 	return false
 }
 
-func buildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCallingChatModel, error) {
+func BuildChatModel(ctx context.Context, cfg *admin.AIConfig) (model.ToolCallingChatModel, error) {
 	log.Printf("[ChatModel] 初始化 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
 	switch cfg.Provider {

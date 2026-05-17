@@ -21,7 +21,7 @@ func init() {
 }
 
 func NewPermissionAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, userID string) (*adk.ChatModelAgent, error) {
-	cm, err := buildChatModel(ctx, cfg)
+	cm, err := BuildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create permission agent model failed: %w", err)
 	}

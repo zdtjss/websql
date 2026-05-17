@@ -56,10 +56,10 @@ func NewHandler() (*Handler, error) {
 }
 
 type sseContext struct {
-	wg         *writeGuard
-	kaStop     chan struct{}
-	flush      func(StreamChunk)
-	runnerCtx  context.Context
+	wg           *writeGuard
+	kaStop       chan struct{}
+	flush        func(StreamChunk)
+	runnerCtx    context.Context
 	runnerCancel context.CancelFunc
 }
 
@@ -144,9 +144,9 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		req.UserID = user.Id
 	}
 
-	dbType, dbSchema, dbVersion := getDBInfo(req.ConnID)
+	dbType, dbSchema, dbVersion := GetDBInfo(req.ConnID)
 	if len(req.Schemas) > 0 {
-		dbType, dbSchema, dbVersion = getDBInfo(req.Schemas[0].ConnID)
+		dbType, dbSchema, dbVersion = GetDBInfo(req.Schemas[0].ConnID)
 	}
 	permConnID := req.ConnID
 	if permConnID == "" && len(req.Schemas) > 0 {
@@ -395,7 +395,7 @@ func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": logs, "total": total})
 }
 
-func getDBInfo(connID string) (string, string, string) {
+func GetDBInfo(connID string) (string, string, string) {
 	if connID == "" {
 		return "", "", ""
 	}

@@ -1,22 +1,25 @@
 <template>
   <div class="global-search-content">
     <div class="search-filters">
-      <el-select v-model="connId" placeholder="不限连接" clearable filterable :teleported="false" style="width:220px" @change="onConnChange">
+      <el-select v-model="filterConnId" placeholder="不限连接" clearable filterable :teleported="false" style="width:220px" @change="onConnChange">
         <el-option v-for="c in connections" :key="c.id" :label="c.name || c.id" :value="c.id">
           <span>{{ c.name || c.id }}</span>
           <span class="option-extra">{{ c.dbType || '' }}</span>
         </el-option>
       </el-select>
-      <el-select v-model="schema" placeholder="不限Schema" clearable :teleported="false" style="width:180px" @change="onSchemaChange">
+      <el-select v-model="filterSchema" placeholder="不限Schema" clearable :teleported="false" style="width:180px" @change="onSchemaChange">
         <el-option v-for="s in schemas" :key="s.label" :label="s.label" :value="s.label">
           <span>{{ s.label }}</span>
           <span class="option-extra">{{ s.data?.dbType || '' }}</span>
         </el-option>
       </el-select>
+      <el-button text size="small" @click="doSearch" :loading="searching" title="搜索">
+        <el-icon :size="16"><Search /></el-icon>
+      </el-button>
     </div>
 
     <div class="search-bar">
-      <el-input v-model="keyword" placeholder="输入搜索关键词..." size="default" clearable @keyup.enter="doSearch" @clear="onKeywordClear" style="flex:1">
+      <el-input ref="keywordInputRef" v-model="keyword" placeholder="输入搜索关键词..." size="default" clearable @keyup.enter="doSearch" @clear="onKeywordClear" style="flex:1">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <el-select v-model="searchType" :teleported="false" style="width:100px" @change="onSearchTypeChange">
@@ -43,16 +46,12 @@
       </div>
     </el-scrollbar>
 
-    <div class="search-hint" v-if="isTableOrView && !keyword.trim() && hasPreloadedSchema">
-      输入关键词即可实时匹配表名
-    </div>
-
     <el-empty v-if="!searching && searched && !results.length" description="未找到结果" :image-size="60" />
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
@@ -65,8 +64,9 @@ const props = defineProps({
 })
 const emit = defineEmits(['select'])
 
-const connId = ref('')
-const schema = ref('')
+const keywordInputRef = ref(null)
+const filterConnId = ref('')
+const filterSchema = ref('')
 const connections = ref([])
 const schemas = ref([])
 const keyword = ref('')
@@ -76,7 +76,6 @@ const searched = ref(false)
 const lastQuery = ref('')
 const results = ref([])
 const totalResults = ref(0)
-const hasPreloadedSchema = ref(false)
 
 let debounceTimer = null
 
@@ -118,10 +117,9 @@ async function init() {
   lastQuery.value = ''
   totalResults.value = 0
   searchType.value = 'table'
-  connId.value = ''
-  schema.value = ''
+  filterConnId.value = ''
+  filterSchema.value = ''
   schemas.value = []
-  hasPreloadedSchema.value = false
 
   try {
     const res = await http.get('/listConn2', { params: { pageSize: 1000 } })
@@ -130,59 +128,57 @@ async function init() {
   } catch (e) {}
 
   if (props.connId) {
-    connId.value = props.connId
+    filterConnId.value = props.connId
     await onConnChange()
     if (props.schema) {
-      schema.value = props.schema
+      filterSchema.value = props.schema
       await loadSchemaTables(props.schema)
     }
   }
+  await nextTick()
+  keywordInputRef.value?.focus()
 }
 
 function cleanup() {
   clearTimeout(debounceTimer)
-  connId.value = ''
-  schema.value = ''
+  filterConnId.value = ''
+  filterSchema.value = ''
   schemas.value = []
   results.value = []
   searched.value = false
   keyword.value = ''
   lastQuery.value = ''
   totalResults.value = 0
-  hasPreloadedSchema.value = false
 }
 
 async function onConnChange() {
   schemas.value = []
-  hasPreloadedSchema.value = false
-  if (connId.value) {
-    schema.value = props.schema && props.connId === connId.value ? props.schema : ''
+  if (filterConnId.value) {
+    filterSchema.value = props.schema && props.connId === filterConnId.value ? props.schema : ''
   } else {
-    schema.value = ''
+    filterSchema.value = ''
   }
-  if (!connId.value) return
+  if (!filterConnId.value) return
   try {
-    const res = await http.get('/showTree', { params: { connId: connId.value, key: '', type: 'conn', level: '2' } })
+    const res = await http.get('/showTree', { params: { connId: filterConnId.value, key: '', type: 'conn', level: '2' } })
     schemas.value = res.data && res.data.data ? res.data.data : (Array.isArray(res.data) ? res.data : [])
   } catch (e) {}
 }
 
 async function onSchemaChange() {
-  hasPreloadedSchema.value = false
-  if (schema.value && connId.value) {
-    await loadSchemaTables(schema.value)
+  if (filterSchema.value && filterConnId.value) {
+    await loadSchemaTables(filterSchema.value)
   }
 }
 
 async function loadSchemaTables(schemaName) {
-  if (!connId.value || !schemaName) return
+  if (!filterConnId.value || !schemaName) return
   try {
-    const res = await http.get('/showTree', { params: { connId: connId.value, key: schemaName, type: 'schema', level: '3' } })
+    const res = await http.get('/showTree', { params: { connId: filterConnId.value, key: schemaName, type: 'schema', level: '3' } })
     const schemaObj = schemas.value.find(s => s.label === schemaName)
     const dbType = schemaObj?.data?.dbType || ''
     if (res.data && res.data.data) {
       dbSchemaProxy.addTable(schemaName, dbType, res.data.data)
-      hasPreloadedSchema.value = true
     }
   } catch (e) {}
 }
@@ -225,7 +221,7 @@ async function doSearch() {
     return
   }
 
-  if (!connId.value) { ElMessage.warning('搜索列或索引需要先选择连接'); return }
+  if (!filterConnId.value) { ElMessage.warning('搜索列或索引需要先选择连接'); return }
 
   searching.value = true
   searched.value = false
@@ -243,8 +239,8 @@ async function doSearch() {
 function searchTablesLocally(keyword, type) {
   const keywordLower = keyword.toLowerCase()
   const matched = []
-  const schemasToSearch = schema.value
-    ? [schema.value]
+  const schemasToSearch = filterSchema.value
+    ? [filterSchema.value]
     : Object.keys(dbSchemaProxy.schemaProxy)
 
   for (const schemaName of schemasToSearch) {
@@ -264,7 +260,7 @@ function searchTablesLocally(keyword, type) {
           name: tableName,
           schema: schemaName,
           comment: self.detail || '',
-          connId: connId.value || props.connId || ''
+          connId: filterConnId.value || props.connId || ''
         })
       }
     }
@@ -273,10 +269,10 @@ function searchTablesLocally(keyword, type) {
 }
 
 async function searchTablesRemotely(keyword, type) {
-  if (!connId.value) return
+  if (!filterConnId.value) return
   try {
     const res = await http.get('/search/objects', {
-      params: { connId: connId.value, schema: schema.value, keyword, searchType: type }
+      params: { connId: filterConnId.value, schema: filterSchema.value, keyword, searchType: type }
     })
     const payload = res.data
     const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
@@ -286,8 +282,8 @@ async function searchTablesRemotely(keyword, type) {
         .map(r => ({
           ...r,
           typeLabel: typeLabelMap[r.type] || r.type,
-          connId: connId.value,
-          schema: r.schema || schema.value
+          connId: filterConnId.value,
+          schema: r.schema || filterSchema.value
         }))
       results.value = [...results.value, ...newResults]
       totalResults.value = results.value.length
@@ -301,15 +297,15 @@ async function searchTablesRemotely(keyword, type) {
 async function searchRemotely(keyword, type) {
   try {
     const res = await http.get('/search/objects', {
-      params: { connId: connId.value, schema: schema.value, keyword, searchType: type }
+      params: { connId: filterConnId.value, schema: filterSchema.value, keyword, searchType: type }
     })
     const payload = res.data
     const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
     results.value = remoteResults.map(r => ({
       ...r,
       typeLabel: typeLabelMap[r.type] || r.type,
-      connId: connId.value,
-      schema: r.schema || schema.value
+      connId: filterConnId.value,
+      schema: r.schema || filterSchema.value
     }))
     totalResults.value = results.value.length
     searched.value = true
@@ -323,7 +319,7 @@ function selectObject(obj) {
     name: obj.name,
     schema: obj.schema,
     comment: obj.comment,
-    connId: obj.connId || connId.value
+    connId: obj.connId || filterConnId.value
   })
 }
 </script>
@@ -349,13 +345,6 @@ function selectObject(obj) {
 .search-summary {
   color: #909399;
   font-size: 13px;
-}
-
-.search-hint {
-  color: #c0c4cc;
-  font-size: 13px;
-  text-align: center;
-  padding: 12px 0;
 }
 
 .search-result-item {

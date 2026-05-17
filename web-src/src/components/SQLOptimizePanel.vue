@@ -1,5 +1,13 @@
 <template>
-  <el-drawer v-model="drawerVisible" title="SQL优化分析" direction="btt" size="45%" :before-close="handleClose">
+  <el-drawer
+    ref="drawerRef"
+    v-model="drawerVisible"
+    title="SQL优化分析"
+    direction="btt"
+    :size="drawerHeight + '%'"
+    :before-close="handleClose"
+  >
+    <div class="drag-handle" @mousedown="startDrag"></div>
     <div class="toolbar-area">
       <el-tabs v-model="activeTab" @tab-change="onTabChange" class="optimize-tabs">
         <el-tab-pane name="explain">
@@ -63,19 +71,31 @@
             </span>
           </template>
           <div class="tab-body">
-            <template v-if="optimizeResult && optimizeResult.suggestions && optimizeResult.suggestions.length">
-              <h4 class="suggest-title">优化建议</h4>
-              <el-alert v-for="(sug, idx) in optimizeResult.suggestions" :key="idx" :title="sug.title" :type="sug.severity === 'critical' ? 'error' : sug.severity === 'warning' ? 'warning' : 'info'" :description="sug.description" :closable="false" show-icon style="margin-bottom:8px">
-                <template v-if="sug.fixSql" #default>
-                  <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
-                    <pre class="fix-sql-pre"><code>{{ sug.fixSql }}</code></pre>
-                    <el-button size="small" type="primary" link @click="copyText(sug.fixSql)">复制</el-button>
-                  </div>
-                </template>
-              </el-alert>
-            </template>
-            <el-empty v-else-if="optimizeAttempted" description="该SQL无法生成优化建议" :image-size="60" />
-            <el-empty v-else description="点击上方 AI优化建议 页签开始分析" :image-size="60" />
+            <div v-if="optimizeError" class="optimize-error">
+              <el-alert :title="optimizeError" type="error" :closable="false" show-icon />
+            </div>
+
+            <div v-if="thinkingText" class="thinking-section">
+              <div class="thinking-header" @click="thinkingExpanded = !thinkingExpanded" style="cursor:pointer">
+                <span>
+                  <el-icon class="thinking-arrow" :class="{ expanded: thinkingExpanded }"><ArrowRight /></el-icon>
+                  {{ optimizing ? 'AI 正在思考...' : 'AI 推理过程' }}
+                </span>
+              </div>
+              <el-collapse-transition>
+                <div v-show="thinkingExpanded" class="thinking-content">{{ thinkingText }}</div>
+              </el-collapse-transition>
+            </div>
+
+            <div v-if="optimizeContent" class="markdown-body optimize-content" v-html="renderedMarkdown"></div>
+
+            <div v-if="!optimizing && !optimizeContent && !optimizeError && optimizeAttempted" class="optimize-empty">
+              <el-empty description="AI 未返回优化建议，请重试" :image-size="60" />
+            </div>
+
+            <div v-if="!optimizing && !optimizeContent && !optimizeError && !optimizeAttempted" class="optimize-empty">
+              <el-empty description="点击上方 AI优化建议 页签开始分析" :image-size="60" />
+            </div>
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -84,10 +104,33 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
+import MarkdownIt from 'markdown-it'
+import hljs from 'highlight.js/lib/core'
+import hljsSql from 'highlight.js/lib/languages/sql'
 import http from '@/js/utils/httpProxy.js'
+
+hljs.registerLanguage('sql', hljsSql)
+hljs.registerLanguage('mysql', hljsSql)
+hljs.registerLanguage('mariadb', hljsSql)
+
+const md = new MarkdownIt({
+  html: true,
+  breaks: true,
+  linkify: true,
+  highlight: function (str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return '<pre class="hljs"><code>' +
+          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
+          '</code></pre>'
+      } catch (e) {}
+    }
+    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>'
+  }
+})
 
 const props = defineProps({
   visible: Boolean,
@@ -103,13 +146,64 @@ const drawerVisible = computed({ get: () => props.visible, set: v => emit('updat
 const explaining = ref(false)
 const optimizing = ref(false)
 const explainResult = ref(null)
-const optimizeResult = ref(null)
 const activeTab = ref('explain')
 const rawExpanded = ref(false)
 const explainAttempted = ref(false)
 const optimizeAttempted = ref(false)
 
+const thinkingText = ref('')
+const thinkingExpanded = ref(false)
+const optimizeContent = ref('')
+const optimizeError = ref('')
+const abortController = ref(null)
+
+const drawerHeight = ref(45)
+let dragging = false
+let dragStartY = 0
+let dragStartHeight = 0
+
+function startDrag(e) {
+  dragging = true
+  dragStartY = e.clientY
+  dragStartHeight = drawerHeight.value
+  document.addEventListener('mousemove', onDrag)
+  document.addEventListener('mouseup', stopDrag)
+  document.body.style.userSelect = 'none'
+  e.preventDefault()
+}
+
+function onDrag(e) {
+  if (!dragging) return
+  const dy = dragStartY - e.clientY
+  const vh = window.innerHeight
+  const newPct = dragStartHeight + (dy / vh) * 100
+  drawerHeight.value = Math.max(15, Math.min(90, newPct))
+}
+
+function stopDrag() {
+  dragging = false
+  document.removeEventListener('mousemove', onDrag)
+  document.removeEventListener('mouseup', stopDrag)
+  document.body.style.userSelect = ''
+}
+
+const renderedMarkdown = computed(() => {
+  if (!optimizeContent.value) return ''
+  let processed = optimizeContent.value
+  let rendered = md.render(processed)
+  rendered = addCopyButtonsToCodeBlocks(rendered)
+  return rendered
+})
+
+function addCopyButtonsToCodeBlocks(html) {
+  return html.replace(
+    /(<pre class="hljs"><code[^>]*>[\s\S]*?<\/code><\/pre>)/g,
+    '<div class="code-block-wrapper">$1<div class="code-copy-btn" onclick="this.previousElementSibling.querySelector(\'code\').textContent && navigator.clipboard.writeText(this.previousElementSibling.querySelector(\'code\').textContent).then(()=>{this.textContent=\'已复制\';})">复制</div></div>'
+  )
+}
+
 function handleClose() {
+  stopOptimize()
   drawerVisible.value = false
 }
 
@@ -118,9 +212,9 @@ function copyText(text) {
 }
 
 function onTabChange(name) {
-  if (name === 'explain' && !explainResult.value && !explainAttempted.value) {
+  if (name === 'explain' && !explainResult.value && !explainAttempted.value && !explaining.value) {
     runExplain()
-  } else if (name === 'optimize' && !optimizeResult.value && !optimizeAttempted.value) {
+  } else if (name === 'optimize' && !optimizeContent.value && !optimizeAttempted.value && !optimizing.value) {
     runOptimize()
   }
 }
@@ -137,9 +231,7 @@ function decodeExplainData(data) {
       for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i)
       const text = new TextDecoder().decode(bytes)
       if (text) return text
-    } catch {
-      // not base64, return as-is
-    }
+    } catch {}
     return val
   }
 
@@ -168,16 +260,10 @@ function decodeExplainData(data) {
         }
         return line
       }).join('\n')
-    } catch {
-      // keep raw format if decoding fails
-    }
+    } catch {}
   }
 
-  return {
-    ...data,
-    rows: decodedRows,
-    raw: formattedRaw
-  }
+  return { ...data, rows: decodedRows, raw: formattedRaw }
 }
 
 async function runExplain() {
@@ -209,46 +295,116 @@ async function runExplain() {
 
 async function runOptimize() {
   if (!props.sql?.trim()) { ElMessage.warning('SQL不能为空'); return }
+  if (optimizing.value) return
+
+  stopOptimize()
   optimizing.value = true
+  optimizeContent.value = ''
+  thinkingText.value = ''
+  optimizeError.value = ''
+  optimizeAttempted.value = false
+  thinkingExpanded.value = true
+
+  const controller = new AbortController()
+  abortController.value = controller
+
   try {
     const formData = new FormData()
     formData.append('connId', props.connId)
     formData.append('schema', props.schema)
     formData.append('sql', props.sql)
-    formData.append('useExplain', 'true')
-    const res = await http.post('/sqlopt/optimize', formData)
-    const data = res.data.data
-    if (data) {
-      optimizeResult.value = data
-      optimizeAttempted.value = false
+    if (explainResult.value) {
+      formData.append('explainResult', JSON.stringify(explainResult.value))
     }
-    if (data && data.explainPlan) {
-      const planResult = decodeExplainData(data.explainPlan)
-      if (planResult && planResult.rows && planResult.rows.length) {
-        explainResult.value = planResult
+
+    const auth = sessionStorage.getItem('authentication') || ''
+    const resp = await fetch('/api/sqlopt/optimize', {
+      method: 'POST',
+      headers: { 'Authorization': auth },
+      body: formData,
+      signal: controller.signal,
+    })
+
+    if (!resp.ok) {
+      optimizeError.value = 'AI 服务请求失败 (HTTP ' + resp.status + ')'
+      return
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (!data) continue
+
+        let chunk
+        try {
+          chunk = JSON.parse(data)
+        } catch {
+          continue
+        }
+
+        switch (chunk.type) {
+          case 'thinking':
+            thinkingText.value += chunk.content
+            break
+          case 'content':
+            optimizeContent.value += chunk.content
+            break
+          case 'error':
+            optimizeError.value = chunk.content || 'AI 处理出错'
+            break
+          case 'done':
+            break
+        }
       }
     }
-    if (data && data.suggestions && data.suggestions.length) {
-      ElMessage.success('发现 ' + data.suggestions.length + ' 条优化建议')
-    } else {
-      ElMessage.success('SQL看起来不错，没有发现需要优化的地方')
-    }
   } catch (e) {
-    optimizeResult.value = null
-    optimizeAttempted.value = true
+    if (e.name !== 'AbortError') {
+      optimizeError.value = 'AI 服务请求失败: ' + (e.message || '未知错误')
+      console.error('optimize stream error:', e)
+    }
   } finally {
     optimizing.value = false
+    optimizeAttempted.value = true
+    abortController.value = null
+    if (!thinkingText.value) {
+      thinkingExpanded.value = false
+    }
+  }
+}
+
+function stopOptimize() {
+  if (abortController.value) {
+    abortController.value.abort()
+    abortController.value = null
   }
 }
 
 watch(() => props.visible, (val) => {
   if (val && props.sql?.trim()) {
+    activeTab.value = 'explain'
     runExplain()
   } else if (!val) {
+    stopOptimize()
     explainResult.value = null
-    optimizeResult.value = null
+    optimizeContent.value = ''
+    thinkingText.value = ''
+    optimizeError.value = ''
     explainAttempted.value = false
     optimizeAttempted.value = false
+    activeTab.value = 'explain'
+    optimizing.value = false
   }
 })
 
@@ -256,14 +412,32 @@ watch(() => props.sql, (newSql, oldSql) => {
   if (!props.visible || !newSql?.trim()) return
   if (newSql === oldSql) return
   explainResult.value = null
-  optimizeResult.value = null
+  optimizeContent.value = ''
+  thinkingText.value = ''
+  optimizeError.value = ''
   explainAttempted.value = false
   optimizeAttempted.value = false
-  runExplain()
+  activeTab.value = 'explain'
+})
+
+onUnmounted(() => {
+  stopOptimize()
+  document.removeEventListener('mousemove', onDrag)
+  document.removeEventListener('mouseup', stopDrag)
 })
 </script>
 
 <style scoped>
+.drag-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 10;
+}
+
 .toolbar-area {
   display: flex;
   align-items: flex-start;
@@ -291,24 +465,6 @@ watch(() => props.sql, (newSql, oldSql) => {
 .tab-body {
   padding-top: 12px;
   min-height: 120px;
-}
-
-.suggest-title {
-  margin: 0 0 8px;
-  color: #303133;
-  font-size: 14px;
-}
-
-.fix-sql-pre {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  flex: 1;
-  margin: 0;
-  max-height: 120px;
-  overflow: auto;
 }
 
 .explain-section {
@@ -379,5 +535,172 @@ watch(() => props.sql, (newSql, oldSql) => {
   word-break: break-all;
   max-height: 180px;
   overflow: auto;
+}
+
+.thinking-section {
+  margin-bottom: 12px;
+  background: #f5f3ff;
+  border: 1px solid #e0d8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #ede9fe;
+  color: #6d5c9e;
+  font-size: 13px;
+  font-weight: 500;
+  user-select: none;
+}
+
+.thinking-arrow {
+  font-size: 12px;
+  margin-right: 4px;
+  transition: transform 0.3s ease;
+  vertical-align: middle;
+}
+
+.thinking-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.thinking-content {
+  padding: 10px 14px;
+  color: #5b4a8a;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.optimize-error {
+  margin-bottom: 12px;
+}
+
+.optimize-content {
+  padding: 4px 0;
+}
+
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #303133;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  color: #1d1e1f;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 15px;
+}
+
+.markdown-body :deep(h4) {
+  font-size: 14px;
+}
+
+.markdown-body :deep(p) {
+  margin: 6px 0;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.markdown-body :deep(li) {
+  margin: 3px 0;
+}
+
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid #e4e7ed;
+  padding: 6px 12px;
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: #f0f5ff;
+  font-weight: 600;
+}
+
+.markdown-body :deep(strong) {
+  font-weight: 600;
+  color: #1d1e1f;
+}
+
+.code-block-wrapper {
+  position: relative;
+  margin: 8px 0;
+}
+
+.code-block-wrapper .code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #909399;
+  background: #f0f2f5;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  z-index: 2;
+  transition: all 0.2s;
+}
+
+.code-block-wrapper .code-copy-btn:hover {
+  color: #409eff;
+  background: #ecf5ff;
+  border-color: #c6e2ff;
+  cursor: pointer;
+}
+
+.markdown-body :deep(.hljs) {
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 14px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.markdown-body :deep(code) {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+}
+
+.markdown-body :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #e0d8f0;
+  background: #f5f3ff;
+  color: #6d5c9e;
+}
+
+.optimize-empty {
+  padding: 20px 0;
 }
 </style>

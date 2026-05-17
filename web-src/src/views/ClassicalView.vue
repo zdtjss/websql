@@ -20,22 +20,9 @@
               <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
                 <el-icon :size="14"><Refresh /></el-icon>
               </el-button>
-              <el-dropdown v-if="loginSucc" trigger="click" @command="handleUserCommand">
-                <el-button text size="small" class="sidebar-user-btn" :title="currentUser.name || '用户'">
-                  <el-icon :size="14"><User /></el-icon>
-                </el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item disabled>
-                      <span style="color: #303133; font-weight: 500;">{{ currentUser.name || '用户' }}</span>
-                    </el-dropdown-item>
-                    <el-dropdown-item divided command="changePassword">🔑 修改密码</el-dropdown-item>
-                    <el-dropdown-item v-if="currentUser.isAdmin || !isRemote" command="systemManagement">⚙️ 系统管理</el-dropdown-item>
-                    <el-dropdown-item command="registerBio">🖐️ 注册指纹</el-dropdown-item>
-                    <el-dropdown-item divided command="logout" style="color: #f56c6c;">🚪 退出登录</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <el-button text size="small" class="theme-toggle-btn" title="AI 对话" @click="openAiChat">
+                <el-icon :size="14"><ChatDotRound /></el-icon>
+              </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
@@ -233,9 +220,10 @@
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
+import { ChatDotRound, ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef } from 'vue'
+import { useRouter } from 'vue-router'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
 import DataBrowser from './DataBrowser.vue'
@@ -251,6 +239,8 @@ import DataDictDialog from '../components/DataDictDialog.vue'
 import SchemaCompareDialog from '../components/SchemaCompareDialog.vue'
 import GlobalSearchDialog from '../components/GlobalSearchDialog.vue'
 import { useTheme } from '@/js/utils/useTheme.ts'
+
+const router = useRouter()
 
 const showLoginBtn = ref(true)
 
@@ -347,23 +337,8 @@ const changePwdRules = reactive({
   ],
 })
 
-function handleUserCommand(command) {
-  switch (command) {
-    case 'changePassword':
-      changePwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
-      changePwdDialogVisible.value = true
-      break
-    case 'systemManagement':
-      sessionStorage.setItem('systemManagement_user', JSON.stringify(currentUser.value))
-      window.open('/system-management', '_blank')
-      break
-    case 'registerBio':
-      register()
-      break
-    case 'logout':
-      logout()
-      break
-  }
+function openAiChat() {
+  router.push('/')
 }
 
 function submitChangePassword() {

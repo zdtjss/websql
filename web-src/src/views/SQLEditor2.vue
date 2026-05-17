@@ -30,7 +30,6 @@
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
                     <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
-                    <el-button @click="queryBuilderVisible = true" title="可视化查询构建器">查询构建</el-button>
                     <el-upload
                       :show-file-list="false"
                       accept=".sql"
@@ -167,14 +166,6 @@
     @apply="onApplySnippet"
   />
 
-  <QueryBuilderDialog
-    v-model="queryBuilderVisible"
-    :conn-id="props.connId"
-    :schema="props.schema"
-    @execute="onQueryBuilderExecute"
-    @insert="onQueryBuilderInsert"
-  />
-
   <SQLOptimizePanel
     v-model:visible="optimizePanelVisible"
     :conn-id="props.connId"
@@ -199,7 +190,6 @@ import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '../components/SqlSnippetManager.vue'
-import QueryBuilderDialog from '../components/QueryBuilderDialog.vue'
 import SQLOptimizePanel from '../components/SQLOptimizePanel.vue'
 
 import hljs from 'highlight.js/lib/core'
@@ -280,7 +270,6 @@ const exportDialogVisible = ref(false)
 const exectingSql = ref(false)
 const executionTime = ref<number | null>(null)
 const snippetVisible = ref(false)
-const queryBuilderVisible = ref(false)
 const optimizePanelVisible = ref(false)
 const optimizeSql = ref('')
 const currentSelectTable = ref("")
@@ -420,32 +409,6 @@ function onApplySnippet(sql: string) {
         })
     }
     ElMessage({ message: '已填入编辑器', type: 'success' })
-}
-
-function onQueryBuilderExecute(sql: string) {
-    const editorState = editorView.value?.state as EditorState
-    if (editorState) {
-        const doc = editorState.doc.toString()
-        const insertPos = doc.length
-        editorView.value?.dispatch({
-            changes: { from: 0, to: doc.length, insert: sql }
-        })
-    }
-    nextTick(() => {
-        exec()
-    })
-}
-
-function onQueryBuilderInsert(sql: string) {
-    const editorState = editorView.value?.state as EditorState
-    if (editorState) {
-        const doc = editorState.doc.toString()
-        const insertPos = doc.length
-        editorView.value?.dispatch({
-            changes: { from: insertPos, insert: '\n' + sql }
-        })
-    }
-    ElMessage({ message: 'SQL 已插入编辑器', type: 'success' })
 }
 
 onMounted(() => {

@@ -285,7 +285,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 	}
 
 	// 从连接配置获取 schema
-	_, dbSchema, _ := getDBInfo(req.ConnID)
+	_, dbSchema, _ := GetDBInfo(req.ConnID)
 
 	tableColumns, err := getTableColumns(conn, dbType, dbSchema, req.TableName)
 	if err != nil || len(tableColumns) == 0 {

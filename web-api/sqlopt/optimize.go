@@ -1,15 +1,24 @@
 package sqlopt
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
+
 	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	admin "go-web/web-api/admin"
-	"go-web/web-api/ai"
-	"strings"
+	agentv2 "go-web/web-api/ai/agent/v2"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
+	toolutils "github.com/cloudwego/eino/components/tool/utils"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -23,20 +32,6 @@ type ExplainResult struct {
 type ExplainColumn struct {
 	Name  string `json:"name"`
 	Align string `json:"align"`
-}
-
-type OptimizationSuggestion struct {
-	Sql         string         `json:"sql"`
-	Suggestions []Suggestion   `json:"suggestions"`
-	ExplainPlan *ExplainResult `json:"explainPlan"`
-}
-
-type Suggestion struct {
-	Type        string `json:"type"`
-	Severity    string `json:"severity"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	FixSQL      string `json:"fixSql"`
 }
 
 func ExplainSQL(c *gin.Context) {
@@ -58,14 +53,18 @@ func ExplainSQL(c *gin.Context) {
 		explainSQL = "EXPLAIN PLAN FOR " + sqlStr
 		_, execErr := conn.Exec(explainSQL)
 		if execErr != nil {
-			logutils.PanicErrf("EXPLAIN失败", execErr)
+			logutils.PrintErrf("EXPLAIN失败", execErr)
+			c.JSON(200, gin.H{"code": 500, "msg": "EXPLAIN失败: " + execErr.Error()})
+			return
 		}
 		explainSQL = "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY())"
 	}
 
 	rows, err := conn.Queryx(explainSQL)
 	if err != nil {
-		logutils.PanicErrf("EXPLAIN失败", err)
+		logutils.PrintErrf("EXPLAIN失败", err)
+		c.JSON(200, gin.H{"code": 500, "msg": "EXPLAIN失败: " + err.Error()})
+		return
 	}
 	defer rows.Close()
 
@@ -124,172 +123,6 @@ func ExplainSQL(c *gin.Context) {
 
 func keep(val *any) {}
 
-func OptimizeSQL(c *gin.Context) {
-	connId := c.PostForm("connId")
-	_ = c.PostForm("schema")
-	sqlStr := c.PostForm("sql")
-	useExplain := c.DefaultPostForm("useExplain", "true")
-
-	authorization := c.GetHeader("Authorization")
-	conn := admin.GetConn(connId, authorization)
-	dbType := conn.DriverName()
-
-	dbVersion := ""
-	var versionSQL string
-	switch dbType {
-	case "oracle":
-		versionSQL = "SELECT BANNER FROM v$version WHERE BANNER LIKE 'Oracle%'"
-	case "mysql", "mariadb":
-		versionSQL = "SELECT VERSION()"
-	default:
-		versionSQL = "SELECT VERSION()"
-	}
-	row := conn.QueryRow(versionSQL)
-	if row != nil {
-		row.Scan(&dbVersion)
-	}
-
-	if strings.TrimSpace(sqlStr) == "" {
-		utils.WriteJson(c.Writer, map[string]any{"code": 500, "msg": "SQL不能为空"})
-		return
-	}
-
-	result := &OptimizationSuggestion{
-		Sql:         sqlStr,
-		Suggestions: make([]Suggestion, 0),
-	}
-
-	upperSQL := strings.ToUpper(strings.TrimSpace(sqlStr))
-
-	var explainResult *ExplainResult
-	if useExplain == "true" && strings.HasPrefix(upperSQL, "SELECT") {
-		explainSQL := "EXPLAIN " + sqlStr
-		r, err := execExplain(conn, dbType, explainSQL)
-		if err == nil {
-			explainResult = r
-			result.ExplainPlan = explainResult
-		}
-	}
-
-	aiSuggestions := analyzeWithAgent(sqlStr, dbType, dbVersion, explainResult)
-	if len(aiSuggestions) > 0 {
-		result.Suggestions = aiSuggestions
-	}
-
-	utils.WriteJson(c.Writer, result)
-}
-
-type aiSuggestionItem struct {
-	Type        string `json:"type"`
-	Severity    string `json:"severity"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	FixSQL      string `json:"fixSql"`
-}
-
-type aiOptimizeResponse struct {
-	Suggestions []aiSuggestionItem `json:"suggestions"`
-	Summary     string             `json:"summary"`
-}
-
-func analyzeWithAgent(sqlStr, dbType, dbVersion string, explainResult *ExplainResult) []Suggestion {
-	aiCfg := admin.GetSelectedModelConfig("")
-	if aiCfg == nil || aiCfg.ApiKey == "" || aiCfg.BaseURL == "" {
-		return nil
-	}
-
-	explainInfo := ""
-	if explainResult != nil {
-		explainJSON, err := json.Marshal(explainResult.Rows)
-		if err == nil {
-			explainInfo = fmt.Sprintf("\nEXPLAIN执行计划结果：\n%s\n", string(explainJSON))
-		} else {
-			explainInfo = fmt.Sprintf("\nEXPLAIN执行计划原始数据：\n%s\n", explainResult.Raw)
-		}
-	}
-
-	systemPrompt := `你是一个专业的数据库SQL优化专家。请分析用户提供的SQL语句，找出性能问题并给出优化建议。
-
-要求：
-1. 分析SQL的执行效率、索引使用、查询结构等方面
-2. 给出具体的优化建议，每条建议包含：type（index/performance/structure）、severity（critical/warning/info）、title、description
-3. 如果可能，提供优化后的fixSql
-4. 最终以JSON格式返回，格式为：{"suggestions": [...], "summary": "总结"}
-
-注意：
-- 只返回JSON，不要包含其他解释文字
-- 如果没有明显问题，suggestions 可以为空数组
-- 只关注SQL层面的优化，不要建议修改表结构或索引`
-
-	versionInfo := ""
-	if dbVersion != "" {
-		versionInfo = fmt.Sprintf("\n数据库版本：%s", dbVersion)
-	}
-
-	userPrompt := fmt.Sprintf("数据库类型：%s%s\n待优化SQL：\n```sql\n%s\n```%s\n请分析并给出优化建议。", dbType, versionInfo, sqlStr, explainInfo)
-
-	messages := []ai.ChatMessage{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt},
-	}
-
-	response, err := ai.CallAI(aiCfg, messages)
-	if err != nil {
-		logutils.PrintErr(fmt.Errorf("AI agent 分析失败: %v", err))
-		return nil
-	}
-
-	response = extractJSON(response)
-
-	var aiResp aiOptimizeResponse
-	if err := json.Unmarshal([]byte(response), &aiResp); err != nil {
-		logutils.PrintErr(fmt.Errorf("AI agent 响应解析失败: %v, response: %s", err, response))
-		return nil
-	}
-
-	if len(aiResp.Suggestions) == 0 {
-		return nil
-	}
-
-	suggestions := make([]Suggestion, 0, len(aiResp.Suggestions))
-	for _, item := range aiResp.Suggestions {
-		suggestions = append(suggestions, Suggestion{
-			Type:        item.Type,
-			Severity:    item.Severity,
-			Title:       item.Title,
-			Description: item.Description,
-			FixSQL:      item.FixSQL,
-		})
-	}
-
-	return suggestions
-}
-
-func extractJSON(text string) string {
-	text = strings.TrimSpace(text)
-	if idx := strings.Index(text, "```json"); idx != -1 {
-		text = text[idx+7:]
-		if end := strings.Index(text, "```"); end != -1 {
-			text = text[:end]
-		}
-	} else if idx := strings.Index(text, "```"); idx != -1 {
-		text = text[idx+3:]
-		if end := strings.Index(text, "```"); end != -1 {
-			text = text[:end]
-		}
-	}
-
-	start := strings.Index(text, "{")
-	if start == -1 {
-		return text
-	}
-	end := strings.LastIndex(text, "}")
-	if end == -1 || end <= start {
-		return text
-	}
-	return text[start : end+1]
-}
-
 func execExplain(conn *sqlx.DB, dbType, sql string) (*ExplainResult, error) {
 	rows, err := conn.Queryx(sql)
 	if err != nil {
@@ -333,6 +166,228 @@ func execExplain(conn *sqlx.DB, dbType, sql string) (*ExplainResult, error) {
 	}
 	result.Raw = strings.Join(lines, "\n")
 	return result, nil
+}
+
+func OptimizeSQLStream(c *gin.Context) {
+	connId := c.PostForm("connId")
+	dbSchema := c.PostForm("schema")
+	sqlStr := c.PostForm("sql")
+
+	dbType, cfgSchema, dbVersion := agentv2.GetDBInfo(connId)
+	if dbSchema == "" {
+		dbSchema = cfgSchema
+	}
+
+	if strings.TrimSpace(sqlStr) == "" {
+		c.JSON(200, gin.H{"code": 500, "msg": "SQL不能为空"})
+		return
+	}
+
+	aiCfg := admin.GetSelectedModelConfig("")
+	if aiCfg == nil || aiCfg.ApiKey == "" || aiCfg.BaseURL == "" {
+		c.JSON(200, gin.H{"code": 500, "msg": "AI 模型未配置，请先在系统设置中配置 AI 模型"})
+		return
+	}
+
+	var explainResult *ExplainResult
+	if explainResultJSON := c.PostForm("explainResult"); explainResultJSON != "" {
+		json.Unmarshal([]byte(explainResultJSON), &explainResult)
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	var mu sync.Mutex
+	dead := false
+
+	writeSSE := func(data string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dead {
+			return
+		}
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+
+	flush := func(chunk agentv2.StreamChunk) {
+		data, _ := json.Marshal(chunk)
+		writeSSE(string(data))
+	}
+
+	kaStop := make(chan struct{})
+	defer close(kaStop)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-ticker.C:
+				mu.Lock()
+				if !dead {
+					c.Writer.WriteString("data: \n\n")
+					c.Writer.Flush()
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	go func() {
+		<-c.Request.Context().Done()
+		mu.Lock()
+		dead = true
+		mu.Unlock()
+		cancel()
+	}()
+
+	cm, err := agentv2.BuildChatModel(ctx, aiCfg)
+	if err != nil {
+		logutils.PrintErrf("创建优化Agent模型失败", err)
+		flush(agentv2.StreamChunk{Type: "error", Content: "AI 模型初始化失败: " + err.Error()})
+		flush(agentv2.StreamChunk{Type: "done"})
+		return
+	}
+
+	schemas := []agentv2.SchemaRef{{ConnID: connId, Schema: dbSchema}}
+	optTools, err := buildOptTools(connId, dbType, dbSchema, schemas)
+	if err != nil {
+		logutils.PrintErrf("创建优化Agent工具失败", err)
+		flush(agentv2.StreamChunk{Type: "error", Content: "工具初始化失败: " + err.Error()})
+		flush(agentv2.StreamChunk{Type: "done"})
+		return
+	}
+
+	sysPrompt := buildOptSystemPrompt(dbType, dbVersion, explainResult)
+
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "SQLOptimizer",
+		Description: "SQL 优化专家，分析 SQL 性能问题并给出优化建议",
+		Instruction: sysPrompt,
+		Model:       cm,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: optTools},
+		},
+		MaxIterations: 10,
+	})
+	if err != nil {
+		logutils.PrintErrf("创建优化Agent失败", err)
+		flush(agentv2.StreamChunk{Type: "error", Content: "Agent 创建失败: " + err.Error()})
+		flush(agentv2.StreamChunk{Type: "done"})
+		return
+	}
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent:           agent,
+		EnableStreaming: true,
+	})
+
+	userPrompt := fmt.Sprintf("请分析并优化以下 SQL：\n\n```sql\n%s\n```", sqlStr)
+	messages := []adk.Message{
+		&schema.Message{Role: schema.System, Content: sysPrompt},
+		&schema.Message{Role: schema.User, Content: userPrompt},
+	}
+
+	iter := runner.Run(ctx, messages)
+
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			logutils.PrintErrf("优化Agent事件错误", event.Err)
+			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理出错: " + event.Err.Error()})
+			break
+		}
+		if event.Action != nil && event.Action.Exit {
+			break
+		}
+		if event.Action != nil && event.Action.Interrupted != nil {
+			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理被中断，请重试"})
+			break
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+
+		mo := event.Output.MessageOutput
+		if mo.IsStreaming && mo.MessageStream != nil {
+			for {
+				chunk, recvErr := mo.MessageStream.Recv()
+				if recvErr != nil {
+					break
+				}
+				if chunk.ReasoningContent != "" {
+					flush(agentv2.StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
+				}
+				if chunk.Content != "" {
+					flush(agentv2.StreamChunk{Type: "content", Content: chunk.Content})
+				}
+			}
+		}
+	}
+
+	flush(agentv2.StreamChunk{Type: "done"})
+}
+
+func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef) ([]tool.BaseTool, error) {
+	schemaTool, _ := toolutils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，包含字段名、类型、索引等", agentv2.NewSchemaFunc(connId, dbType, dbSchema, schemas))
+	queryTool, _ := toolutils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", agentv2.NewQueryFunc(connId, schemas))
+
+	var validTools []tool.BaseTool
+	if schemaTool != nil {
+		validTools = append(validTools, schemaTool)
+	}
+	if queryTool != nil {
+		validTools = append(validTools, queryTool)
+	}
+	return validTools, nil
+}
+
+func buildOptSystemPrompt(dbType, dbVersion string, explainResult *ExplainResult) string {
+	var sb strings.Builder
+
+	sb.WriteString("你是专业的 SQL 优化专家。先获取表结构，必要时 EXPLAIN，基于事实给出最优方案。\n\n")
+
+	sb.WriteString("## 工具\n")
+	sb.WriteString("- `get_table_schema(table)` 获取字段、类型、索引\n")
+	sb.WriteString("- `query_data(sql)` 执行 EXPLAIN 或查询\n\n")
+
+	sb.WriteString("## 要求\n")
+	sb.WriteString("1. 先调工具收集信息，再输出结论\n")
+	sb.WriteString("2. 输出用 Markdown：表结构分析 → 问题定位 → 优化方案 → 优化后 SQL\n")
+	sb.WriteString("3. 优化后 SQL 用 ```sql 代码块，每条可独立执行\n")
+	sb.WriteString("4. 不做索引建议（除非与 SQL 直接相关），不调整表结构\n")
+	sb.WriteString("5. 给出性能预期改善（如：减少全表扫描、索引利用）\n\n")
+
+	fmt.Fprintf(&sb, "## 环境\n- 数据库：%s\n", dbType)
+	if dbVersion != "" {
+		fmt.Fprintf(&sb, "- 版本：%s\n", dbVersion)
+	}
+
+	if explainResult != nil && len(explainResult.Rows) > 0 {
+		sb.WriteString("\n## EXPLAIN（已预执行）\n```\n")
+		for _, row := range explainResult.Rows {
+			for _, col := range explainResult.Columns {
+				if v, ok := row[col.Name]; ok {
+					fmt.Fprintf(&sb, "%-30s %v\n", col.Name, v)
+				}
+			}
+			sb.WriteString("---\n")
+		}
+		sb.WriteString("```\n")
+	}
+
+	return sb.String()
 }
 
 func init() {
