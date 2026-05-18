@@ -66,6 +66,18 @@ type ExecOutput struct {
 	AffectedRows int64  `json:"affectedRows"`
 	Message      string `json:"message"`
 }
+type ListTablesInput struct {
+	ConnID string `json:"connId,omitempty"`
+}
+type ListTablesOutput struct {
+	Tables []TableInfo `json:"tables"`
+	Count  int         `json:"count"`
+}
+type TableInfo struct {
+	TableName    string `json:"tableName"`
+	TableComment string `json:"tableComment,omitempty"`
+}
+
 type SchemaInput struct {
 	Tables []string `json:"tables" jsonschema:"required"`
 }
@@ -209,8 +221,8 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
 					if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
-					sql = applyRowLimit(sql, altConn.DriverName(), 500)
-				}
+						sql = applyRowLimit(sql, altConn.DriverName(), 500)
+					}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, sql)
 					if altErr == nil {
 						defer altRows.Close()
@@ -417,6 +429,88 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 			rows.Close()
 		}
 		return &SchemaOutput{Schema: sb.String()}, nil
+	}
+}
+
+func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
+	connLookup := buildConnLookup(schemas)
+	schemaNames := buildSchemaNames(schemas)
+
+	return func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
+		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
+		conn, _ := GetConn(targetConnID)
+		if conn == nil {
+			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
+			if len(schemaNames) > 0 {
+				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+
+		log.Printf("[Tool:list_tables] connId=%s, targetConn=%s, dbType=%s, dbSchema=%s\n", input.ConnID, targetConnID, dbType, dbSchema)
+
+		listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		var query string
+		var args []any
+
+		switch dbType {
+		case "mysql", "mariadb":
+			if dbSchema != "" {
+				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+				args = []any{dbSchema}
+			} else {
+				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+			}
+		case "oracle":
+			if dbSchema != "" {
+				query = "SELECT TABLE_NAME, COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = :1 AND TABLE_TYPE = 'TABLE' ORDER BY TABLE_NAME"
+				args = []any{strings.ToUpper(dbSchema)}
+			} else {
+				query = "SELECT TABLE_NAME, COMMENTS FROM USER_TAB_COMMENTS WHERE TABLE_TYPE = 'TABLE' ORDER BY TABLE_NAME"
+			}
+		case "sqlite":
+			query = "SELECT name, '' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+		case "postgresql", "postgres":
+			if dbSchema != "" {
+				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname = $1 ORDER BY tablename"
+				args = []any{dbSchema}
+			} else {
+				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY tablename"
+			}
+		case "sqlserver", "mssql":
+			if dbSchema != "" {
+				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' WHERE SCHEMA_NAME(t.schema_id) = @p1 ORDER BY t.name"
+				args = []any{dbSchema}
+			} else {
+				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' ORDER BY t.name"
+			}
+		default:
+			if dbSchema != "" {
+				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+				args = []any{dbSchema}
+			} else {
+				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+			}
+		}
+
+		rows, err := conn.QueryxContext(listCtx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list tables failed: %w", err)
+		}
+		defer rows.Close()
+
+		var tables []TableInfo
+		for rows.Next() {
+			var ti TableInfo
+			if err := rows.Scan(&ti.TableName, &ti.TableComment); err != nil {
+				continue
+			}
+			tables = append(tables, ti)
+		}
+
+		return &ListTablesOutput{Tables: tables, Count: len(tables)}, nil
 	}
 }
 

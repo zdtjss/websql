@@ -1,7 +1,7 @@
 <template>
     <el-tabs v-model="activeName" type="card" class="table-editor-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
-            <el-table :data="columnList" style="width: 100%" class="col-table">
+            <el-table :data="columnList" style="width: 100%" class="col-table" height="100%">
                 <el-table-column label="名称" width="250" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnName" style="margin-bottom: 10px;" />
@@ -151,7 +151,7 @@
             <div style="margin-bottom: 8px;">
                 <el-button size="small" @click="showAddIndexDialog">新建索引</el-button>
             </div>
-            <el-table :data="indexList" style="width: 100%" class="col-table" row-key="rowKey">
+            <el-table :data="indexList" style="width: 100%" class="col-table" row-key="rowKey" height="100%">
                 <el-table-column prop="indexName" label="索引名" width="200" resizable />
                 <el-table-column prop="columnName" label="字段" width="200" resizable />
                 <el-table-column label="唯一" width="80" resizable>
@@ -299,7 +299,7 @@
     </el-dialog>
 </template>
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, watch } from 'vue'
 import http from '@/js/utils/httpProxy.js'
 import { dbSchemaProxy } from '@/stores/sql'
 import { format } from 'sql-formatter'
@@ -355,10 +355,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['tableDrop'])
-
-onMounted(() => {
-    loadData('colums')
-})
 
 watch(() => props.tableMeta, (newVal, oldVal) => {
     if (newVal && newVal !== oldVal) {
@@ -745,6 +741,7 @@ function copyCreateScript() {
 .table-editor-tabs {
     display: flex;
     flex-direction: column;
+    max-height: calc(65vh - 54px);
 
     :deep(.el-tabs__header) {
         margin-bottom: 0;
@@ -769,6 +766,10 @@ function copyCreateScript() {
         flex: 1;
         overflow: auto;
         padding: 8px;
+    }
+
+    :deep(.el-tab-pane) {
+        height: 100%;
     }
 }
 

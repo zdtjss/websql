@@ -6,6 +6,7 @@
     direction="btt"
     :size="drawerHeight + '%'"
     :before-close="handleClose"
+    :close-on-click-modal="false"
   >
     <div class="drag-handle" @mousedown="startDrag"></div>
     <div class="toolbar-area">
@@ -20,10 +21,6 @@
           <div class="tab-body">
             <template v-if="explainResult">
               <div class="explain-section">
-                <div class="section-header">
-                  <span class="section-title">执行计划</span>
-                  <el-tag size="small" type="primary">EXPLAIN</el-tag>
-                </div>
                 <div class="explain-table-wrapper">
                   <el-table
                     v-if="explainResult.rows && explainResult.rows.length"
@@ -108,6 +105,9 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
+import texmath from 'markdown-it-texmath'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
 import http from '@/js/utils/httpProxy.js'
@@ -130,6 +130,12 @@ const md = new MarkdownIt({
     }
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>'
   }
+})
+
+md.use(texmath, {
+  engine: katex,
+  delimiters: 'dollars',
+  katexOptions: { throwOnError: false, strict: false },
 })
 
 const props = defineProps({
@@ -190,6 +196,14 @@ function stopDrag() {
 const renderedMarkdown = computed(() => {
   if (!optimizeContent.value) return ''
   let processed = optimizeContent.value
+
+  processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
+    return inner
+  })
+  processed = processed.replace(/\$\\(?:bm|mathit|mathrm|mathsf|mathtt)\{([^}]+)\}\$/g, (match, inner) => {
+    return inner
+  })
+
   let rendered = md.render(processed)
   rendered = addCopyButtonsToCodeBlocks(rendered)
   return rendered
@@ -474,21 +488,6 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, #f0f5ff 0%, #e8ecff 100%);
-  border-bottom: 1px solid #e4e7ed;
-}
-
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
 .explain-table-wrapper {
   padding: 12px;
   background: #fff;
@@ -527,7 +526,7 @@ onUnmounted(() => {
 .raw-content {
   margin: 0;
   padding: 12px;
-  color: #cdd6f4;
+  color: #67c23a;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -585,6 +584,7 @@ onUnmounted(() => {
 
 .optimize-content {
   padding: 4px 0;
+  margin: 0px 15px;
 }
 
 .markdown-body {

@@ -1,7 +1,7 @@
 <template>
     <el-tabs v-model="activeName" type="card" class="view-dialog-tabs" @tab-click="loadData">
         <el-tab-pane label="字段" name="colums">
-            <el-table :data="columnList" style="width: 100%" height="470" size="small" stripe>
+            <el-table :data="columnList" style="width: 100%" height="100%" size="small" stripe>
                 <el-table-column prop="columnName" label="名称" width="250" resizable />
                 <el-table-column prop="columnType" label="类型" width="160" resizable />
                 <el-table-column prop="isNullable" label="可空" width="100" resizable />
@@ -15,7 +15,7 @@
             <el-empty description="暂无统计信息" />
         </el-tab-pane>
         <el-tab-pane label="DDL" name="showCreate">
-            <el-scrollbar style="font-size: 15px; width: 100%; height: 470px;">
+            <el-scrollbar style="font-size: 15px; width: 100%; height: 100%;">
                 <pre style="margin: 0; padding: 12px;"><code class="language-sql" v-bind:innerHTML="tableCreateDdl" ref="tableCreateDdlRef"></code></pre>
             </el-scrollbar>
         </el-tab-pane>
@@ -93,7 +93,9 @@ function getSqlLang(schema) {
 
 <style lang="less" scoped>
 .view-dialog-tabs {
-    height: 500px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(65vh - 54px);
 
     :deep(.el-tabs__header) {
         margin-bottom: 0;
@@ -110,6 +112,15 @@ function getSqlLang(schema) {
 
     :deep(.el-tabs__item.is-active) {
         font-weight: 500;
+    }
+
+    :deep(.el-tabs__content) {
+        flex: 1;
+        overflow: auto;
+    }
+
+    :deep(.el-tab-pane) {
+        height: 100%;
     }
 }
 </style>

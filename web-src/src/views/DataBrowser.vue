@@ -5,7 +5,7 @@
       <div class="toolbar-left">
         <span class="toolbar-title">
           <el-icon :size="16" color="#409eff"><Grid /></el-icon>
-          {{ tableName }}
+          {{ schema + "." + tableName }}
         </span>
         <el-divider direction="vertical" />
         <el-button size="small" @click="loadData" :loading="loading" :icon="Refresh">刷新</el-button>

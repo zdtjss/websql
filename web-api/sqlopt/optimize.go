@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -178,6 +179,8 @@ func OptimizeSQLStream(c *gin.Context) {
 		dbSchema = cfgSchema
 	}
 
+	log.Printf("[OptAgent] 开始优化 - connID=%s, dbType=%s, schema=%s, sqlLen=%d\n", connId, dbType, dbSchema, len(sqlStr))
+
 	if strings.TrimSpace(sqlStr) == "" {
 		c.JSON(200, gin.H{"code": 500, "msg": "SQL不能为空"})
 		return
@@ -256,6 +259,7 @@ func OptimizeSQLStream(c *gin.Context) {
 		flush(agentv2.StreamChunk{Type: "done"})
 		return
 	}
+	log.Printf("[OptAgent] 模型初始化成功 - provider=%s, model=%s\n", aiCfg.Provider, aiCfg.Model)
 
 	schemas := []agentv2.SchemaRef{{ConnID: connId, Schema: dbSchema}}
 	optTools, err := buildOptTools(connId, dbType, dbSchema, schemas)
@@ -265,6 +269,7 @@ func OptimizeSQLStream(c *gin.Context) {
 		flush(agentv2.StreamChunk{Type: "done"})
 		return
 	}
+	log.Printf("[OptAgent] 工具初始化成功 - toolCount=%d\n", len(optTools))
 
 	sysPrompt := buildOptSystemPrompt(dbType, dbVersion, explainResult)
 
@@ -284,6 +289,7 @@ func OptimizeSQLStream(c *gin.Context) {
 		flush(agentv2.StreamChunk{Type: "done"})
 		return
 	}
+	log.Printf("[OptAgent] Agent 创建成功 - maxIterations=10\n")
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
 		Agent:           agent,
@@ -296,6 +302,7 @@ func OptimizeSQLStream(c *gin.Context) {
 		&schema.Message{Role: schema.User, Content: userPrompt},
 	}
 
+	log.Printf("[OptAgent] 开始执行 - sqlLen=%d\n", len(sqlStr))
 	iter := runner.Run(ctx, messages)
 
 	for {
@@ -304,14 +311,17 @@ func OptimizeSQLStream(c *gin.Context) {
 			break
 		}
 		if event.Err != nil {
+			log.Printf("[OptAgent] 事件错误 - err=%+v\n", event.Err)
 			logutils.PrintErrf("优化Agent事件错误", event.Err)
 			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理出错: " + event.Err.Error()})
 			break
 		}
 		if event.Action != nil && event.Action.Exit {
+			log.Printf("[OptAgent] Agent 执行完毕\n")
 			break
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
+			log.Printf("[OptAgent] Agent 被中断\n")
 			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理被中断，请重试"})
 			break
 		}
@@ -337,6 +347,7 @@ func OptimizeSQLStream(c *gin.Context) {
 	}
 
 	flush(agentv2.StreamChunk{Type: "done"})
+	log.Printf("[OptAgent] 优化流程结束 - connID=%s\n", connId)
 }
 
 func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef) ([]tool.BaseTool, error) {

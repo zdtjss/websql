@@ -141,6 +141,24 @@ func (s *PermissionScope) IsTableAllowed(table string) bool {
 	return s.AllowedTables[table] || len(s.AllowedColumns[table]) > 0
 }
 
+func (s *PermissionScope) IsTableAllowedIgnoreCase(table string) bool {
+	if s.IsTableAllowed(table) {
+		return true
+	}
+	upper := strings.ToUpper(table)
+	for t := range s.AllowedTables {
+		if strings.ToUpper(t) == upper {
+			return true
+		}
+	}
+	for t := range s.AllowedColumns {
+		if strings.ToUpper(t) == upper {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
 	if s.SkipChecks() || s.HasFullSchemaAccess || s.AllowedTables[table] {
 		return true
@@ -437,6 +455,8 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 		switch tCtx.Name {
 		case "get_table_schema":
 			return m.checkSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "list_tables":
+			return m.postFilterSync(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
 		case "query_data":
 			return m.checkQueryAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
@@ -466,6 +486,8 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 		switch tCtx.Name {
 		case "get_table_schema":
 			return m.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "list_tables":
+			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
 		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt":
 			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		default:
@@ -533,7 +555,7 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 	filtered := make([]string, 0)
 	deniedTables := make([]string, 0)
 	for _, table := range input.Tables {
-		if m.Scope.IsTableAllowed(table) {
+		if m.Scope.IsTableAllowedIgnoreCase(table) {
 			filtered = append(filtered, table)
 		} else {
 			deniedTables = append(deniedTables, table)
@@ -575,7 +597,9 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 
 	var output SchemaOutput
 	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		return result, nil
+		m.logDeny("get_table_schema", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
+		safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
+		return string(safeOutput), nil
 	}
 
 	if output.Schema != "" {
@@ -588,6 +612,70 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 	}
 
 	return result, nil
+}
+
+// ──────────────────────────────────────────────
+// 通用后过滤权限检查（适用于 list_tables 等仅需过滤输出的工具）
+// ──────────────────────────────────────────────
+
+func (m *PermissionMiddleware) postFilterSync(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (string, error) {
+	if m.Scope.HasFullSchemaAccess || m.Scope.SkipChecks() {
+		m.logAllow(toolName, "full_access")
+		return endpoint(ctx, args, opts...)
+	}
+	result, err := endpoint(ctx, args, opts...)
+	if err != nil {
+		return "", err
+	}
+	m.logAllow(toolName, "post_filter")
+	return filter(result), nil
+}
+
+func (m *PermissionMiddleware) postFilterStream(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	if m.Scope.HasFullSchemaAccess || m.Scope.SkipChecks() {
+		m.logAllow(toolName+"(stream)", "full_access")
+		return endpoint(ctx, args, opts...)
+	}
+	reader, err := endpoint(ctx, args, opts...)
+	if err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr != nil {
+			break
+		}
+		sb.WriteString(chunk)
+	}
+	m.logAllow(toolName+"(stream)", "post_filter")
+	return schema.StreamReaderFromArray([]string{filter(sb.String())}), nil
+}
+
+func (m *PermissionMiddleware) filterListTablesResult(result string) string {
+	var output ListTablesOutput
+	if err := json.Unmarshal([]byte(result), &output); err != nil {
+		m.logDeny("list_tables", "结果JSON解析失败，拒绝返回未过滤数据", nil)
+		safeOutput, _ := json.Marshal(ListTablesOutput{Tables: []TableInfo{}, Count: 0})
+		return string(safeOutput)
+	}
+
+	filtered := make([]TableInfo, 0, len(output.Tables))
+	for _, t := range output.Tables {
+		if m.Scope.IsTableAllowedIgnoreCase(t.TableName) {
+			filtered = append(filtered, t)
+		}
+	}
+
+	removedCount := len(output.Tables) - len(filtered)
+	if removedCount > 0 {
+		m.logInfo("list_tables", "过滤无权限表 - 原始=%d, 保留=%d, 移除=%d", len(output.Tables), len(filtered), removedCount)
+	}
+
+	output.Tables = filtered
+	output.Count = len(filtered)
+	outputJSON, _ := json.Marshal(output)
+	return string(outputJSON)
 }
 
 // ──────────────────────────────────────────────
@@ -932,7 +1020,7 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 	filtered := make([]string, 0)
 	deniedTables := make([]string, 0)
 	for _, table := range input.Tables {
-		if m.Scope.IsTableAllowed(table) {
+		if m.Scope.IsTableAllowedIgnoreCase(table) {
 			filtered = append(filtered, table)
 		} else {
 			deniedTables = append(deniedTables, table)
@@ -985,7 +1073,9 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 
 	var output SchemaOutput
 	if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
-		return schema.StreamReaderFromArray([]string{rawResult}), nil
+		m.logDeny("get_table_schema(stream)", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
+		safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
+		return schema.StreamReaderFromArray([]string{string(safeOutput)}), nil
 	}
 	if output.Schema != "" {
 		output.Schema = filterDDLByScope(output.Schema, filtered, m.Scope)

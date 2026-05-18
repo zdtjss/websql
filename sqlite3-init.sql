@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS t_prompt (
 	content TEXT NOT NULL,
 	created_by TEXT,
 	role_id TEXT,
+	conn_id TEXT,
+	schema TEXT,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

@@ -662,6 +662,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas))
 	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx))
 	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas))
+	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释。当用户未指定表名时，优先调用此工具获取表列表，通过表注释判断目标表，而非猜测表名", NewListTablesFunc(connID, dbType, dbSchema, schemas))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
@@ -670,7 +671,7 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	// 获取当前日期、星期几和时间  不是所有模型都支持正确使用SQL获取当前日期信息
 	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 
-	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool, currentDateInfoTool}
+	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool, currentDateInfoTool}
 	// 过滤掉 nil（InferTool 失败时）
 	var validTools []tool.BaseTool
 	for _, t := range allTools {
@@ -762,21 +763,24 @@ func buildStaticPromptPart(dbType string) string {
 3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
 4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
 5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
+6. **禁止猜测表名**：当用户未指定表名时，必须先调用 list_tables 获取表列表及表注释，通过表注释判断目标表。只有在 list_tables 返回的表注释无法判断目标表时，才可以向用户询问确认，绝不允许凭空猜测表名
 `)
 
 	sb.WriteString(`
 ## 标准工作流程
 执行每个数据分析任务时，按以下步骤推进：
 1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
-2. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
-3. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
-4. 执行查询 — 调用 query_data（读）或 exec_sql（写）
-5. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
-6. 当涉及写操作时，在步骤4之前先向用户说明将要执行的操作，等待系统推送确认
+2. 定位表 — 如果用户未指定表名，调用 list_tables 获取表列表及表注释，通过注释匹配目标表；如果用户已指定表名，跳过此步
+3. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
+4. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
+5. 执行查询 — 调用 query_data（读）或 exec_sql（写）
+6. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
+7. 当涉及写操作时，在步骤5之前先向用户说明将要执行的操作，等待系统推送确认
 
 ## 工具使用指南
 | 工具 | 用途与约束 |
 |------|-----------|
+| list_tables | 获取当前数据库的所有表名及表注释。**当用户未指定表名时必须优先调用此工具**，通过表注释判断目标表，而非猜测表名。可选参数 connId 指定目标连接（留空默认） |
 | get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
 | query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH）。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用 |
 | exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。可选参数 connId 指定目标连接（留空默认）。系统会拦截并推送前端确认，你无需额外处理 |
@@ -815,11 +819,25 @@ func buildStaticPromptPart(dbType string) string {
 - 若 3 次均失败，向用户解释原因并建议替代方案
 
 ## 迭代次数限制（重要）
-你的每次思考与工具调用都会消耗 1 次迭代，你有 20 次迭代上限。请高效利用：
-- 当 query_data 连续 2 次返回空结果（如不同 schema 下都查不到表），立即停止尝试，直接告知用户该表不存在
-- 不要在同一个问题上反复尝试不同变体（如猜不同的 schema 名、表名变体），这会在几次内耗尽迭代上限
-- 优先使用一次聚合查询获取概况，而非多次明细查询
-- 如果发现在重复踩同一个错误，停下来思考替代方案，而不是继续硬试
+你的每次思考与工具调用都会消耗 1 次迭代，你有 ` + fmt.Sprint(maxIterations) + ` 次迭代上限。请高效利用，确保在有限迭代内完成有价值的工作：
+
+### 减少试错的关键原则
+1. **先定位再探索**：用户未指定表名时，必须先调用 list_tables 获取表列表及注释，通过注释匹配目标表后再调用 get_table_schema，禁止凭空猜测表名
+2. **先验证再执行**：探索新表时必须调用 get_table_schema，浏览返回的字段和类型后再写 SQL，禁止基于猜测的字段名直接查询
+3. **合并调用**：get_table_schema 支持一次传入多个表名，一次 SQL 涉及的所有表应在同一轮 get_table_schema 中完成探索
+4. **SQL 自检**：写完后在脑中快速检查引号是否正确、LIMIT 是否添加、JOIN 条件是否完整，确认无误后再调用工具
+
+### 及时止损
+- query_data 连续 2 次返回空结果或"表不存在"类错误 → 立即停止，告知用户数据不可用，禁止猜测其他表名变体
+- 同一个错误信息连续出现 2 次 → 禁止用相同参数重试，转为向用户说明问题或切换工具/策略
+- 禁止猜测表名变体：加 _bak / _old / _temp / _new 后缀的猜测不超过 2 次就应放弃
+- 若迭代已消耗超过 35 次，暂停新探索，尽快整合已有结果输出给用户
+
+### 最大化有效产出
+- 能用一条 JOIN 查询完成的多表分析，不要拆成多次单表查询再手动合并
+- 优先用 GROUP BY + 聚合函数一次获取多维度统计概况，而非逐维度分多次查询
+- 查询结果确认正确后再导出（export_excel / export_ppt / export_analysis_docx），避免导出错误数据后重新查询浪费迭代
+- 复杂任务中途向用户反馈进度，让用户感知分析在推进
 `)
 
 	return sb.String()
@@ -872,7 +890,7 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 		fmt.Fprintf(&sb, "\n用户指定表范围：%s\n", strings.Join(tableContext, ", "))
 		sb.WriteString("只能在这些表上操作。若需求无法仅用这些表满足，请明确告知需要哪些额外表。\n")
 	} else {
-		sb.WriteString("\n用户未限定表范围，你可以调用 get_table_schema 探索已授权表的结构。\n")
+		sb.WriteString("\n用户未限定表范围，请先调用 list_tables 获取表列表及表注释，通过注释判断目标表后再调用 get_table_schema 获取表结构。禁止凭空猜测表名。\n")
 	}
 
 	sb.WriteString(scope.DescribeForPrompt())

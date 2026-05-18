@@ -129,9 +129,13 @@
                       </template>
                       <div class="prompt-list">
                         <div v-if="myPrompts.length === 0" class="prompt-empty">暂无提示词</div>
-                        <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content)">
+                        <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connId: prompt.connId, schema: prompt.schema })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
+                            <div v-if="prompt.connId && prompt.schema" class="prompt-item-sub">
+                              <el-icon size="12"><Coin /></el-icon>
+                              {{ prompt.schema }}
+                            </div>
                             <div v-if="prompt.isShared" class="prompt-item-sub">
                               <el-icon size="12"><Share /></el-icon>
                               {{ prompt.sharedByName || '他人分享' }}
@@ -154,9 +158,13 @@
                           <el-icon class="is-loading"><Loading /></el-icon>
                         </div>
                         <div v-else-if="systemPrompts.length === 0" class="prompt-empty">暂无系统提示词</div>
-                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content)">
+                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connId: prompt.connId, schema: prompt.schema })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
+                            <div v-if="prompt.connId && prompt.schema" class="prompt-item-sub">
+                              <el-icon size="12"><Coin /></el-icon>
+                              {{ prompt.schema }}
+                            </div>
                           </div>
                           <div class="prompt-item-actions">
                             <el-button size="small" text type="info" @click.stop="handleViewPromptDetail(prompt)" title="查看">
@@ -168,7 +176,7 @@
                     </el-tab-pane>
                   </el-tabs>
                 </div>
-                <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" @saved="handlePromptSaved" @send-to-AI="handlePromptSendToAI" />
+                <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" :role-id="editingRoleId" @saved="handlePromptSaved" @send-to-AI="handleSendToAIFromDialog" />
                 <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="600px" append-to-body>
                   <div v-if="promptDetail" class="prompt-detail-content markdown-body" v-html="md.render(promptDetail.content)"></div>
                   <template #footer>
@@ -370,11 +378,12 @@
 import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
+import { usePromptEditDialog } from '@/composables/usePromptEditDialog'
 import LoginDialog from '@/components/LoginDialog.vue'
 import http from '@/js/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
-import { ChatLineRound, Clock, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import hljs from 'highlight.js/lib/core'
 import hljsSql from 'highlight.js/lib/languages/sql'
@@ -506,8 +515,8 @@ let speechRecognition = null
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
 const canUseClassicView = ref(false)
 
-const promptEditDialogVisible = ref(false)
-const editingPromptId = ref('')
+const { visible: promptEditDialogVisible, promptId: editingPromptId, roleId: editingRoleId, openDialog: openPromptEditDialog, closeDialog: closePromptEditDialog, triggerSaved: triggerPromptSaved, setSendToAIHandler, handleSendToAI: handleSendToAIFromDialog } = usePromptEditDialog()
+
 const promptPopoverVisible = ref(false)
 
 const prompts = ref([])
@@ -2234,32 +2243,28 @@ function clearUploadedExcel() {
   uploadedExcel.value = null
 }
 
-function handleSendPromptToAI(content) {
+function handlePromptSendToAI(content, connInfo) {
   promptPopoverVisible.value = false
   promptEditDialogVisible.value = false
   question.value = content
-  nextTick(() => sendMessage())
-}
-
-function handlePromptSendToAI(content) {
-  promptPopoverVisible.value = false
-  promptEditDialogVisible.value = false
-  question.value = content
+  if (connInfo && connInfo.connId && connInfo.schema) {
+    const schemaValue = connInfo.connId + '::' + connInfo.schema
+    selectedSchemas.value = [schemaValue]
+  }
   nextTick(() => sendMessage())
 }
 
 function handlePromptAdd() {
-  editingPromptId.value = ''
-  promptEditDialogVisible.value = true
+  openPromptEditDialog()
 }
 
 function handlePromptEdit(promptId) {
-  editingPromptId.value = promptId
-  promptEditDialogVisible.value = true
+  openPromptEditDialog({ promptId })
 }
 
 function handlePromptSaved() {
   loadPrompts()
+  triggerPromptSaved()
 }
 
 async function loadPrompts() {
@@ -2300,7 +2305,10 @@ function handleViewPromptDetail(prompt) {
 
 function handleSendFromDetail() {
   if (promptDetail.value) {
-    handlePromptSendToAI(promptDetail.value.content)
+    handlePromptSendToAI(promptDetail.value.content, {
+      connId: promptDetail.value.connId,
+      schema: promptDetail.value.schema,
+    })
     promptDetailVisible.value = false
   }
 }
@@ -2677,6 +2685,7 @@ function handleExportLinkClick(e) {
 }
 
 onMounted(() => {
+  setSendToAIHandler(handlePromptSendToAI)
   getSysModel()
   loadModelList()
   loadConnList().then(() => {

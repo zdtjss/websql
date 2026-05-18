@@ -15,6 +15,7 @@ let vditorModulePromise = null
  * 多次调用安全，只会触发一次实际加载
  */
 export function preloadVditor() {
+  ensureVditorCss()
   if (!vditorModulePromise) {
     vditorModulePromise = import('vditor').then(m => {
       VditorClass = m.default || m

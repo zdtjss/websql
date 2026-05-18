@@ -80,9 +80,9 @@
     </div>
 
     <PromptEditDialog
-      v-model="editDialogVisible"
-      :prompt-id="editingPromptId"
-      :role-id="currentRole?.id || ''"
+      v-model="dialogVisible"
+      :prompt-id="dialogPromptId"
+      :role-id="dialogRoleId"
       @saved="handlePromptSaved"
     />
   </div>
@@ -94,7 +94,6 @@ import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Edit, Loading, User } from '@element-plus/icons-vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
-import { preloadVditor } from '@/utils/vditorLoader'
 
 const roles = ref([])
 const currentRole = ref(null)
@@ -102,8 +101,10 @@ const prompts = ref([])
 const loadingRoles = ref(false)
 const loadingPrompts = ref(false)
 const roleSearchKey = ref('')
-const editDialogVisible = ref(false)
-const editingPromptId = ref('')
+
+const dialogVisible = ref(false)
+const dialogPromptId = ref('')
+const dialogRoleId = ref('')
 
 const filteredRoles = computed(() => {
   if (!roleSearchKey.value) return roles.value
@@ -113,8 +114,6 @@ const filteredRoles = computed(() => {
 
 onMounted(() => {
   loadRoles()
-  // 进入提示词管理页面时预加载 Vditor
-  preloadVditor()
 })
 
 async function loadRoles() {
@@ -147,13 +146,15 @@ async function loadPromptsByRole(roleId) {
 }
 
 function handleAdd() {
-  editingPromptId.value = ''
-  editDialogVisible.value = true
+  dialogRoleId.value = currentRole.value?.id || ''
+  dialogPromptId.value = ''
+  dialogVisible.value = true
 }
 
 function handleEdit(prompt) {
-  editingPromptId.value = prompt.id
-  editDialogVisible.value = true
+  dialogPromptId.value = prompt.id
+  dialogRoleId.value = currentRole.value?.id || ''
+  dialogVisible.value = true
 }
 
 function handleDelete(prompt) {

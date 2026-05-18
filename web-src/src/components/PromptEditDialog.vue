@@ -20,9 +20,26 @@
         </div>
       </div>
     </template>
-    <el-form ref="formRef" :model="form" :rules="rules" label-width="80px">
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-form-item label="标题" prop="title">
         <el-input v-model="form.title" placeholder="请输入提示词标题" maxlength="100" show-word-limit />
+      </el-form-item>
+      <el-form-item label="连接/Schema">
+        <div v-if="connLoading" class="conn-schema-loading">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>加载连接中...</span>
+        </div>
+        <el-tree-select v-else
+          v-model="selectedConnSchema"
+          :data="connTree"
+          :props="{ label: 'label', value: 'value', children: 'children', disabled: 'disabled' }"
+          placeholder="选择数据库连接和Schema（可选）"
+          class="modern-tree-select"
+          filterable
+          :check-on-click-node="true"
+          clearable
+          :teleported="false"
+        />
       </el-form-item>
       <el-form-item label="内容" prop="content">
         <div ref="vditorContainerRef" class="vditor-container" v-loading="vditorLoading" element-loading-text="稍等片刻...">
@@ -60,8 +77,8 @@
 import { ref, computed, onUnmounted, nextTick, watch, shallowRef } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage } from 'element-plus'
-import { Close, Promotion } from '@element-plus/icons-vue'
-import { loadVditorModule, ensureVditorCss } from '@/utils/vditorLoader'
+import { Close, Promotion, Loading } from '@element-plus/icons-vue'
+import { loadVditorModule, ensureVditorCss, preloadVditor } from '@/utils/vditorLoader'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -86,12 +103,155 @@ const form = ref({
   title: '',
   content: '',
   roleId: '',
+  connId: '',
+  schema: '',
   sharedUserIds: [],
 })
 
 const rules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
   content: [{ required: true, message: '请输入内容', trigger: 'blur' }],
+}
+
+const connLoading = ref(false)
+const connSchemaList = ref([])
+const connTree = ref([])
+const selectedConnSchema = ref('')
+
+function buildSchemaTree(rawList) {
+  const dirMap = new Map()
+  const noDir = []
+
+  for (const item of rawList) {
+    const schemas = item.schemas || []
+    if (item.available === false) {
+      const node = {
+        label: item.name,
+        value: item.connId + '::',
+        connId: item.connId,
+        schemaName: '',
+        disabled: true,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
+        dirMap.get(dir).push(node)
+      } else {
+        noDir.push(node)
+      }
+      continue
+    }
+    if (schemas.length <= 1) {
+      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || 'default')
+      const node = {
+        label: item.name,
+        value: item.connId + '::' + singleSchema,
+        connId: item.connId,
+        schemaName: singleSchema,
+        disabled: false,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
+        dirMap.get(dir).push(node)
+      } else {
+        noDir.push(node)
+      }
+    } else {
+      const schemaChildren = schemas.map(s => ({
+        label: s.name,
+        value: item.connId + '::' + s.name,
+        connId: item.connId,
+        schemaName: s.name,
+        disabled: false,
+      }))
+      const connNode = {
+        label: item.name,
+        value: '__conn__' + item.connId,
+        disabled: true,
+        children: schemaChildren,
+      }
+      const dir = item.dirName
+      if (dir) {
+        if (!dirMap.has(dir)) dirMap.set(dir, [])
+        dirMap.get(dir).push(connNode)
+      } else {
+        noDir.push(connNode)
+      }
+    }
+  }
+
+  const tree = []
+  for (const [dirName, children] of dirMap) {
+    tree.push({ label: dirName, value: '__dir__' + dirName, disabled: true, children })
+  }
+  tree.push(...noDir)
+  return tree
+}
+
+async function loadConnList() {
+  connLoading.value = true
+  try {
+    const auth = sessionStorage.getItem('authentication') || ''
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    const resp = await fetch(apiBase + '/listUserConnSchemasStream', {
+      headers: { 'Authorization': auth }
+    })
+    if (!resp.ok) {
+      throw new Error('HTTP ' + resp.status)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    const rawList = []
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value && value.length > 0) {
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            const data = JSON.parse(trimmed)
+            if (data.connId) {
+              rawList.push(data)
+              connTree.value = buildSchemaTree(rawList)
+            }
+          } catch (e) {
+            console.warn('parse error for line', trimmed, e)
+          }
+        }
+      }
+      if (done) break
+    }
+    connSchemaList.value = rawList
+    if (rawList.length === 0) {
+      throw new Error('no connections')
+    }
+  } catch (e) {
+    console.error('加载连接列表失败，降级使用旧接口', e)
+    try {
+      const resp = await http.get('/listUserConn')
+      const data = resp.data.data || []
+      const converted = data.map(conn => ({
+        connId: conn.id,
+        name: conn.name,
+        dirName: conn.dirName,
+        dbType: conn.dbType,
+        available: conn.available !== false,
+        schemas: [{ name: conn.dbSchema || 'default' }],
+      }))
+      connSchemaList.value = converted
+      connTree.value = buildSchemaTree(converted)
+    } catch (e2) {
+      console.error('加载连接列表完全失败', e2)
+    }
+  } finally {
+    connLoading.value = false
+  }
 }
 
 async function initVditor() {
@@ -154,10 +314,13 @@ async function waitForVditorReady() {
 }
 
 function handleOpen() {
+  preloadVditor()
+  loadConnList()
   if (props.promptId) {
     loadPromptDetail(props.promptId)
   } else {
-    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', sharedUserIds: [] }
+    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', connId: '', schema: '', sharedUserIds: [] }
+    selectedConnSchema.value = ''
     userOptions.value = []
     if (vditorInstance.value) {
       vditorInstance.value.setValue('')
@@ -167,6 +330,19 @@ function handleOpen() {
     initVditor()
   })
 }
+
+watch(selectedConnSchema, (val) => {
+  if (!val) {
+    form.value.connId = ''
+    form.value.schema = ''
+    return
+  }
+  const idx = val.indexOf('::')
+  if (idx !== -1) {
+    form.value.connId = val.substring(0, idx)
+    form.value.schema = val.substring(idx + 2)
+  }
+})
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) {
@@ -193,7 +369,14 @@ async function loadPromptDetail(id) {
         title: data.title,
         content: data.content,
         roleId: data.roleId || props.roleId || '',
+        connId: data.connId || '',
+        schema: data.schema || '',
         sharedUserIds: data.sharedUserIds || [],
+      }
+      if (data.connId && data.schema) {
+        selectedConnSchema.value = data.connId + '::' + data.schema
+      } else {
+        selectedConnSchema.value = ''
       }
       if (data.sharedUsers && data.sharedUsers.length > 0) {
         userOptions.value = data.sharedUsers.map(u => ({ id: u.id, name: u.name, loginName: u.loginName || '' }))
@@ -252,7 +435,10 @@ async function handleSave() {
 
 function handleSendToAI() {
   if (!form.value.content.trim()) return
-  emit('sendToAI', form.value.content)
+  emit('sendToAI', form.value.content, {
+    connId: form.value.connId,
+    schema: form.value.schema,
+  })
 }
 </script>
 
@@ -281,6 +467,19 @@ function handleSendToAI() {
 
 .share-select {
   width: 100%;
+}
+
+.modern-tree-select {
+  width: 100%;
+}
+
+.conn-schema-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  padding: 8px 0;
 }
 
 .dialog-footer {

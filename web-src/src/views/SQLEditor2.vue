@@ -26,7 +26,6 @@
                       </template>
                     </el-dropdown>
                     <el-divider direction="vertical" />
-                    <el-button @click="listBackupData">备份</el-button>
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
                     <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
@@ -90,25 +89,6 @@
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
         <DBExport :connId="props.connId" :schema="props.schema" opt="insert" :canImport="canModify"/>
     </el-dialog>
-    <el-dialog v-model="backupDataDialogVisible" :draggable="true" title="自动备份的数据" width="1000px"
-        style="height:650px;overflow-y: auto;">
-        <el-table :data="backupDataList" stripe style="width: 100%;" :max-height="520">
-            <el-table-column type="index" width="50" resizable />
-            <el-table-column prop="exec_time" label="操作时间" width="170" resizable />
-            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip resizable />
-            <el-table-column label="" width="38" resizable>
-                <template #default="scope">
-                    <el-icon style="cursor: pointer;" @click="showBackupData(scope.row.id)">
-                        <View />
-                    </el-icon>
-                </template>
-            </el-table-column>
-        </el-table>
-        <div style="position: absolute;right: 10px;bottom: 5px;">
-            <el-pagination layout="prev, pager, next" v-model:total="backupDataTotal" v-model:page-size="backupDataSize"
-                v-model:current-page="backupDataCurrent" @current-change="listBackupData" />
-        </div>
-    </el-dialog>
     <el-drawer v-model="backupDataDrawerShow">
         <template #header>
             <h3>备份的数据</h3>
@@ -118,12 +98,19 @@
             <pre style="white-space: pre;">{{ backupData }}</pre>
         </template>
     </el-drawer>
-    <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" size="520px">
+    <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" size="600px">
         <div style="margin-bottom: 12px;">
             <el-input v-model="sqlHistorySearch" placeholder="搜索 SQL..." clearable size="small" />
         </div>
-        <el-table :data="filteredSqlHistory" stripe size="small" style="width: 100%;" max-height="calc(100vh - 180px)">
+        <el-table :data="filteredSqlHistory" stripe size="small" style="width: 100%;" max-height="calc(100vh - 240px)">
             <el-table-column prop="exec_time" label="时间" width="160" resizable />
+            <el-table-column prop="operation_type" label="类型" width="80" resizable>
+                <template #default="scope">
+                    <el-tag v-if="scope.row.operation_type === 'select'" type="info" size="small">SELECT</el-tag>
+                    <el-tag v-else-if="scope.row.operation_type === 'update'" type="warning" size="small">UPDATE</el-tag>
+                    <el-tag v-else type="danger" size="small">DELETE</el-tag>
+                </template>
+            </el-table-column>
             <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip resizable>
                 <template #default="scope">
                     <span style="cursor: pointer; color: #409eff;" @click="applySqlFromHistory(scope.row.exec_sql)" title="点击填入编辑器">
@@ -131,7 +118,18 @@
                     </span>
                 </template>
             </el-table-column>
+            <el-table-column label="操作" width="50" resizable>
+                <template #default="scope">
+                    <el-icon v-if="scope.row.operation_type !== 'select'" style="cursor: pointer;" @click="showBackupData(scope.row.id)" title="查看备份数据">
+                        <View />
+                    </el-icon>
+                </template>
+            </el-table-column>
         </el-table>
+        <div style="position: absolute;right: 10px;bottom: 5px;">
+            <el-pagination layout="prev, pager, next" v-model:total="sqlHistoryTotal" v-model:page-size="sqlHistoryPageSize"
+                v-model:current-page="sqlHistoryCurrent" @current-change="showSqlHistory" />
+        </div>
     </el-drawer>
     <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
         class="data-details-dialog">
@@ -274,12 +272,6 @@ const optimizePanelVisible = ref(false)
 const optimizeSql = ref('')
 const currentSelectTable = ref("")
 
-const backupDataList = ref([])
-const backupDataTotal = ref(0)
-const backupDataCurrent = ref(0)
-const backupDataSize = ref(12)
-const backupDataDialogVisible = ref(false)
-
 const canEdit = ref(false)
 const tableKeys = ref([] as string[])
 const rowData: any = ref({})
@@ -329,6 +321,9 @@ const backupDataDrawerShow = ref(false)
 const sqlHistoryDrawerShow = ref(false)
 const sqlHistoryList = ref([])
 const sqlHistorySearch = ref('')
+const sqlHistoryTotal = ref(0)
+const sqlHistoryCurrent = ref(1)
+const sqlHistoryPageSize = ref(12)
 
 const filteredSqlHistory = computed(() => {
     const kw = sqlHistorySearch.value.trim().toLowerCase()
@@ -339,9 +334,10 @@ const filteredSqlHistory = computed(() => {
 })
 
 function showSqlHistory() {
-    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: 1, pageSize: 200 } })
+    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: sqlHistoryCurrent.value, pageSize: sqlHistoryPageSize.value } })
         .then((resp: any) => {
             sqlHistoryList.value = resp.data.data.data || []
+            sqlHistoryTotal.value = resp.data.data.total || 0
             sqlHistoryDrawerShow.value = true
         })
 }
@@ -545,15 +541,6 @@ function toggleOptimizePanel() {
   }
   optimizeSql.value = sqlExec
   optimizePanelVisible.value = true
-}
-
-function listBackupData() {
-    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: backupDataCurrent.value, pageSize: backupDataSize.value } })
-        .then((resp) => {
-            backupDataList.value = resp.data.data.data
-            backupDataTotal.value = resp.data.data.total
-            backupDataDialogVisible.value = true
-        })
 }
 
 function showBackupData(backupId: any) {

@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS t_prompt (
 	content MEDIUMTEXT not null,
 	created_by varchar(36),
 	role_id varchar(36),
+	conn_id varchar(36),
+	schema varchar(256),
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );

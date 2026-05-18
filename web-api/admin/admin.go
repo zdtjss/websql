@@ -370,15 +370,15 @@ func ListBackupData(c *gin.Context) {
 	)
 
 	// 基础SQL部分
-	baseWhere := "WHERE conn_id = ? AND operation_type IN ('update','delete')"
+	baseWhere := "WHERE conn_id = ?"
 	baseCountSQL := "SELECT COUNT(*) FROM t_history a " + baseWhere
-	baseQuerySQL := "SELECT a.id, a.exec_sql, a.exec_time FROM t_history a " + baseWhere +
+	baseQuerySQL := "SELECT a.id, a.exec_sql, a.exec_time, a.operation_type FROM t_history a " + baseWhere +
 		" ORDER BY a.exec_time DESC LIMIT ?, ?"
 
 	if user.Id != config.AdminId {
 		// 非管理员：添加user条件
-		countSQL = "SELECT COUNT(*) FROM t_history a WHERE a.user = ? AND conn_id = ? AND operation_type IN ('update','delete')"
-		querySQL = "SELECT a.id, a.exec_sql, exec_time FROM t_history a WHERE a.user = ? AND conn_id = ? AND operation_type IN ('update','delete') ORDER BY exec_time DESC LIMIT ?,?"
+		countSQL = "SELECT COUNT(*) FROM t_history a WHERE a.user = ? AND conn_id = ?"
+		querySQL = "SELECT a.id, a.exec_sql, a.exec_time, a.operation_type FROM t_history a WHERE a.user = ? AND conn_id = ? ORDER BY exec_time DESC LIMIT ?,?"
 		countArgs = []any{user.LoginName, connId}
 	} else {
 		// 管理员：忽略user条件

@@ -40,7 +40,7 @@
         class="search-result-item"
         @click="selectObject(r)">
         <el-tag :type="getTypeColor(r.type)" size="small" class="result-tag">{{r.typeLabel || r.type}}</el-tag>
-        <span class="result-name">{{r.name}}</span>
+        <span class="result-name" :title="r.name">{{r.name}}</span>
         <span v-if="r.schema" class="result-schema">{{r.schema}}</span>
         <span v-if="r.comment" class="result-comment" :title="r.comment">{{r.comment}}</span>
       </div>
@@ -210,25 +210,22 @@ function getTypeColor(type) {
 async function doSearch() {
   if (!keyword.value.trim()) { ElMessage.warning('请输入搜索关键词'); return }
 
-  if (isTableOrView.value) {
-    searching.value = true
-    lastQuery.value = keyword.value
-    try {
-      await searchTablesRemotely(keyword.value.trim(), searchType.value)
-    } finally {
-      searching.value = false
-    }
-    return
-  }
-
-  if (!filterConnId.value) { ElMessage.warning('搜索列或索引需要先选择连接'); return }
-
+  results.value = []
+  totalResults.value = 0
   searching.value = true
-  searched.value = false
   lastQuery.value = keyword.value
+  searched.value = false
 
   try {
-    await searchRemotely(keyword.value.trim(), searchType.value)
+    if (isTableOrView.value) {
+      await searchTablesRemotely(keyword.value.trim(), searchType.value)
+    } else {
+      if (!filterConnId.value && connections.value.length === 0) {
+        ElMessage.warning('搜索列或索引需要先选择连接')
+        return
+      }
+      await searchRemotely(keyword.value.trim(), searchType.value)
+    }
     searched.value = true
   } catch (e) {
   } finally {
@@ -269,48 +266,84 @@ function searchTablesLocally(keyword, type) {
 }
 
 async function searchTablesRemotely(keyword, type) {
-  if (!filterConnId.value) return
-  try {
-    const res = await http.get('/search/objects', {
-      params: { connId: filterConnId.value, schema: filterSchema.value, keyword, searchType: type }
-    })
-    const payload = res.data
-    const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
-    if (remoteResults.length > 0) {
-      const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema))
-      const newResults = remoteResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema))
-        .map(r => ({
-          ...r,
-          typeLabel: typeLabelMap[r.type] || r.type,
-          connId: filterConnId.value,
-          schema: r.schema || filterSchema.value
-        }))
-      results.value = [...results.value, ...newResults]
-      totalResults.value = results.value.length
+  const connIds = filterConnId.value
+    ? [filterConnId.value]
+    : connections.value.map(c => c.id).filter(Boolean)
+
+  if (connIds.length === 0) return
+
+  const allResults = []
+  const tasks = connIds.map(async (cid) => {
+    try {
+      const res = await http.get('/search/objects', {
+        params: { connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type }
+      })
+      const payload = res.data
+      const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
+      return remoteResults.map(r => ({
+        ...r,
+        typeLabel: typeLabelMap[r.type] || r.type,
+        connId: cid,
+        schema: r.schema || (filterConnId.value ? filterSchema.value : '')
+      }))
+    } catch (e) {
+      return []
     }
-    if (!results.value.length) {
-      searched.value = true
+  })
+
+  const settled = await Promise.allSettled(tasks)
+  for (const item of settled) {
+    if (item.status === 'fulfilled' && item.value) {
+      allResults.push(...item.value)
     }
-  } catch (e) {}
+  }
+
+  if (allResults.length > 0) {
+    const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
+    const newResults = allResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
+    results.value = [...results.value, ...newResults]
+    totalResults.value = results.value.length
+  }
+  if (!results.value.length) {
+    searched.value = true
+  }
 }
 
 async function searchRemotely(keyword, type) {
-  try {
-    const res = await http.get('/search/objects', {
-      params: { connId: filterConnId.value, schema: filterSchema.value, keyword, searchType: type }
-    })
-    const payload = res.data
-    const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
-    results.value = remoteResults.map(r => ({
-      ...r,
-      typeLabel: typeLabelMap[r.type] || r.type,
-      connId: filterConnId.value,
-      schema: r.schema || filterSchema.value
-    }))
-    totalResults.value = results.value.length
-    searched.value = true
-  } catch (e) {
+  const connIds = filterConnId.value
+    ? [filterConnId.value]
+    : connections.value.map(c => c.id).filter(Boolean)
+
+  if (connIds.length === 0) return
+
+  const allResults = []
+  const tasks = connIds.map(async (cid) => {
+    try {
+      const res = await http.get('/search/objects', {
+        params: { connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type }
+      })
+      const payload = res.data
+      const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
+      return remoteResults.map(r => ({
+        ...r,
+        typeLabel: typeLabelMap[r.type] || r.type,
+        connId: cid,
+        schema: r.schema || (filterConnId.value ? filterSchema.value : '')
+      }))
+    } catch (e) {
+      return []
+    }
+  })
+
+  const settled = await Promise.allSettled(tasks)
+  for (const item of settled) {
+    if (item.status === 'fulfilled' && item.value) {
+      allResults.push(...item.value)
+    }
   }
+
+  results.value = allResults
+  totalResults.value = results.value.length
 }
 
 function selectObject(obj) {
