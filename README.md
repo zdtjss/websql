@@ -9,7 +9,9 @@
 
 自然语言驱动数据库操作。企业级安全保障。零依赖单文件部署。
 
-***
+---
+
+## 概述
 
 WebSQL 提供两种互补的数据库交互方式，兼顾 AI 智能与经典体验：
 
@@ -19,28 +21,50 @@ WebSQL 提供两种互补的数据库交互方式，兼顾 AI 智能与经典体
 
 这一切编译为单个可执行文件，无需任何外部运行时依赖。
 
+---
+
+## 核心优势
+
+WebSQL 将 **AI 智能** 与 **经典可视化工具** 融为一体，形成互为增强的闭环：AI 接管繁琐的 SQL 编写与分析工作，让效率飞跃；经典工具确保你对数据库拥有精确、可控的深度操作能力。两者不是替代关系，而是能力叠加——AI 生成的 SQL 可在编辑器中复查微调，编辑器中调试通过的查询可交给 AI 一键生成图文报告。
+
+### AI 驱动，降低门槛
+
+用自然语言描述需求，AI 自动理解 Schema、生成 SQL、执行查询，并产出含图表的 Excel、PPT、Word 文档。跨库关联分析、趋势预测、SQL 优化建议——过去需要数小时的组合操作，现在一句话完成。写操作经双智能体架构审核，危险 SQL 自动拦截并需人工确认，兼顾效率与安全。
+
+### 经典全覆盖，不妥协
+
+CodeMirror 6 SQL 编辑器提供语法高亮与 Schema 感知自动补全；可视化数据浏览、编辑、导入导出；表结构与索引管理；ER 图逆向/正向工程；全量或选择性备份与 AES 加密恢复；Schema 对比与数据同步；全局数据库搜索；QPS/TPS 实时监控。覆盖 Navicat、DBeaver 等主流工具的日常场景，且享有统一的连接—Schema—表级权限控制、UPDATE/DELETE 自动备份和生产环境保护，并非"有了 AI 就弱化传统"。
+
+### 部署即交付
+
+编译为单个可执行文件，`./websql -port 8080` 即刻启动。支持自签名 HTTPS、本地 Ollama 离线运行 AI、Docker 一键部署。不依赖外部运行时，不连接授权服务器，不包含任何遥测代码——数据主权完全在你手中。
+
+---
+
 ## 对标传统工具
 
 数据库管理工具在过去二十年里没有发生过根本性变化。Navicat、DBeaver、phpMyAdmin 都是成熟的产品，在其原始设计目标——为手写 SQL 提供图形化操作界面——上表现出色。WebSQL 在此基础上更进一步：经典视图模式下，它提供与传统工具同等级别的 SQL 编辑器体验（语法高亮、Schema 感知补全、可视化数据操作）；AI 对话模式下，它又将数据库视为 AI Agent 系统的推理目标，让自然语言成为另一种查询方式。两种模式共享同一套连接、Schema 与表级权限控制、零依赖部署体验，以及 UPDATE/DELETE 自动备份、生产环境保护等安全机制。
 
-| 维度     | 传统工具                | WebSQL（AI 模式 / 经典模式）                                  |
-| ------ | ------------------- | ------------------------------------------------------------ |
-| 查询方式   | 手写 SQL              | AI 模式：自然语言驱动，AI 自动生成并执行 SQL<br>经典模式：手写 SQL，语法高亮 + Schema 感知补全 |
+| 维度       | 传统工具                    | WebSQL（AI 模式 / 经典模式）                                      |
+| ---------- | --------------------------- | ---------------------------------------------------------------- |
+| 查询方式   | 手写 SQL                    | AI 模式：自然语言驱动，AI 自动生成并执行 SQL<br>经典模式：手写 SQL，语法高亮 + Schema 感知补全 |
 | 报告产出   | 导出 Excel，手动做图，粘贴进文档 | AI 模式：一句话生成含图表的 Excel / PPT / Word<br>经典模式：Excel 导入导出 |
-| 写操作安全  | 依赖操作人员自觉            | AI 模式：AI 中间件自动拦截危险 SQL，前端二次确认，全程审计<br>经典模式：UPDATE/DELETE 自动备份 + 生产环境保护 |
-| 权限粒度   | 连接级                 | AI 模式：连接 - Schema - 表 - 列，四级 RBAC + PermissionAgent 审核<br>经典模式：连接 - Schema - 表，三级权限控制 |
-| 认证方式   | 账号密码                | 密码 / WebAuthn 生物识别 / 第三方 Token                                  |
-| 部署形态   | 逐台安装客户端             | 单文件，`docker run` 或直接运行                                          |
-| 协作方式   | 各自安装客户端             | 浏览器打开，团队共享                                                      |
-| 错误处理   | SQL 报错，手动修改         | AI 模式：AI 自动分析错误，调整参数重试（ReAct 循环）                                  |
-| 长对话处理  | 上下文溢出，状态丢失          | AI 模式：超过上下文窗口 85% 自动摘要压缩                                        |
-| 跨库查询   | 逐个连接切换，手动合并         | AI 模式：AI 感知连接拓扑，自动拆分/路由 SQL                                    |
-| 文档生成   | 第三方组件库或手动拼装         | AI 模式：内置 Python Skill 引擎，专业 PPT/Word 一键生成                         |
-| SQL 优化 | 手动 EXPLAIN 分析       | AI 模式：AI 驱动 EXPLAIN 计划推理，给出可执行的优化建议<br>经典模式：SQL 编辑器内置 EXPLAIN 执行 |
-| 结构对比   | 人工比对                | 自动化 Schema Diff，直接生成 ALTER 语句                                   |
-| 数据同步   | 手动导出导入              | 自动差异识别，生成同步 SQL，分块处理大数据                                         |
-| 数据库搜索  | 逐表检查                | 全局跨对象搜索，覆盖表/列/索引/视图及数据内容                                        |
-| 实时监控   | 依赖外部工具              | 内置 QPS/TPS、连接池、Buffer Pool、进程列表监控                               |
+| 写操作安全 | 依赖操作人员自觉            | AI 模式：AI 中间件自动拦截危险 SQL，前端二次确认，全程审计<br>经典模式：UPDATE/DELETE 自动备份 + 生产环境保护 |
+| 权限粒度   | 连接级                      | AI 模式：连接 - Schema - 表 - 列，四级 RBAC + PermissionAgent 审核<br>经典模式：连接 - Schema - 表，三级权限控制 |
+| 认证方式   | 账号密码                    | 密码 / WebAuthn 生物识别 / 第三方 Token                          |
+| 部署形态   | 逐台安装客户端              | 单文件，`docker run` 或直接运行                                  |
+| 协作方式   | 各自安装客户端              | 浏览器打开，团队共享                                             |
+| 错误处理   | SQL 报错，手动修改          | AI 模式：AI 自动分析错误，调整参数重试（ReAct 循环）             |
+| 长对话处理 | 上下文溢出，状态丢失        | AI 模式：超过上下文窗口 85% 自动摘要压缩                          |
+| 跨库查询   | 逐个连接切换，手动合并      | AI 模式：AI 感知连接拓扑，自动拆分/路由 SQL                       |
+| 文档生成   | 第三方组件库或手动拼装      | AI 模式：内置 Python Skill 引擎，专业 PPT/Word 一键生成           |
+| SQL 优化   | 手动 EXPLAIN 分析           | AI 模式：AI 驱动 EXPLAIN 计划推理，给出可执行的优化建议<br>经典模式：SQL 编辑器内置 EXPLAIN 执行 |
+| 结构对比   | 人工比对                    | 自动化 Schema Diff，直接生成 ALTER 语句                           |
+| 数据同步   | 手动导出导入                | 自动差异识别，生成同步 SQL，分块处理大数据                        |
+| 数据库搜索 | 逐表检查                    | 全局跨对象搜索，覆盖表/列/索引/视图及数据内容                     |
+| 实时监控   | 依赖外部工具                | 内置 QPS/TPS、连接池、Buffer Pool、进程列表监控                   |
+
+---
 
 ## 在线体验
 
@@ -51,7 +75,7 @@ WebSQL 提供两种互补的数据库交互方式，兼顾 AI 智能与经典体
 >
 > 演示服务器上行带宽有限，首次加载可能较慢。请文明使用，不要进行破坏性操作。
 
-***
+---
 
 ## 核心能力
 
@@ -112,21 +136,23 @@ PermissionAgent 作为 PermissionMiddleware 的内部工具运行。在每次 SQ
 
 #### 权限检查覆盖矩阵
 
-| 入口                      | 连接级 | 表级  | 列级（读）       | 列级（写）    | 结果集过滤 | 树可见性 |
-| ----------------------- | --- | --- | ----------- | -------- | ----- | ---- |
-| `/execSQL`              | 已覆盖 | 已覆盖 | --          | --       | --    | --   |
-| `/exportXlsxBySql`      | 已覆盖 | 已覆盖 | --         | --       | --    | --   |
-| `/importXlsx`           | 已覆盖 | 已覆盖 | --          | --       | --    | --   |
-| `/showTree`             | 已覆盖 | 已覆盖 | --          | --       | --    | 已覆盖  |
-| AI `query_data`（流式/非流式） | 已覆盖 | 已覆盖 | 已覆盖         | --       | 已覆盖   | --   |
-| AI `exec_sql`           | 已覆盖 | 已覆盖 | --          | 已覆盖      | --    | --   |
-| AI `get_table_schema`   | 已覆盖 | 已覆盖 | 已覆盖（DDL 过滤） | --       | --    | --   |
-| AI `export_*`           | 已覆盖 | 已覆盖 | 已覆盖         | --       | --    | --   |
-| AI `import_data`        | 已覆盖 | 已覆盖 | --          | 已覆盖（映射列） | --    | --   |
+| 入口                          | 连接级 | 表级  | 列级（读）       | 列级（写）    | 结果集过滤 | 树可见性 |
+| ----------------------------- | ------ | ----- | ---------------- | ------------ | ---------- | -------- |
+| `/execSQL`                    | 已覆盖 | 已覆盖 | --               | --           | --         | --       |
+| `/exportXlsxBySql`            | 已覆盖 | 已覆盖 | --               | --           | --         | --       |
+| `/importXlsx`                 | 已覆盖 | 已覆盖 | --               | --           | --         | --       |
+| `/showTree`                   | 已覆盖 | 已覆盖 | --               | --           | --         | 已覆盖   |
+| AI `query_data`（流式/非流式） | 已覆盖 | 已覆盖 | 已覆盖           | --           | 已覆盖     | --       |
+| AI `exec_sql`                 | 已覆盖 | 已覆盖 | --               | 已覆盖       | --         | --       |
+| AI `get_table_schema`         | 已覆盖 | 已覆盖 | 已覆盖（DDL 过滤） | --          | --         | --       |
+| AI `export_*`                 | 已覆盖 | 已覆盖 | 已覆盖           | --           | --         | --       |
+| AI `import_data`              | 已覆盖 | 已覆盖 | --               | 已覆盖（映射列） | --        | --       |
 
 **双重防线**（AI 模式专属）：第一道（SQL 解析拦截）在工具调用前检查 SQL 文本中的表和字段；第二道（结果集过滤）在查询返回后过滤未授权列的数据，作为兜底保护。流式与非流式两条路径均已完全覆盖。经典模式仅做表级拦截，不做列级过滤。
 
 > **模式说明**：表中 AI `*` 条目（query_data、exec_sql 等）的四级 RBAC 由 PermissionAgent（LLM 审核）+ 程序化降级共同保障，为 AI 对话模式专属。经典模式的 `/execSQL`、`/exportXlsxBySql`、`/importXlsx`、`/showTree` 提供连接、Schema 与表级权限控制；备份恢复、数据建模、数据字典、全局搜索、监控等模块提供连接级访问控制。
+
+---
 
 ### 防篡改审批流
 
@@ -164,6 +190,8 @@ flowchart TD
 - **恢复后再次中断保护**：用户确认后若 LLM 又生成新的危险 SQL，会再次中断，不会遗漏
 - **风险自动分级**：无 WHERE 的 UPDATE/DELETE、DROP、TRUNCATE 标记为高风险
 
+---
+
 ### Skill 扩展系统
 
 WebSQL 内置了一套基于 Python 脚本的 Skill 扩展框架，将 AI Agent 的工具能力从 Go 原生扩展至 Python 生态，同时保持无缝回退。
@@ -182,11 +210,11 @@ flowchart TD
 
 #### 内置 Skill
 
-| Skill                 | 脚本入口                                           | 核心能力                                                                      |
-| --------------------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
-| **export-ppt**        | `skills/export-ppt/scripts/export_ppt.py`      | 专业 PPT 生成，支持 HTML 转 PPTX、模板驱动、数据驱动编程创建、OOXML 级操作 4 种工作流，8 种图表类型，3 套配色方案   |
-| **export-word**       | `skills/export-word/scripts/word_generator.py` | 专业 Word 报告生成，支持数据驱动创建、OOXML 文本替换、多章节模板组装、修订追踪 4 种工作流，含封面/摘要/统计/可视化/建议完整结构 |
-| **cross-db-analysis** | `skills/cross-db-analysis/scripts/analyze.py`  | 跨数据库大数据量分析，多数据源连接、SQL 聚合下推、跨库对比、分块处理、JSON 结构化输出                           |
+| Skill                  | 脚本入口                                             | 核心能力                                                                                           |
+| ---------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **export-ppt**         | `skills/export-ppt/scripts/export_ppt.py`            | 专业 PPT 生成，支持 HTML 转 PPTX、模板驱动、数据驱动编程创建、OOXML 级操作 4 种工作流，8 种图表类型，3 套配色方案        |
+| **export-word**        | `skills/export-word/scripts/word_generator.py`       | 专业 Word 报告生成，支持数据驱动创建、OOXML 文本替换、多章节模板组装、修订追踪 4 种工作流，含封面/摘要/统计/可视化/建议完整结构 |
+| **cross-db-analysis**  | `skills/cross-db-analysis/scripts/analyze.py`        | 跨数据库大数据量分析，多数据源连接、SQL 聚合下推、跨库对比、分块处理、JSON 结构化输出                                  |
 
 #### Skill 框架特性
 
@@ -195,6 +223,8 @@ flowchart TD
 - **优雅回退**：Python 不可用或 Skill 执行失败时，自动降级为 Go 原生实现
 - **双重引擎**：Go 引擎保证基础可用，Python Skill 提供更专业品质的输出（如 Office 文档的专业排版）
 - **超时保护**：每个 Skill 脚本有 120 秒执行超时，防止阻塞 Agent 流程
+
+---
 
 ### 跨库操作
 
@@ -217,14 +247,16 @@ flowchart TD
 
 **跨库规则**（注入 Agent 系统提示词）：
 
-| 规则          | 说明                                                                   |
-| ----------- | -------------------------------------------------------------------- |
-| 连接分组        | 同连接下的 Schema 可 JOIN/UNION，不同连接必须分步查询                                 |
-| connId 自动路由 | `query_data` / `exec_sql` 支持可选 `connId` 参数，根据 Schema 名自动路由到正确连接      |
-| 写操作隔离       | 不同连接各自维护事务，无法跨连接回滚，Agent 需告知用户操作原子性边界                                |
-| 来源标注        | 跨库分析结果须明确标注每条数据的来源（连接 + Schema）                                      |
-| 大数据量防范      | 跨库组合可能产生极大结果集，须强制 LIMIT 或聚合，或使用 `export_excel` 导出                    |
+| 规则            | 说明                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| 连接分组        | 同连接下的 Schema 可 JOIN/UNION，不同连接必须分步查询                                          |
+| connId 自动路由 | `query_data` / `exec_sql` 支持可选 `connId` 参数，根据 Schema 名自动路由到正确连接             |
+| 写操作隔离      | 不同连接各自维护事务，无法跨连接回滚，Agent 需告知用户操作原子性边界                            |
+| 来源标注        | 跨库分析结果须明确标注每条数据的来源（连接 + Schema）                                          |
+| 大数据量防范    | 跨库组合可能产生极大结果集，须强制 LIMIT 或聚合，或使用 `export_excel` 导出                     |
 | Python 脚本增强 | 超过 10 万行场景，Agent 自动调用 `cross-db-analysis` Skill，在数据库端完成聚合，仅返回结论 JSON |
+
+---
 
 ### 传统 SQL 编辑器
 
@@ -238,14 +270,18 @@ flowchart TD
 - **生产环境保护**：根据 Schema 名称自动识别测试/生产环境，生产库默认禁止写操作
 - **连接、Schema 与表级权限校验**：SQL 编辑器执行入口经过连接、Schema 与表级权限校验；备份恢复、数据建模、数据字典等模块享有连接级访问控制
 
+---
+
 ### SQL 优化顾问
 
 SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行计划与大模型推理：
 
-- **EXPLAIN 执行计划提取**：捕获并展示 SELECT 语句在 MySQL、PostgreSQL、Oracle 中的执行计划
+- **EXPLAIN 执行计划提取**：捕获并展示 SELECT 语句在 MySQL、Oracle 中的执行计划
 - **AI 驱动分析**：大模型接收 SQL 文本、数据库类型、版本号和 EXPLAIN 输出，产出按类型（索引/性能/结构）和严重程度（严重/警告/提示）分类的结构化优化建议
 - **可执行建议**：每条建议包含可读标题、详细描述，并在可能时提供改写后的 `fixSql` 语句
 - **零配置**：使用与主 Agent 相同的 AI 配置，开箱即用
+
+---
 
 ### 全局数据库搜索
 
@@ -255,6 +291,8 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **数据搜索**：并发扫描所有表的文本类型列，匹配数据值并报告命中行数
 - **分类筛选**：按类别（全部/表/列/索引/视图）过滤，支持定向查找
 - **并发执行**：可配置并发数并行扫描多表，平衡搜索速度与数据库负载
+
+---
 
 ### 数据库备份与恢复
 
@@ -267,6 +305,8 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **下载支持**：备份文件可下载为 `.sql` 文件供离线存档
 - **备份历史**：完整的备份记录管理，含元数据（大小、类型、时间戳、加密状态）
 
+---
+
 ### 数据字典
 
 自动化数据字典生成，专业排版：
@@ -276,6 +316,8 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **PDF 导出**：通过浏览器打印生成 A4 排版 PDF
 - **交互预览**：JSON API 供前端数据字典浏览
 - **多数据库支持**：完整支持 MySQL、MariaDB、Oracle
+
+---
 
 ### 结构对比与数据同步
 
@@ -289,6 +331,8 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **事务化执行**：在数据库事务内执行生成的 SQL，失败自动回滚
 - **方向控制**：支持源到目标、目标到源双向同步
 
+---
+
 ### 数据建模与 ER 图
 
 数据库逆向与正向工程：
@@ -298,6 +342,8 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **模型导出**：导出为结构化 JSON 供程序使用，或导出 DDL 语句作为建库脚本
 - **ER 图可视化**：前端基于 AntV X6 的 ER 图可视化，支持自动布局
 
+---
+
 ### 数据库监控
 
 实时性能监控面板：
@@ -306,7 +352,9 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **资源监控**：数据大小、索引大小、表数量、总行数、InnoDB Buffer Pool 利用率与命中率、查询缓存命中率
 - **进程列表**：完整进程列表，含用户、主机、数据库、命令、执行时长、状态信息
 - **历史指标**：内存环形缓冲区存储最近 100 条指标快照，支持趋势分析
-- **服务变量**：关键配置曝光（max\_connections、buffer pool size、version、character set、collation）
+- **服务变量**：关键配置曝光（max_connections、buffer pool size、version、character set、collation）
+
+---
 
 ### 熔断器与限流
 
@@ -318,16 +366,18 @@ SQL 编辑器内置 AI 驱动的优化引擎，结合数据库级 EXPLAIN 执行
 - **登录限流**：针对 `/api/login` 的独立限流，每 IP 每分钟最多 10 次登录尝试
 - **后台清理**：定时任务自动清理超过 7 天的导出文件
 
+---
+
 ### 安全体系
 
 #### 认证
 
 三种登录方式，适配不同部署场景：
 
-| 方式        | 实现               | 适用场景 |
-| --------- | ---------------- | ---- |
-| 密码登录      | MD5 + 盐值哈希       | 传统认证 |
-| 生物识别      | WebAuthn 指纹 / 面容 | 安全便捷 |
+| 方式         | 实现                     | 适用场景 |
+| ------------ | ------------------------ | -------- |
+| 密码登录     | MD5 + 盐值哈希           | 传统认证 |
+| 生物识别     | WebAuthn 指纹 / 面容     | 安全便捷 |
 | 第三方 Token | OAuth 对接外部认证接口   | 企业集成 |
 
 #### 授权
@@ -351,7 +401,9 @@ flowchart TD
 
 #### IP 白名单
 
-本地模式下可配置 IP 白名单，限制只有指定 IP 地址能够访问，提供额外的网络层安全防护。
+远程模式下可配置 IP 白名单，限制只有指定 IP 地址能够访问，提供额外的网络层安全防护。
+
+---
 
 ## 技术架构
 
@@ -417,157 +469,189 @@ flowchart TB
         direction LR
         DB1["MySQL / MariaDB"]
         DB2["Oracle"]
-        DB3["PostgreSQL"]
-        DB4["SQLite"]
+        DB3["SQLite"]
     end
 ```
 
 ### 后端技术栈
 
-| 组件        | 技术                         | 说明                                               |
-| --------- | -------------------------- | ------------------------------------------------ |
-| Web 框架    | Gin                        | HTTP 路由、中间件、SSE 流式                               |
-| AI 框架     | Eino ADK v0.8              | 双 Agent、Runner、CheckPointStore、StatefulInterrupt |
-| LLM 接入    | OpenAI / Ollama            | 通过 eino-ext 适配器，兼容任何 OpenAI 兼容接口                 |
-| 数据库驱动     | sqlx + mysql/oracle/sqlite | 多数据库方言支持                                         |
-| Excel     | excelize/v2                | 读写 Excel、内嵌图表、StreamWriter 流式写入                  |
-| 图表        | go-chart/v2                | PNG 图表渲染（折线/柱状/饼图/散点）                            |
-| Office 文档 | 原生 Open XML                | DOCX/PPTX 零依赖生成，直接构建 OOXML                       |
-| 管理库       | SQLite（modernc，CGO-free）   | 用户/连接/会话/审计，纯 Go 实现                              |
-| 缓存        | 内存 + Redis（可选）             | 滑动过期支持，Redis 分布式 Session 30 分钟 TTL               |
-| 加密        | AES-ECB                    | 数据库连接密码加密存储                                      |
-| ID 生成     | 雪花算法                       | 分布式唯一 ID，单节点每毫秒 4096 个                           |
-| Skill 引擎  | Python 3 + pip             | 自动环境检测、按需依赖安装、Go 回退双重引擎                          |
-| 韧性        | 熔断器 + 限流器                  | SQL/AI 双熔断，IP 级限流中间件                             |
+| 组件       | 技术                           | 说明                                             |
+| ---------- | ------------------------------ | ------------------------------------------------ |
+| Web 框架   | Gin                            | HTTP 路由、中间件、SSE 流式                      |
+| AI 框架    | Eino ADK v0.8                  | 双 Agent、Runner、CheckPointStore、StatefulInterrupt |
+| LLM 接入   | OpenAI / Ollama                | 通过 eino-ext 适配器，兼容任何 OpenAI 兼容接口    |
+| 数据库驱动 | sqlx + mysql/oracle/sqlite     | 多数据库方言支持                                  |
+| Excel      | excelize/v2                    | 读写 Excel、内嵌图表、StreamWriter 流式写入       |
+| 图表       | go-chart/v2                    | PNG 图表渲染（折线/柱状/饼图/散点）               |
+| Office 文档 | 原生 Open XML                  | DOCX/PPTX 零依赖生成，直接构建 OOXML              |
+| 管理库     | SQLite（modernc，CGO-free）    | 用户/连接/会话/审计，纯 Go 实现                   |
+| 缓存       | 内存 + Redis（可选）           | 滑动过期支持，Redis 分布式 Session 30 分钟 TTL    |
+| 加密       | AES-ECB                        | 数据库连接密码加密存储                            |
+| ID 生成    | 雪花算法                       | 分布式唯一 ID，单节点每毫秒 4096 个               |
+| Skill 引擎 | Python 3 + pip                 | 自动环境检测、按需依赖安装、Go 回退双重引擎       |
+| 韧性       | 熔断器 + 限流器                | SQL/AI 双熔断，IP 级限流中间件                    |
 
 ### 前端技术栈
 
-| 组件       | 技术                          | 说明                     |
-| -------- | --------------------------- | ---------------------- |
-| 框架       | Vue 3 + Composition API     | 响应式、组合式 API            |
-| UI 库     | Element Plus                | 中文 locale，虚拟滚动表格       |
-| SQL 编辑器  | CodeMirror 6                | 语法高亮、Schema 感知自动补全、格式化 |
-| Markdown | markdown-it + mermaid       | AI 回复渲染，Mermaid 流式渲染   |
-| 数学公式     | KaTeX + markdown-it-texmath | 数学公式渲染                 |
-| ER 图     | @antv/x6 + @antv/layout     | 实体关系可视化                |
-| 认证       | @passwordless-id/webauthn   | 指纹 / 面容生物识别            |
-| 语音输入     | Web Speech API              | 中文语音识别                 |
-| 构建       | Vite                        | 快速开发与构建                |
+| 组件       | 技术                            | 说明                   |
+| ---------- | ------------------------------- | ---------------------- |
+| 框架       | Vue 3 + Composition API         | 响应式、组合式 API     |
+| UI 库      | Element Plus                    | 中文 locale，虚拟滚动表格 |
+| SQL 编辑器 | CodeMirror 6                    | 语法高亮、Schema 感知自动补全、格式化 |
+| Markdown   | markdown-it + mermaid           | AI 回复渲染，Mermaid 流式渲染 |
+| 数学公式   | KaTeX + markdown-it-texmath     | 数学公式渲染           |
+| ER 图      | @antv/x6 + @antv/layout         | 实体关系可视化         |
+| 认证       | @passwordless-id/webauthn       | 指纹 / 面容生物识别    |
+| 语音输入   | Web Speech API                  | 中文语音识别           |
+| 构建       | Vite                            | 快速开发与构建         |
+
+---
 
 ## 项目结构
 
 ```
 websql/
-├── main.go                       # 入口：HTTP 服务启动、优雅关闭
+├── main.go                           # 入口：HTTP 服务启动、优雅关闭
 ├── config/
-│   ├── config.go                 # 配置加载（config.json + 数据库覆盖）
-│   ├── db.go                     # 数据库连接池管理、心跳检测
-│   └── init_db.go                # SQL 脚本初始化
+│   ├── config.go                     # 配置加载（config.json + 数据库覆盖）
+│   ├── db.go                         # 数据库连接池管理、心跳检测
+│   └── init_db.go                    # SQL 脚本初始化
 ├── web-api/
-│   ├── router.go                 # 路由注册，中间件链（认证/CORS/Recovery/IP 白名单）
-│   ├── sql_exec.go               # 传统 SQL 执行（自动备份 + 表级权限）
-│   ├── export.go                 # 传统数据导出（StreamWriter 流式写入 + 表级权限）
-│   ├── import.go                 # 传统数据导入（事务保证，列映射 + 表级权限）
-│   ├── ratelimit.go              # 登录限流中间件（IP 级别，10 次/分钟）
-│   ├── circuit_breaker.go        # 熔断器中间件（SQL + AI）
-│   ├── cleanup.go                # 导出文件定时清理（7 天 TTL）
-│   ├── admin/                    # 管理 API
-│   │   ├── admin.go              # 用户 CRUD、密码哈希、树可见性聚合
-│   │   ├── login.go              # 三种登录方式（密码/生物识别/Token）
-│   │   ├── conn_config.go        # 连接配置管理（AES 加密存储）
-│   │   ├── db_operate.go         # 数据库操作 API（含表级权限过滤）
-│   │   ├── sql_analyzer.go       # SQL 分析器：提取操作类型、表、写列
-│   │   ├── sql_permission.go     # 经典模式权限校验：表级查询 + SELECT 列提取 + DDL 过滤
-│   │   ├── tree_permission.go    # 目录树权限过滤（conn/schema/table/dir 四级）
-│   │   ├── tree_mg.go            # 数据库导航树（权限感知 + tree_visible 过滤）
-│   │   ├── system_config.go      # 系统配置（双层：文件 + 数据库）
-│   │   └── prompt.go             # 提示词管理（个人/分享/角色三级）
+│   ├── router.go                     # 路由注册，中间件链（认证/CORS/Recovery/IP 白名单）
+│   ├── sql_exec.go                   # 传统 SQL 执行（自动备份 + 表级权限）
+│   ├── export.go                     # 传统数据导出（StreamWriter 流式写入 + 表级权限）
+│   ├── import.go                     # 传统数据导入（事务保证，列映射 + 表级权限）
+│   ├── ratelimit.go                  # 登录限流中间件（IP 级别，10 次/分钟）
+│   ├── circuit_breaker.go            # 熔断器中间件（SQL + AI）
+│   ├── cleanup.go                    # 导出文件定时清理（7 天 TTL）
+│   ├── admin/                        # 管理 API
+│   │   ├── admin.go                  # 用户 CRUD、密码哈希、树可见性聚合
+│   │   ├── login.go                  # 三种登录方式（密码/生物识别/Token）
+│   │   ├── conn_config.go            # 连接配置管理（AES 加密存储）
+│   │   ├── db_operate.go             # 数据库操作 API（含表级权限过滤）
+│   │   ├── sql_analyzer.go           # SQL 分析器：提取操作类型、表、写列
+│   │   ├── sql_permission.go         # 经典模式权限校验：表级查询 + SELECT 列提取 + DDL 过滤
+│   │   ├── tree_permission.go        # 目录树权限过滤（conn/schema/table/dir 四级）
+│   │   ├── tree_mg.go                # 数据库导航树（权限感知 + tree_visible 过滤）
+│   │   ├── system_config.go          # 系统配置（双层：文件 + 数据库）
+│   │   ├── system_config_handler.go  # 系统配置 HTTP 处理器
+│   │   └── prompt.go                 # 提示词管理（个人/分享/角色三级）
 │   ├── ai/
-│   │   ├── ai_config.go          # AI 配置管理
-│   │   ├── ai_handler.go         # AI 路由注册
-│   │   └── agent/v2/             # Eino ADK 双 Agent 体系
-│   │       ├── agent.go          # SQLAgent 核心：模型构建、系统提示词、Runner 流式执行
-│   │       ├── handler.go        # HTTP Handler：SSE 流、Keep-Alive、会话管理、恢复执行
-│   │       ├── tools.go          # 工具实现：query_data / exec_sql / get_table_schema / import_data
-│   │       ├── export/           # 导出子模块
-│   │       │   ├── tools.go      # 导出工具入口：Excel / Excel+Chart
-│   │       │   ├── excel.go      # Excel 文件生成（含样式/合并/图表嵌入）
-│   │       │   ├── pptx.go       # PPTX Open XML 生成（零依赖）
-│   │       │   ├── docx.go       # DOCX Open XML 生成（零依赖）
-│   │       │   ├── chart.go      # go-chart PNG 图表渲染
-│   │       │   ├── markdown.go   # Markdown 导出
-│   │       │   ├── skill_detector.go  # Python 环境检测 & Skill 生命周期
-│   │       │   ├── skill_export.go    # Skill 导出（PPT/Word/跨库分析）
-│   │       │   └── types.go      # 导出数据类型定义
-│   │       ├── middleware.go     # 中间件：防篡改审批 / 错误恢复 / 调用日志 / 结果精简
-│   │       ├── permission.go     # PermissionScope + PermissionMiddleware（双重防线）
-│   │       ├── permission_agent.go       # PermissionAgent：LLM 驱动的权限审核智能体
-│   │       ├── permission_agent_tools.go # PermissionAgent 工具：表结构 + 用户权限查询
-│   │       ├── checkpoint_store.go       # 内存 CheckPointStore（15 分钟自动过期）
-│   │       ├── session_db.go     # 会话持久化（内存缓存 + 数据库）
-│   │       ├── audit.go          # SQL 审计日志（权限拒绝 + 执行记录）
-│   │       └── import_upload.go  # Excel 上传暂存（30 分钟自动清理）
-│   ├── backup/                   # 备份恢复模块
-│   │   └── backup.go             # 创建/列表/恢复/删除/下载备份，AES 加密
-│   ├── sync/                     # 结构与数据同步
-│   │   ├── schema_diff.go        # Schema 对比，DDL Diff，ALTER 语句生成，执行
-│   │   └── data_sync.go          # 数据对比，分块处理，同步 SQL 生成，执行
-│   ├── modeler/                  # 数据建模
-│   │   └── modeler.go            # 逆向/正向工程，ER 模型提取，DDL 导出
-│   ├── datadict/                 # 数据字典
-│   │   └── dict.go               # 字典生成，HTML/PDF 导出，交互浏览
-│   ├── search/                   # 全局数据库搜索
-│   │   └── search.go             # 对象搜索（表/列/索引/视图），数据搜索，并发扫描
-│   ├── monitor/                  # 数据库监控
-│   │   └── monitor.go            # QPS/TPS 指标，Buffer Pool，进程列表，服务变量，历史
-│   └── sqlopt/                   # SQL 优化
-│       └── optimize.go           # EXPLAIN 执行，AI 驱动优化建议
-├── utils/                        # 工具包
-│   ├── security_helper.go        # AES 加密/解密
-│   ├── errutil.go                # 凭证脱敏（password/token/DSN/IP 自动替换）
-│   ├── id.go                     # 雪花算法 ID 生成器
-│   ├── json.go                   # JSON Gzip 压缩（>= 20 字节自动压缩）
+│   │   ├── ai_config.go              # AI 配置管理
+│   │   ├── ai_handler.go             # AI 路由注册
+│   │   └── agent/v2/                 # Eino ADK 双 Agent 体系
+│   │       ├── agent.go              # SQLAgent 核心：模型构建、系统提示词、Runner 流式执行
+│   │       ├── agent_factory.go      # Agent 工厂：创建与配置
+│   │       ├── handler.go            # HTTP Handler：SSE 流、Keep-Alive、会话管理、恢复执行
+│   │       ├── tools.go              # 工具实现：query_data / exec_sql / get_table_schema / import_data
+│   │       ├── middleware.go         # 中间件：防篡改审批 / 错误恢复 / 调用日志 / 结果精简
+│   │       ├── permission.go         # PermissionScope + PermissionMiddleware（双重防线）
+│   │       ├── permission_agent.go           # PermissionAgent：LLM 驱动的权限审核智能体
+│   │       ├── permission_agent_tools.go     # PermissionAgent 工具：表结构 + 用户权限查询
+│   │       ├── permission_agent_cache.go     # PermissionAgent 缓存
+│   │       ├── checkpoint_store.go   # 内存 CheckPointStore（15 分钟自动过期）
+│   │       ├── session_db.go         # 会话持久化（内存缓存 + 数据库）
+│   │       ├── audit.go              # SQL 审计日志（权限拒绝 + 执行记录）
+│   │       ├── import_upload.go      # Excel 上传暂存（30 分钟自动清理）
+│   │       └── export/               # 导出子模块
+│   │           ├── tools.go          # 导出工具入口：Excel / Excel+Chart
+│   │           ├── excel.go          # Excel 文件生成（含样式/合并/图表嵌入）
+│   │           ├── pptx.go           # PPTX Open XML 生成（零依赖）
+│   │           ├── docx.go           # DOCX Open XML 生成（零依赖）
+│   │           ├── chart.go          # go-chart PNG 图表渲染
+│   │           ├── markdown.go       # Markdown 导出
+│   │           ├── skill_detector.go # Python 环境检测 & Skill 生命周期
+│   │           ├── skill_export.go   # Skill 导出（PPT/Word/跨库分析）
+│   │           └── types.go          # 导出数据类型定义
+│   ├── backup/                       # 备份恢复模块
+│   │   └── backup.go                 # 创建/列表/恢复/删除/下载备份，AES 加密
+│   ├── sync/                         # 结构与数据同步
+│   │   ├── schema_diff.go            # Schema 对比，DDL Diff，ALTER 语句生成，执行
+│   │   └── data_sync.go              # 数据对比，分块处理，同步 SQL 生成，执行
+│   ├── modeler/                      # 数据建模
+│   │   └── modeler.go                # 逆向/正向工程，ER 模型提取，DDL 导出
+│   ├── datadict/                     # 数据字典
+│   │   └── dict.go                   # 字典生成，HTML/PDF 导出，交互浏览
+│   ├── search/                       # 全局数据库搜索
+│   │   └── search.go                 # 对象搜索（表/列/索引/视图），数据搜索，并发扫描
+│   ├── monitor/                      # 数据库监控
+│   │   └── monitor.go                # QPS/TPS 指标，Buffer Pool，进程列表，服务变量，历史
+│   └── sqlopt/                       # SQL 优化
+│       └── optimize.go               # EXPLAIN 执行，AI 驱动优化建议
+├── utils/                            # 工具包
+│   ├── security_helper.go            # AES 加密/解密
+│   ├── errutil.go                    # 凭证脱敏（password/token/DSN/IP 自动替换）
+│   ├── id.go                         # 雪花算法 ID 生成器
+│   ├── json.go                       # JSON Gzip 压缩（>= 20 字节自动压缩）
 │   ├── store/
-│   │   ├── store.go              # 内存缓存 + Redis 双模式（滑动过期，30min TTL）
-│   │   └── redis.go              # Redis 连接管理
+│   │   ├── store.go                  # 内存缓存 + Redis 双模式（滑动过期，30min TTL）
+│   │   └── redis.go                  # Redis 连接管理
 │   └── db/
-│       └── sql_dialect.go        # 多数据库 SQL 方言映射
-├── https/                        # HTTPS 自动配置（自签名证书自动生成/续期）
-├── logutils/                     # 日志工具
-├── skills/                       # Python Skill 扩展脚本
-├── web-src/                      # 前端源码（Vue 3）
+│       ├── dbutils.go                # 查询结果行解析
+│       └── sql_dialect.go            # 多数据库 SQL 方言映射
+├── https/                            # HTTPS 自动配置（自签名证书自动生成/续期）
+├── logutils/                         # 日志工具
+├── skills/                           # Python Skill 扩展脚本
+│   ├── export-ppt/
+│   │   ├── scripts/export_ppt.py
+│   │   ├── scripts/requirements.txt
+│   │   └── SKILL.md
+│   ├── export-word/
+│   │   ├── scripts/word_generator.py
+│   │   ├── scripts/requirements.txt
+│   │   └── SKILL.md
+│   └── cross-db-analysis/
+│       ├── scripts/analyze.py
+│       ├── scripts/requirements.txt
+│       └── SKILL.md
+├── web-src/                          # 前端源码（Vue 3）
 │   └── src/
-│       ├── App.vue               # 主界面：AI 对话 + SSE 流式 + Mermaid 渲染 + 语音 + Excel 上传
-│       ├── views/                # 页面
-│       │   ├── SQLEditor2.vue          # SQL 编辑器（CodeMirror 6 + 虚拟滚动表格）
-│       │   ├── DataBrowser.vue         # 数据浏览（列过滤/排序/CRUD）
-│       │   ├── ClassicalView.vue       # 经典视图（数据库树 + 多标签页）
-│       │   ├── TableManager.vue        # 表管理（字段/索引/选项/DDL）
-│       │   ├── SystemManagement.vue    # 系统管理入口
-│       │   ├── RolePermission.vue      # 四级权限配置（含 tree_visible）
-│       │   ├── SQLAuditLog.vue         # SQL 审计日志
-│       │   └── ...                     # 更多管理页面
-│       ├── components/           # 组件
-│       │   ├── SQLConfirmInline.vue    # 危险 SQL 确认（风险等级 + 关键字高亮）
-│       │   ├── ERDiagramDialog.vue     # ER 图可视化
-│       │   ├── BackupRestoreDialog.vue # 备份恢复对话框
-│       │   ├── DataSyncDialog.vue      # 数据同步对话框
-│       │   ├── SchemaCompareDialog.vue # 结构对比对话框
-│       │   ├── SQLOptimizePanel.vue    # SQL 优化面板
-│       │   ├── GlobalSearchDialog.vue  # 全局搜索对话框
-│       │   ├── EnhancedMonitorPanel.vue # 监控面板
-│       │   ├── DataDictDialog.vue      # 数据字典对话框
-│       │   ├── ImportPreviewDialog.vue # Excel 导入预览（字段映射 + 预览）
-│       │   └── ...
+│       ├── App.vue                   # 主界面：AI 对话 + SSE 流式 + Mermaid 渲染 + 语音 + Excel 上传
+│       ├── views/                    # 页面
+│       │   ├── ClassicalView.vue          # 经典视图（数据库树 + 多标签页）
+│       │   ├── SQLEditor2.vue             # SQL 编辑器（CodeMirror 6 + 虚拟滚动表格）
+│       │   ├── DataBrowser.vue            # 数据浏览（列过滤/排序/CRUD）
+│       │   ├── TableManager.vue           # 表管理（字段/索引/选项/DDL）
+│       │   ├── SystemManagement.vue       # 系统管理入口
+│       │   ├── RolePermission.vue         # 四级权限配置（含 tree_visible）
+│       │   ├── SQLAuditLog.vue            # SQL 审计日志
+│       │   ├── ConnManagement.vue         # 连接管理
+│       │   ├── UserManagement.vue         # 用户管理
+│       │   ├── SystemConfig.vue           # 系统配置
+│       │   ├── PromptManagement.vue       # 提示词管理
+│       │   ├── DirManagement.vue          # 目录管理
+│       │   └── DBExport.vue               # 数据导出
+│       ├── components/               # 组件
+│       │   ├── SQLConfirmInline.vue        # 危险 SQL 确认（风险等级 + 关键字高亮）
+│       │   ├── ERDiagramDialog.vue         # ER 图可视化
+│       │   ├── BackupRestoreDialog.vue     # 备份恢复对话框
+│       │   ├── DataSyncDialog.vue          # 数据同步对话框
+│       │   ├── SchemaCompareDialog.vue     # 结构对比对话框
+│       │   ├── SQLOptimizePanel.vue        # SQL 优化面板
+│       │   ├── GlobalSearchDialog.vue      # 全局搜索对话框
+│       │   ├── EnhancedMonitorPanel.vue    # 监控面板
+│       │   ├── DataDictDialog.vue          # 数据字典对话框
+│       │   ├── ImportPreviewDialog.vue     # Excel 导入预览（字段映射 + 预览）
+│       │   ├── ServerStatusPanel.vue       # 服务器状态面板
+│       │   ├── LoginDialog.vue             # 登录对话框
+│       │   ├── SqlSnippetManager.vue       # SQL 片段管理
+│       │   ├── PromptEditDialog.vue        # 提示词编辑对话框
+│       │   └── SchemaObjectsDialog.vue     # Schema 对象对话框
 │       └── utils/
-│           ├── sqlRiskAssessment.js    # SQL 风险评估（前端）
-│           ├── errorHandler.js         # 错误脱敏
-│           └── vditorLoader.js         # Vditor 懒加载
-├── config.json                   # 运行时配置
-├── sqlite3-init.sql              # SQLite 初始化脚本
-├── mysql-init.sql                # MySQL 初始化脚本
-└── Dockerfile                    # Docker 部署
+│           ├── sqlRiskAssessment.js        # SQL 风险评估（前端）
+│           ├── errorHandler.js             # 错误脱敏
+│           └── vditorLoader.js             # Vditor 懒加载
+├── static/                           # 前端构建产物（由 npm run build 生成）
+├── config.json                       # 运行时配置
+├── sqlite3-init.sql                  # SQLite 初始化脚本
+├── mysql-init.sql                    # MySQL 初始化脚本
+├── migration.sql                     # 数据库迁移脚本
+├── Dockerfile                        # Docker 完整构建部署
+├── Dockerfile2                       # Docker 预编译部署
+└── LICENSE                           # MIT
 ```
+
+---
 
 ## 快速开始
 
@@ -575,6 +659,7 @@ websql/
 
 - Go 1.26+（编译）
 - Node.js 18+（前端开发，仅开发时需要，生产部署不需要）
+- Python 3（可选，用于 Skill 扩展功能）
 
 ### 编译运行
 
@@ -595,7 +680,12 @@ go build -o websql .
 ### Docker 部署
 
 ```bash
+# 完整构建（含编译）
 docker build -t websql .
+docker run -d -p 443:443 -v ./data:/app/data websql
+
+# 预编译部署（需先在本机构建好 release 目录）
+docker build -f Dockerfile2 -t websql .
 docker run -d -p 443:443 -v ./data:/app/data websql
 ```
 
@@ -607,6 +697,8 @@ npm install
 npm run dev    # 开发服务器（localhost:5173）
 npm run build  # 构建到 static/
 ```
+
+---
 
 ## 配置说明
 
@@ -631,31 +723,35 @@ npm run build  # 构建到 static/
 
 通过系统管理界面配置，支持参数：
 
-| 参数               | 说明                       |
-| ---------------- | ------------------------ |
-| provider         | `openai` 或 `ollama`      |
-| baseUrl          | API 地址（支持任何 OpenAI 兼容接口） |
-| model            | 模型名称                     |
-| apiKey           | API 密钥                   |
-| temperature      | 温度参数                     |
-| maxTokens        | 最大 token 数               |
-| maxContextTokens | 模型上下文窗口大小（用于自动摘要触发计算）    |
-| enableThinking   | 是否启用思考过程（Ollama）         |
+| 参数               | 说明                                     |
+| ------------------ | ---------------------------------------- |
+| provider           | `openai` 或 `ollama`                     |
+| baseUrl            | API 地址（支持任何 OpenAI 兼容接口）     |
+| model              | 模型名称                                 |
+| apiKey             | API 密钥                                 |
+| temperature        | 温度参数                                 |
+| maxTokens          | 最大 token 数                            |
+| maxContextTokens   | 模型上下文窗口大小（用于自动摘要触发计算） |
+| enableThinking     | 是否启用思考过程（Ollama）               |
 
 ### 双模式运行
 
-| 模式   | isRemote | 权限管理                              | 适用场景      |
-| ---- | -------- | --------------------------------- | --------- |
-| 本地模式 | false    | 无（所有用户可访问所有连接）                    | 个人开发、内网使用 |
+| 模式     | isRemote | 权限管理                                      | 适用场景         |
+| -------- | -------- | --------------------------------------------- | ---------------- |
+| 本地模式 | false    | 无（所有用户可访问所有连接）                   | 个人开发、内网使用 |
 | 远程模式 | true     | 严格 RBAC + AI 权限审核 + IP 白名单 + 登录限流 | 团队协作、生产环境 |
+
+---
 
 ## 数据库支持
 
 | 数据库             | 查询 | 写操作 | 可视化编辑 | 导入导出 | AI 方言适配 |
-| --------------- | -- | --- | ----- | ---- | ------- |
-| MySQL / MariaDB | 支持 | 支持  | 支持    | 支持   | 支持      |
-| Oracle          | 支持 | 支持  | 部分支持  | 支持   | 支持      |
-| SQLite          | 支持 | 支持  | 支持    | 支持   | 支持      |
+| ------------------ | ---- | ------ | ---------- | -------- | ----------- |
+| MySQL / MariaDB    | 支持 | 支持   | 支持       | 支持     | 支持        |
+| Oracle             | 支持 | 支持   | 部分支持   | 支持     | 支持        |
+| SQLite             | 支持 | 支持   | 支持       | 支持     | 支持        |
+
+---
 
 ## 开源优势
 
@@ -692,6 +788,8 @@ WebSQL **不包含任何遥测、用户行为追踪或数据收集代码**。你
 - **完全开放源码**：所有功能模块（AI Agent、权限体系、数据库同步、ER 图等）均无"企业版"限制
 - **欢迎贡献**：Bug 报告、功能建议、代码贡献均通过 GitHub Issues/Pull Requests 进行
 - **Skill 扩展**：Python Skill 系统允许社区贡献新的数据库分析、导出、可视化能力
+
+---
 
 ## License
 
