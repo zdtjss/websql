@@ -182,8 +182,8 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
-		log.Printf("[Tool:query_data] sql=%s connId=%s\n", input.SQL, input.ConnID)
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
+		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
 		conn, _ := GetConn(targetConnID)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
@@ -216,14 +216,16 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		rows, err := conn.QueryxContext(queryCtx, sql)
 		if err != nil {
 			if input.ConnID == "" && targetConnID == connId {
-				if altConnID, altConn := tryAlternativeConn(sql, connLookup, connId); altConn != nil {
-					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, input.ConnID)
+				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId); altConn != nil {
+					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, altSchema)
+					altRawSQL := strings.TrimSpace(input.SQL)
+					altSQL := qualifyBareTableNames(altRawSQL, altConn.DriverName(), altSchema)
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
 					if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
-						sql = applyRowLimit(sql, altConn.DriverName(), 500)
+						altSQL = applyRowLimit(altSQL, altConn.DriverName(), 500)
 					}
-					altRows, altErr := altConn.QueryxContext(altQueryCtx, sql)
+					altRows, altErr := altConn.QueryxContext(altQueryCtx, altSQL)
 					if altErr == nil {
 						defer altRows.Close()
 						cols, _ := altRows.Columns()
@@ -242,20 +244,108 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 	}
 }
 
-func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string) (string, *sqlx.DB) {
+func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string) (string, *sqlx.DB, string) {
 	schema := extractSchemaFromSQL(sql)
-	if schema == "" {
-		return "", nil
+	if schema != "" {
+		altConnID, ok := connLookup[strings.ToUpper(schema)]
+		if ok && altConnID != defaultConnID {
+			altConn, _ := GetConn(altConnID)
+			if altConn != nil {
+				return altConnID, altConn, schema
+			}
+		}
 	}
-	altConnID, ok := connLookup[strings.ToUpper(schema)]
-	if !ok || altConnID == defaultConnID {
-		return "", nil
+
+	tableNames := extractTableNamesFromSQL(sql)
+	if len(tableNames) == 0 {
+		return "", nil, ""
 	}
-	altConn, _ := GetConn(altConnID)
-	if altConn == nil {
-		return "", nil
+	seen := make(map[string]bool)
+	for altSchema, altConnID := range connLookup {
+		if altConnID == defaultConnID || seen[altConnID] {
+			continue
+		}
+		seen[altConnID] = true
+		altConn, _ := GetConn(altConnID)
+		if altConn == nil {
+			continue
+		}
+		if connContainsAnyTable(altConn, altSchema, tableNames) {
+			return altConnID, altConn, altSchema
+		}
 	}
-	return altConnID, altConn
+	return "", nil, ""
+}
+
+func extractTableNamesFromSQL(sql string) []string {
+	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:` +
+		"`" + `([^` + "`" + `]+)` + "`" + `|` +
+		`"([^"]+)"|` +
+		`\[([^\]]+)\]|` +
+		`([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*))`)
+	matches := re.FindAllStringSubmatch(sql, -1)
+	var tables []string
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		var raw string
+		for i := 1; i < len(m); i++ {
+			if m[i] != "" {
+				raw = m[i]
+				break
+			}
+		}
+		if raw == "" {
+			continue
+		}
+		dotIdx := strings.LastIndex(raw, ".")
+		var tableName string
+		if dotIdx >= 0 && dotIdx < len(raw)-1 {
+			tableName = raw[dotIdx+1:]
+		} else {
+			tableName = raw
+		}
+		tableName = strings.TrimSpace(tableName)
+		if tableName != "" && !seen[strings.ToUpper(tableName)] {
+			seen[strings.ToUpper(tableName)] = true
+			tables = append(tables, strings.ToUpper(tableName))
+		}
+	}
+	return tables
+}
+
+func connContainsAnyTable(conn *sqlx.DB, schemaName string, tableNames []string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var query string
+	var args []any
+	switch conn.DriverName() {
+	case "mysql", "mariadb":
+		placeholders := make([]string, len(tableNames))
+		args = make([]any, 0, len(tableNames)+1)
+		args = append(args, schemaName)
+		for i, t := range tableNames {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		query = fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_NAME IN (%s) LIMIT 1", strings.Join(placeholders, ","))
+	case "oracle":
+		placeholders := make([]string, len(tableNames))
+		args = make([]any, 0, len(tableNames)+1)
+		args = append(args, strings.ToUpper(schemaName))
+		for i, t := range tableNames {
+			placeholders[i] = ":" + fmt.Sprintf("%d", i+2)
+			args = append(args, t)
+		}
+		query = fmt.Sprintf("SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = :1 AND TABLE_NAME IN (%s) AND ROWNUM = 1", strings.Join(placeholders, ","))
+	default:
+		return false
+	}
+	rows, err := conn.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
 }
 
 func extractSchemaFromSQL(sql string) string {
@@ -271,6 +361,30 @@ func extractSchemaFromSQL(sql string) string {
 	return ""
 }
 
+func qualifyBareTableNames(sql, dbType, schema string) string {
+	if schema == "" {
+		return sql
+	}
+	re := regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	var result strings.Builder
+	lastEnd := 0
+	for _, loc := range re.FindAllStringSubmatchIndex(sql, -1) {
+		result.WriteString(sql[lastEnd:loc[0]])
+		keyword := sql[loc[2]:loc[3]]
+		tableName := sql[loc[4]:loc[5]]
+		afterMatch := sql[loc[1]:]
+		trimmed := strings.TrimLeft(afterMatch, " \t")
+		if len(trimmed) > 0 && trimmed[0] == '.' {
+			result.WriteString(sql[loc[0]:loc[1]])
+		} else {
+			result.WriteString(keyword + " " + quoteTableRef(dbType, schema, tableName))
+		}
+		lastEnd = loc[1]
+	}
+	result.WriteString(sql[lastEnd:])
+	return result.String()
+}
+
 // ExecAuditCtx holds context for audit logging within exec_sql tool
 type ExecAuditCtx struct {
 	ConnID    string
@@ -283,13 +397,13 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
-		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, input.ConnID)
+		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
+		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, targetConnID)
 		sql := strings.TrimSpace(input.SQL)
 		if sql == "" {
 			return nil, fmt.Errorf("SQL is empty")
 		}
 
-		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		isDefaultConn := targetConnID == connId
 		if !isDefaultConn && input.ConnID != "" {
 			log.Printf("[Tool:exec_sql] 非默认连接操作：原始connId=%s → 目标连接=%s（默认=%s）", input.ConnID, targetConnID, connId)
@@ -345,8 +459,75 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 			return c, t, connId
 		}
 
-		schemaCtx, schemaCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer schemaCancel()
+		trySchemaOnConn := func(conn *sqlx.DB, actualDBType, schemaName, tableName string) (string, bool) {
+			if conn == nil {
+				return "", false
+			}
+			var schemaSQL string
+			switch actualDBType {
+			case "mysql", "mariadb":
+				if schemaName != "" {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schemaName, tableName)
+				} else {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
+				}
+			case "sqlite":
+				schemaSQL = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
+			case "oracle":
+				if schemaName != "" {
+					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s', '%s') FROM DUAL",
+						strings.ToUpper(tableName), strings.ToUpper(schemaName))
+				} else {
+					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s') FROM DUAL",
+						strings.ToUpper(tableName))
+				}
+			default:
+				if schemaName != "" {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\".\"%s\"", schemaName, tableName)
+				} else {
+					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\"", tableName)
+				}
+			}
+			schemaCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			var rows *sqlx.Rows
+			var err error
+			switch actualDBType {
+			case "sqlite":
+				rows, err = conn.QueryxContext(schemaCtx, schemaSQL, tableName)
+			default:
+				rows, err = conn.QueryxContext(schemaCtx, schemaSQL)
+			}
+			if err != nil {
+				return "", false
+			}
+			defer rows.Close()
+			var sb strings.Builder
+			for rows.Next() {
+				switch actualDBType {
+				case "sqlite":
+					var createSQL string
+					if err := rows.Scan(&createSQL); err == nil && createSQL != "" {
+						sb.WriteString(createSQL)
+						sb.WriteString(";\n\n")
+					}
+				case "oracle":
+					var ddl string
+					if err := rows.Scan(&ddl); err == nil && ddl != "" {
+						sb.WriteString(ddl)
+						sb.WriteString(";\n\n")
+					}
+				default:
+					var tn, createTable string
+					if err := rows.Scan(&tn, &createTable); err == nil {
+						sb.WriteString(createTable)
+						sb.WriteString(";\n\n")
+					}
+				}
+			}
+			result := sb.String()
+			return result, result != ""
+		}
 
 		var sb strings.Builder
 		for _, table := range input.Tables {
@@ -366,67 +547,35 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 				continue
 			}
 
-			var schemaSQL string
-			switch actualDBType {
-			case "mysql", "mariadb":
-				if schemaName != "" {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schemaName, tableName)
-				} else {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)
-				}
-			case "sqlite":
-				schemaSQL = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
-			case "oracle":
-				if schemaName != "" && !strings.EqualFold(schemaName, dbSchema) {
-					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s', '%s') FROM DUAL",
-						strings.ToUpper(tableName), strings.ToUpper(schemaName))
-				} else {
-					schemaSQL = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE', '%s') FROM DUAL",
-						strings.ToUpper(tableName))
-				}
-			default:
-				if schemaName != "" {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\".\"%s\"", schemaName, tableName)
-				} else {
-					schemaSQL = fmt.Sprintf("SHOW CREATE TABLE \"%s\"", tableName)
-				}
-			}
-			var rows *sqlx.Rows
-			var err error
-			switch actualDBType {
-			case "sqlite":
-				rows, err = tableConn.QueryxContext(schemaCtx, schemaSQL, table)
-			default:
-				rows, err = tableConn.QueryxContext(schemaCtx, schemaSQL)
-			}
-			if err != nil {
-				logutils.PrintErr(fmt.Errorf("get schema failed %s: %w", table, err))
-				sb.WriteString(fallbackColumnInfo(tableConn, actualDBType, schemaName, tableName))
+			if result, ok := trySchemaOnConn(tableConn, actualDBType, schemaName, tableName); ok {
+				sb.WriteString(result)
 				continue
 			}
-			for rows.Next() {
-				switch actualDBType {
-				case "sqlite":
-					var createSQL string
-					if err := rows.Scan(&createSQL); err == nil && createSQL != "" {
-						sb.WriteString(createSQL)
-						sb.WriteString(";\n\n")
+
+			if schemaName == dbSchema || schemaName == "" {
+				found := false
+				for altSchema, altConnID := range schemaConnMap {
+					if altConnID == connId {
+						continue
 					}
-				case "oracle":
-					var ddl string
-					if err := rows.Scan(&ddl); err == nil && ddl != "" {
-						sb.WriteString(ddl)
-						sb.WriteString(";\n\n")
+					altConn, altDBType := GetConn(altConnID)
+					if altConn == nil {
+						continue
 					}
-				default:
-					var tableName, createTable string
-					if err := rows.Scan(&tableName, &createTable); err == nil {
-						sb.WriteString(createTable)
-						sb.WriteString(";\n\n")
+					if result, ok := trySchemaOnConn(altConn, altDBType, altSchema, tableName); ok {
+						log.Printf("[Tool:get_table_schema] 表 %s 在默认连接未找到，自动路由到 schema=%s (conn=%s)\n", table, altSchema, altConnID)
+						sb.WriteString(result)
+						found = true
+						break
 					}
 				}
+				if found {
+					continue
+				}
 			}
-			rows.Close()
+
+			logutils.PrintErr(fmt.Errorf("get schema failed %s: not found on any connection", table))
+			sb.WriteString(fallbackColumnInfo(tableConn, actualDBType, schemaName, tableName))
 		}
 		return &SchemaOutput{Schema: sb.String()}, nil
 	}

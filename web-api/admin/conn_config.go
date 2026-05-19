@@ -694,6 +694,7 @@ type ConnCfg struct {
 	Url        *string `json:"url"`
 	DbSchema   *string `json:"dbSchema" db:"db_schema"`
 	DbVersion  *string `json:"dbVersion" db:"db_version"`
+	Charset    *string `json:"charset" db:"charset"`
 }
 
 type ConnCfgBase struct {

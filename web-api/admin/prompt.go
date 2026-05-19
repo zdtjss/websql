@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"go-web/config"
 	"go-web/logutils"
@@ -12,22 +13,111 @@ import (
 )
 
 type Prompt struct {
-	Id            string       `json:"id" db:"id"`
-	Title         string       `json:"title" db:"title"`
-	Content       string       `json:"content" db:"content"`
-	CreatedBy     *string      `json:"createdBy" db:"created_by"`
-	RoleId        *string      `json:"roleId" db:"role_id"`
-	ConnId        *string      `json:"connId" db:"conn_id"`
-	Schema        *string      `json:"schema" db:"schema"`
-	RoleName      string       `json:"roleName,omitempty" db:"-"`
-	CreatedAt     *string      `json:"createdAt,omitempty" db:"created_at"`
-	UpdatedAt     *string      `json:"updatedAt,omitempty" db:"updated_at"`
-	CurrentUserId string       `json:"currentUserId" db:"-"`
-	IsShared      bool         `json:"isShared" db:"-"`
-	IsRolePrompt  bool         `json:"isRolePrompt" db:"-"`
-	SharedByName  string       `json:"sharedByName,omitempty" db:"-"`
-	SharedUserIds []string     `json:"sharedUserIds,omitempty" db:"-"`
-	SharedUsers   []SharedUser `json:"sharedUsers,omitempty" db:"-"`
+	Id            string          `json:"id" db:"id"`
+	Title         string          `json:"title" db:"title"`
+	Content       string          `json:"content" db:"content"`
+	CreatedBy     *string         `json:"createdBy" db:"created_by"`
+	RoleId        *string         `json:"roleId" db:"role_id"`
+	ConnSchemas   ConnSchemasJSON `json:"connSchemas,omitempty" db:"schemas"`
+	Tables        TableRefJSON    `json:"tables,omitempty" db:"tables"`
+	RoleName      string          `json:"roleName,omitempty" db:"-"`
+	CreatedAt     *string         `json:"createdAt,omitempty" db:"created_at"`
+	UpdatedAt     *string         `json:"updatedAt,omitempty" db:"updated_at"`
+	CurrentUserId string          `json:"currentUserId" db:"-"`
+	IsShared      bool            `json:"isShared" db:"-"`
+	IsRolePrompt  bool            `json:"isRolePrompt" db:"-"`
+	SharedByName  string          `json:"sharedByName,omitempty" db:"-"`
+	SharedUserIds []string        `json:"sharedUserIds,omitempty" db:"-"`
+	SharedUsers   []SharedUser    `json:"sharedUsers,omitempty" db:"-"`
+}
+
+type ConnSchemaRef struct {
+	ConnId string `json:"connId"`
+	Schema string `json:"schema"`
+}
+
+type ConnSchemasJSON []ConnSchemaRef
+
+func (cs *ConnSchemasJSON) Scan(src interface{}) error {
+	if src == nil {
+		*cs = nil
+		return nil
+	}
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return errors.New("unsupported type for ConnSchemasJSON")
+	}
+	if len(b) == 0 {
+		*cs = nil
+		return nil
+	}
+	return json.Unmarshal(b, cs)
+}
+
+type TableRef struct {
+	Name    string `json:"name"`
+	Comment string `json:"comment,omitempty"`
+}
+
+type TableRefJSON []TableRef
+
+func (tr *TableRefJSON) Scan(src interface{}) error {
+	if src == nil {
+		*tr = nil
+		return nil
+	}
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return errors.New("unsupported type for TableRefJSON")
+	}
+	if len(b) == 0 {
+		*tr = nil
+		return nil
+	}
+	raw := string(b)
+	var oldFormat []string
+	if err := json.Unmarshal(b, &oldFormat); err == nil {
+		result := make([]TableRef, len(oldFormat))
+		for i, s := range oldFormat {
+			result[i] = TableRef{Name: s}
+		}
+		*tr = result
+		return nil
+	}
+	return json.Unmarshal([]byte(raw), tr)
+}
+
+type StringArrayJSON []string
+
+func (sa *StringArrayJSON) Scan(src interface{}) error {
+	if src == nil {
+		*sa = nil
+		return nil
+	}
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return errors.New("unsupported type for StringArrayJSON")
+	}
+	if len(b) == 0 {
+		*sa = nil
+		return nil
+	}
+	return json.Unmarshal(b, sa)
 }
 
 type SharedUser struct {
@@ -37,13 +127,13 @@ type SharedUser struct {
 }
 
 type PromptSave struct {
-	Id            string   `json:"id"`
-	Title         string   `json:"title"`
-	Content       string   `json:"content"`
-	RoleId        string   `json:"roleId"`
-	ConnId        string   `json:"connId"`
-	Schema        string   `json:"schema"`
-	SharedUserIds []string `json:"sharedUserIds"`
+	Id            string          `json:"id"`
+	Title         string          `json:"title"`
+	Content       string          `json:"content"`
+	RoleId        string          `json:"roleId"`
+	ConnSchemas   []ConnSchemaRef `json:"connSchemas"`
+	Tables        []TableRef      `json:"tables"`
+	SharedUserIds []string        `json:"sharedUserIds"`
 }
 
 type PromptShare struct {
@@ -78,16 +168,16 @@ func PromptList(c *gin.Context) {
 		}
 
 		err := config.Mngtdb.Select(&prompts,
-			`select p.id, p.title, p.content, p.created_by, p.role_id, p.conn_id, p.schema, p.created_at, p.updated_at
+			`select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			where p.created_by = ?
 			union
-			select p.id, p.title, p.content, p.created_by, p.role_id, p.conn_id, p.schema, p.created_at, p.updated_at
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			inner join t_prompt_share ps on p.id = ps.prompt_id
 			where ps.shared_to = ?
 			union
-			select p.id, p.title, p.content, p.created_by, p.role_id, p.conn_id, p.schema, p.created_at, p.updated_at
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			where p.role_id in (`+placeholders+`)
 			order by updated_at desc`,
@@ -95,11 +185,11 @@ func PromptList(c *gin.Context) {
 		logutils.PanicErr(err)
 	} else {
 		err := config.Mngtdb.Select(&prompts,
-			`select p.id, p.title, p.content, p.created_by, p.role_id, p.conn_id, p.schema, p.created_at, p.updated_at
+			`select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			where p.created_by = ?
 			union
-			select p.id, p.title, p.content, p.created_by, p.role_id, p.conn_id, p.schema, p.created_at, p.updated_at
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			inner join t_prompt_share ps on p.id = ps.prompt_id
 			where ps.shared_to = ?
@@ -147,7 +237,7 @@ func PromptListByRole(c *gin.Context) {
 
 	prompts := []*Prompt{}
 	err := config.Mngtdb.Select(&prompts,
-		`select id, title, content, created_by, role_id, conn_id, schema, created_at, updated_at
+		`select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at
 		from t_prompt
 		where role_id = ?
 		order by updated_at desc`, roleId)
@@ -177,7 +267,7 @@ func PromptDetail(c *gin.Context) {
 	}
 
 	prompt := &Prompt{}
-	err := config.Mngtdb.Get(prompt, "select * from t_prompt where id = ?", id)
+	err := config.Mngtdb.Get(prompt, "select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at from t_prompt where id = ?", id)
 	logutils.PanicErr(err)
 
 	sharedToIds := []string{}
@@ -225,23 +315,31 @@ func SavePrompt(c *gin.Context) {
 	if req.RoleId != "" {
 		roleId = req.RoleId
 	}
-	var connId interface{} = nil
-	if req.ConnId != "" {
-		connId = req.ConnId
+
+	var schemasVal interface{} = nil
+	if len(req.ConnSchemas) > 0 {
+		csBytes, err := json.Marshal(req.ConnSchemas)
+		if err == nil {
+			schemasVal = string(csBytes)
+		}
 	}
-	var schema interface{} = nil
-	if req.Schema != "" {
-		schema = req.Schema
+
+	var tablesVal interface{} = nil
+	if len(req.Tables) > 0 {
+		tBytes, err := json.Marshal(req.Tables)
+		if err == nil {
+			tablesVal = string(tBytes)
+		}
 	}
 
 	if req.Id == "" {
 		req.Id = utils.RandomStr()
-		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, role_id, conn_id, schema, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			req.Id, req.Title, req.Content, userId, roleId, connId, schema, now, now)
+		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, role_id, schemas, tables, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			req.Id, req.Title, req.Content, userId, roleId, schemasVal, tablesVal, now, now)
 		logutils.PanicErrf("保存提示词失败", err)
 	} else {
-		_, err := tx.Exec("update t_prompt set title = ?, content = ?, role_id = ?, conn_id = ?, schema = ?, updated_at = ? where id = ?",
-			req.Title, req.Content, roleId, connId, schema, now, req.Id)
+		_, err := tx.Exec("update t_prompt set title = ?, content = ?, role_id = ?, schemas = ?, tables = ?, updated_at = ? where id = ?",
+			req.Title, req.Content, roleId, schemasVal, tablesVal, now, req.Id)
 		logutils.PanicErrf("更新提示词失败", err)
 	}
 

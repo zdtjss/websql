@@ -17,7 +17,7 @@
             </div>
             <div v-else-if="msg.role === 'user'" :class="['chat-bubble', 'user']">
               <div class="bubble-label">你</div>
-              <div class="bubble-content" style="white-space: pre-wrap;">{{ msg.content }}</div>
+              <div class="bubble-content markdown-body" v-html="getCachedHtml(msg)"></div>
             </div>
             <div v-else-if="msg.role === 'assistant'" :class="['chat-bubble', 'assistant']">
               <div class="bubble-label">AI</div>
@@ -129,12 +129,16 @@
                       </template>
                       <div class="prompt-list">
                         <div v-if="myPrompts.length === 0" class="prompt-empty">暂无提示词</div>
-                        <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connId: prompt.connId, schema: prompt.schema })">
+                        <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
-                            <div v-if="prompt.connId && prompt.schema" class="prompt-item-sub">
+                            <div v-if="prompt.connSchemas && prompt.connSchemas.length > 1" class="prompt-item-sub">
                               <el-icon size="12"><Coin /></el-icon>
-                              {{ prompt.schema }}
+                              {{ prompt.connSchemas.length }} 个 Schema
+                            </div>
+                            <div v-else-if="prompt.connSchemas && prompt.connSchemas.length === 1" class="prompt-item-sub">
+                              <el-icon size="12"><Coin /></el-icon>
+                              {{ prompt.connSchemas[0].schema }}
                             </div>
                             <div v-if="prompt.isShared" class="prompt-item-sub">
                               <el-icon size="12"><Share /></el-icon>
@@ -158,12 +162,16 @@
                           <el-icon class="is-loading"><Loading /></el-icon>
                         </div>
                         <div v-else-if="systemPrompts.length === 0" class="prompt-empty">暂无系统提示词</div>
-                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connId: prompt.connId, schema: prompt.schema })">
+                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
-                            <div v-if="prompt.connId && prompt.schema" class="prompt-item-sub">
+                            <div v-if="prompt.connSchemas && prompt.connSchemas.length > 1" class="prompt-item-sub">
                               <el-icon size="12"><Coin /></el-icon>
-                              {{ prompt.schema }}
+                              {{ prompt.connSchemas.length }} 个 Schema
+                            </div>
+                            <div v-else-if="prompt.connSchemas && prompt.connSchemas.length === 1" class="prompt-item-sub">
+                              <el-icon size="12"><Coin /></el-icon>
+                              {{ prompt.connSchemas[0].schema }}
                             </div>
                           </div>
                           <div class="prompt-item-actions">
@@ -177,8 +185,27 @@
                   </el-tabs>
                 </div>
                 <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" :role-id="editingRoleId" @saved="handlePromptSaved" @send-to-AI="handleSendToAIFromDialog" />
-                <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="600px" append-to-body>
-                  <div v-if="promptDetail" class="prompt-detail-content markdown-body" v-html="md.render(promptDetail.content)"></div>
+                <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="800px" append-to-body>
+                  <div v-if="promptDetail">
+                    <div v-if="promptDetail.connSchemas && promptDetail.connSchemas.length" class="prompt-detail-meta">
+                      <div class="prompt-detail-meta-label">关联 Schema</div>
+                      <div class="prompt-detail-meta-tags">
+                        <el-tag v-for="cs in promptDetail.connSchemas" :key="cs.connId + cs.schema" size="small" type="info">
+                          <el-icon style="margin-right: 4px;"><Coin /></el-icon>{{ cs.schema }}
+                        </el-tag>
+                      </div>
+                    </div>
+                    <div v-if="promptDetail.tables && promptDetail.tables.length" class="prompt-detail-meta">
+                      <div class="prompt-detail-meta-label">关联表</div>
+                      <div class="prompt-detail-meta-tags">
+                        <el-tooltip v-for="t in promptDetail.tables" :key="typeof t === 'string' ? t : t.name" :content="getTableComment(typeof t === 'string' ? t : t.name) || (typeof t === 'object' ? t.comment : '') || ''" :disabled="!(getTableComment(typeof t === 'string' ? t : t.name) || (typeof t === 'object' && t.comment))" placement="top">
+                          <el-tag size="small">{{ typeof t === 'string' ? t : t.name }}</el-tag>
+                        </el-tooltip>
+                      </div>
+                    </div>
+                    <el-divider v-if="promptDetail.connSchemas?.length || promptDetail.tables?.length" style="margin: 12px 0;" />
+                    <div class="prompt-detail-content markdown-body" v-html="md.render(promptDetail.content)"></div>
+                  </div>
                   <template #footer>
                     <el-button @click="promptDetailVisible = false">关闭</el-button>
                     <el-button type="primary" @click="handleSendFromDetail">
@@ -274,7 +301,29 @@
               <div v-if="tablesLoading" class="selector-skeleton">
                 <div class="skeleton-shimmer"></div>
               </div>
-              <el-select v-else v-model="selectedTables" multiple filterable placeholder="搜索表名..." class="modern-select" collapse-tags collapse-tags-tooltip>
+              <el-select v-else v-model="selectedTables" multiple filterable placeholder="搜索表名..." class="modern-select">
+                <template #tag="{ data, deleteTag, selectDisabled }">
+                  <el-tag
+                    v-for="item in data.slice(0, 2)"
+                    :key="item.value"
+                    :closable="!selectDisabled && !item.isDisabled"
+                    @close="deleteTag($event, item)"
+                    size="small"
+                    disable-transitions
+                  >
+                    <el-tooltip :content="getTableComment(item.currentLabel)" :disabled="!getTableComment(item.currentLabel)" placement="top">
+                      <span>{{ item.currentLabel }}</span>
+                    </el-tooltip>
+                  </el-tag>
+                  <el-tooltip v-if="data.length > 2" placement="bottom">
+                    <template #content>
+                      <div v-for="item in data.slice(2)" :key="'c-' + item.value" style="line-height: 2;">
+                        {{ item.currentLabel }}<span v-if="getTableComment(item.currentLabel)" style="color: var(--el-text-color-secondary); margin-left: 6px;">{{ getTableComment(item.currentLabel) }}</span>
+                      </div>
+                    </template>
+                    <el-tag size="small" type="info" disable-transitions>+ {{ data.length - 2 }}</el-tag>
+                  </el-tooltip>
+                </template>
                 <el-option v-for="table in tableList" :key="table.name + (table.schema || '')"
                   :label="table.label || table.name"
                   :value="table.label || table.name">
@@ -625,7 +674,7 @@ function buildSchemaTree(rawList) {
     }
     // 如果连接只有一个 schema，折叠到连接名下
     if (schemas.length <= 1) {
-      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || 'default')
+      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || '')
       const node = {
         label: item.name,
         value: item.connId + '::' + singleSchema,
@@ -746,37 +795,7 @@ async function loadConnList() {
       handleSessionExpired()
       return
     }
-    // 降级：使用旧接口
-    try {
-      const resp = await http.get('/listUserConn')
-      const rawList = resp.data.data || []
-      const converted = rawList.map(item => ({
-        connId: item.connId,
-        name: item.name,
-        dbSchema: item.dbSchema || '',
-        dirName: item.dirName,
-        dbType: item.dbType || '',
-        schemas: item.dbSchema ? [{ name: item.dbSchema }] : [],
-      }))
-      connSchemaList.value = converted
-      connList.value = buildSchemaTree(converted)
-      if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
-        const savedSchemas = (() => {
-          try {
-            const v = sessionStorage.getItem('lastSelectedSchemas')
-            return v ? JSON.parse(v) : null
-          } catch { return null }
-        })()
-        if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
-          selectedSchemas.value = savedSchemas
-        }
-      }
-    } catch (e2) {
-      console.error('加载连接列表失败:', e2)
-      if (e2.response && e2.response.status === 401) {
-        handleSessionExpired()
-      }
-    }
+    console.error('加载连接列表失败:', e)
   } finally {
     schemasLoading.value = false
   }
@@ -786,6 +805,11 @@ function parseSchemaValue(value) {
   const idx = value.indexOf('::')
   if (idx === -1) return null
   return { connId: value.substring(0, idx), schema: value.substring(idx + 2) }
+}
+
+function getTableComment(value) {
+  const found = tableList.value.find(t => (t.label || t.name) === value)
+  return found?.comment || ''
 }
 
 async function loadTableListForSchemas() {
@@ -2247,11 +2271,22 @@ function handlePromptSendToAI(content, connInfo) {
   promptPopoverVisible.value = false
   promptEditDialogVisible.value = false
   question.value = content
-  if (connInfo && connInfo.connId && connInfo.schema) {
-    const schemaValue = connInfo.connId + '::' + connInfo.schema
-    selectedSchemas.value = [schemaValue]
+  if (connInfo && connInfo.connSchemas && connInfo.connSchemas.length > 0) {
+    selectedSchemas.value = connInfo.connSchemas.map(cs => cs.connId + '::' + cs.schema)
   }
-  nextTick(() => sendMessage())
+  if (connInfo && connInfo.tables && connInfo.tables.length > 0) {
+    const tableNames = connInfo.tables.map(t => typeof t === 'string' ? t : t.name)
+    nextTick(() => {
+      loadTableListForSchemas().then(() => {
+        const availableNames = tableList.value.map(t => t.label || t.name)
+        selectedTables.value = tableNames.filter(t => availableNames.includes(t))
+        nextTick(() => sendMessage())
+      })
+    })
+  } else {
+    selectedTables.value = []
+    nextTick(() => sendMessage())
+  }
 }
 
 function handlePromptAdd() {
@@ -2306,8 +2341,8 @@ function handleViewPromptDetail(prompt) {
 function handleSendFromDetail() {
   if (promptDetail.value) {
     handlePromptSendToAI(promptDetail.value.content, {
-      connId: promptDetail.value.connId,
-      schema: promptDetail.value.schema,
+      connSchemas: promptDetail.value.connSchemas,
+      tables: promptDetail.value.tables,
     })
     promptDetailVisible.value = false
   }
@@ -2868,7 +2903,7 @@ onUnmounted(() => {
 /* 用户消息气泡 - 浅蓝渐变 */
 .chat-bubble.user {
   align-self: flex-end;
-  background: linear-gradient(135deg, #64b5f6 0%, #42a5f5 100%);
+  background: linear-gradient(135deg, #64b5f6 0%, #f0f0f0 100%);
   color: #fff;
   border-bottom-right-radius: 4px;
   box-shadow: 0 4px 12px rgba(100, 181, 246, 0.25);
@@ -3760,8 +3795,26 @@ onUnmounted(() => {
   opacity: 1;
 }
 
+.prompt-detail-meta {
+  margin-bottom: 8px;
+}
+
+.prompt-detail-meta-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 6px;
+}
+
+.prompt-detail-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
 .prompt-detail-content {
-  max-height: 60vh;
+  max-height: 50vh;
   overflow-y: auto;
 }
 </style>

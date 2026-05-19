@@ -33,13 +33,57 @@
           v-model="selectedConnSchema"
           :data="connTree"
           :props="{ label: 'label', value: 'value', children: 'children', disabled: 'disabled' }"
-          placeholder="选择数据库连接和Schema（可选）"
+          placeholder="选择数据库连接和Schema（可选，支持多选）"
           class="modern-tree-select"
           filterable
+          multiple
           :check-on-click-node="true"
           clearable
+          collapse-tags
+          collapse-tags-tooltip
+          max-collapse-tags="3"
           :teleported="false"
+          @change="handleConnSchemaChange"
         />
+      </el-form-item>
+      <el-form-item label="相关表">
+        <div v-if="tablesLoading" class="conn-schema-loading">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>加载表列表...</span>
+        </div>
+        <el-select v-else v-model="selectedTables" multiple filterable placeholder="请先选择连接/Schema，再选择表" class="modern-select" :disabled="selectedConnSchema.length === 0">
+          <template #tag="{ data, deleteTag, selectDisabled }">
+            <el-tag
+              v-for="item in data.slice(0, 2)"
+              :key="item.value"
+              :closable="!selectDisabled && !item.isDisabled"
+              @close="deleteTag($event, item)"
+              size="small"
+              disable-transitions
+            >
+              <el-tooltip :content="getTableComment(item.currentLabel)" :disabled="!getTableComment(item.currentLabel)" placement="top">
+                <span>{{ item.currentLabel }}</span>
+              </el-tooltip>
+            </el-tag>
+            <el-tooltip v-if="data.length > 2" placement="bottom">
+              <template #content>
+                <div v-for="item in data.slice(2)" :key="'c-' + item.value" style="line-height: 2;">
+                  {{ item.currentLabel }}<span v-if="getTableComment(item.currentLabel)" style="color: var(--el-text-color-secondary); margin-left: 6px;">{{ getTableComment(item.currentLabel) }}</span>
+                </div>
+              </template>
+              <el-tag size="small" type="info" disable-transitions>+ {{ data.length - 2 }}</el-tag>
+            </el-tooltip>
+          </template>
+          <el-option v-for="table in tableList" :key="table.name + (table.schema || '')"
+            :label="table.label || table.name"
+            :value="table.label || table.name">
+            <div class="table-option-content">
+              <span class="table-option-name">{{ table.name }}</span>
+              <span v-if="table.comment" class="table-option-comment">{{ table.comment }}</span>
+              <span v-if="table.schema && selectedConnSchema.length > 1" class="table-option-schema">{{ table.schema }}</span>
+            </div>
+          </el-option>
+        </el-select>
       </el-form-item>
       <el-form-item label="内容" prop="content">
         <div ref="vditorContainerRef" class="vditor-container" v-loading="vditorLoading" element-loading-text="稍等片刻...">
@@ -65,7 +109,7 @@
         <el-button @click="$emit('update:modelValue', false)">取消</el-button>
         <el-button v-if="!roleId" type="primary" @click="handleSendToAI" :disabled="!form.content.trim()">
           <el-icon><Promotion /></el-icon>
-          发送
+          发送到AI模型
         </el-button>
         <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
       </div>
@@ -103,8 +147,8 @@ const form = ref({
   title: '',
   content: '',
   roleId: '',
-  connId: '',
-  schema: '',
+  connSchemas: [],
+  tables: [],
   sharedUserIds: [],
 })
 
@@ -116,7 +160,16 @@ const rules = {
 const connLoading = ref(false)
 const connSchemaList = ref([])
 const connTree = ref([])
-const selectedConnSchema = ref('')
+const selectedConnSchema = ref([])
+const tablesLoading = ref(false)
+const tableList = ref([])
+const selectedTables = ref([])
+
+function parseSchemaValue(value) {
+  const idx = value.indexOf('::')
+  if (idx === -1) return null
+  return { connId: value.substring(0, idx), schema: value.substring(idx + 2) }
+}
 
 function buildSchemaTree(rawList) {
   const dirMap = new Map()
@@ -142,20 +195,26 @@ function buildSchemaTree(rawList) {
       continue
     }
     if (schemas.length <= 1) {
-      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || 'default')
-      const node = {
-        label: item.name,
+      const singleSchema = schemas.length === 1 ? schemas[0].name : (item.dbSchema || '')
+      const schemaChild = {
+        label: singleSchema,
         value: item.connId + '::' + singleSchema,
         connId: item.connId,
         schemaName: singleSchema,
         disabled: false,
       }
+      const connNode = {
+        label: item.name,
+        value: '__conn__' + item.connId,
+        disabled: true,
+        children: [schemaChild],
+      }
       const dir = item.dirName
       if (dir) {
         if (!dirMap.has(dir)) dirMap.set(dir, [])
-        dirMap.get(dir).push(node)
+        dirMap.get(dir).push(connNode)
       } else {
-        noDir.push(node)
+        noDir.push(connNode)
       }
     } else {
       const schemaChildren = schemas.map(s => ({
@@ -212,17 +271,17 @@ async function loadConnList() {
         const lines = buf.split('\n')
         buf = lines.pop()
         for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed) continue
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (!data) continue
+          if (data === '"ok"' || data === '"empty"') continue
           try {
-            const data = JSON.parse(trimmed)
-            if (data.connId) {
-              rawList.push(data)
+            const item = JSON.parse(data)
+            if (item.connId) {
+              rawList.push(item)
               connTree.value = buildSchemaTree(rawList)
             }
-          } catch (e) {
-            console.warn('parse error for line', trimmed, e)
-          }
+          } catch (_) {}
         }
       }
       if (done) break
@@ -232,32 +291,69 @@ async function loadConnList() {
       throw new Error('no connections')
     }
   } catch (e) {
-    console.error('加载连接列表失败，降级使用旧接口', e)
-    try {
-      const resp = await http.get('/listUserConn')
-      const data = resp.data.data || []
-      const converted = data.map(conn => ({
-        connId: conn.id,
-        name: conn.name,
-        dirName: conn.dirName,
-        dbType: conn.dbType,
-        available: conn.available !== false,
-        schemas: [{ name: conn.dbSchema || 'default' }],
-      }))
-      connSchemaList.value = converted
-      connTree.value = buildSchemaTree(converted)
-    } catch (e2) {
-      console.error('加载连接列表完全失败', e2)
-    }
+    if (e.response && e.response.status === 401) return
+    console.error('加载连接列表失败', e)
   } finally {
     connLoading.value = false
   }
 }
 
+async function loadTableListForSchemas() {
+  tablesLoading.value = true
+  if (selectedConnSchema.value.length === 0) {
+    tableList.value = []
+    tablesLoading.value = false
+    return
+  }
+  try {
+    const schemaRefs = selectedConnSchema.value
+      .map(v => parseSchemaValue(v))
+      .filter(Boolean)
+
+    if (schemaRefs.length === 0) {
+      tableList.value = []
+      tablesLoading.value = false
+      return
+    }
+
+    const resp = await http.get('/listTableNames', {
+      params: { schemas: JSON.stringify(schemaRefs) }
+    })
+    const tables = resp.data.data || []
+    const allTables = tables.map(t => {
+      const hasSchema = t.schema && selectedConnSchema.value.length > 1
+      return {
+        name: t.name,
+        comment: t.comment || '',
+        schema: t.schema || '',
+        label: hasSchema ? t.schema + '.' + t.name : t.name,
+      }
+    })
+    tableList.value = allTables
+
+    if (selectedTables.value.length > 0) {
+      const newValues = allTables.map(t => t.label || t.name)
+      selectedTables.value = selectedTables.value.filter(name => newValues.includes(name))
+    }
+  } catch (e) {
+    tableList.value = []
+  } finally {
+    tablesLoading.value = false
+  }
+}
+
+function handleConnSchemaChange() {
+  loadTableListForSchemas()
+}
+
+function getTableComment(value) {
+  const found = tableList.value.find(t => (t.label || t.name) === value)
+  return found?.comment || ''
+}
+
 async function initVditor() {
   if (!vditorContainerRef.value) return
 
-  // 如果已有实例且容器未变，直接复用
   if (vditorInstance.value) {
     vditorInstance.value.setValue(form.value.content || '')
     return
@@ -265,11 +361,9 @@ async function initVditor() {
 
   vditorLoading.value = true
 
-  // 并行加载 CSS 和 JS 模块
   ensureVditorCss()
   const Vditor = await loadVditorModule()
 
-  // 加载完成后容器可能已被销毁（用户快速关闭）
   if (!vditorContainerRef.value) {
     vditorLoading.value = false
     return
@@ -289,7 +383,6 @@ async function initVditor() {
         'code', 'inline-code', 'table', 'link', 'undo', 'redo', '|', 'fullscreen',
       ],
       cache: { enable: false },
-      // 关闭不需要的重型子模块，避免运行时再去加载 WASM/大 JS
       math: false,
       graph: false,
       codeHighlight: false,
@@ -319,8 +412,10 @@ function handleOpen() {
   if (props.promptId) {
     loadPromptDetail(props.promptId)
   } else {
-    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', connId: '', schema: '', sharedUserIds: [] }
-    selectedConnSchema.value = ''
+    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', connSchemas: [], tables: [], sharedUserIds: [] }
+    selectedConnSchema.value = []
+    selectedTables.value = []
+    tableList.value = []
     userOptions.value = []
     if (vditorInstance.value) {
       vditorInstance.value.setValue('')
@@ -332,16 +427,20 @@ function handleOpen() {
 }
 
 watch(selectedConnSchema, (val) => {
-  if (!val) {
-    form.value.connId = ''
-    form.value.schema = ''
-    return
-  }
-  const idx = val.indexOf('::')
-  if (idx !== -1) {
-    form.value.connId = val.substring(0, idx)
-    form.value.schema = val.substring(idx + 2)
-  }
+  form.value.connSchemas = val.map(v => {
+    const idx = v.indexOf('::')
+    if (idx !== -1) {
+      return { connId: v.substring(0, idx), schema: v.substring(idx + 2) }
+    }
+    return null
+  }).filter(Boolean)
+})
+
+watch(selectedTables, (val) => {
+  form.value.tables = val.map(name => {
+    const found = tableList.value.find(t => (t.label || t.name) === name)
+    return { name, comment: found?.comment || '' }
+  })
 })
 
 watch(() => props.modelValue, (visible) => {
@@ -369,17 +468,25 @@ async function loadPromptDetail(id) {
         title: data.title,
         content: data.content,
         roleId: data.roleId || props.roleId || '',
-        connId: data.connId || '',
-        schema: data.schema || '',
+        connSchemas: data.connSchemas || [],
+        tables: data.tables || [],
         sharedUserIds: data.sharedUserIds || [],
       }
-      if (data.connId && data.schema) {
-        selectedConnSchema.value = data.connId + '::' + data.schema
-      } else {
-        selectedConnSchema.value = ''
-      }
+      selectedConnSchema.value = (data.connSchemas || []).map(cs => cs.connId + '::' + cs.schema)
       if (data.sharedUsers && data.sharedUsers.length > 0) {
         userOptions.value = data.sharedUsers.map(u => ({ id: u.id, name: u.name, loginName: u.loginName || '' }))
+      }
+      if (data.connSchemas && data.connSchemas.length > 0) {
+        await loadTableListForSchemas()
+        if (data.tables && data.tables.length > 0) {
+          const availableNames = tableList.value.map(t => t.label || t.name)
+          const tableNames = data.tables.map(t => typeof t === 'string' ? t : t.name)
+          selectedTables.value = tableNames.filter(name => availableNames.includes(name))
+        } else {
+          selectedTables.value = []
+        }
+      } else {
+        selectedTables.value = []
       }
       if (vditorInstance.value) {
         vditorInstance.value.setValue(form.value.content)
@@ -436,8 +543,8 @@ async function handleSave() {
 function handleSendToAI() {
   if (!form.value.content.trim()) return
   emit('sendToAI', form.value.content, {
-    connId: form.value.connId,
-    schema: form.value.schema,
+    connSchemas: form.value.connSchemas,
+    tables: form.value.tables,
   })
 }
 </script>
@@ -470,6 +577,10 @@ function handleSendToAI() {
 }
 
 .modern-tree-select {
+  width: 100%;
+}
+
+.modern-select {
   width: 100%;
 }
 
@@ -512,5 +623,34 @@ function handleSendToAI() {
 .vditor-container :deep(.vditor-reset) {
   background-color: var(--el-bg-color) !important;
   color: var(--el-text-color-primary) !important;
+}
+
+.table-option-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.table-option-name {
+  font-weight: 500;
+}
+
+.table-option-comment {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.table-option-schema {
+  color: var(--el-color-primary);
+  font-size: 11px;
+  background: var(--el-color-primary-light-9);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 </style>

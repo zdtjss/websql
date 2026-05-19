@@ -100,7 +100,7 @@
       :page-sizes="[10, 20, 50, 100]"
       :total="pagination.total"
       layout="total, sizes, prev, pager, next, jumper"
-      style="margin-top: 16px; justify-content: center;"
+      style="margin-top: 16px; justify-content: right;"
       @size-change="handleSizeChange"
       @current-change="handleCurrentChange"
     />
