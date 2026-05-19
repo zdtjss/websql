@@ -5,11 +5,11 @@ import (
 	"reflect"
 
 	"github.com/jmoiron/sqlx"
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 // dereferenceValue 如果 v 是指针类型，则解引用返回实际值
-func dereferenceValue(v interface{}) interface{} {
+func dereferenceValue(v any) any {
 	if v == nil {
 		return v
 	}
@@ -44,7 +44,7 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 		// for i, v := range values { // 这种写法获取不到地址
 		// 	valuesPoints[i] = &v
 		// }
-		for i := 0; i < count; i++ {
+		for i := range count {
 			valuesPoints[i] = &values[i]
 		}
 
@@ -88,7 +88,7 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) []map[string]any {
 	for rows.Next() {
 		values, valuesPoints := make([]any, count), make([]any, count)
 
-		for i := 0; i < count; i++ {
+		for i := range count {
 			valuesPoints[i] = &values[i]
 		}
 
@@ -116,7 +116,7 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) []map[string]any {
 
 func KeyIdx(keys, columns []string) []int {
 	keyIdx := make([]int, 0)
-	for i := 0; i < len(columns); i++ {
+	for i := range columns {
 		if slices.Contains(keys, columns[i]) {
 			keyIdx = append(keyIdx, i)
 		}

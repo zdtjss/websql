@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go-web/config"
 	"go-web/logutils"
@@ -58,7 +59,7 @@ func GetSystemConfig(c *gin.Context) {
 
 // GetAllSystemConfigHandler 获取所有系统配置
 func GetAllSystemConfigHandler(c *gin.Context) {
-	logutils.PrintErr(fmt.Errorf("开始获取所有系统配置"))
+	logutils.PrintErr(errors.New("开始获取所有系统配置"))
 
 	cfg := &SystemConfigAll{
 		OutterUser:      GetSystemConfigValue("system.outterUser"),
@@ -128,10 +129,10 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 			// 删除旧的配置字段
 			if config.Mngtdb != nil {
 				config.Mngtdb.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.maxTokens', 'ai.enableThinking')")
-				logutils.PrintErr(fmt.Errorf("已删除旧的 AI 配置字段"))
-			}
+				logutils.PrintErr(errors.New("已删除旧的 AI 配置字段"))
+		}
 
-			logutils.PrintErr(fmt.Errorf("已将旧 AI 配置迁移到模型列表"))
+		logutils.PrintErr(errors.New("已将旧 AI 配置迁移到模型列表"))
 		} else {
 			cfg.AIModelList = []AIModelItem{}
 		}

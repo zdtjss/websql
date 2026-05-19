@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,7 +80,7 @@ func callOllama(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 	if result.Message != nil && result.Message.Content != "" {
 		return result.Message.Content, nil
 	}
-	return "", fmt.Errorf("Ollama 返回空响应")
+	return "", errors.New("Ollama 返回空响应")
 }
 
 func callOpenAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
@@ -112,7 +113,7 @@ func callOpenAI(cfg *admin.AIConfig, messages []ChatMessage) (string, error) {
 		return "", fmt.Errorf("解析响应失败: %w", err)
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("OpenAI 返回空 choices")
+		return "", errors.New("OpenAI 返回空 choices")
 	}
 	return result.Choices[0].Message.Content, nil
 }

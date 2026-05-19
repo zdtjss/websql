@@ -268,7 +268,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		log.Printf("[Agent] 新建会话 - sessionID=%s\n", sessionID)
 	}
 	if req.UserID == "" {
-		return "", fmt.Errorf("userId 不能为空")
+		return "", errors.New("userId 不能为空")
 	}
 
 	sess, err := a.sessions.GetOrCreate(sessionID, req.UserID)

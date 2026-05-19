@@ -1,6 +1,7 @@
 package export
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -20,12 +21,12 @@ type QueryResult struct {
 func QueryForExport(conn *sqlx.DB, sql string) (*QueryResult, error) {
 	sql = strings.TrimSpace(sql)
 	if sql == "" {
-		return nil, fmt.Errorf("SQL 不能为空")
+		return nil, errors.New("SQL 不能为空")
 	}
 	stripped := StripSQLComments(sql)
 	upper := strings.ToUpper(stripped)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
-		return nil, fmt.Errorf("导出仅支持 SELECT 查询")
+		return nil, errors.New("导出仅支持 SELECT 查询")
 	}
 	if strings.HasPrefix(upper, "WITH") {
 		writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}

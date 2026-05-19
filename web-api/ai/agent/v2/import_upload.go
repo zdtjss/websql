@@ -9,6 +9,7 @@
 package agentv2
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -94,7 +95,7 @@ func GetUploadedFile(id string) (*UploadedFile, error) {
 		return nil, fmt.Errorf("解析工作表失败：%w", err)
 	}
 	if len(rows) < 2 {
-		return nil, fmt.Errorf("文件数据不足")
+		return nil, errors.New("文件数据不足")
 	}
 
 	columns := rows[0]

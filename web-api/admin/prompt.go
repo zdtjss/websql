@@ -38,7 +38,7 @@ type ConnSchemaRef struct {
 
 type ConnSchemasJSON []ConnSchemaRef
 
-func (cs *ConnSchemasJSON) Scan(src interface{}) error {
+func (cs *ConnSchemasJSON) Scan(src any) error {
 	if src == nil {
 		*cs = nil
 		return nil
@@ -66,7 +66,7 @@ type PromptTableRef struct {
 
 type PromptTableRefJSON []PromptTableRef
 
-func (tr *PromptTableRefJSON) Scan(src interface{}) error {
+func (tr *PromptTableRefJSON) Scan(src any) error {
 	if src == nil {
 		*tr = nil
 		return nil
@@ -99,7 +99,7 @@ func (tr *PromptTableRefJSON) Scan(src interface{}) error {
 
 type StringArrayJSON []string
 
-func (sa *StringArrayJSON) Scan(src interface{}) error {
+func (sa *StringArrayJSON) Scan(src any) error {
 	if src == nil {
 		*sa = nil
 		return nil
@@ -162,7 +162,7 @@ func PromptList(c *gin.Context) {
 	if len(userRoleIds) > 0 {
 		placeholders := strings.Repeat("?,", len(userRoleIds))
 		placeholders = placeholders[:len(placeholders)-1]
-		args := []interface{}{userId, userId}
+		args := []any{userId, userId}
 		for _, rid := range userRoleIds {
 			args = append(args, rid)
 		}
@@ -311,12 +311,12 @@ func SavePrompt(c *gin.Context) {
 	tx, _ := config.Mngtdb.Beginx()
 	defer tx.Rollback()
 
-	var roleId interface{} = nil
+	var roleId any
 	if req.RoleId != "" {
 		roleId = req.RoleId
 	}
 
-	var schemasVal interface{} = nil
+	var schemasVal any
 	if len(req.ConnSchemas) > 0 {
 		csBytes, err := json.Marshal(req.ConnSchemas)
 		if err == nil {
@@ -324,7 +324,7 @@ func SavePrompt(c *gin.Context) {
 		}
 	}
 
-	var tablesVal interface{} = nil
+	var tablesVal any
 	if len(req.Tables) > 0 {
 		tBytes, err := json.Marshal(req.Tables)
 		if err == nil {

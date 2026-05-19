@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,10 +19,10 @@ const (
 
 type circuitBreaker struct {
 	mu               sync.Mutex
-	state            atomic.Int32
-	failures         atomic.Int64
-	successes        atomic.Int64
-	lastFailure      atomic.Int64
+	state            circuitState
+	failures         int64
+	successes        int64
+	lastFailure      time.Time
 	name             string
 	failureThreshold int
 	successThreshold int
@@ -40,20 +39,16 @@ func newCircuitBreaker(name string, maxFailures int, timeout time.Duration) *cir
 }
 
 func (cb *circuitBreaker) allow() bool {
-	if cb.state.Load() == int32(circuitClosed) {
-		return true
-	}
-
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	switch circuitState(cb.state.Load()) {
+	switch cb.state {
 	case circuitClosed:
 		return true
 	case circuitOpen:
-		if time.Since(time.Unix(0, cb.lastFailure.Load())) > cb.timeout {
-			cb.state.Store(int32(circuitHalfOpen))
-			cb.successes.Store(0)
+		if time.Since(cb.lastFailure) > cb.timeout {
+			cb.state = circuitHalfOpen
+			cb.successes = 0
 			return true
 		}
 		return false
@@ -64,47 +59,33 @@ func (cb *circuitBreaker) allow() bool {
 }
 
 func (cb *circuitBreaker) recordSuccess() {
-	if cb.state.Load() != int32(circuitHalfOpen) {
-		return
-	}
-
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state.Load() == int32(circuitHalfOpen) {
-		if cb.successes.Add(1) >= int64(cb.successThreshold) {
-			cb.state.Store(int32(circuitClosed))
-			cb.failures.Store(0)
+	if cb.state == circuitHalfOpen {
+		cb.successes++
+		if cb.successes >= int64(cb.successThreshold) {
+			cb.state = circuitClosed
+			cb.failures = 0
 		}
 	}
 }
 
 func (cb *circuitBreaker) recordFailure() {
-	cb.failures.Add(1)
-	cb.lastFailure.Store(time.Now().UnixNano())
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
-	state := circuitState(cb.state.Load())
+	cb.failures++
+	cb.lastFailure = time.Now()
 
-	if state == circuitHalfOpen {
-		cb.mu.Lock()
-		if cb.state.Load() == int32(circuitHalfOpen) {
-			cb.state.Store(int32(circuitOpen))
+	switch cb.state {
+	case circuitHalfOpen:
+		cb.state = circuitOpen
+	case circuitClosed:
+		if cb.failures >= int64(cb.failureThreshold) {
+			cb.state = circuitOpen
 		}
-		cb.mu.Unlock()
-		return
 	}
-
-	if state == circuitClosed && cb.failures.Load() >= int64(cb.failureThreshold) {
-		cb.mu.Lock()
-		if cb.state.Load() == int32(circuitClosed) && cb.failures.Load() >= int64(cb.failureThreshold) {
-			cb.state.Store(int32(circuitOpen))
-		}
-		cb.mu.Unlock()
-	}
-}
-
-func (cb *circuitBreaker) getState() circuitState {
-	return circuitState(cb.state.Load())
 }
 
 var (

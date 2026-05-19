@@ -27,7 +27,7 @@ import (
 )
 
 // 不需要以/结尾
-var destAddr string = "http://localhost:8083"
+var destAddr = "http://localhost:8083"
 
 var proxyHttpClient = &http.Client{
 	Timeout: 30 * time.Second,
@@ -224,7 +224,6 @@ func proxy(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "创建代理请求失败"})
 		return
 	}
-	defer c.Request.Body.Close()
 	req.Header = c.Request.Header.Clone()
 	resp, err := proxyHttpClient.Do(req)
 	if err != nil {

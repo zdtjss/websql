@@ -9,7 +9,7 @@ import (
 
 func InitDB(scriptFile string) {
 	sql := ReadSql(scriptFile)
-	sqlArr := strings.Split(*sql, ";")
+	sqlArr := strings.Split(sql, ";")
 	tx, err := Mngtdb.DB.Begin()
 	defer tx.Rollback()
 	logutils.PanicErrf("事务开启失败", err)

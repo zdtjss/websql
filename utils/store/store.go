@@ -32,7 +32,7 @@ type shardedStore struct {
 
 func newShardedStore() *shardedStore {
 	s := &shardedStore{}
-	for i := 0; i < numShards; i++ {
+	for i := range numShards {
 		s.shards[i] = &shard{data: make(map[string]*storeItem, 16)}
 	}
 	return s
@@ -89,7 +89,7 @@ func (s *shardedStore) get(key string, dist any) {
 
 func (s *shardedStore) cleanExpired() {
 	now := time.Now()
-	for i := 0; i < numShards; i++ {
+	for i := range numShards {
 		sh := s.shards[i]
 		sh.mu.Lock()
 		for k, v := range sh.data {

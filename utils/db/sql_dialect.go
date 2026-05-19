@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 var SQL_DIALECT = map[string]map[string]string{

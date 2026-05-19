@@ -29,7 +29,7 @@ type ipLimiterStore struct {
 
 func newIPLimiterStore() *ipLimiterStore {
 	s := &ipLimiterStore{}
-	for i := 0; i < numLimiterShards; i++ {
+	for i := range numLimiterShards {
 		s.shards[i] = &ipLimiterShard{limiters: make(map[string]*ipLimiter)}
 	}
 	return s
@@ -58,7 +58,7 @@ func (s *ipLimiterStore) getLimiter(ip string, rps float64, burst int) *rate.Lim
 
 func (s *ipLimiterStore) cleanup(maxAge time.Duration) {
 	now := time.Now()
-	for i := 0; i < numLimiterShards; i++ {
+	for i := range numLimiterShards {
 		sh := s.shards[i]
 		sh.mu.Lock()
 		for ip, entry := range sh.limiters {

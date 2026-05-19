@@ -11,7 +11,7 @@ import (
 func ExtractSql(s string) string {
 	relSql := strings.TrimSpace(s)
 	if relSql == "" || strings.HasPrefix(relSql, "--") || strings.HasPrefix(relSql, "//") || strings.HasPrefix(relSql, "/*") {
-		nsql := []string{}
+		var nsql []string
 		for _, row := range strings.Split(relSql, "\n") {
 			if row == "" || strings.HasPrefix(row, "--") || strings.HasPrefix(row, "//") || strings.HasPrefix(row, "/*") {
 				continue
@@ -36,7 +36,7 @@ func SnakeToCamel(v any) any {
 		return v
 	}
 
-	// 先将输入转为通用的 interface{} 结构（通过 JSON）
+	// 先将输入转为通用的 any 结构（通过 JSON）
 	data, err := json.Marshal(v)
 	if err != nil {
 		// 如果无法序列化（如包含 func、chan 等），直接返回原值
@@ -60,8 +60,8 @@ func convertRecursive(v any) any {
 			newMap[newKey] = convertRecursive(v2)
 		}
 		return newMap
-	case []interface{}:
-		newSlice := make([]interface{}, len(val))
+	case []any:
+		newSlice := make([]any, len(val))
 		for i, item := range val {
 			newSlice[i] = convertRecursive(item)
 		}

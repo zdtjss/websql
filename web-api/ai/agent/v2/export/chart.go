@@ -1,6 +1,7 @@
 package export
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -40,7 +41,7 @@ func RenderMultiChartPNG(seriesList []ChartSeries, title, chartType, filePath st
 		if len(seriesList) > 0 {
 			return renderPieChartFile(filePath, seriesList[0].XLabels, seriesList[0].YValues, title)
 		}
-		return fmt.Errorf("pie chart requires at least one series")
+		return errors.New("pie chart requires at least one series")
 	case "bar", "column":
 		return renderBarChartFile(filePath, seriesList, title)
 	default:
@@ -50,7 +51,7 @@ func RenderMultiChartPNG(seriesList []ChartSeries, title, chartType, filePath st
 
 func renderLineChartFile(filePath string, seriesList []ChartSeries, title string) error {
 	if len(seriesList) == 0 {
-		return fmt.Errorf("no series data")
+		return errors.New("no series data")
 	}
 
 	var allSeries []chart.Series
@@ -110,7 +111,7 @@ func renderLineChartFile(filePath string, seriesList []ChartSeries, title string
 
 func renderBarChartFile(filePath string, seriesList []ChartSeries, title string) error {
 	if len(seriesList) == 0 {
-		return fmt.Errorf("no series data")
+		return errors.New("no series data")
 	}
 
 	if len(seriesList) > 1 {

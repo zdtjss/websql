@@ -132,12 +132,12 @@ type requestParams struct {
 func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, error) {
 	cfg := admin.GetSelectedModelConfig(req.ModelId)
 	if cfg == nil {
-		return nil, fmt.Errorf("未配置 AI 服务")
+		return nil, errors.New("未配置 AI 服务")
 	}
 
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
-		return nil, fmt.Errorf("未认证或认证已过期")
+		return nil, errors.New("未认证或认证已过期")
 	}
 
 	if req.UserID == "" {

@@ -17,7 +17,7 @@ func TestPtr(t *testing.T) {
 }
 
 func TestRandomInt64(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		time.Sleep(10 * time.Millisecond)
 		id := RandomInt64()
 		fmt.Println(id)

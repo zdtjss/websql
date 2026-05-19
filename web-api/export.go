@@ -27,14 +27,14 @@ func ExportXlsx(c *gin.Context) {
 
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	c.Header("content-disposition", strings.Join([]string{"attachment;filename=", table, current, ".xlsx"}, ""))
+	c.Header("content-disposition", "attachment;filename="+table+current+".xlsx")
 	queryAndWrite(schema+"."+table, schema, c.Writer, connId, authorization)
 }
 func queryAndWrite(table, schema string, out io.Writer, connId string, authorization string) {
 	log.Println("正在导出：", table)
 
 	connCtx := admin.GetConn(connId, authorization)
-	rows, err := connCtx.Query(strings.Join([]string{"SELECT * from ", table}, ""))
+	rows, err := connCtx.Query("SELECT * from " + table)
 	logutils.PanicErr(err)
 
 	allColumns, err := rows.Columns()
@@ -43,7 +43,7 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	columnComment := make([]string, 0)
 	columnMap := admin.ColumnMapFiltered(table, schema, connId, authorization, connCtx)
 
-	for i := 0; i < len(allColumns); i++ {
+	for i := range allColumns {
 		columnComment = append(columnComment, columnMap[allColumns[i]])
 	}
 

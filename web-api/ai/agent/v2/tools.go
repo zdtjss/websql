@@ -2,6 +2,7 @@ package agentv2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go-web/config"
 	"go-web/logutils"
@@ -198,7 +199,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "WITH") {
-			return nil, fmt.Errorf("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
+			return nil, errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
 		}
 		if strings.HasPrefix(upper, "WITH") {
 			writeKW := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
@@ -401,7 +402,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, targetConnID)
 		sql := strings.TrimSpace(input.SQL)
 		if sql == "" {
-			return nil, fmt.Errorf("SQL is empty")
+			return nil, errors.New("SQL is empty")
 		}
 
 		isDefaultConn := targetConnID == connId
@@ -729,7 +730,7 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}
 		if input.FileID == "" {
-			return nil, fmt.Errorf("fileId is required")
+			return nil, errors.New("fileId is required")
 		}
 		if !isValidTableName(input.TableName) {
 			return nil, fmt.Errorf("invalid table name: %s", input.TableName)
@@ -1179,7 +1180,7 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 		}
 	}
 	if len(setParts) == 0 || len(whereParts) == 0 {
-		return fmt.Errorf("cannot build update: missing SET or WHERE")
+		return errors.New("cannot build update: missing SET or WHERE")
 	}
 	args := append(setArgs, whereArgs...)
 	tableRef := quoteTableRef(dbType, dbSchema, tableName)

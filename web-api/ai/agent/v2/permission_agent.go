@@ -3,6 +3,7 @@ package agentv2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -183,7 +184,7 @@ reason 字段要求：
 func callPermissionAgent(ctx context.Context, permAgent tool.BaseTool, sql, toolName string) (*PermDecisionOutput, error) {
 	invokable, ok := permAgent.(tool.InvokableTool)
 	if !ok {
-		return nil, fmt.Errorf("permission agent does not support invokable mode")
+		return nil, errors.New("permission agent does not support invokable mode")
 	}
 
 	request := fmt.Sprintf("检查以下SQL的权限\n工具名称：%s\nSQL语句：\n%s", toolName, sql)

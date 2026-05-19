@@ -3,6 +3,7 @@ package export
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -30,7 +31,7 @@ func (b *OSFilesystemBackend) SetValidateCommand(fn func(string) error) {
 
 func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfoRequest) ([]filesystem.FileInfo, error) {
 	if req == nil || req.Path == "" {
-		return nil, fmt.Errorf("path is required")
+		return nil, errors.New("path is required")
 	}
 
 	entries, err := os.ReadDir(req.Path)
@@ -57,7 +58,7 @@ func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfo
 
 func (b *OSFilesystemBackend) Read(ctx context.Context, req *filesystem.ReadRequest) (*filesystem.FileContent, error) {
 	if req == nil || req.FilePath == "" {
-		return nil, fmt.Errorf("filePath is required")
+		return nil, errors.New("filePath is required")
 	}
 
 	data, err := os.ReadFile(req.FilePath)
@@ -94,7 +95,7 @@ func (b *OSFilesystemBackend) Read(ctx context.Context, req *filesystem.ReadRequ
 
 func (b *OSFilesystemBackend) GrepRaw(ctx context.Context, req *filesystem.GrepRequest) ([]filesystem.GrepMatch, error) {
 	if req == nil || req.Pattern == "" {
-		return nil, fmt.Errorf("pattern is required")
+		return nil, errors.New("pattern is required")
 	}
 
 	pattern := req.Pattern
@@ -173,7 +174,7 @@ func (b *OSFilesystemBackend) GrepRaw(ctx context.Context, req *filesystem.GrepR
 
 func (b *OSFilesystemBackend) GlobInfo(ctx context.Context, req *filesystem.GlobInfoRequest) ([]filesystem.FileInfo, error) {
 	if req == nil || req.Pattern == "" {
-		return nil, fmt.Errorf("pattern is required")
+		return nil, errors.New("pattern is required")
 	}
 
 	pattern := filepath.Join(req.Path, req.Pattern)
@@ -201,7 +202,7 @@ func (b *OSFilesystemBackend) GlobInfo(ctx context.Context, req *filesystem.Glob
 
 func (b *OSFilesystemBackend) Write(ctx context.Context, req *filesystem.WriteRequest) error {
 	if req == nil || req.FilePath == "" {
-		return fmt.Errorf("filePath is required")
+		return errors.New("filePath is required")
 	}
 
 	dir := filepath.Dir(req.FilePath)
@@ -218,13 +219,13 @@ func (b *OSFilesystemBackend) Write(ctx context.Context, req *filesystem.WriteRe
 
 func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 	if req == nil || req.FilePath == "" {
-		return fmt.Errorf("filePath is required")
+		return errors.New("filePath is required")
 	}
 	if req.OldString == "" {
-		return fmt.Errorf("oldString is required")
+		return errors.New("oldString is required")
 	}
 	if req.OldString == req.NewString {
-		return fmt.Errorf("newString must be different from oldString")
+		return errors.New("newString must be different from oldString")
 	}
 
 	data, err := os.ReadFile(req.FilePath)
@@ -236,7 +237,7 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 	count := strings.Count(content, req.OldString)
 
 	if count == 0 {
-		return fmt.Errorf("oldString not found in file")
+		return errors.New("oldString not found in file")
 	}
 	if !req.ReplaceAll && count > 1 {
 		return fmt.Errorf("oldString appears %d times, use replaceAll=true or make it unique", count)
@@ -257,7 +258,7 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 
 func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *filesystem.ExecuteRequest) (*schema.StreamReader[*filesystem.ExecuteResponse], error) {
 	if input == nil || input.Command == "" {
-		return nil, fmt.Errorf("command is required")
+		return nil, errors.New("command is required")
 	}
 
 	if b.validateCommand != nil {

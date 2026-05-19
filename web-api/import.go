@@ -15,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/xuri/excelize/v2"
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 func ImportXlsx(c *gin.Context) {

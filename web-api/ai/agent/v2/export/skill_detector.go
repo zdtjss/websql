@@ -3,6 +3,7 @@ package export
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -138,7 +139,7 @@ func (e *SkillEnv) FilesystemBackend() *OSFilesystemBackend {
 
 func (e *SkillEnv) CheckAndInstallDeps(ctx context.Context, skillName string) error {
 	if !IsPythonAvailable() {
-		return fmt.Errorf("Python 不可用")
+		return errors.New("Python 不可用")
 	}
 
 	e.depsCheckMu.Lock()
@@ -251,7 +252,7 @@ func detectPython() {
 
 func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (string, error) {
 	if !IsPythonAvailable() {
-		return "", fmt.Errorf("Python 不可用")
+		return "", errors.New("Python 不可用")
 	}
 
 	select {
@@ -306,7 +307,7 @@ func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("Python 脚本执行超时")
+			return "", errors.New("Python 脚本执行超时")
 		}
 		stderrStr := strings.TrimSpace(stderr.String())
 		if stderrStr != "" {
@@ -336,7 +337,7 @@ func RunPythonScript(ctx context.Context, scriptPath string, inputJSON string) (
 
 func checkMissingDeps(ctx context.Context, reqFile string) ([]string, error) {
 	if !IsPythonAvailable() {
-		return nil, fmt.Errorf("Python 不可用")
+		return nil, errors.New("Python 不可用")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -378,7 +379,7 @@ print(','.join(missing))
 
 func installDeps(ctx context.Context, reqFile string) error {
 	if !IsPythonAvailable() {
-		return fmt.Errorf("Python 不可用")
+		return errors.New("Python 不可用")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)

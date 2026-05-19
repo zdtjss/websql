@@ -249,7 +249,7 @@ func minInt(a, b int) int {
 func DocxCoverPageEnhanced(title, subtitle string) string {
 	var sb strings.Builder
 
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		sb.WriteString(docxParagraph("", false, 24, ""))
 	}
 
@@ -366,13 +366,13 @@ func docxTableForColumns(qr *QueryResult, cols []string) string {
 `)
 
 	sb.WriteString(`<w:tblGrid>`)
-	for i := 0; i < numCols; i++ {
+	for range numCols {
 		sb.WriteString(fmt.Sprintf(`<w:gridCol w:w="%d"/>`, 9000/numCols))
 	}
 	sb.WriteString(`</w:tblGrid>`)
 
 	sb.WriteString("<w:tr>")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		sb.WriteString(`<w:tc><w:tcPr>
   <w:shd w:val="clear" w:color="auto" w:fill="1A237E"/>
   <w:tcW w:w="1000" w:type="pct"/>
@@ -398,7 +398,7 @@ func docxTableForColumns(qr *QueryResult, cols []string) string {
 			fillColor = "F0F4FF"
 		}
 		sb.WriteString("<w:tr>")
-		for j := 0; j < numCols; j++ {
+		for j := range numCols {
 			sb.WriteString(fmt.Sprintf(`<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="%s"/></w:tcPr>`, fillColor))
 			sb.WriteString("<w:p><w:pPr><w:spacing w:before=\"20\" w:after=\"20\"/></w:pPr>")
 			sb.WriteString("<w:r><w:rPr>")

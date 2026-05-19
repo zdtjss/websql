@@ -15,7 +15,7 @@ import (
 
 var Mngtdb *sqlx.DB
 var (
-	DBMap   map[string]*sqlx.DB = make(map[string]*sqlx.DB)
+	DBMap   = make(map[string]*sqlx.DB)
 	dbMapMu sync.RWMutex
 )
 
@@ -69,7 +69,7 @@ func GetConn(param *DBParam) *sqlx.DB {
 		return val
 	}
 
-	db, err := sqlx.Connect(param.DbType, *makeDsn(param))
+	db, err := sqlx.Connect(param.DbType, makeDsn(param))
 	if err != nil {
 		logutils.PanicErrf("连接数据库失败", err)
 	}
@@ -120,17 +120,15 @@ func GetConn(param *DBParam) *sqlx.DB {
 	return db
 }
 
-func makeDsn(param *DBParam) *string {
-	dsn := ""
+func makeDsn(param *DBParam) string {
 	switch param.DbType {
 	case "oracle":
-		dsn = "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
+		return "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
 	case "mysql":
-		dsn = fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
+		return fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
 	default:
-		dsn = param.User + ":" + param.Pwd + "@" + param.Url
+		return param.User + ":" + param.Pwd + "@" + param.Url
 	}
-	return &dsn
 }
 
 func RealseConn(param *DBParam) {

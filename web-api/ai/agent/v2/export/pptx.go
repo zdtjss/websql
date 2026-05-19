@@ -285,13 +285,13 @@ func pptxTableSlideEnhanced(qr *QueryResult, pageNum int) string {
     <a:tblPr firstRow="1" bandRow="0"/>
     <a:tblGrid>`, tableWidth, tableCy))
 
-	for i := 0; i < numCols; i++ {
+	for range numCols {
 		fmt.Fprintf(&sb, `<a:gridCol w="%d"/>`, colWidth)
 	}
 	sb.WriteString("</a:tblGrid>\n")
 
 	sb.WriteString("<a:tr h=\"380000\">")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		fmt.Fprintf(&sb, `<a:tc><a:txBody><a:bodyPr lIns="50000" rIns="50000" tIns="25000" bIns="25000"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="1100" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/></a:rPr><a:t>%s</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="1A237E"/></a:solidFill></a:tcPr></a:tc>`, xmlEscape(qr.Columns[i]))
 	}
 	sb.WriteString("</a:tr>\n")
@@ -299,7 +299,7 @@ func pptxTableSlideEnhanced(qr *QueryResult, pageNum int) string {
 	for r := 0; r < maxRows; r++ {
 		row := qr.Data[r]
 		sb.WriteString(fmt.Sprintf("<a:tr h=\"%d\">", rowHeight))
-		for c := 0; c < numCols; c++ {
+		for c := range numCols {
 			val := ""
 			if v, ok := row[qr.Columns[c]]; ok {
 				val = fmt.Sprintf("%v", v)
@@ -366,13 +366,13 @@ func pptxGroupTableSlide(groupCol, groupName string, totalRows int, qr *QueryRes
     <a:tblPr firstRow="1" bandRow="0"/>
     <a:tblGrid>`, tableWidth, tableCy))
 
-	for i := 0; i < numCols; i++ {
+	for range numCols {
 		fmt.Fprintf(&sb, `<a:gridCol w="%d"/>`, colWidth)
 	}
 	sb.WriteString("</a:tblGrid>\n")
 
 	sb.WriteString("<a:tr h=\"380000\">")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		fmt.Fprintf(&sb, `<a:tc><a:txBody><a:bodyPr lIns="50000" rIns="50000" tIns="25000" bIns="25000"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="zh-CN" sz="1100" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/></a:rPr><a:t>%s</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="1A237E"/></a:solidFill></a:tcPr></a:tc>`, xmlEscape(qr.Columns[i]))
 	}
 	sb.WriteString("</a:tr>\n")
@@ -380,7 +380,7 @@ func pptxGroupTableSlide(groupCol, groupName string, totalRows int, qr *QueryRes
 	for r := 0; r < maxRows; r++ {
 		row := qr.Data[r]
 		sb.WriteString(fmt.Sprintf("<a:tr h=\"%d\">", rowHeight))
-		for c := 0; c < numCols; c++ {
+		for c := range numCols {
 			val := ""
 			if v, ok := row[qr.Columns[c]]; ok {
 				val = fmt.Sprintf("%v", v)
@@ -964,7 +964,7 @@ func pptxContentTableXML(mdTable string, idStart int) (string, int64) {
     <a:tblPr firstRow="1" bandRow="0"/>
     <a:tblGrid>`, idStart, int64(10500000), tableH))
 
-	for i := 0; i < numCols; i++ {
+	for range numCols {
 		fmt.Fprintf(&sb, `<a:gridCol w="%d"/>`, colWidth)
 	}
 	sb.WriteString("</a:tblGrid>\n")
@@ -978,7 +978,7 @@ func pptxContentTableXML(mdTable string, idStart int) (string, int64) {
 	for r := 1; r < numRows; r++ {
 		row := rows[r]
 		sb.WriteString(fmt.Sprintf("<a:tr h=\"%d\">", rowHeight))
-		for c := 0; c < numCols; c++ {
+		for c := range numCols {
 			val := ""
 			if c < len(row) {
 				val = row[c]

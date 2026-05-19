@@ -23,7 +23,7 @@ func ToJsonString2(v any) ([]byte, error) {
 		log.Println(err)
 		return []byte{}, err
 	}
-	return str, err
+	return str, nil
 }
 
 func WriteJson(w http.ResponseWriter, v any) {

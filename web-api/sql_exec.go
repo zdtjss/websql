@@ -96,7 +96,6 @@ func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
 		return
 	}
 
-	hasData := false
 	insertSQL := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
 	stmt, err := tx.Preparex(insertSQL)
 	if err != nil {
@@ -110,8 +109,6 @@ func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
 		dataVal := r.Data
 		if dataVal == "" {
 			dataVal = "NULL"
-		} else {
-			hasData = true
 		}
 		_, err := stmt.Exec(r.Id, r.User, r.ConnId, r.OperationType, r.ExecTime, r.ExecSql, dataVal)
 		if err != nil {
@@ -122,8 +119,6 @@ func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
 	if err := tx.Commit(); err != nil {
 		logutils.PrintErrf("历史记录事务提交失败", err)
 	}
-
-	_ = hasData
 }
 
 func ShutdownHistoryWriter() {
@@ -206,11 +201,11 @@ func ExecSQL(c *gin.Context) {
 		asyncRecordHistory(sqlStr, user, connId)
 	}
 
-	sqlStr = strings.Join([]string{sqlStr[0:min(blankIdx, nlIdx)], sqlStr[min(blankIdx, nlIdx):]}, "")
+	sqlStr = sqlStr[0:min(blankIdx, nlIdx)] + sqlStr[min(blankIdx, nlIdx):]
 
 	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop ", "insert", "create"}) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		result, err := batchExec(&sqlStr, conn)
+		result, err := batchExec(sqlStr, conn)
 		if err != nil {
 			writeSQLError(c, err)
 			return
@@ -220,7 +215,7 @@ func ExecSQL(c *gin.Context) {
 	} else {
 		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			sqlStr = *page(conn.DriverName(), &sqlStr)
+			sqlStr = page(conn.DriverName(), sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
 			params = append(params, maxLineI)
 		}
@@ -306,25 +301,17 @@ func IsAlphaNumeric(str string) bool {
 	return false
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func page(dbtype string, sql *string) *string {
-	pageSql := ""
+func page(dbtype string, sql string) string {
 	if dbtype == "oracle" {
-		pageSql = "select a.* from (" + *sql + ") a where rownum <= :1"
+		return "select a.* from (" + sql + ") a where rownum <= :1"
 	} else if dbtype == "mysql" {
-		pageSql = *sql + " limit ?"
+		return sql + " limit ?"
 	}
-	return &pageSql
+	return sql
 }
 
-func batchExec(sql *string, db *sqlx.DB) ([]map[string]any, error) {
-	sqlArr := strings.Split(*sql, ";")
+func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
+	sqlArr := strings.Split(sql, ";")
 	tx, err := db.Beginx()
 	if err != nil {
 		return nil, err

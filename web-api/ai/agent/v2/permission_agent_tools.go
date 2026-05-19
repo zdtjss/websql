@@ -3,6 +3,7 @@ package agentv2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -106,7 +107,7 @@ func getTableColumnsFromConn(conn *sqlx.DB, tableName string) ([]rawColumnInfo, 
 		args = []any{tableName}
 	case "sqlite":
 		if !isValidTableName(tableName) {
-			return nil, fmt.Errorf("invalid table name")
+			return nil, errors.New("invalid table name")
 		}
 		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
 	case "oracle":

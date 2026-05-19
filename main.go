@@ -104,7 +104,7 @@ func startServer(server *http.Server, isHttps *bool, port *string) {
 // 启动状态监听
 func listenStartStatus() {
 	for {
-		time.Sleep(time.Duration(1 * time.Millisecond))
+		time.Sleep(time.Millisecond)
 		// 注意，使用 InsecureSkipVerify: true 来跳过证书验证，否则总是请求失败
 		client := &http.Client{Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -115,10 +115,10 @@ func listenStartStatus() {
 		if *isHttps {
 			protocol = "https"
 		}
-		r, _ := client.Get(strings.Join([]string{protocol, "://localhost:", *port, "/api/healthCheck"}, ""))
+		r, _ := client.Get(protocol + "://localhost:" + *port + "/api/healthCheck")
 		if r != nil {
 			r.Body.Close()
-			log.Println(strings.Join([]string{"==================== 系统已启动完成，端口：", *port, " 、 https：", strconv.FormatBool(*isHttps), " ===================="}, ""))
+			log.Println("==================== 系统已启动完成，端口：" + *port + " 、 https：" + strconv.FormatBool(*isHttps) + " ====================")
 			runtime.Goexit()
 		}
 	}

@@ -3,6 +3,7 @@ package agentv2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -499,7 +500,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 
 func (m *PermissionMiddleware) checkSQLPermissionViaAgent(ctx context.Context, sql, toolName string) (*PermDecisionOutput, error) {
 	if m.PermAgent == nil {
-		return nil, fmt.Errorf("permission agent not initialized")
+		return nil, errors.New("permission agent not initialized")
 	}
 	return callPermissionAgent(ctx, m.PermAgent, sql, toolName)
 }

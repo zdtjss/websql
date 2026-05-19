@@ -16,7 +16,6 @@ require (
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/wcharczuk/go-chart/v2 v2.1.2
 	github.com/xuri/excelize/v2 v2.10.1
-	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.50.1
 )
@@ -79,6 +78,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.27.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/image v0.40.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect

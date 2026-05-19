@@ -3,6 +3,7 @@ package export
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -20,14 +21,14 @@ const (
 func mustGetSkillEnv() (*SkillEnv, error) {
 	env := GetSkillEnv()
 	if env == nil {
-		return nil, fmt.Errorf("Skill 环境未初始化")
+		return nil, errors.New("Skill 环境未初始化")
 	}
 	return env, nil
 }
 
 func SkillExportWord(ctx context.Context, qr *QueryResult, title, fileName string, includeChart bool, chartImagePaths []string) (string, error) {
 	if !IsPythonAvailable() {
-		return "", fmt.Errorf("Python 不可用，请使用 Go 原生实现")
+		return "", errors.New("Python 不可用，请使用 Go 原生实现")
 	}
 
 	env, err := mustGetSkillEnv()
@@ -53,7 +54,7 @@ func SkillExportWord(ctx context.Context, qr *QueryResult, title, fileName strin
 	findings := buildFindings(qr, numericCols)
 	filteredCharts := filterExistingFiles(chartImagePaths)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"title":          title,
 		"columns":        qr.Columns,
 		"data":           qr.Data,
@@ -75,7 +76,7 @@ func SkillExportWord(ctx context.Context, qr *QueryResult, title, fileName strin
 		return "", err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", fmt.Errorf("解析 Python 脚本输出失败: %w", err)
 	}
@@ -93,7 +94,7 @@ func SkillExportWord(ctx context.Context, qr *QueryResult, title, fileName strin
 
 func SkillExportPPT(ctx context.Context, qr *QueryResult, title, fileName string, chartPaths []string) (string, int, error) {
 	if !IsPythonAvailable() {
-		return "", 0, fmt.Errorf("Python 不可用，请使用 Go 原生实现")
+		return "", 0, errors.New("Python 不可用，请使用 Go 原生实现")
 	}
 
 	env, err := mustGetSkillEnv()
@@ -119,7 +120,7 @@ func SkillExportPPT(ctx context.Context, qr *QueryResult, title, fileName string
 	highlights := buildHighlights(qr, numericCols)
 	filteredCharts := filterExistingFiles(chartPaths)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"mode":           "data",
 		"title":          title,
 		"columns":        qr.Columns,
@@ -141,7 +142,7 @@ func SkillExportPPT(ctx context.Context, qr *QueryResult, title, fileName string
 		return "", 0, err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", 0, fmt.Errorf("解析 Python 脚本输出失败: %w", err)
 	}
@@ -164,7 +165,7 @@ func SkillExportPPT(ctx context.Context, qr *QueryResult, title, fileName string
 
 func SkillExportWordFromContent(ctx context.Context, content, title, fileName string) (string, error) {
 	if !IsPythonAvailable() {
-		return "", fmt.Errorf("Python 不可用，请使用 Go 原生实现")
+		return "", errors.New("Python 不可用，请使用 Go 原生实现")
 	}
 
 	env, err := mustGetSkillEnv()
@@ -187,7 +188,7 @@ func SkillExportWordFromContent(ctx context.Context, content, title, fileName st
 	blocks := ParseMarkdownBlocks(content)
 	sections := buildSections(blocks)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"mode":       "content",
 		"title":      title,
 		"sections":   sections,
@@ -204,13 +205,13 @@ func SkillExportWordFromContent(ctx context.Context, content, title, fileName st
 		return "", err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", fmt.Errorf("解析 Python 脚本输出失败: %w", err)
 	}
 
 	if success, ok := result["success"].(bool); !ok || !success {
-		return "", fmt.Errorf("Skill 执行失败")
+		return "", errors.New("Skill 执行失败")
 	}
 
 	return outputPath, nil
@@ -218,7 +219,7 @@ func SkillExportWordFromContent(ctx context.Context, content, title, fileName st
 
 func SkillExportPPTFromContent(ctx context.Context, content, title, fileName string) (string, int, error) {
 	if !IsPythonAvailable() {
-		return "", 0, fmt.Errorf("Python 不可用，请使用 Go 原生实现")
+		return "", 0, errors.New("Python 不可用，请使用 Go 原生实现")
 	}
 
 	env, err := mustGetSkillEnv()
@@ -241,7 +242,7 @@ func SkillExportPPTFromContent(ctx context.Context, content, title, fileName str
 	blocks := ParseMarkdownBlocks(content)
 	sections := buildSections(blocks)
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"mode":       "content",
 		"title":      title,
 		"sections":   sections,
@@ -258,7 +259,7 @@ func SkillExportPPTFromContent(ctx context.Context, content, title, fileName str
 		return "", 0, err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", 0, fmt.Errorf("解析 Python 脚本输出失败: %w", err)
 	}
@@ -273,7 +274,7 @@ func SkillExportPPTFromContent(ctx context.Context, content, title, fileName str
 
 func SkillGenerateChart(ctx context.Context, seriesList []ChartSeries, chartType, title, filePath string) (string, error) {
 	if !IsPythonAvailable() {
-		return "", fmt.Errorf("Python 不可用")
+		return "", errors.New("Python 不可用")
 	}
 
 	env, err := mustGetSkillEnv()
@@ -295,16 +296,16 @@ func SkillGenerateChart(ctx context.Context, seriesList []ChartSeries, chartType
 		return "", err
 	}
 
-	var series []map[string]interface{}
+	var series []map[string]any
 	for _, s := range seriesList {
-		series = append(series, map[string]interface{}{
+		series = append(series, map[string]any{
 			"name":    s.Name,
 			"xLabels": s.XLabels,
 			"yValues": s.YValues,
 		})
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"chartType":  chartType,
 		"title":      title,
 		"outputPath": filePath,
@@ -321,13 +322,13 @@ func SkillGenerateChart(ctx context.Context, seriesList []ChartSeries, chartType
 		return "", err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		return "", fmt.Errorf("解析图表脚本输出失败: %w", err)
 	}
 
 	if success, ok := result["success"].(bool); !ok || !success {
-		return "", fmt.Errorf("图表生成失败")
+		return "", errors.New("图表生成失败")
 	}
 
 	return filePath, nil
@@ -590,8 +591,8 @@ func NewSkillExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *Expor
 	}
 }
 
-func buildNumericStats(qr *QueryResult, numericCols []string) []map[string]interface{} {
-	var stats []map[string]interface{}
+func buildNumericStats(qr *QueryResult, numericCols []string) []map[string]any {
+	var stats []map[string]any
 	for _, col := range numericCols {
 		min, max, avg, count := CalcNumericStats(qr, col)
 		if count == 0 {
@@ -610,7 +611,7 @@ func buildNumericStats(qr *QueryResult, numericCols []string) []map[string]inter
 			stddev = math.Sqrt(sumSq / float64(count-1))
 		}
 
-		stats = append(stats, map[string]interface{}{
+		stats = append(stats, map[string]any{
 			"column": col,
 			"count":  count,
 			"min":    min,
@@ -655,19 +656,19 @@ func buildHighlights(qr *QueryResult, numericCols []string) []string {
 	return highlights
 }
 
-func buildSummary(qr *QueryResult) map[string]interface{} {
-	summary := map[string]interface{}{
+func buildSummary(qr *QueryResult) map[string]any {
+	summary := map[string]any{
 		"totalRows": len(qr.Data),
 		"totalCols": len(qr.Columns),
 		"columns":   qr.Columns,
-		"stats":     make(map[string]interface{}),
+		"stats":     make(map[string]any),
 	}
 
-	stats := summary["stats"].(map[string]interface{})
+	stats := summary["stats"].(map[string]any)
 	for _, col := range DetectNumericCols(qr) {
 		min, max, avg, count := CalcNumericStats(qr, col)
 		if count > 0 {
-			stats[col] = map[string]interface{}{
+			stats[col] = map[string]any{
 				"min": min,
 				"max": max,
 				"avg": avg,
@@ -678,14 +679,14 @@ func buildSummary(qr *QueryResult) map[string]interface{} {
 	return summary
 }
 
-func buildSections(blocks []MdBlock) []map[string]interface{} {
-	var sections []map[string]interface{}
-	var current map[string]interface{}
-	var currentBlocks []map[string]interface{}
+func buildSections(blocks []MdBlock) []map[string]any {
+	var sections []map[string]any
+	var current map[string]any
+	var currentBlocks []map[string]any
 
-	ensureBlocks := func() []map[string]interface{} {
+	ensureBlocks := func() []map[string]any {
 		if currentBlocks == nil {
-			return []map[string]interface{}{}
+			return []map[string]any{}
 		}
 		return currentBlocks
 	}
@@ -696,12 +697,12 @@ func buildSections(blocks []MdBlock) []map[string]interface{} {
 				current["blocks"] = ensureBlocks()
 				sections = append(sections, current)
 			}
-			current = map[string]interface{}{
+			current = map[string]any{
 				"title": StripMarkdownFormatting(block.Content),
 			}
 			currentBlocks = nil
 		} else {
-			currentBlocks = append(currentBlocks, map[string]interface{}{
+			currentBlocks = append(currentBlocks, map[string]any{
 				"type":    block.Type,
 				"content": StripMarkdownFormatting(block.Content),
 			})

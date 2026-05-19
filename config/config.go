@@ -2,17 +2,17 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"go-web/logutils"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 var (
 	Cfg *Config
 	// 管理员用户 id
-	AdminId string = "825683877312860160"
+	AdminId = "825683877312860160"
 )
 
 func ReadConfig() *Config {
@@ -44,13 +44,13 @@ func LoadConfigFromDB() {
 	var redisDBStr string
 	loadSystemConfigValue("system.redisDB", &redisDBStr)
 	if redisDBStr != "" {
-		var dbVal int
-		fmt.Sscanf(redisDBStr, "%d", &dbVal)
-		Cfg.Redis.DB = dbVal
+		if dbVal, err := strconv.Atoi(redisDBStr); err == nil {
+			Cfg.Redis.DB = dbVal
+		}
 	}
 }
 
-func loadSystemConfigValue(key string, target interface{}) {
+func loadSystemConfigValue(key string, target any) {
 	var value string
 	err := Mngtdb.Get(&value, "select config_value from t_system_config where config_key = ?", key)
 	if err != nil || value == "" {
@@ -70,22 +70,21 @@ func loadSystemConfigValue(key string, target interface{}) {
 	}
 }
 
-func ReadSql(fileName string) *string {
+func ReadSql(fileName string) string {
 	configFile := FindFile(fileName)
 	fileData, err := os.ReadFile(configFile)
 	logutils.PanicErr(err)
-	sql := string(fileData)
-	return &sql
+	return string(fileData)
 }
 
 func FindFile(fileName string) string {
 	exec, err := os.Executable()
 	logutils.PanicErr(err)
-	configFile := filepath.Join(filepath.Join(filepath.Dir(exec), "../"), fileName)
-	_, err = os.Lstat(configFile)
+	configFile := filepath.Join(filepath.Dir(exec), "..", fileName)
+	_, err = os.Stat(configFile)
 	if err != nil {
 		configFile = filepath.Join(filepath.Dir(exec), fileName)
-		_, err = os.Lstat(configFile)
+		_, err = os.Stat(configFile)
 		logutils.PanicErr(err)
 	}
 	return configFile
