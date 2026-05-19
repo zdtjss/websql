@@ -13,22 +13,22 @@ import (
 )
 
 type Prompt struct {
-	Id            string          `json:"id" db:"id"`
-	Title         string          `json:"title" db:"title"`
-	Content       string          `json:"content" db:"content"`
-	CreatedBy     *string         `json:"createdBy" db:"created_by"`
-	RoleId        *string         `json:"roleId" db:"role_id"`
-	ConnSchemas   ConnSchemasJSON `json:"connSchemas,omitempty" db:"schemas"`
-	Tables        TableRefJSON    `json:"tables,omitempty" db:"tables"`
-	RoleName      string          `json:"roleName,omitempty" db:"-"`
-	CreatedAt     *string         `json:"createdAt,omitempty" db:"created_at"`
-	UpdatedAt     *string         `json:"updatedAt,omitempty" db:"updated_at"`
-	CurrentUserId string          `json:"currentUserId" db:"-"`
-	IsShared      bool            `json:"isShared" db:"-"`
-	IsRolePrompt  bool            `json:"isRolePrompt" db:"-"`
-	SharedByName  string          `json:"sharedByName,omitempty" db:"-"`
-	SharedUserIds []string        `json:"sharedUserIds,omitempty" db:"-"`
-	SharedUsers   []SharedUser    `json:"sharedUsers,omitempty" db:"-"`
+	Id            string             `json:"id" db:"id"`
+	Title         string             `json:"title" db:"title"`
+	Content       string             `json:"content" db:"content"`
+	CreatedBy     *string            `json:"createdBy" db:"created_by"`
+	RoleId        *string            `json:"roleId" db:"role_id"`
+	ConnSchemas   ConnSchemasJSON    `json:"connSchemas,omitempty" db:"schemas"`
+	Tables        PromptTableRefJSON `json:"tables,omitempty" db:"tables"`
+	RoleName      string             `json:"roleName,omitempty" db:"-"`
+	CreatedAt     *string            `json:"createdAt,omitempty" db:"created_at"`
+	UpdatedAt     *string            `json:"updatedAt,omitempty" db:"updated_at"`
+	CurrentUserId string             `json:"currentUserId" db:"-"`
+	IsShared      bool               `json:"isShared" db:"-"`
+	IsRolePrompt  bool               `json:"isRolePrompt" db:"-"`
+	SharedByName  string             `json:"sharedByName,omitempty" db:"-"`
+	SharedUserIds []string           `json:"sharedUserIds,omitempty" db:"-"`
+	SharedUsers   []SharedUser       `json:"sharedUsers,omitempty" db:"-"`
 }
 
 type ConnSchemaRef struct {
@@ -59,14 +59,14 @@ func (cs *ConnSchemasJSON) Scan(src interface{}) error {
 	return json.Unmarshal(b, cs)
 }
 
-type TableRef struct {
+type PromptTableRef struct {
 	Name    string `json:"name"`
 	Comment string `json:"comment,omitempty"`
 }
 
-type TableRefJSON []TableRef
+type PromptTableRefJSON []PromptTableRef
 
-func (tr *TableRefJSON) Scan(src interface{}) error {
+func (tr *PromptTableRefJSON) Scan(src interface{}) error {
 	if src == nil {
 		*tr = nil
 		return nil
@@ -78,7 +78,7 @@ func (tr *TableRefJSON) Scan(src interface{}) error {
 	case string:
 		b = []byte(v)
 	default:
-		return errors.New("unsupported type for TableRefJSON")
+		return errors.New("unsupported type for PromptTableRefJSON")
 	}
 	if len(b) == 0 {
 		*tr = nil
@@ -87,9 +87,9 @@ func (tr *TableRefJSON) Scan(src interface{}) error {
 	raw := string(b)
 	var oldFormat []string
 	if err := json.Unmarshal(b, &oldFormat); err == nil {
-		result := make([]TableRef, len(oldFormat))
+		result := make([]PromptTableRef, len(oldFormat))
 		for i, s := range oldFormat {
-			result[i] = TableRef{Name: s}
+			result[i] = PromptTableRef{Name: s}
 		}
 		*tr = result
 		return nil
@@ -127,13 +127,13 @@ type SharedUser struct {
 }
 
 type PromptSave struct {
-	Id            string          `json:"id"`
-	Title         string          `json:"title"`
-	Content       string          `json:"content"`
-	RoleId        string          `json:"roleId"`
-	ConnSchemas   []ConnSchemaRef `json:"connSchemas"`
-	Tables        []TableRef      `json:"tables"`
-	SharedUserIds []string        `json:"sharedUserIds"`
+	Id            string           `json:"id"`
+	Title         string           `json:"title"`
+	Content       string           `json:"content"`
+	RoleId        string           `json:"roleId"`
+	ConnSchemas   []ConnSchemaRef  `json:"connSchemas"`
+	Tables        []PromptTableRef `json:"tables"`
+	SharedUserIds []string         `json:"sharedUserIds"`
 }
 
 type PromptShare struct {
