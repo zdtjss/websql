@@ -24,7 +24,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import http from '@/js/utils/httpProxy.js'
-import { dbSchemaProxy } from '@/stores/sql'
+import { useDbSchemaStore } from '@/stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 import { getSqlDialect } from '@/js/utils/sqlHelper.ts'
 import hljs from 'highlight.js/lib/core'
 import { format } from 'sql-formatter'
@@ -39,7 +40,7 @@ let columnListOrigin = []
 const columnList = ref([])
 const tableCreateDdl = ref("")
 
-const props = defineProps({
+const { tableMeta } = defineProps({
     tableMeta: Object,
 })
 
@@ -50,7 +51,7 @@ onMounted(() => {
 
 function loadData(pane) {
     if (pane.props.name === "columns") {
-        http.post("/listTableColumns", props.tableMeta)
+        http.post("/listTableColumns", tableMeta)
             .then((resp) => {
                 columnList.value = resp.data.data
                 for (let i = 0; i < columnList.value.length; i++) {
@@ -60,24 +61,24 @@ function loadData(pane) {
             })
     } else if (pane.props.name === "showCreate") {
         let sqlStr = ""
-        const dbType = dbSchemaProxy.getDbType(props.tableMeta.schema)
+        const dbType = dbSchemaProxy.getDbType(tableMeta.schema)
         if (dbType === 'mysql') {
-            sqlStr = "show create table " + props.tableMeta.tableName
+            sqlStr = "show create table " + tableMeta.tableName
         } else if (dbType === 'oracle') {
-            sqlStr = "select dbms_metadata.get_ddl('VIEW','" + props.tableMeta.tableName.toUpperCase() + "') from dual"
+            sqlStr = "select dbms_metadata.get_ddl('VIEW','" + tableMeta.tableName.toUpperCase() + "') from dual"
         } else {
             tableCreateDdl.value = "暂不支持"
             return
         }
         const params = new URLSearchParams()
-        params.append("connId", props.tableMeta.connId)
-        params.append("schema", props.tableMeta.schema)
+        params.append("connId", tableMeta.connId)
+        params.append("schema", tableMeta.schema)
         params.append("sql", sqlStr)
         params.append("maxLine", 1)
         http.post("/execSQL", params)
             .then((resp) => {
                 const data = resp.data.data.data[0]
-                const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(props.tableMeta.schema) })
+                const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(tableMeta.schema) })
                 tableCreateDdl.value =  hljs.highlight(sql, { language: 'sql' }).value
             }).catch((error) => {
                 console.log(error);

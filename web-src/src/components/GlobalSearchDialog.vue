@@ -51,20 +51,21 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
-import { dbSchemaProxy } from '@/stores/sql'
+import { useDbSchemaStore } from '@/stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 
-const props = defineProps({
+const { visible, connId, schema } = defineProps({
   visible: Boolean,
   connId: String,
   schema: String
 })
 const emit = defineEmits(['select'])
 
-const keywordInputRef = ref(null)
+const keywordInputRef = useTemplateRef('keywordInputRef')
 const filterConnId = ref('')
 const filterSchema = ref('')
 const connections = ref([])
@@ -88,7 +89,7 @@ const typeLabelMap = {
   index: '索引'
 }
 
-watch(() => props.visible, (val) => {
+watch(() => visible, (val) => {
   if (val) {
     init()
   } else {
@@ -127,12 +128,12 @@ async function init() {
     connections.value = result.data || []
   } catch (e) {}
 
-  if (props.connId) {
-    filterConnId.value = props.connId
+  if (connId) {
+    filterConnId.value = connId
     await onConnChange()
-    if (props.schema) {
-      filterSchema.value = props.schema
-      await loadSchemaTables(props.schema)
+    if (schema) {
+      filterSchema.value = schema
+      await loadSchemaTables(schema)
     }
   }
   await nextTick()
@@ -154,7 +155,7 @@ function cleanup() {
 async function onConnChange() {
   schemas.value = []
   if (filterConnId.value) {
-    filterSchema.value = props.schema && props.connId === filterConnId.value ? props.schema : ''
+    filterSchema.value = schema && connId === filterConnId.value ? schema : ''
   } else {
     filterSchema.value = ''
   }
@@ -257,7 +258,7 @@ function searchTablesLocally(keyword, type) {
           name: tableName,
           schema: schemaName,
           comment: self.detail || '',
-          connId: filterConnId.value || props.connId || ''
+          connId: filterConnId.value || connId || ''
         })
       }
     }

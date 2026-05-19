@@ -11,14 +11,14 @@
                                 <el-button size="small" @click="exportXlsx(scope.row)"
                                     :loading="scope.row.exporting">导出</el-button>
                             </el-col>
-                            <el-col :span="9" v-if="props.canImport">
+                            <el-col :span="9" v-if="canImport">
                                 <el-upload :file-list="fileListInsert" :http-request="handleFileSelect"
                                     :data="{ row: scope.row, table: scope.row.name, optType: 'insert' }"
                                     :show-file-list="false" :limit="1" accept=".xlsx,.xls">
                                     <el-button size="small" :loading="scope.row.inserting">导入/新增</el-button>
                                 </el-upload>
                             </el-col>
-                            <el-col :span="9" v-if="props.canImport">
+                            <el-col :span="9" v-if="canImport">
                                 <el-upload :file-list="fileListUpdate" :http-request="handleFileSelect"
                                     :data="{ row: scope.row, table: scope.row.name, optType: 'update' }"
                                     :show-file-list="false" :limit="1" accept=".xlsx,.xls">
@@ -52,12 +52,12 @@
 <script setup>
 
 import { ElMessage } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, useTemplateRef } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
 import http from '../js/utils/httpProxy.js'
 
-const props = defineProps({
+const { connId, schema, opt, canImport } = defineProps({
     connId: String,
     schema: String,
     opt: String,
@@ -74,14 +74,14 @@ const importPreviewVisible = ref(false)
 const currentRow = ref(null)
 const currentOptType = ref('insert')
 const dbColumns = ref([])
-const importDialogRef = ref(null)
+const importDialogRef = useTemplateRef('importDialogRef')
 
 onMounted(() => {
     queryData()
 })
 
 function queryData() {
-    http.get("/listTable?connId=" + props.connId + "&schema=" + props.schema)
+    http.get("/listTable?connId=" + connId + "&schema=" + schema)
         .then((resp) => {
             tableData.value = resp.data
         })
@@ -92,7 +92,7 @@ function queryData() {
 
 function exportXlsx(row) {
     row.exporting = true
-    http.get("/exportXlsx?connId=" + props.connId + "&schema=" + props.schema + "&table=" + row.name, { responseType: 'blob' }).then((res) => {
+    http.get("/exportXlsx?connId=" + connId + "&schema=" + schema + "&table=" + row.name, { responseType: 'blob' }).then((res) => {
         if (!res) {
             ElMessage.error("下载失败")
             return;
@@ -156,8 +156,8 @@ function fetchDbColumns(tableName) {
     return new Promise((resolve) => {
         const sql = `SELECT * FROM \`${tableName}\` LIMIT 0`
         const params = new URLSearchParams()
-        params.append('connId', props.connId)
-        params.append('schema', props.schema)
+        params.append('connId', connId)
+        params.append('schema', schema)
         params.append('sql', sql)
         
         http.post('/execSQL', params).then((resp) => {

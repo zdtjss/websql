@@ -3,7 +3,7 @@
     v-model="visible"
     title="SQL 收藏夹"
     size="420px"
-    @close="emit('update:modelValue', false)"
+    @close="visible = false"
   >
     <div class="snippet-actions">
       <el-button size="small" type="primary" @click="showAddSnippet()">+ 添加当前 SQL</el-button>
@@ -62,26 +62,20 @@
 
 <script setup>
 import { Delete } from '@element-plus/icons-vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, useTemplateRef } from 'vue'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+const { currentSql } = defineProps({
   currentSql: { type: String, default: '' },
 })
-
-const emit = defineEmits(['update:modelValue', 'apply'])
+const emit = defineEmits(['apply'])
 
 const STORAGE_KEY = 'websql_snippets'
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (val) => emit('update:modelValue', val),
-})
 
 const snippets = ref([])
 const searchText = ref('')
 const addDialogVisible = ref(false)
-const formRef = ref(null)
+const formRef = useTemplateRef('formRef')
 
 const formData = ref({ name: '', sql: '' })
 
@@ -112,7 +106,7 @@ function saveAll() {
 
 function showAddSnippet() {
   formData.value.name = ''
-  formData.value.sql = props.currentSql || ''
+  formData.value.sql = currentSql || ''
   addDialogVisible.value = true
 }
 

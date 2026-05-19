@@ -79,17 +79,10 @@
 import { computed, ref } from 'vue'
 import http from '../js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+const { connId, schema } = defineProps({
   connId: String,
   schema: String,
-})
-
-const emit = defineEmits(['update:modelValue'])
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value) => emit('update:modelValue', value)
 })
 
 const activeTab = ref('overview')
@@ -112,8 +105,8 @@ const connPercentage = computed(() => {
 
 async function execQuery(sql) {
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
+  params.append('connId', connId)
+  params.append('schema', schema)
   params.append('sql', sql)
   params.append('maxLine', '500')
   const resp = await http.post('/execSQL', params)

@@ -132,11 +132,11 @@
 <script setup>
 import { CircleCheck, Refresh, RefreshLeft, Upload, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import http from '../js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+const { connId, schema, tableName, dbColumns, onImportSuccess, importFormat } = defineProps({
   connId: String,
   schema: String,
   tableName: String,
@@ -144,13 +144,7 @@ const props = defineProps({
   onImportSuccess: Function,
   importFormat: { type: String, default: 'xlsx' }
 })
-
-const emit = defineEmits(['update:modelValue', 'success', 'confirmImportData'])
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value) => emit('update:modelValue', value)
-})
+const emit = defineEmits(['success', 'confirmImportData'])
 
 // 状态管理
 const importMode = ref('insert') // 'insert' 或 'update'
@@ -170,7 +164,7 @@ const mappingStatus = ref({
 })
 
 // 监听 dbColumns 变化
-watch(() => props.dbColumns, (newVal) => {
+watch(() => dbColumns, (newVal) => {
   if (newVal && newVal.length > 0 && excelHeaders.value.length > 0) {
     initMapping()
     previewData()
@@ -179,7 +173,7 @@ watch(() => props.dbColumns, (newVal) => {
 
 // 初始化映射
 function initMapping() {
-  const dbCols = props.dbColumns || []
+  const dbCols = dbColumns || []
   previewColumns.value = excelHeaders.value.map((excelCol) => {
     const matchedDbCol = dbCols.find(dbCol => dbCol.toLowerCase() === excelCol.toLowerCase())
     return {
@@ -198,7 +192,7 @@ function onMappingChange() {
 
 // 获取可用字段
 function getAvailableColumns(currentCol) {
-  const dbCols = props.dbColumns || []
+  const dbCols = dbColumns || []
   const usedColumns = previewColumns.value
     .filter(col => col.dbCol && col.excelCol !== currentCol.excelCol)
     .map(col => col.dbCol)
@@ -218,7 +212,7 @@ function updateMappingStatus() {
   const matched = previewColumns.value.filter(col => col.dbCol).length
   const unmatchedExcel = previewColumns.value.filter(col => !col.dbCol).map(col => col.excelCol)
   const matchedDbCols = previewColumns.value.filter(col => col.dbCol).map(col => col.dbCol)
-  const dbCols = props.dbColumns || []
+  const dbCols = dbColumns || []
   const unmatchedDb = dbCols.filter(dbCol => !matchedDbCols.includes(dbCol))
   
   mappingStatus.value = {
@@ -251,7 +245,7 @@ function confirmImport() {
     return
   }
 
-  if (props.importFormat === 'csv' || props.importFormat === 'json') {
+  if (importFormat === 'csv' || importFormat === 'json') {
     const mapping = {}
     previewColumns.value.forEach(col => {
       if (col.dbCol) {
@@ -286,9 +280,9 @@ function executeImport() {
   
   let param = new FormData()
   param.append('file', selectedFile.value)
-  param.append('connId', props.connId)
-  param.append('schema', props.schema)
-  param.append('table', props.tableName)
+  param.append('connId', connId)
+  param.append('schema', schema)
+  param.append('table', tableName)
   param.append('optType', importMode.value) // 添加导入模式参数
   param.append('startRow', dataStartRow.value.toString())
   param.append('mapping', JSON.stringify(mapping))
@@ -303,8 +297,8 @@ function executeImport() {
       ElMessage({ message: `导入${modeText}成功`, type: 'success' })
       visible.value = false
       emit('success')
-      if (props.onImportSuccess) {
-        props.onImportSuccess()
+      if (onImportSuccess) {
+        onImportSuccess()
       }
     } else {
       if (res && res.data) {

@@ -86,17 +86,16 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:modelValue'])
-const visible = computed({ get: () => props.modelValue, set: v => emit('update:modelValue', v) })
 
 const activeTab = ref('create')
 const backupName = ref('')
@@ -124,11 +123,11 @@ function formatSize(bytes) {
 
 async function loadBackups() {
   try {
-    const res = await http.get('/backup/list', { params: { connId: props.connId, schema: props.schema } })
+    const res = await http.get('/backup/list', { params: { connId, schema } })
     backupList.value = res.data.data?.records || []
   } catch (e) {}
   try {
-    const res = await http.get('/backup/tables', { params: { connId: props.connId, schema: props.schema } })
+    const res = await http.get('/backup/tables', { params: { connId, schema } })
     backupTables.value = (res.data.data?.tables || []).map(t => ({ ...t, checked: true }))
   } catch (e) {}
 }
@@ -139,8 +138,8 @@ async function createBackup() {
   try {
     const selected = backupTables.value.filter(t => t.checked).map(t => t.table).join(',')
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
     formData.append('name', backupName.value)
     formData.append('description', backupDesc.value)
     formData.append('tables', selected)
@@ -189,8 +188,8 @@ async function doRestore(row) {
   try {
     const formData = new FormData()
     formData.append('backupId', row.id)
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
     const res = await http.post('/backup/restore', formData)
     if (res.data.data?.success) ElMessage.success(`恢复成功，执行 ${res.data.data?.executed || 0} 条语句`)
     else ElMessage.error(`恢复部分失败: ${(res.data.data?.failedCount || 0)} 条错误`)

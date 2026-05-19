@@ -361,14 +361,14 @@
 <script setup>
 import { ArrowDown, ArrowUp, Download, Filter, Grid, InfoFilled, Plus, Refresh, Sort, Timer } from '@element-plus/icons-vue'
 import { ElLoading, ElMessage } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
 import http from '../js/utils/httpProxy.js'
 import { fmtVal } from '../js/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson, exportToSql, downloadBlob } from '../js/utils/exportHelper.ts'
 
-const props = defineProps({
+const { connId, schema, tableName, tabId, dbType, schemaPath } = defineProps({
   connId: String,
   schema: String,
   tableName: String,
@@ -396,7 +396,7 @@ const columnFilterDialogVisible = ref(false)
 const currentColumn = ref(null)
 const columnFilterOperator = ref('=')
 const columnFilterValue = ref('')
-const columnFilterPopoverRef = ref(null)
+const columnFilterPopoverRef = useTemplateRef('columnFilterPopoverRef')
 const filterTriggerRef = ref(null)
 // 存储每个字段的过滤条件：{ fieldName: { operator, value } }
 const columnFilterConditions = ref({})
@@ -604,7 +604,7 @@ const fileList = ref([])
 const importing = ref(false)
 const importPreviewVisible = ref(false)
 const dbColumns = ref([])
-const importDialogRef = ref(null)
+const importDialogRef = useTemplateRef('importDialogRef')
 const importMode = ref('insert')
 const importFormat = ref('xlsx')
 
@@ -685,14 +685,14 @@ function getRowKey(row) {
 }
 
 async function fetchTotal() {
-  let sql = `SELECT COUNT(*) as cnt FROM \`${props.tableName}\``
+  let sql = `SELECT COUNT(*) as cnt FROM \`${tableName}\``
   if (filterExpr.value.trim()) {
     sql += ` WHERE ${filterExpr.value.trim()}`
   }
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('tableName', props.tableName)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('tableName', tableName)
   params.append('sql', sql)
   params.append('maxLine', '1')
   const resp = await http.post('/execSQL', params)
@@ -706,7 +706,7 @@ async function fetchTotal() {
 
 async function fetchData() {
   const offset = (currentPage.value - 1) * pageSize.value
-  let sql = `SELECT * FROM \`${props.tableName}\``
+  let sql = `SELECT * FROM \`${tableName}\``
   if (filterExpr.value.trim()) {
     sql += ` WHERE ${filterExpr.value.trim()}`
   }
@@ -716,9 +716,9 @@ async function fetchData() {
   }
   sql += ` LIMIT ${pageSize.value} OFFSET ${offset}`
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('tableName', props.tableName)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('tableName', tableName)
   params.append('sql', sql)
   const resp = await http.post('/execSQL', params)
   const data = resp.data.data
@@ -750,7 +750,7 @@ async function fetchData() {
 }
 
 async function loadData() {
-  if (!props.connId || !props.schema || !props.tableName) return
+  if (!connId || !schema || !tableName) return
   loading.value = true
   try {
     await fetchTotal()
@@ -1065,7 +1065,7 @@ async function saveInlineChanges() {
       const colList = insertCols.map(c => '`' + c.name + '`').join(', ')
       const valList = insertCols.map(c => fmtVal(merged[c.name])).join(', ')
 
-      sqlStatements.push(`INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`)
+      sqlStatements.push(`INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`)
     }
 
     for (const rowKey of existingKeys) {
@@ -1086,7 +1086,7 @@ async function saveInlineChanges() {
         .map(k => `\`${k}\` = ${fmtVal(orig[k])}`)
         .join(' AND ')
 
-      sqlStatements.push(`UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
+      sqlStatements.push(`UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
     }
 
     if (sqlStatements.length === 0) {
@@ -1096,8 +1096,8 @@ async function saveInlineChanges() {
 
     const batchSql = sqlStatements.join('; ')
     const params = new URLSearchParams()
-    params.append('connId', props.connId)
-    params.append('schema', props.schema)
+    params.append('connId', connId)
+    params.append('schema', schema)
     params.append('sql', batchSql)
 
     const resp = await http.post('/execSQL', params)
@@ -1333,12 +1333,12 @@ async function handleExportCommand(format) {
     const cols = dataColumns.value.map(c => c.name)
 
     if (format === 'csv') {
-      exportToCsv(cols, rows, props.tableName)
+      exportToCsv(cols, rows, tableName)
     } else if (format === 'json') {
-      exportToJson(rows, props.tableName)
+      exportToJson(rows, tableName)
     } else if (format === 'sql') {
-      const sqlText = exportToSql(cols, rows, props.tableName)
-      downloadBlob(sqlText, props.tableName + '.sql', 'text/plain')
+      const sqlText = exportToSql(cols, rows, tableName)
+      downloadBlob(sqlText, tableName + '.sql', 'text/plain')
     }
     ElMessage({ message: '导出成功', type: 'success' })
   } catch (err) {
@@ -1350,7 +1350,7 @@ async function handleExportCommand(format) {
 }
 
 async function fetchFullData() {
-  let sql = `SELECT * FROM \`${props.tableName}\``
+  let sql = `SELECT * FROM \`${tableName}\``
   if (filterExpr.value.trim()) {
     sql += ` WHERE ${filterExpr.value.trim()}`
   }
@@ -1359,16 +1359,16 @@ async function fetchFullData() {
     sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
   }
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('tableName', props.tableName)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('tableName', tableName)
   params.append('sql', sql)
   params.append('maxLine', '100000')
   return await http.post('/execSQL', params)
 }
 
 async function exportToExcel() {
-  let sql = `SELECT * FROM \`${props.tableName}\``
+  let sql = `SELECT * FROM \`${tableName}\``
   if (filterExpr.value.trim()) {
     sql += ` WHERE ${filterExpr.value.trim()}`
   }
@@ -1377,9 +1377,9 @@ async function exportToExcel() {
     sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
   }
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('filename', props.tableName)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('filename', tableName)
   params.append('sql', sql)
   exporting.value = true
   http.post('/exportXlsxBySql', params, { responseType: 'blob' })
@@ -1395,7 +1395,7 @@ async function exportToExcel() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = props.tableName + '.xlsx'
+      a.download = tableName + '.xlsx'
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -1433,13 +1433,13 @@ async function saveData() {
   ]
   const whereClauses = allWhereCols.map(key => `\`${key}\` = ${fmtVal(origin[key])}`).join(' AND ')
 
-  const sql = `UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`
+  const sql = `UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`
 
   saving.value = true
   try {
     const params = new URLSearchParams()
-    params.append('connId', props.connId)
-    params.append('schema', props.schema)
+    params.append('connId', connId)
+    params.append('schema', schema)
     params.append('sql', sql)
     const resp = await http.post('/execSQL', params)
     const respData = resp.data.data
@@ -1480,13 +1480,13 @@ async function insertData() {
 
   const colList = cols.map(k => `\`${k}\``).join(', ')
   const valList = cols.map(k => fmtVal(row[k])).join(', ')
-  const sql = `INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`
+  const sql = `INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`
 
   inserting.value = true
   try {
     const params = new URLSearchParams()
-    params.append('connId', props.connId)
-    params.append('schema', props.schema)
+    params.append('connId', connId)
+    params.append('schema', schema)
     params.append('sql', sql)
     const resp = await http.post('/execSQL', params)
     const respData = resp.data.data
@@ -1514,12 +1514,12 @@ async function deleteRow(row) {
   }
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(row).slice(0, 1)
   const whereClauses = pkCols.map(key => `\`${key}\` = ${fmtVal(row[key])}`).join(' AND ')
-  const sql = `DELETE FROM \`${props.tableName}\` WHERE ${whereClauses}`
+  const sql = `DELETE FROM \`${tableName}\` WHERE ${whereClauses}`
 
   try {
     const params = new URLSearchParams()
-    params.append('connId', props.connId)
-    params.append('schema', props.schema)
+    params.append('connId', connId)
+    params.append('schema', schema)
     params.append('sql', sql)
     const resp = await http.post('/execSQL', params)
     const respData = resp.data.data
@@ -1540,8 +1540,8 @@ async function deleteRow(row) {
 function upload(options) {
   let param = new FormData()
   param.append('file', options.file)
-  param.append('connId', props.connId)
-  param.append('schema', props.schema)
+  param.append('connId', connId)
+  param.append('schema', schema)
   param.append('table', options.data.table)
 
   importing.value = true
@@ -1736,13 +1736,13 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
         if (mode === 'insert') {
           const colList = cols.map(k => '`' + k + '`').join(', ')
           const valList = cols.map(k => fmtVal(row[k])).join(', ')
-          sqlStatements.push(`INSERT INTO \`${props.tableName}\` (${colList}) VALUES (${valList})`)
+          sqlStatements.push(`INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`)
         } else {
           const setClauses = cols.map(k => '`' + k + '` = ' + fmtVal(row[k])).join(', ')
           const pkCols = pkColumns.value.length > 0 ? pkColumns.value : cols.slice(0, 1)
           const whereClauses = pkCols.filter(k => row[k] !== null).map(k => '`' + k + '` = ' + fmtVal(row[k])).join(' AND ')
           if (!whereClauses) continue
-          sqlStatements.push(`UPDATE \`${props.tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
+          sqlStatements.push(`UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
         }
       }
 
@@ -1750,8 +1750,8 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
       if (!batchSql) continue
 
       const params = new URLSearchParams()
-      params.append('connId', props.connId)
-      params.append('schema', props.schema)
+      params.append('connId', connId)
+      params.append('schema', schema)
       params.append('sql', batchSql)
 
       try {
@@ -1779,14 +1779,14 @@ onMounted(() => {
 
 function openTableStructure() {
   emit('viewTableInfo', {
-    connId: props.connId,
-    schema: props.schema,
-    tableName: props.tableName,
+    connId: connId,
+    schema: schema,
+    tableName: tableName,
   })
 }
 
 watch(
-  () => [props.connId, props.schema, props.tableName],
+  () => [connId, schema, tableName],
   () => {
     currentPage.value = 1
     loadData()

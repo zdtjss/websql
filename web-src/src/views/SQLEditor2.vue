@@ -87,7 +87,7 @@
         </el-splitter>
     </div>
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
-        <DBExport :connId="props.connId" :schema="props.schema" opt="insert" :canImport="canModify"/>
+        <DBExport :connId="connId" :schema="schema" opt="insert" :canImport="canModify"/>
     </el-dialog>
     <el-drawer v-model="backupDataDrawerShow">
         <template #header>
@@ -166,10 +166,10 @@
 
   <SQLOptimizePanel
     v-model:visible="optimizePanelVisible"
-    :conn-id="props.connId"
-    :schema="props.schema"
+    :conn-id="connId"
+    :schema="schema"
     :sql="optimizeSql"
-    :db-type="props.dbType"
+    :db-type="dbType"
   />
 </template>
 
@@ -183,7 +183,8 @@ import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { tags } from '@lezer/highlight'
 import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
-import { dbSchemaProxy } from '../stores/sql'
+import { useDbSchemaStore } from '../stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 import { ElMessage } from 'element-plus'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
@@ -245,7 +246,7 @@ const sqlCompartment = new Compartment()
 const themeCompartment = new Compartment()
 const highlightCompartment = new Compartment()
 
-const props = defineProps<{
+const { tabId, connId, schema, schemaPath, tableName, dbType } = defineProps<{
     tabId: string,
     connId: string,
     schema: string,
@@ -294,7 +295,7 @@ const pasteSnapshot2 = ref<any>(null)
 
 const tableList = computed(() => {
     try {
-        return dbSchemaProxy.getTable(props.schema).map((t: any) => t.label)
+        return dbSchemaProxy.getTable(schema).map((t: any) => t.label)
     } catch {
         return []
     }
@@ -334,7 +335,7 @@ const filteredSqlHistory = computed(() => {
 })
 
 function showSqlHistory() {
-    http.get("/listBackupData", { params: { connId: props.connId, schema: props.schema, current: sqlHistoryCurrent.value, pageSize: sqlHistoryPageSize.value } })
+    http.get("/listBackupData", { params: { connId: connId, schema: schema, current: sqlHistoryCurrent.value, pageSize: sqlHistoryPageSize.value } })
         .then((resp: any) => {
             sqlHistoryList.value = resp.data.data.data || []
             sqlHistoryTotal.value = resp.data.data.total || 0
@@ -361,8 +362,8 @@ async function handleSqlFile(options: any) {
 
     for (const stmt of statements) {
         const params = new URLSearchParams()
-        params.append("connId", props.connId)
-        params.append("schema", props.schema)
+        params.append("connId", connId)
+        params.append("schema", schema)
         params.append("sql", stmt)
         params.append("maxLine", maxLine.value)
         try {
@@ -410,13 +411,13 @@ function onApplySnippet(sql: string) {
 onMounted(() => {
     window.addEventListener('keyup', onGlobalKeyup)
     dbSchemaProxy.registLsn((schema: any) => {
-        if (schema === props.schema) {
+        if (schema === schema) {
             reconfigureSql()
         }
     })
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
-    const schemaPathLower = props.schemaPath.toLowerCase()
+    const schemaPathLower = schemaPath.toLowerCase()
     canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat")  != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
 })
 
@@ -429,7 +430,7 @@ watch(currentTheme, () => {
 })
 
 watch(canModify, (can) => {
-     const schemaPathLower = props.schemaPath.toLowerCase()
+     const schemaPathLower = schemaPath.toLowerCase()
     if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_read") != -1)) {
         ElMessage({ message: "当前可能为生产库，请谨慎修改。", type: "error" })
     }
@@ -455,8 +456,8 @@ function createEditor(editorContainer: any, doc: any) {
                 { key: 'Tab', run: insertTab, preventDefault: true },
             ]),
         sqlCompartment.of(sql({
-            dialect: dbSchemaProxy.getDialect(props.schema),
-            schema: <any>dbSchemaProxy.getAll(props.schema),
+            dialect: dbSchemaProxy.getDialect(schema),
+            schema: <any>dbSchemaProxy.getAll(schema),
         })),
         history(),
         lineNumbers(),
@@ -469,8 +470,8 @@ function createEditor(editorContainer: any, doc: any) {
                     if (editorView.value) {
                         editorView.value.dispatch({
                             effects: sqlCompartment.reconfigure(sql({
-                                dialect: dbSchemaProxy.getDialect(props.schema),
-                                schema: <any>dbSchemaProxy.getAll(props.schema),
+                                dialect: dbSchemaProxy.getDialect(schema),
+                                schema: <any>dbSchemaProxy.getAll(schema),
                             }))
                         })
                     }
@@ -494,8 +495,8 @@ function reconfigureSql() {
     if (!editorView.value) return
     editorView.value.dispatch({
         effects: sqlCompartment.reconfigure(sql({
-            dialect: dbSchemaProxy.getDialect(props.schema),
-            schema: <any>dbSchemaProxy.getAll(props.schema),
+            dialect: dbSchemaProxy.getDialect(schema),
+            schema: <any>dbSchemaProxy.getAll(schema),
         }))
     })
 }
@@ -520,7 +521,7 @@ const getEditorDoc = (): string => {
 };
 
 function getSqlKey() {
-    return "go-web-sql-" + props.tabId
+    return "go-web-sql-" + tabId
 }
 
 function formatSql() {
@@ -592,8 +593,8 @@ function exec() {
     executionTime.value = null
     const startTime = performance.now()
     const params = new URLSearchParams()
-    params.append("connId", props.connId)
-    params.append("schema", props.schema)
+    params.append("connId", connId)
+    params.append("schema", schema)
     params.append("tableName", currentSelectTable.value)
     params.append("sql", effiectiveSql)
     params.append("maxLine", maxLine.value)
@@ -945,8 +946,8 @@ function saveInlineChanges() {
     }
 
     const params = new URLSearchParams()
-    params.append('connId', props.connId)
-    params.append('schema', props.schema)
+    params.append('connId', connId)
+    params.append('schema', schema)
     params.append('tableName', currentSelectTable.value)
     params.append('sql', sql)
     promises.push(http.post('/execSQL', params))
@@ -1000,8 +1001,8 @@ function saveData(rowData: any) {
     onDataSaving.value = true
 
     const params = new URLSearchParams()
-    params.append("connId", props.connId)
-    params.append("schema", props.schema)
+    params.append("connId", connId)
+    params.append("schema", schema)
     params.append("tableName", currentSelectTable.value)
     params.append("sql", effiectiveSql)
 
@@ -1217,7 +1218,7 @@ function exportCurrentToSqlUpdate() {
 }
 
 function getSqlLang(): SqlLanguage {
-    return getSqlDialect(dbSchemaProxy.getDbType(props.schema))
+    return getSqlDialect(dbSchemaProxy.getDbType(schema) || '')
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -1326,8 +1327,8 @@ function onEditorClick(e: MouseEvent) {
   tableNameUnderCursor.value = ''
   ctrlHeld.value = false
   emit('openDataBrowser', {
-    connId: props.connId,
-    schema: props.schema,
+    connId: connId,
+    schema: schema,
     tableName: tableName,
   })
 }
@@ -1345,9 +1346,9 @@ function onResultDivResize(index: number, sizes: number[]) {
 
 function openTableManager() {
     emit('openTableManager', {
-        connId: props.connId,
-        schema: props.schema,
-        schemaPath: props.schemaPath
+        connId: connId,
+        schema: schema,
+        schemaPath: schemaPath
     })
 }
 

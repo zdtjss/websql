@@ -20,9 +20,10 @@
 <script setup>
 import { DagreLayout } from '@antv/layout'
 import { Graph, Shape } from '@antv/x6'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import http from '../js/utils/httpProxy.js'
-import { dbSchemaProxy } from '../stores/sql'
+import { useDbSchemaStore } from '../stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 
 const NODE_WIDTH = 300
 const HEADER_HEIGHT = 30
@@ -110,7 +111,7 @@ Shape.HTML.register({
   html: createErTableHtml,
 })
 
-const props = defineProps({
+const { tabId, connId, schema, dbType, tableName } = defineProps({
   tabId: String,
   connId: String,
   schema: String,
@@ -121,7 +122,7 @@ const props = defineProps({
 const emit = defineEmits(['openDataBrowser'])
 
 const loading = ref(false)
-const containerRef = ref(null)
+const containerRef = useTemplateRef('containerRef')
 const layoutType = ref('TB')
 const showAllTables = ref(true)
 
@@ -153,8 +154,8 @@ const filteredEdges = computed(() => {
 
 async function execQuery(sql, maxLine) {
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
+  params.append('connId', connId)
+  params.append('schema', schema)
   params.append('sql', sql)
   params.append('maxLine', String(maxLine || 5000))
   const resp = await http.post('/execSQL', params)
@@ -166,11 +167,10 @@ async function loadData() {
   allNodes.value = []
   allEdges.value = []
   try {
-    const dbType = (props.dbType || dbSchemaProxy.getDbType(props.schema) || '').toLowerCase()
-    const schema = props.schema
-    if (dbType === 'mysql') {
+    const dbTypeVal = (dbType || dbSchemaProxy.getDbType(schema) || '').toLowerCase()
+    if (dbTypeVal === 'mysql') {
       await loadMysqlData(schema)
-    } else if (dbType === 'sqlite') {
+    } else if (dbTypeVal === 'sqlite') {
       await loadSqliteData()
     }
   } catch (err) {
@@ -350,7 +350,7 @@ function rebuildGraph() {
       const now = Date.now()
       if (tableId && lastHeaderClick.tableId === tableId && (now - lastHeaderClick.time) < 400) {
         lastHeaderClick = { tableId: null, time: 0 }
-        emit('openDataBrowser', { connId: props.connId, schema: props.schema, tableName: tableId })
+        emit('openDataBrowser', { connId, schema, tableName: tableId })
         return
       }
       lastHeaderClick = { tableId, time: now }

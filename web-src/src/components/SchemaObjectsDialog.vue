@@ -86,21 +86,15 @@ import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
 import 'highlight.js/styles/stackoverflow-light.css'
 import http from '../js/utils/httpProxy.js'
-import { dbSchemaProxy } from '../stores/sql'
+import { useDbSchemaStore } from '../stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 
 hljs.registerLanguage('sql', highlightSql.default)
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+const { connId, schema } = defineProps({
   connId: String,
   schema: String,
-})
-
-const emit = defineEmits(['update:modelValue'])
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value) => emit('update:modelValue', value)
 })
 
 const activeTab = ref('procedures')
@@ -123,16 +117,16 @@ function onTabChange(name) {
 
 function loadProcedures() {
   if (procedureList.value.length > 0) return
-  const dbType = (dbSchemaProxy.getDbType(props.schema) || '').toLowerCase()
+  const dbType = (dbSchemaProxy.getDbType(schema) || '').toLowerCase()
   if (dbType !== 'mysql') {
     procedureList.value = []
     return
   }
   loading.value = true
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('sql', `SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, CREATED, ROUTINE_COMMENT, ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '${props.schema}' ORDER BY ROUTINE_TYPE, ROUTINE_NAME`)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('sql', `SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, CREATED, ROUTINE_COMMENT, ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '${schema}' ORDER BY ROUTINE_TYPE, ROUTINE_NAME`)
   params.append('maxLine', '500')
   http.post('/execSQL', params)
     .then(resp => {
@@ -151,16 +145,16 @@ function loadProcedures() {
 
 function loadTriggers() {
   if (triggerList.value.length > 0) return
-  const dbType = (dbSchemaProxy.getDbType(props.schema) || '').toLowerCase()
+  const dbType = (dbSchemaProxy.getDbType(schema) || '').toLowerCase()
   if (dbType !== 'mysql') {
     triggerList.value = []
     return
   }
   loading.value = true
   const params = new URLSearchParams()
-  params.append('connId', props.connId)
-  params.append('schema', props.schema)
-  params.append('sql', `SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT, CREATED FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '${props.schema}' ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION`)
+  params.append('connId', connId)
+  params.append('schema', schema)
+  params.append('sql', `SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT, CREATED FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '${schema}' ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION`)
   params.append('maxLine', '500')
   http.post('/execSQL', params)
     .then(resp => {

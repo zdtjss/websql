@@ -218,11 +218,12 @@
 
 <script setup>
 import http from '@/js/utils/httpProxy.js'
-import { dbSchemaProxy } from '@/stores/sql'
+import { useDbSchemaStore } from '@/stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ChatDotRound, ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { User } from '@element-plus/icons-vue'
-import { onMounted, reactive, ref, shallowRef } from 'vue'
+import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import TableEditor from './comonents/TableEditor.vue'
 import ViewDialog from './comonents/ViewDialog.vue'
@@ -263,7 +264,7 @@ const currentUser = ref({
   isAdmin: false
 })
 const loginName = ref()
-const loginFormRef = ref()
+const loginFormRef = useTemplateRef('loginFormRef')
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
 
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
@@ -303,7 +304,7 @@ const dictSchema = ref('')
 const compareDialogVisible = ref(false)
 const compareConnId = ref('')
 const compareSchema = ref('')
-const searchPopoverRef = ref(null)
+const searchPopoverRef = useTemplateRef('searchPopoverRef')
 const searchPopoverVisible = ref(false)
 const searchConnId = ref('')
 const searchSchema = ref('')
@@ -315,7 +316,7 @@ const treeLoading = ref(false)
 const changePwdDialogVisible = ref(false)
 const changingPwd = ref(false)
 const changePwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
-const changePwdFormRef = ref()
+const changePwdFormRef = useTemplateRef('changePwdFormRef')
 const changePwdRules = reactive({
   oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
   newPassword: [

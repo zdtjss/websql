@@ -101,15 +101,18 @@ export default defineConfig({
   plugins: [
     vue(),
     AutoImport({
-      resolvers: [ElementPlusResolver(), IconsResolver({
-        prefix: 'Icon',
-      }),],
+      resolvers: [
+        ElementPlusResolver({ importStyle: false }),
+        IconsResolver({ prefix: 'Icon' }),
+      ],
+      dts: 'src/auto-imports.d.ts',
     }),
     Components({
-      resolvers: [ElementPlusResolver(),
-      IconsResolver({
-        enabledCollections: ['ep'],
-      }),],
+      resolvers: [
+        ElementPlusResolver({ importStyle: false }),
+        IconsResolver({ enabledCollections: ['ep'] }),
+      ],
+      dts: 'src/components.d.ts',
     }),
   ],
   resolve: {

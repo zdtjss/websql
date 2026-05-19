@@ -144,17 +144,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import http from '@/js/utils/httpProxy.js'
 
-const props = defineProps({
-  visible: Boolean,
+const drawerVisible = defineModel('visible', { default: false })
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:visible'])
-
-const drawerVisible = computed({ get: () => props.visible, set: v => emit('update:visible', v) })
 
 const metrics = ref(null)
 const resources = ref(null)
@@ -181,25 +178,25 @@ function formatNum(val) {
 }
 
 async function loadMetrics() {
-  if (!props.connId) return
+  if (!connId) return
   try {
-    const res = await http.get('/monitor/metrics', { params: { connId: props.connId } })
+    const res = await http.get('/monitor/metrics', { params: { connId } })
     metrics.value = res.data
   } catch (e) {}
 }
 
 async function loadResources() {
-  if (!props.connId) return
+  if (!connId) return
   try {
-    const res = await http.get('/monitor/resources', { params: { connId: props.connId, schema: props.schema } })
+    const res = await http.get('/monitor/resources', { params: { connId, schema } })
     resources.value = res.data.dbResources || res.data
   } catch (e) {}
 }
 
 async function loadProcesses() {
-  if (!props.connId) return
+  if (!connId) return
   try {
-    const res = await http.get('/monitor/processes', { params: { connId: props.connId } })
+    const res = await http.get('/monitor/processes', { params: { connId } })
     processes.value = res.data.processes || []
   } catch (e) {}
 }

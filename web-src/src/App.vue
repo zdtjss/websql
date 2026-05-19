@@ -1,6 +1,7 @@
 <template>
+  <el-config-provider :locale="zhCn">
   <div>
-    <router-view v-if="['/system-management', '/role-permission', '/classical'].includes($route.path)" />
+    <router-view v-if="systemRoutes.includes(route.path)" />
     <div v-else>
 
     <div class="ai-sql-panel-container">
@@ -421,6 +422,7 @@
     </div>
     <LoginDialog ref="loginDialogRef" v-model="loginDialogVisible" @login-success="handleLoginSuccess" />
   </div>
+  </el-config-provider>
 </template>
 
 <script setup>
@@ -442,8 +444,12 @@ import texmath from 'markdown-it-texmath'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+
+const route = useRoute()
+const systemRoutes = ['/system-management', '/role-permission', '/classical']
 
 hljs.registerLanguage('sql', hljsSql)
 
@@ -558,7 +564,7 @@ const streamingExecContent = ref('') // 用于危险SQL确认后的流式响应
 const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
-const msgContainer = ref(null)
+const msgContainer = useTemplateRef('msgContainer')
 let speechRecognition = null
 
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
@@ -586,7 +592,7 @@ const showLoginBtn = ref(true)
 const loginDialogVisible = ref(false)
 const loginForm = ref({ name: "", password: "" })
 const loginName = ref()
-const loginFormRef = ref()
+const loginFormRef = useTemplateRef('loginFormRef')
 function parseCurrentUser() {
   try {
     const stored = sessionStorage.getItem("currentUser")
@@ -1020,7 +1026,7 @@ const lastQuestion = ref('')
 
 // Excel 上传
 const uploadedExcel = ref(null) // { fileId, name, columns, rows, preview }
-const excelUploadRef = ref(null)
+const excelUploadRef = useTemplateRef('excelUploadRef')
 const excelUploading = ref(false)
 
 function highlightSql(text) {
@@ -2435,7 +2441,7 @@ function logout() {
     })
 }
 
-const loginDialogRef = ref(null)
+const loginDialogRef = useTemplateRef('loginDialogRef')
 
 function showLoginDialog() {
   loginDialogVisible.value = true

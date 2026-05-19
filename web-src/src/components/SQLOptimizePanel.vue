@@ -101,7 +101,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted, useTemplateRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
@@ -138,16 +138,16 @@ md.use(texmath, {
   katexOptions: { throwOnError: false, strict: false },
 })
 
-const props = defineProps({
-  visible: Boolean,
+const drawerVisible = defineModel('visible', { default: false })
+
+const { connId, schema, sql } = defineProps({
   connId: String,
   schema: String,
   sql: String,
   dbType: String
 })
-const emit = defineEmits(['update:visible'])
 
-const drawerVisible = computed({ get: () => props.visible, set: v => emit('update:visible', v) })
+const drawerRef = useTemplateRef('drawerRef')
 
 const explaining = ref(false)
 const optimizing = ref(false)
@@ -281,13 +281,13 @@ function decodeExplainData(data) {
 }
 
 async function runExplain() {
-  if (!props.sql?.trim()) { ElMessage.warning('SQL不能为空'); return }
+  if (!sql?.trim()) { ElMessage.warning('SQL不能为空'); return }
   explaining.value = true
   try {
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
-    formData.append('sql', props.sql)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
+    formData.append('sql', sql)
     const res = await http.post('/sqlopt/explain', formData)
     const result = decodeExplainData(res.data.data)
     if (result && result.rows && result.rows.length) {
@@ -308,7 +308,7 @@ async function runExplain() {
 }
 
 async function runOptimize() {
-  if (!props.sql?.trim()) { ElMessage.warning('SQL不能为空'); return }
+  if (!sql?.trim()) { ElMessage.warning('SQL不能为空'); return }
   if (optimizing.value) return
 
   stopOptimize()
@@ -324,9 +324,9 @@ async function runOptimize() {
 
   try {
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
-    formData.append('sql', props.sql)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
+    formData.append('sql', sql)
     if (explainResult.value) {
       formData.append('explainResult', JSON.stringify(explainResult.value))
     }
@@ -405,8 +405,8 @@ function stopOptimize() {
   }
 }
 
-watch(() => props.visible, (val) => {
-  if (val && props.sql?.trim()) {
+watch(drawerVisible, (val) => {
+  if (val && sql?.trim()) {
     activeTab.value = 'explain'
     runExplain()
   } else if (!val) {
@@ -422,8 +422,8 @@ watch(() => props.visible, (val) => {
   }
 })
 
-watch(() => props.sql, (newSql, oldSql) => {
-  if (!props.visible || !newSql?.trim()) return
+watch(() => sql, (newSql, oldSql) => {
+  if (!drawerVisible.value || !newSql?.trim()) return
   if (newSql === oldSql) return
   explainResult.value = null
   optimizeContent.value = ''

@@ -175,7 +175,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TableEditor from './comonents/TableEditor.vue'
 
-const props = defineProps({
+const { connId, schema, dbType, tabId, schemaPath } = defineProps({
   connId: String,
   schema: String,
   dbType: String,
@@ -192,10 +192,10 @@ const selectedTable = ref(null)
 const tableMeta = computed(() => {
   if (!selectedTable.value) return null
   return {
-    connId: props.connId,
-    schema: props.schema,
+    connId: connId,
+    schema: schema,
     tableName: selectedTable.value,
-    dbType: props.dbType || '',
+    dbType: dbType || '',
   }
 })
 
@@ -246,8 +246,8 @@ function onResizeEnd() {
 }
 
 function loadTables() {
-  if (!props.connId || !props.schema) return
-  http.get('/listTable', { params: { connId: props.connId, schema: props.schema } })
+  if (!connId || !schema) return
+  http.get('/listTable', { params: { connId, schema } })
     .then((resp) => {
       tableList.value = resp.data || []
     })
@@ -371,7 +371,7 @@ function submitNewTable() {
   }
   const sql = buildCreateTableSQL()
   newTableSubmitting.value = true
-  http.post('/execSQL', { connId: props.connId, schema: props.schema, sql })
+  http.post('/execSQL', { connId, schema, sql })
     .then(() => {
       newTableDialogVisible.value = false
       loadTables()
@@ -386,11 +386,11 @@ function submitNewTable() {
 }
 
 function onBrowseData(row) {
-  emit('openDataBrowser', { connId: props.connId, schema: props.schema, tableName: row.name })
+  emit('openDataBrowser', { connId, schema, tableName: row.name })
 }
 
 function exportTable(row) {
-  http.get(`/exportXlsx?connId=${props.connId}&schema=${props.schema}&table=${row.name}`, { responseType: 'blob' })
+  http.get(`/exportXlsx?connId=${connId}&schema=${schema}&table=${row.name}`, { responseType: 'blob' })
     .then((res) => {
       const contentType = res.headers['content-type'] || ''
       if (contentType.includes('application/json')) {
@@ -433,7 +433,7 @@ function onTableAction(command, row) {
       { confirmButtonText: '确定清空', cancelButtonText: '取消', type: 'warning' }
     ).then(() => {
       const sql = `TRUNCATE TABLE \`${row.name}\``
-      http.post('/execSQL', { connId: props.connId, schema: props.schema, sql })
+      http.post('/execSQL', { connId, schema, sql })
         .then(() => {
           ElMessage({ message: `表 "${row.name}" 已清空`, type: 'success' })
         })
@@ -445,7 +445,7 @@ function onTableAction(command, row) {
       { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'error' }
     ).then(() => {
       const sql = `DROP TABLE \`${row.name}\``
-      http.post('/execSQL', { connId: props.connId, schema: props.schema, sql })
+      http.post('/execSQL', { connId, schema, sql })
         .then(() => {
           ElMessage({ message: `表 "${row.name}" 已删除`, type: 'success' })
           if (selectedTable.value === row.name) {
@@ -469,7 +469,7 @@ function submitRename() {
   }
   const sql = `RENAME TABLE \`${renameTarget.value}\` TO \`${newName}\``
   renameSubmitting.value = true
-  http.post('/execSQL', { connId: props.connId, schema: props.schema, sql })
+  http.post('/execSQL', { connId, schema, sql })
     .then(() => {
       ElMessage({ message: `表已重命名为 "${newName}"`, type: 'success' })
       if (selectedTable.value === renameTarget.value) {
@@ -500,7 +500,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.connId, props.schema],
+  () => [connId, schema],
   () => {
     selectedTable.value = null
     loadTables()

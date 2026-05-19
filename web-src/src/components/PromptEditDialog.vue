@@ -1,7 +1,6 @@
 <template>
   <el-dialog
-    :model-value="modelValue"
-    @update:model-value="$emit('update:modelValue', $event)"
+    v-model="dialogVisible"
     :title="isEdit ? '编辑提示词' : '新增提示词'"
     width="1000px"
     :close-on-click-modal="false"
@@ -106,7 +105,7 @@
     </el-form>
     <template #footer>
       <div class="dialog-footer">
-        <el-button @click="$emit('update:modelValue', false)">取消</el-button>
+        <el-button @click="dialogVisible = false">取消</el-button>
         <el-button v-if="!roleId" type="primary" @click="handleSendToAI" :disabled="!form.content.trim()">
           <el-icon><Promotion /></el-icon>
           发送到AI模型
@@ -118,26 +117,27 @@
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted, nextTick, watch, shallowRef } from 'vue'
+import { ref, computed, onUnmounted, nextTick, watch, shallowRef, useTemplateRef } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage } from 'element-plus'
 import { Close, Promotion, Loading } from '@element-plus/icons-vue'
 import { loadVditorModule, ensureVditorCss, preloadVditor } from '@/utils/vditorLoader'
 
-const props = defineProps({
-  modelValue: { type: Boolean, default: false },
+const dialogVisible = defineModel({ default: false })
+
+const { promptId, roleId } = defineProps({
   promptId: { type: String, default: '' },
   roleId: { type: String, default: '' },
 })
 
-const emit = defineEmits(['update:modelValue', 'saved', 'sendToAI'])
+const emit = defineEmits(['saved', 'sendToAI'])
 
-const isEdit = computed(() => !!props.promptId)
-const formRef = ref(null)
+const isEdit = computed(() => !!promptId)
+const formRef = useTemplateRef('formRef')
 const saving = ref(false)
 const userSearchLoading = ref(false)
 const userOptions = ref([])
-const vditorContainerRef = ref(null)
+const vditorContainerRef = useTemplateRef('vditorContainerRef')
 const vditorInstance = shallowRef(null)
 const vditorLoading = ref(false)
 const vditorReadyPromise = shallowRef(null)
@@ -409,10 +409,10 @@ async function waitForVditorReady() {
 function handleOpen() {
   preloadVditor()
   loadConnList()
-  if (props.promptId) {
-    loadPromptDetail(props.promptId)
+  if (promptId) {
+    loadPromptDetail(promptId)
   } else {
-    form.value = { id: '', title: '', content: '', roleId: props.roleId || '', connSchemas: [], tables: [], sharedUserIds: [] }
+    form.value = { id: '', title: '', content: '', roleId: roleId || '', connSchemas: [], tables: [], sharedUserIds: [] }
     selectedConnSchema.value = []
     selectedTables.value = []
     tableList.value = []
@@ -443,7 +443,7 @@ watch(selectedTables, (val) => {
   })
 })
 
-watch(() => props.modelValue, (visible) => {
+watch(dialogVisible, (visible) => {
   if (!visible) {
     if (vditorInstance.value) {
       vditorInstance.value.setValue('')
@@ -467,7 +467,7 @@ async function loadPromptDetail(id) {
         id: data.id,
         title: data.title,
         content: data.content,
-        roleId: data.roleId || props.roleId || '',
+        roleId: data.roleId || roleId || '',
         connSchemas: data.connSchemas || [],
         tables: data.tables || [],
         sharedUserIds: data.sharedUserIds || [],
@@ -531,7 +531,7 @@ async function handleSave() {
     await http.post('/savePrompt', form.value)
     ElMessage.success('保存成功')
     emit('saved')
-    emit('update:modelValue', false)
+    dialogVisible.value = false
   } catch (e) {
     console.error('保存提示词失败:', e)
     ElMessage.error('保存失败')

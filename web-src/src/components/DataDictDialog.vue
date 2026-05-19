@@ -91,13 +91,11 @@ import { ElMessage } from 'element-plus'
 import { Document, FullScreen, Close } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:modelValue'])
-const visible = computed({ get: () => props.modelValue, set: v => emit('update:modelValue', v) })
 
 const tables = ref([])
 const dictData = ref(null)
@@ -131,7 +129,7 @@ function toggleSelectAll() {
 
 async function loadTables() {
   try {
-    const res = await http.get('/datadict/tables', { params: { connId: props.connId, schema: props.schema } })
+    const res = await http.get('/datadict/tables', { params: { connId, schema } })
     const result = res.data.data || res.data
     tables.value = (result.tables || []).map(t => ({ ...t, checked: false }))
   } catch (e) {
@@ -145,8 +143,8 @@ async function generateDict() {
   generating.value = true
   try {
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
     formData.append('tables', selected)
     const res = await http.post('/datadict/generate', formData)
     dictData.value = res.data.data || res.data
@@ -165,15 +163,15 @@ async function exportHTML() {
   }
   try {
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
     formData.append('tables', selected)
     const res = await http.post('/datadict/export/html', formData, { responseType: 'blob' })
     const blob = new Blob([res.data], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `datadict_${props.schema}.html`
+    a.download = `datadict_${schema}.html`
     a.click()
     URL.revokeObjectURL(url)
     ElMessage.success('HTML导出成功')
@@ -186,8 +184,8 @@ async function exportPDF() {
   const selected = tables.value.filter(t => t.checked).map(t => t.name).join(',')
   try {
     const formData = new FormData()
-    formData.append('connId', props.connId)
-    formData.append('schema', props.schema)
+    formData.append('connId', connId)
+    formData.append('schema', schema)
     formData.append('tables', selected)
     const res = await http.post('/datadict/export/pdf', formData, { responseType: 'blob' })
     const blob = new Blob([res.data], { type: 'text/html;charset=utf-8' })

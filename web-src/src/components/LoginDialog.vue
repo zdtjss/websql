@@ -21,24 +21,14 @@
 import http from '@/js/utils/httpProxy.js'
 import { ElMessage } from 'element-plus'
 import { client, server } from '@passwordless-id/webauthn'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { reactive, ref, useTemplateRef, watch } from 'vue'
 
-const props = defineProps({
-  modelValue: {
-    type: Boolean,
-    default: false
-  }
-})
+const dialogVisible = defineModel({ default: false })
 
-const emit = defineEmits(['update:modelValue', 'login-success', 'login-cancel'])
+const emit = defineEmits(['login-success', 'login-cancel'])
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: (val) => emit('update:modelValue', val)
-})
-
-const loginFormRef = ref()
-const loginNameInput = ref()
+const loginFormRef = useTemplateRef('loginFormRef')
+const loginNameInput = useTemplateRef('loginNameInput')
 const loginForm = ref({ name: '', password: '' })
 const logining = ref(false)
 
@@ -53,7 +43,6 @@ const loginRules = reactive({
 
 const bioLocalStorageKey = 'nway_websql_bio_credential_id'
 
-// 监听对话框打开，自动尝试智能登录
 watch(dialogVisible, (newVal) => {
   if (newVal) {
     tryAutoLogin()
@@ -61,7 +50,7 @@ watch(dialogVisible, (newVal) => {
 })
 
 function handleClose() {
-  emit('update:modelValue', false)
+  dialogVisible.value = false
   emit('login-cancel')
 }
 
@@ -85,7 +74,7 @@ function login() {
         sessionStorage.setItem('authentication', resp.headers.get('authentication'))
         sessionStorage.setItem('currentUser', JSON.stringify(resp.data.data))
         loginForm.value = {}
-        emit('update:modelValue', false)
+        dialogVisible.value = false
         emit('login-success', resp.data.data)
         ElMessage('登陆成功')
       }).catch(() => {
@@ -106,18 +95,18 @@ function loginByToken(token) {
       sessionStorage.setItem('currentUser', JSON.stringify(resp.data.data))
       loginForm.value = {}
       logining.value = false
-      emit('update:modelValue', false)
+      dialogVisible.value = false
       emit('login-success', resp.data.data)
       ElMessage('登陆成功')
     } else {
       console.error('[LoginDialog] 登录失败 - code:', resp.data.code)
       ElMessage.error(resp.data.msg || '登录失败')
-      emit('update:modelValue', true)
+      dialogVisible.value = true
     }
   }).catch((error) => {
     console.error('[LoginDialog] 登录异常:', error)
     ElMessage.error('登录失败')
-    emit('update:modelValue', true)
+    dialogVisible.value = true
   })
 }
 
@@ -137,18 +126,18 @@ async function loginBio() {
       sessionStorage.setItem('currentUser', JSON.stringify(resp.data.data))
       loginForm.value = {}
       logining.value = false
-      emit('update:modelValue', false)
+      dialogVisible.value = false
       emit('login-success', resp.data.data)
       ElMessage('登陆成功')
     } else {
       console.error('[LoginDialog] bio登录失败 - code:', resp.data.code)
       ElMessage.error(resp.data.msg || '登录失败')
-      emit('update:modelValue', true)
+      dialogVisible.value = true
     }
   }).catch((error) => {
     console.error('[LoginDialog] bio登录异常:', error)
     ElMessage.error('登录失败')
-    emit('update:modelValue', true)
+    dialogVisible.value = true
   })
 }
 
@@ -160,11 +149,8 @@ function tryAutoLogin() {
   } else {
     const credentialId = window.localStorage.getItem(bioLocalStorageKey)
     if (credentialId && client.isAvailable()) {
-      // 先关闭对话框，再调用指纹登录，避免同时显示两个对话框
-      emit('update:modelValue', false)
+      dialogVisible.value = false
       loginBio()
-    } else {
-      // 不自动显示对话框，等待用户主动点击
     }
   }
 }

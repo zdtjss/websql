@@ -28,7 +28,7 @@
             <template #header><span style="color:#409EFF;font-weight:bold">源数据库</span></template>
             <el-form label-position="top">
               <el-form-item label="连接">
-                <el-select v-model="sourceConnId" placeholder="选择源连接" style="width:100%" :disabled="!!props.connId" @change="onSourceConnChange">
+                <el-select v-model="sourceConnId" placeholder="选择源连接" style="width:100%" :disabled="!!connId" @change="onSourceConnChange">
                   <el-option v-for="c in connections" :key="c.id" :label="c.name" :value="c.id" />
                 </el-select>
               </el-form-item>
@@ -280,13 +280,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Right, FullScreen, Close } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:modelValue'])
-const visible = computed({ get: () => props.modelValue, set: v => emit('update:modelValue', v) })
 
 const activeStep = ref(0)
 const isFullscreen = ref(false)
@@ -401,11 +400,11 @@ async function onOpen() {
   syncBatchInfo.updateCount = 0
   syncBatchInfo.deleteCount = 0
   await loadConnections()
-  if (props.connId) {
-    sourceConnId.value = props.connId
+  if (connId) {
+    sourceConnId.value = connId
     onSourceConnChange()
   }
-  if (props.schema) sourceSchema.value = props.schema
+  if (schema) sourceSchema.value = schema
 }
 
 async function loadConnections() {

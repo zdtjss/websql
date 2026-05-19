@@ -69,10 +69,18 @@
 
 <script setup>
 import { ElMessage } from 'element-plus'
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+
+const {
+  sql,
+  operationType,
+  riskLevel,
+  description,
+  affectedRows,
+  tableName
+} = defineProps({
   sql: { type: String, default: '' },
   operationType: {
     type: String,
@@ -89,12 +97,7 @@ const props = defineProps({
   tableName: { type: String, default: '' }
 })
 
-const emit = defineEmits(['update:modelValue', 'confirm', 'cancel'])
-
-const visible = computed({
-  get: () => props.modelValue,
-  set: (value) => emit('update:modelValue', value)
-})
+const emit = defineEmits(['confirm', 'cancel'])
 
 const confirmLoading = ref(false)
 
@@ -147,7 +150,7 @@ const handleConfirm = async () => {
     // 生成确认标记
     const userName = getCurrentUser()
     const timestamp = new Date().toISOString()
-    const confirmedSql = `${props.sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
+    const confirmedSql = `${sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
 
     // 调用父组件的确认回调
     await emit('confirm', confirmedSql)

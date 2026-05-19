@@ -144,13 +144,12 @@ import { ElMessage } from 'element-plus'
 import { Right } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy.js'
 
-const props = defineProps({
-  modelValue: Boolean,
+const visible = defineModel({ default: false })
+
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
-const emit = defineEmits(['update:modelValue'])
-const visible = computed({ get: () => props.modelValue, set: v => emit('update:modelValue', v) })
 
 const connections = ref([])
 const sourceConn = ref('')
@@ -190,9 +189,9 @@ async function onOpen() {
     const res = await http.get('/listConn2')
     connections.value = (res.data.data || []).filter(c => c && c.id)
   } catch (e) {}
-  if (props.connId) { sourceConn.value = props.connId; targetConn.value = props.connId }
-  if (props.connId) { onSourceConnChange(); onTargetConnChange() }
-  if (props.schema) { sourceSchema.value = props.schema; targetSchema.value = props.schema }
+  if (connId) { sourceConn.value = connId; targetConn.value = connId }
+  if (connId) { onSourceConnChange(); onTargetConnChange() }
+  if (schema) { sourceSchema.value = schema; targetSchema.value = schema }
 }
 
 async function onSourceConnChange() {

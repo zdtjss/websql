@@ -82,7 +82,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue'
+import { ref, reactive, onMounted, nextTick, useTemplateRef } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -97,7 +97,7 @@ const selectedSchemaLabel = ref('')
 const selectedTable = ref('')
 const selectedTableLabel = ref('')
 
-const treeRef = ref(null)
+const treeRef = useTemplateRef('treeRef')
 const treeData = ref([])
 const saving = ref(false)
 const treeProps = { children: 'children', label: 'label' }

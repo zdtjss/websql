@@ -27,6 +27,7 @@
     "markdown-it-texmath": "^1.0.0",
     "marked": "^17.0.5",
     "mermaid": "^11.14.0",
+    "pinia": "^3.0.4",
     "sql-formatter": "^15.7.3",
     "vditor": "^3.11.2",
     "vue": "^3.5.32",

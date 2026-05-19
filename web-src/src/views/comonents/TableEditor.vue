@@ -299,9 +299,10 @@
     </el-dialog>
 </template>
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, useTemplateRef, watch } from 'vue'
 import http from '@/js/utils/httpProxy.js'
-import { dbSchemaProxy } from '@/stores/sql'
+import { useDbSchemaStore } from '@/stores/dbSchema'
+const dbSchemaProxy = useDbSchemaStore()
 import { format } from 'sql-formatter'
 import hljs from 'highlight.js/lib/core'
 import * as highlightSql from 'highlight.js/lib/languages/sql'
@@ -316,7 +317,7 @@ const activeName = ref("colums")
 let columnListOrigin = []
 const columnList = ref([])
 const tableCreateDdl = ref("")
-const tableCreateDdlRef = ref()
+const tableCreateDdlRef = useTemplateRef('tableCreateDdlRef')
 
 const indexList = ref([])
 const tableOptionsData = ref({})
@@ -350,13 +351,13 @@ const COLLATION_OPTIONS = [
     'gb2312_chinese_ci', 'ascii_general_ci', 'ascii_bin',
 ]
 
-const props = defineProps({
+const { tableMeta } = defineProps({
     tableMeta: Object,
 })
 
 const emit = defineEmits(['tableDrop'])
 
-watch(() => props.tableMeta, (newVal, oldVal) => {
+watch(() => tableMeta, (newVal, oldVal) => {
     if (newVal && newVal !== oldVal) {
         tableCreateDdl.value = ""
         activeName.value = 'colums'
@@ -365,11 +366,11 @@ watch(() => props.tableMeta, (newVal, oldVal) => {
 }, { deep: true, immediate: true });
 
 function getPostBody() {
-    return { connId: props.tableMeta.connId, schema: props.tableMeta.schema, tableName: props.tableMeta.tableName }
+    return { connId: tableMeta.connId, schema: tableMeta.schema, tableName: tableMeta.tableName }
 }
 
 function loadData(pane) {
-    if (!props.tableMeta || !props.tableMeta.connId) return
+    if (!tableMeta || !tableMeta.connId) return
     // el-tabs @tab-click passes a TabsPaneContext; paneName is the tab's name value
     const name = pane?.paneName ?? pane?.props?.name ?? pane
     if (name === "colums") {
@@ -411,14 +412,14 @@ function loadIndexes() {
 }
 
 function loadForeignKeys() {
-    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
+    const dbType = (tableMeta.dbType || dbSchemaProxy.getDbType(tableMeta.schema) || '').toLowerCase()
     let sql = ''
     if (dbType === 'mysql') {
-        sql = `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON k.CONSTRAINT_NAME = r.CONSTRAINT_NAME AND k.CONSTRAINT_SCHEMA = r.CONSTRAINT_SCHEMA WHERE k.TABLE_SCHEMA = '${props.tableMeta.schema}' AND k.TABLE_NAME = '${props.tableMeta.tableName}' AND k.REFERENCED_TABLE_NAME IS NOT NULL`
+        sql = `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON k.CONSTRAINT_NAME = r.CONSTRAINT_NAME AND k.CONSTRAINT_SCHEMA = r.CONSTRAINT_SCHEMA WHERE k.TABLE_SCHEMA = '${tableMeta.schema}' AND k.TABLE_NAME = '${tableMeta.tableName}' AND k.REFERENCED_TABLE_NAME IS NOT NULL`
     } else if (dbType === 'sqlite') {
-        sql = `PRAGMA foreign_key_list('${props.tableMeta.tableName}')`
+        sql = `PRAGMA foreign_key_list('${tableMeta.tableName}')`
     } else if (dbType === 'oracle') {
-        sql = `SELECT a.constraint_name, a.column_name, c_pk.table_name AS referenced_table_name, c_pk.column_name AS referenced_column_name, c.update_rule, c.delete_rule FROM all_cons_columns a JOIN all_constraints c ON a.constraint_name = c.constraint_name AND a.owner = c.owner JOIN all_cons_columns c_pk ON c.r_constraint_name = c_pk.constraint_name AND c.r_owner = c_pk.owner WHERE c.constraint_type = 'R' AND c.table_name = '${(props.tableMeta.tableName || '').toUpperCase()}' AND c.owner = '${(props.tableMeta.schema || '').toUpperCase()}'`
+        sql = `SELECT a.constraint_name, a.column_name, c_pk.table_name AS referenced_table_name, c_pk.column_name AS referenced_column_name, c.update_rule, c.delete_rule FROM all_cons_columns a JOIN all_constraints c ON a.constraint_name = c.constraint_name AND a.owner = c.owner JOIN all_cons_columns c_pk ON c.r_constraint_name = c_pk.constraint_name AND c.r_owner = c_pk.owner WHERE c.constraint_type = 'R' AND c.table_name = '${(tableMeta.tableName || '').toUpperCase()}' AND c.owner = '${(tableMeta.schema || '').toUpperCase()}'`
     }
     if (!sql) {
         foreignKeyList.value = []
@@ -426,8 +427,8 @@ function loadForeignKeys() {
     }
     fkLoading.value = true
     const params = new URLSearchParams()
-    params.append('connId', props.tableMeta.connId)
-    params.append('schema', props.tableMeta.schema)
+    params.append('connId', tableMeta.connId)
+    params.append('schema', tableMeta.schema)
     params.append('sql', sql)
     params.append('maxLine', '100')
     http.post('/execSQL', params)
@@ -503,19 +504,19 @@ function loadStatistics() {
 }
 
 function loadCreateDdl() {
-    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
+    const dbType = tableMeta.dbType || dbSchemaProxy.getDbType(tableMeta.schema) || ''
     let sqlStr = ""
     if (dbType === 'mysql') {
-        sqlStr = "show create table `" + props.tableMeta.tableName + "`"
+        sqlStr = "show create table `" + tableMeta.tableName + "`"
     } else if (dbType === 'oracle') {
-        sqlStr = "select dbms_metadata.get_ddl('TABLE','" + props.tableMeta.tableName.toUpperCase() + "') from dual"
+        sqlStr = "select dbms_metadata.get_ddl('TABLE','" + tableMeta.tableName.toUpperCase() + "') from dual"
     } else {
         tableCreateDdl.value = "暂不支持"
         return
     }
     const params = new URLSearchParams()
-    params.append("connId", props.tableMeta.connId)
-    params.append("schema", props.tableMeta.schema)
+    params.append("connId", tableMeta.connId)
+    params.append("schema", tableMeta.schema)
     params.append("sql", sqlStr)
     params.append("maxLine", 1)
     http.post("/execSQL", params)
@@ -530,17 +531,17 @@ function saveOption(row) {
     const val = row._edit
     let sql = ""
     if (row.key === 'TABLE_COMMENT') {
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COMMENT = '${val}'`
+        sql = `ALTER TABLE \`${tableMeta.tableName}\` COMMENT = '${val}'`
     } else if (row.key === 'ENGINE') {
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` ENGINE = ${val}`
+        sql = `ALTER TABLE \`${tableMeta.tableName}\` ENGINE = ${val}`
     } else if (row.key === 'TABLE_COLLATION') {
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COLLATE = ${val}`
+        sql = `ALTER TABLE \`${tableMeta.tableName}\` COLLATE = ${val}`
     } else if (row.key === 'CHARACTER_SET_NAME') {
         // Changing character set requires changing collation
         const collation = val + '_general_ci'
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` COLLATE = ${collation}`
+        sql = `ALTER TABLE \`${tableMeta.tableName}\` COLLATE = ${collation}`
     } else if (row.key === 'AUTO_INCREMENT') {
-        sql = `ALTER TABLE \`${props.tableMeta.tableName}\` AUTO_INCREMENT = ${val}`
+        sql = `ALTER TABLE \`${tableMeta.tableName}\` AUTO_INCREMENT = ${val}`
     }
     if (!sql) return
     execSql(sql, () => {
@@ -551,12 +552,12 @@ function saveOption(row) {
 }
 
 function saveIndexComment(row) {
-    const dbType = props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || ''
+    const dbType = tableMeta.dbType || dbSchemaProxy.getDbType(tableMeta.schema) || ''
     if (dbType === 'mysql') {
         // Fallback: drop and recreate
-        execSql(`DROP INDEX \`${row.indexName}\` ON \`${props.tableMeta.tableName}\``, () => {
+        execSql(`DROP INDEX \`${row.indexName}\` ON \`${tableMeta.tableName}\``, () => {
             const unique = row.nonUnique == 0 ? 'UNIQUE ' : ''
-            execSql(`CREATE ${unique}INDEX \`${row.indexName}\` ON \`${props.tableMeta.tableName}\` (\`${row.columnName}\`) COMMENT '${row._editComment}'`, () => {
+            execSql(`CREATE ${unique}INDEX \`${row.indexName}\` ON \`${tableMeta.tableName}\` (\`${row.columnName}\`) COMMENT '${row._editComment}'`, () => {
                 row.indexComment = row._editComment
                 row.onCommentEdit = false
                 ElMessage({ message: '索引注释已更新', type: 'success' })
@@ -570,7 +571,7 @@ function saveIndexComment(row) {
 }
 
 function getSqlLang() {
-    return getSqlDialect(props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '')
+    return getSqlDialect(tableMeta.dbType || dbSchemaProxy.getDbType(tableMeta.schema) || '')
 }
 
 const OPTION_LABELS = {
@@ -609,7 +610,7 @@ function formatDefaultValue(defaultVal) {
 }
 
 function modifyColumnName(seq, newName) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` change `" + columnListOrigin[seq].columnName + "` `" + newName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + tableMeta.tableName + "` change `" + columnListOrigin[seq].columnName + "` `" + newName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnName = newName
         columnList.value[seq].onColumnNameEdit = false
@@ -617,7 +618,7 @@ function modifyColumnName(seq, newName) {
 }
 
 function modifyColumnType(seq, newType) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + newType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + newType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnType = newType
         columnList.value[seq].onColumnTypeEdit = false
@@ -626,7 +627,7 @@ function modifyColumnType(seq, newType) {
 
 function modifyColumnDefault(seq, newDefault) {
     const defaultVal = (newDefault === null || newDefault === undefined || newDefault === '') ? 'NULL' : "'" + newDefault.replace(/'/g, "''") + "'"
-    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + defaultVal + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + defaultVal + " comment '" + (columnListOrigin[seq].columnComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnDefault = newDefault
         columnList.value[seq].onColumnDefaultEdit = false
@@ -634,7 +635,7 @@ function modifyColumnDefault(seq, newDefault) {
 }
 
 function modifyColumnComment(seq, newComment) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (newComment || '').replace(/'/g, "''") + "'";
+    const sql = "alter table `" + tableMeta.tableName + "` modify `" + columnListOrigin[seq].columnName + "` " + columnListOrigin[seq].columnType + " DEFAULT " + formatDefaultValue(columnListOrigin[seq].columnDefault) + " comment '" + (newComment || '').replace(/'/g, "''") + "'";
     execSql(sql, () => {
         columnListOrigin[seq].columnComment = newComment
         columnList.value[seq].onColumnCommentEdit = false
@@ -661,7 +662,7 @@ function cancelAdd(targetIdx) {
 }
 
 function doColAdd(column) {
-    let sql = "alter table `" + props.tableMeta.tableName + "` add `" + column.columnName + "` " + column.columnType;
+    let sql = "alter table `" + tableMeta.tableName + "` add `" + column.columnName + "` " + column.columnType;
     if ("YES" === column.isNullable) {
         sql += " default null "
     } else {
@@ -675,7 +676,7 @@ function doColAdd(column) {
 }
 
 function delCol(seq) {
-    const sql = "alter table `" + props.tableMeta.tableName + "` drop `" + columnListOrigin[seq].columnName + "`";
+    const sql = "alter table `" + tableMeta.tableName + "` drop `" + columnListOrigin[seq].columnName + "`";
     execSql(sql, () => loadData('colums'))
 }
 
@@ -692,7 +693,7 @@ function createIndex() {
     }
     const prefix = newIndex.value.type === "UNIQUE" ? "CREATE UNIQUE INDEX" : "CREATE INDEX"
     const cols = newIndex.value.columns.map(c => '`' + c + '`').join(", ")
-    const sql = prefix + " `" + newIndex.value.name + "` ON `" + props.tableMeta.tableName + "` (" + cols + ")"
+    const sql = prefix + " `" + newIndex.value.name + "` ON `" + tableMeta.tableName + "` (" + cols + ")"
     execSql(sql, () => {
         addIndexDialogVisible.value = false
         loadIndexes()
@@ -701,10 +702,10 @@ function createIndex() {
 }
 
 function dropIndex(indexName) {
-    const dbType = (props.tableMeta.dbType || dbSchemaProxy.getDbType(props.tableMeta.schema) || '').toLowerCase()
+    const dbType = (tableMeta.dbType || dbSchemaProxy.getDbType(tableMeta.schema) || '').toLowerCase()
     let sql = ""
     if (dbType === "mysql") {
-        sql = "DROP INDEX `" + indexName + "` ON `" + props.tableMeta.tableName + "`"
+        sql = "DROP INDEX `" + indexName + "` ON `" + tableMeta.tableName + "`"
     } else if (dbType === "oracle") {
         sql = "DROP INDEX \"" + indexName.toUpperCase() + "\""
     } else {
@@ -719,9 +720,9 @@ function dropIndex(indexName) {
 // ========== 通用 ==========
 function execSql(sql, succ) {
     const params = new URLSearchParams()
-    params.append("connId", props.tableMeta.connId)
-    params.append("schema", props.tableMeta.schema)
-    params.append("tableName", props.tableMeta.tableName)
+    params.append("connId", tableMeta.connId)
+    params.append("schema", tableMeta.schema)
+    params.append("tableName", tableMeta.tableName)
     params.append("sql", sql)
     params.append("maxLine", 1)
     http.post("/execSQL", params)
