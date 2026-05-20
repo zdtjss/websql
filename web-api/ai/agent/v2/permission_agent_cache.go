@@ -43,7 +43,7 @@ func GetPermissionAgentCache() *PermissionAgentCache {
 }
 
 func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, userID string) (tool.BaseTool, error) {
-	key := fmt.Sprintf("%s::%s", connID, userID)
+	key := fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
 	cfgHash := aiConfigHash(cfg)
 
 	c.mu.RLock()

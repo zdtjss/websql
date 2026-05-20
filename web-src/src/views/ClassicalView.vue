@@ -21,7 +21,7 @@
                 <el-icon :size="14"><Refresh /></el-icon>
               </el-button>
               <el-button text size="small" class="theme-toggle-btn" title="AI 对话" @click="openAiChat">
-                <el-icon :size="14"><ChatDotRound /></el-icon>
+                <el-icon :size="14"><Back /></el-icon>
               </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
                 <el-icon :size="14"><User /></el-icon>
@@ -221,8 +221,8 @@ import http from '@/js/utils/httpProxy.js'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatDotRound, ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
-import { User } from '@element-plus/icons-vue'
+import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
+import { Back, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import TableEditor from './comonents/TableEditor.vue'
@@ -736,10 +736,13 @@ function openTableManager(node) {
   restoreTab()
 }
 
-function openDataBrowser({ connId, schema, tableName }) {
+function openDataBrowser({ connId, schema, tableName, dbType }) {
   const tabId = 'databrowser-' + connId + '-' + schema + '-' + tableName
   const existing = editableTabs.value.find(t => t.tabId === tabId)
   if (existing) {
+    if (dbType && !existing.dbType) {
+      existing.dbType = dbType
+    }
     editableTabsValue.value = tabId
     return
   }
@@ -749,6 +752,7 @@ function openDataBrowser({ connId, schema, tableName }) {
     connId: connId,
     schema: schema,
     tableName: tableName,
+    dbType: dbType || dbSchemaProxy.getDbType(schema) || '',
     component: dataBrowserComp,
   })
   editableTabsValue.value = tabId
@@ -759,7 +763,8 @@ function openDataBrowserFromNode(node) {
   const connId = node.parent.parent.data.id
   const schema = node.parent.data.label
   const tableName = node.label
-  openDataBrowser({ connId, schema, tableName })
+  const dbType = node.data.data?.dbType || dbSchemaProxy.getDbType(schema) || ''
+  openDataBrowser({ connId, schema, tableName, dbType })
 }
 
 function openTableManagerFromChild({ connId, schema, schemaPath }) {
@@ -861,9 +866,10 @@ function onSearchSelect(obj) {
   searchPopoverRef.value?.hide()
   const connId = obj.connId || searchConnId.value
   const schema = obj.schema || searchSchema.value
+  const dbType = obj.dbType || dbSchemaProxy.getDbType(schema) || ''
   if (obj.type === 'table' || obj.type === 'view') {
     const tableName = obj.name.includes('.') ? obj.name.split('.')[0] : obj.name
-    openDataBrowser({ connId, schema, tableName })
+    openDataBrowser({ connId, schema, tableName, dbType })
   } else if (obj.type === 'column') {
     const parts = obj.name.split('.')
     if (parts.length >= 2) {
@@ -928,7 +934,6 @@ function onSearchSelect(obj) {
 .sidebar-header-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
 }
 
 .sidebar-user-btn {

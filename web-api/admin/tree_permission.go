@@ -13,9 +13,6 @@ func filterConnsWithPermission(parentId string, userPower *UserPower) []*Tree {
 		return listConn(parentId, userPower)
 	}
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return listConn(parentId, userPower)
-		}
 		return []*Tree{}
 	}
 
@@ -63,15 +60,9 @@ func filterSchemasWithPermission(connId, authorization string) []*Tree {
 	if userPower == nil {
 		return []*Tree{}
 	}
-	if userPower.UserId == config.AdminId {
-		return allSchemas
-	}
 
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		if userPower.UserId == config.AdminId {
-			return allSchemas
-		}
 		return []*Tree{}
 	}
 
@@ -164,17 +155,11 @@ func filterTablesWithPermission(key string, schema, authorization string) []*Tre
 
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return allTables
-		}
 		return []*Tree{}
 	}
 
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		if userPower.UserId == config.AdminId {
-			return allTables
-		}
 		return []*Tree{}
 	}
 
@@ -229,9 +214,6 @@ func filterDirTreeWithPermission(parentId string, userPower *UserPower) []*Tree 
 	}
 
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return allDirs
-		}
 		return []*Tree{}
 	}
 

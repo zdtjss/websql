@@ -484,9 +484,6 @@ func filterTablesByPermission(tables []*Table, connId, schema string, userPower 
 		return tables
 	}
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return tables
-		}
 		return []*Table{}
 	}
 

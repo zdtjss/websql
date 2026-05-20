@@ -87,7 +87,7 @@
         </el-splitter>
     </div>
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
-        <DBExport :connId="connId" :schema="schema" opt="insert" :canImport="canModify"/>
+        <DBExport :connId="connId" :schema="schema" opt="insert" :canImport="canModify" :dbType="dbType"/>
     </el-dialog>
     <el-drawer v-model="backupDataDrawerShow">
         <template #header>
@@ -191,18 +191,12 @@ import DBExport from './DBExport.vue'
 import SqlSnippetManager from '../components/SqlSnippetManager.vue'
 import SQLOptimizePanel from '../components/SQLOptimizePanel.vue'
 
-import hljs from 'highlight.js/lib/core'
-import * as highlightSql from 'highlight.js/lib/languages/sql'
-import 'highlight.js/styles/stackoverflow-light.css'
-
 import http from '../js/utils/httpProxy.js'
 import excel from '../js/utils/excel.js'
 import copyToClipboard from '../js/utils/copy-to-clipboard.js'
 import { fmtVal, getSqlDialect } from '../js/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson } from '../js/utils/exportHelper.ts'
 import { useTheme } from '../js/utils/useTheme.ts'
-
-hljs.registerLanguage('sql', highlightSql.default);
 
 const { currentTheme } = useTheme()
 
@@ -1330,6 +1324,7 @@ function onEditorClick(e: MouseEvent) {
     connId: connId,
     schema: schema,
     tableName: tableName,
+    dbType: dbType,
   })
 }
 

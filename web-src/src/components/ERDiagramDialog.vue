@@ -350,7 +350,7 @@ function rebuildGraph() {
       const now = Date.now()
       if (tableId && lastHeaderClick.tableId === tableId && (now - lastHeaderClick.time) < 400) {
         lastHeaderClick = { tableId: null, time: 0 }
-        emit('openDataBrowser', { connId, schema, tableName: tableId })
+        emit('openDataBrowser', { connId, schema, tableName: tableId, dbType })
         return
       }
       lastHeaderClick = { tableId, time: now }

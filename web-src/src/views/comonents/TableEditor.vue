@@ -304,13 +304,9 @@ import http from '@/js/utils/httpProxy.js'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { format } from 'sql-formatter'
-import hljs from 'highlight.js/lib/core'
-import * as highlightSql from 'highlight.js/lib/languages/sql'
-import 'highlight.js/styles/stackoverflow-light.css'
+import { highlightSql } from '@/utils/lazyDeps'
 import copyToClipboard from '@/js/utils/copy-to-clipboard.js'
 import { getSqlDialect } from '@/js/utils/sqlHelper.ts'
-
-hljs.registerLanguage('sql', highlightSql.default);
 
 const activeName = ref("colums")
 
@@ -523,7 +519,7 @@ function loadCreateDdl() {
         .then((resp) => {
             const data = resp.data.data.data[0]
             const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang() })
-            tableCreateDdl.value = hljs.highlight(sql, { language: 'sql' }).value
+            highlightSql(sql).then(html => { tableCreateDdl.value = html })
         }).catch((error) => { console.log(error) });
 }
 

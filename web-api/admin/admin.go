@@ -660,9 +660,6 @@ func checkConnAccess(userPower *UserPower, connId string) bool {
 	}
 
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return true
-		}
 		return false
 	}
 

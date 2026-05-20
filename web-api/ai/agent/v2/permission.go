@@ -84,17 +84,17 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		case "conn":
 			hasConnPerm = true
 		case "schema":
-			if schemaName == "" || pSchema == schemaName {
+			if pSchema == schemaName {
 				hasSchemaPerm = true
 			}
 		case "table":
-			if (schemaName == "" || pSchema == schemaName) && pTable != "" {
+			if pSchema == schemaName && pTable != "" {
 				scope.AllowedTables[pTable] = true
 				hasTableOrColumnForSchema = true
 				tableCount++
 			}
 		case "column":
-			if (schemaName == "" || pSchema == schemaName) && pTable != "" && pColumn != "" {
+			if pSchema == schemaName && pTable != "" && pColumn != "" {
 				hasTableOrColumnForSchema = true
 				if !scope.AllowedTables[pTable] {
 					if scope.AllowedColumns[pTable] == nil {

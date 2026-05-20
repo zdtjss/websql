@@ -144,20 +144,17 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		req.UserID = user.Id
 	}
 
-	dbType, dbSchema, dbVersion := GetDBInfo(req.ConnID)
-	if len(req.Schemas) > 0 {
-		dbType, dbSchema, dbVersion = GetDBInfo(req.Schemas[0].ConnID)
-	}
-	permConnID := req.ConnID
-	if permConnID == "" && len(req.Schemas) > 0 {
-		permConnID = req.Schemas[0].ConnID
-	}
-	scope := BuildPermissionScope(user.Id, permConnID, dbSchema)
-
 	connID := req.ConnID
 	if connID == "" && len(req.Schemas) > 0 {
 		connID = req.Schemas[0].ConnID
 	}
+	dbType, dbSchema, dbVersion := GetDBInfo(connID)
+	if len(req.Schemas) > 0 && req.Schemas[0].Schema != "" {
+		dbSchema = req.Schemas[0].Schema
+	} else if req.Schema != "" {
+		dbSchema = req.Schema
+	}
+	scope := BuildPermissionScope(user.Id, connID, dbSchema)
 
 	return &requestParams{
 		cfg:       cfg,

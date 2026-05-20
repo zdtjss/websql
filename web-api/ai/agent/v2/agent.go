@@ -217,7 +217,7 @@ func NewSQLAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSch
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
-		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, nil),
+		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},

@@ -47,7 +47,7 @@ type PermTableAccess struct {
 	AllowedColumns []string `json:"allowedColumns"`
 }
 
-func newGetTableStructureFunc(connID string) func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
+func newGetTableStructureFunc(connID, dbSchema string) func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 	return func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 		log.Printf("[PermAgent:get_table_structure] tables=%v\n", input.Tables)
 		conn, _ := GetConn(connID)
@@ -60,7 +60,7 @@ func newGetTableStructureFunc(connID string) func(ctx context.Context, input *Pe
 				result = append(result, PermTableInfo{TableName: table, Exists: false})
 				continue
 			}
-			columns, err := getTableColumnsFromConn(conn, table)
+			columns, err := getTableColumnsFromConn(conn, dbSchema, table)
 			if err != nil {
 				result = append(result, PermTableInfo{TableName: table, Exists: false})
 				continue
@@ -89,7 +89,7 @@ type rawColumnInfo struct {
 	Nullable string
 }
 
-func getTableColumnsFromConn(conn *sqlx.DB, tableName string) ([]rawColumnInfo, error) {
+func getTableColumnsFromConn(conn *sqlx.DB, dbSchema, tableName string) ([]rawColumnInfo, error) {
 	deref := func(p *string) string {
 		if p != nil {
 			return *p
@@ -103,19 +103,34 @@ func getTableColumnsFromConn(conn *sqlx.DB, tableName string) ([]rawColumnInfo, 
 
 	switch driverName {
 	case "mysql", "mariadb":
-		query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ORDINAL_POSITION"
-		args = []any{tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = ? ORDER BY ORDINAL_POSITION"
+			args = []any{tableName, dbSchema}
+		} else {
+			query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	case "sqlite":
 		if !isValidTableName(tableName) {
 			return nil, errors.New("invalid table name")
 		}
 		query = "PRAGMA table_info('" + strings.ReplaceAll(tableName, "'", "''") + "')"
 	case "oracle":
-		query = "SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :1 ORDER BY COLUMN_ID"
-		args = []any{strings.ToUpper(tableName)}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM ALL_TAB_COLUMNS WHERE TABLE_NAME = :1 AND OWNER = :2 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(tableName), strings.ToUpper(dbSchema)}
+		} else {
+			query = "SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :1 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(tableName)}
+		}
 	default:
-		query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ORDINAL_POSITION"
-		args = []any{tableName}
+		if dbSchema != "" {
+			query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = ? ORDER BY ORDINAL_POSITION"
+			args = []any{tableName, dbSchema}
+		} else {
+			query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ORDINAL_POSITION"
+			args = []any{tableName}
+		}
 	}
 
 	rows, err := conn.Queryx(query, args...)

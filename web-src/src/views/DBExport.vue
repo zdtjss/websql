@@ -56,12 +56,14 @@ import { onMounted, ref, useTemplateRef } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
 import http from '../js/utils/httpProxy.js'
+import { buildSelectSQL } from '../js/utils/sqlHelper.ts'
 
-const { connId, schema, opt, canImport } = defineProps({
+const { connId, schema, opt, canImport, dbType } = defineProps({
     connId: String,
     schema: String,
     opt: String,
     canImport: Boolean,
+    dbType: String,
 })
 
 const fileListInsert = ref([])
@@ -154,7 +156,7 @@ function handleFileSelect(options) {
 
 function fetchDbColumns(tableName) {
     return new Promise((resolve) => {
-        const sql = `SELECT * FROM \`${tableName}\` LIMIT 0`
+        const sql = buildSelectSQL(tableName, dbType, { limit: 0, offset: 0 })
         const params = new URLSearchParams()
         params.append('connId', connId)
         params.append('schema', schema)

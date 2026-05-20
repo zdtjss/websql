@@ -10,7 +10,7 @@
             v-model="roleSearchKey"
             placeholder="搜索角色"
             clearable
-            prefix-icon="Search"
+            :prefix-icon="Search"
             size="default"
           />
         </div>
@@ -35,7 +35,7 @@
         <div class="panel-header">
           <h2 v-if="currentRole">{{ currentRole.name }} - 提示词列表</h2>
           <h2 v-else>请选择角色</h2>
-          <el-button v-if="currentRole" type="primary" size="small" @click="handleAdd" icon="Plus">
+          <el-button v-if="currentRole" type="primary" size="small" @click="handleAdd" :icon="Plus">
             新增提示词
           </el-button>
         </div>
@@ -92,7 +92,7 @@
 import { ref, computed, onMounted } from 'vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Document, Edit, Loading, User } from '@element-plus/icons-vue'
+import { Delete, Document, Edit, Loading, Plus, Search, User } from '@element-plus/icons-vue'
 import PromptEditDialog from '@/components/PromptEditDialog.vue'
 
 const roles = ref([])

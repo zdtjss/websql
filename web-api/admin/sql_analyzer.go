@@ -288,9 +288,6 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 	if userPower == nil {
 		return &TableColumnAccess{Level: AccessNone}
 	}
-	if userPower.UserId == config.AdminId {
-		return &TableColumnAccess{Level: AccessFull}
-	}
 
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
@@ -382,9 +379,6 @@ func FilterColumnsForTables(columnNames []string, connId string, tableRefs []Tab
 	userPower := GetUserPower(authorization)
 	if userPower == nil {
 		return []string{}
-	}
-	if userPower.UserId == config.AdminId {
-		return columnNames
 	}
 
 	anyColumnLevel := false

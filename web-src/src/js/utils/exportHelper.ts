@@ -1,3 +1,5 @@
+import { quoteId } from './sqlHelper.ts'
+
 export function downloadBlob(data: BlobPart, filename: string, mimeType: string) {
   const blob = new Blob([data], { type: mimeType })
   const url = window.URL.createObjectURL(blob)
@@ -34,8 +36,8 @@ export function exportToCsv(columns: string[], rows: any[], filename: string) {
   downloadBlob(bom + header + '\n' + body, filename + '.csv', 'text/csv;charset=utf-8')
 }
 
-export function exportToSql(columns: string[], rows: any[], tableName: string): string {
-  const colList = '`' + columns.join('`, `') + '`'
+export function exportToSql(columns: string[], rows: any[], tableName: string, dbType?: string): string {
+  const colList = columns.map(c => quoteId(c, dbType)).join(', ')
   const values = rows.map(row => {
     const vals = columns.map(col => {
       const val = row[col]
@@ -46,7 +48,7 @@ export function exportToSql(columns: string[], rows: any[], tableName: string): 
       }
       return String(val)
     }).join(', ')
-    return `INSERT INTO \`${tableName}\` (${colList}) VALUES (${vals});`
+    return 'INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + vals + ');'
   }).join('\n')
   return values
 }

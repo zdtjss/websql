@@ -6,24 +6,23 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import IconsResolver from 'unplugin-icons/resolver'
 import vue from '@vitejs/plugin-vue'
+import viteCompression from 'vite-plugin-compression'
 
-// https://vitejs.dev/config
 export default defineConfig({
   server: {
     port: 5175,
     host: "0.0.0.0",
     proxy: {
       '/api/': {
-        target: 'http://localhost:9081', // 目标代理接口地址
+        target: 'http://localhost:9081',
         secure: false,
-        changeOrigin: true, // 开启代理，在本地创建一个虚拟服务端
-        timeout: 300000, // 5分钟超时，支持长时间AI处理
-        // rewrite: (path) => path.replace(/^\/api/, '')
+        changeOrigin: true,
+        timeout: 300000,
       },
       '/sysapi/': {
-        target: 'http://localhost:8081', // 目标代理接口地址
+        target: 'http://localhost:8081',
         secure: false,
-        changeOrigin: true, // 开启代理，在本地创建一个虚拟服务端
+        changeOrigin: true,
         rewrite: (path) => path.replace(/^\/sysapi/, '/nway-system')
       }
     }
@@ -35,46 +34,49 @@ export default defineConfig({
     commonjsOptions: {
       transformMixedEsModules: true,
     },
-    chunkSizeWarningLimit: 2000,
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       output: {
         manualChunks(id) {
-          // 框架核心
           if (id.includes('node_modules/vue') || id.includes('node_modules/pinia') || id.includes('node_modules/vue-router')) {
             return 'vue-core';
           }
-          // UI 库单独分包
           if (id.includes('node_modules/element-plus')) {
             return 'element-plus';
           }
-          // 大型依赖单独分包
           if (id.includes('node_modules/mermaid')) {
             return 'mermaid';
           }
-          if (id.includes('node_modules/markdown-it')) {
+          if (id.includes('node_modules/markdown-it') || id.includes('node_modules/markdown-it-texmath')) {
             return 'markdown-it';
+          }
+          if (id.includes('node_modules/katex')) {
+            return 'katex';
           }
           if (id.includes('node_modules/axios')) {
             return 'axios';
           }
-          if (id.includes('node_modules/codemirror')) {
+          if (id.includes('node_modules/codemirror') || id.includes('node_modules/@codemirror')) {
             return 'codemirror';
           }
-          if (id.includes('node_modules/exceljs') || id.includes('node_modules/xlsx')) {
+          if (id.includes('node_modules/xlsx')) {
             return 'excel';
           }
           if (id.includes('node_modules/highlight.js')) {
             return 'highlight';
           }
-          // Don't manually chunk vditor - let it go to vendor to avoid rolldown UMD conversion bug
-          // if (id.includes('node_modules/vditor')) {
-          //   return 'vditor';
-          // }
-          // 其他 node_modules 归为 vendor
+          if (id.includes('node_modules/@antv/x6') || id.includes('node_modules/@antv/layout')) {
+            return 'antv';
+          }
+          if (id.includes('node_modules/vditor')) {
+            return 'vditor';
+          }
+          if (id.includes('node_modules/sql-formatter')) {
+            return 'sql-formatter';
+          }
           if (id.includes('node_modules')) {
             return 'vendor';
           }
-          // 应用代码按功能模块分割
           if (id.includes('/src/views/')) {
             const match = id.match(/\/src\/views\/([^/]+)/);
             if (match) return `views/${match[1]}`;
@@ -113,6 +115,11 @@ export default defineConfig({
         IconsResolver({ enabledCollections: ['ep'] }),
       ],
       dts: 'src/components.d.ts',
+    }),
+    viteCompression({
+      algorithm: 'gzip',
+      threshold: 1024,
+      deleteOriginFile: false,
     }),
   ],
   resolve: {

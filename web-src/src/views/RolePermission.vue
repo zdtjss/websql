@@ -5,13 +5,13 @@
         <div class="role-list-panel">
           <div class="panel-header">
             <h2>角色列表</h2>
-            <el-button type="primary" size="small" @click="createRole" icon="Plus">新建角色</el-button>
+            <el-button type="primary" size="small" @click="createRole" :icon="Plus">新建角色</el-button>
           </div>
           <el-table :data="roles" style="width: 100%" highlight-current-row @current-change="handleRoleChange">
             <el-table-column prop="name" label="角色名称" resizable />
             <el-table-column label="操作" width="80" resizable>
               <template #default="scope">
-                <el-button type="danger" size="small" icon="Delete" @click.stop="deleteRole(scope.row)" />
+                <el-button type="danger" size="small" :icon="Delete" @click.stop="deleteRole(scope.row)" />
               </template>
             </el-table-column>
           </el-table>
@@ -83,6 +83,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, nextTick, useTemplateRef } from 'vue'
+import { Delete, Plus } from '@element-plus/icons-vue'
 import http from '@/js/utils/httpProxy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 

@@ -104,39 +104,24 @@
 import { ref, computed, watch, onUnmounted, useTemplateRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
-import MarkdownIt from 'markdown-it'
-import texmath from 'markdown-it-texmath'
-import katex from 'katex'
-import 'katex/dist/katex.min.css'
-import hljs from 'highlight.js/lib/core'
-import hljsSql from 'highlight.js/lib/languages/sql'
+import { getMarkdownRenderer, getHljs } from '@/utils/lazyDeps'
 import http from '@/js/utils/httpProxy.js'
 
-hljs.registerLanguage('sql', hljsSql)
-hljs.registerLanguage('mysql', hljsSql)
-hljs.registerLanguage('mariadb', hljsSql)
+let md = null
+let hljsLib = null
+const mdReady = ref(false)
 
-const md = new MarkdownIt({
-  html: true,
-  breaks: true,
-  linkify: true,
-  highlight: function (str, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return '<pre class="hljs"><code>' +
-          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
-          '</code></pre>'
-      } catch (e) {}
-    }
-    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>'
-  }
-})
-
-md.use(texmath, {
-  engine: katex,
-  delimiters: 'dollars',
-  katexOptions: { throwOnError: false, strict: false },
-})
+async function initDeps() {
+  const [mdInstance, hljsInstance] = await Promise.all([
+    getMarkdownRenderer(),
+    getHljs(),
+  ])
+  hljsLib = hljsInstance
+  hljsLib.registerLanguage('mysql', hljsLib.getLanguage('sql'))
+  hljsLib.registerLanguage('mariadb', hljsLib.getLanguage('sql'))
+  md = mdInstance
+  mdReady.value = true
+}
 
 const drawerVisible = defineModel('visible', { default: false })
 
@@ -194,7 +179,11 @@ function stopDrag() {
 }
 
 const renderedMarkdown = computed(() => {
+  void mdReady.value
   if (!optimizeContent.value) return ''
+  if (!md) {
+    return optimizeContent.value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+  }
   let processed = optimizeContent.value
 
   processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
@@ -406,9 +395,12 @@ function stopOptimize() {
 }
 
 watch(drawerVisible, (val) => {
-  if (val && sql?.trim()) {
-    activeTab.value = 'explain'
-    runExplain()
+  if (val) {
+    if (!mdReady.value) initDeps()
+    if (sql?.trim()) {
+      activeTab.value = 'explain'
+      runExplain()
+    }
   } else if (!val) {
     stopOptimize()
     explainResult.value = null

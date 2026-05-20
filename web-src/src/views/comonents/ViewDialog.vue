@@ -27,12 +27,8 @@ import http from '@/js/utils/httpProxy.js'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { getSqlDialect } from '@/js/utils/sqlHelper.ts'
-import hljs from 'highlight.js/lib/core'
+import { highlightSql } from '@/utils/lazyDeps'
 import { format } from 'sql-formatter'
-import * as highlightSql from 'highlight.js/lib/languages/sql'
-import 'highlight.js/styles/stackoverflow-light.css'
-
-hljs.registerLanguage('sql', highlightSql.default);
 
 const activeName = ref("colums")
 
@@ -79,7 +75,7 @@ function loadData(pane) {
             .then((resp) => {
                 const data = resp.data.data.data[0]
                 const sql = format(data[Object.keys(data)[0].trim()] || "", { language: getSqlLang(tableMeta.schema) })
-                tableCreateDdl.value =  hljs.highlight(sql, { language: 'sql' }).value
+                highlightSql(sql).then(html => { tableCreateDdl.value = html })
             }).catch((error) => {
                 console.log(error);
             });

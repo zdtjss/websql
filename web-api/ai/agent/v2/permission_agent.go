@@ -54,7 +54,7 @@ func NewPermissionAgent(ctx context.Context, cfg *admin.AIConfig, connID, dbType
 func buildPermissionAgentTools(_ context.Context, connID, userID, dbSchema string) ([]tool.BaseTool, error) {
 	tableStructureTool, _ := utils.InferTool("get_table_structure",
 		"获取指定表的结构信息（列名、类型、是否可空等）。用于了解SQL中涉及的表有哪些列",
-		newGetTableStructureFunc(connID))
+		newGetTableStructureFunc(connID, dbSchema))
 
 	userPermsTool, _ := utils.InferTool("get_user_permissions",
 		"获取当前用户在此数据库连接上的数据权限配置。返回连接级、表级、字段级的授权范围",

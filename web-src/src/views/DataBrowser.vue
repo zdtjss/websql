@@ -365,8 +365,9 @@ import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '../components/ImportPreviewDialog.vue'
 import http from '../js/utils/httpProxy.js'
-import { fmtVal } from '../js/utils/sqlHelper.ts'
+import { buildCountSQL, buildPagedSQL, buildSelectSQL, fmtVal, quoteId } from '../js/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson, exportToSql, downloadBlob } from '../js/utils/exportHelper.ts'
+import { useDbSchemaStore } from '../stores/dbSchema'
 
 const { connId, schema, tableName, tabId, dbType, schemaPath } = defineProps({
   connId: String,
@@ -376,6 +377,23 @@ const { connId, schema, tableName, tabId, dbType, schemaPath } = defineProps({
   dbType: String,
   schemaPath: String,
 })
+
+const dbSchemaProxy = useDbSchemaStore()
+const resolvedDbType = ref('')
+const effectiveDbType = computed(() => dbType || dbSchemaProxy.getDbType(schema) || resolvedDbType.value || '')
+
+async function resolveDbType() {
+  if (dbType || dbSchemaProxy.getDbType(schema)) return
+  try {
+    const resp = await http.get('/listConn2', { params: { pageSize: 1000 } })
+    const result = (resp.data && resp.data.data ? resp.data.data : resp.data) || {}
+    const connList = result.data || []
+    const conn = connList.find(c => String(c.id) === String(connId))
+    if (conn && conn.dbType) {
+      resolvedDbType.value = conn.dbType
+    }
+  } catch {}
+}
 
 const emit = defineEmits(['viewTableInfo', 'openDataBrowser', 'openTableManager'])
 
@@ -666,13 +684,12 @@ const unmatchedDbColumns = computed(() => mappingStatus.value.unmatchedDb)
 
 const rowIndexOffset = computed(() => (currentPage.value - 1) * pageSize.value + 1)
 
-// 判断字段是否在过滤条件中
 function isColumnFiltered(colName) {
   if (!filterExpr.value.trim()) return false
-  // 使用单词边界精确匹配字段名，避免 parent_id 匹配到 id
-  // 匹配模式：\`字段名\` 或 字段名（前后为非字母数字下划线或字符串边界）
   const escapedColName = colName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const pattern = new RegExp(`\\\`${escapedColName}\\\`|(?<![a-zA-Z0-9_])${escapedColName}(?![a-zA-Z0-9_])`, 'i')
+  const q = effectiveDbType.value === 'mysql' || effectiveDbType.value === 'mariadb' ? '`' : '"'
+  const escapedQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escapedQ}${escapedColName}${escapedQ}|(?<![a-zA-Z0-9_])${escapedColName}(?![a-zA-Z0-9_])`, 'i')
   return pattern.test(filterExpr.value)
 }
 
@@ -685,10 +702,7 @@ function getRowKey(row) {
 }
 
 async function fetchTotal() {
-  let sql = `SELECT COUNT(*) as cnt FROM \`${tableName}\``
-  if (filterExpr.value.trim()) {
-    sql += ` WHERE ${filterExpr.value.trim()}`
-  }
+  const sql = buildCountSQL(tableName, effectiveDbType.value, filterExpr.value.trim() || undefined)
   const params = new URLSearchParams()
   params.append('connId', connId)
   params.append('schema', schema)
@@ -706,15 +720,17 @@ async function fetchTotal() {
 
 async function fetchData() {
   const offset = (currentPage.value - 1) * pageSize.value
-  let sql = `SELECT * FROM \`${tableName}\``
-  if (filterExpr.value.trim()) {
-    sql += ` WHERE ${filterExpr.value.trim()}`
-  }
+  let orderBy = ''
   if (sortColumn.value && sortOrder.value) {
     const dir = sortOrder.value === 'descending' ? 'DESC' : 'ASC'
-    sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
+    orderBy = quoteId(sortColumn.value, effectiveDbType.value) + ' ' + dir
   }
-  sql += ` LIMIT ${pageSize.value} OFFSET ${offset}`
+  const sql = buildSelectSQL(tableName, effectiveDbType.value, {
+    where: filterExpr.value.trim() || undefined,
+    orderBy: orderBy || undefined,
+    limit: pageSize.value,
+    offset: offset,
+  })
   const params = new URLSearchParams()
   params.append('connId', connId)
   params.append('schema', schema)
@@ -724,24 +740,28 @@ async function fetchData() {
   const data = resp.data.data
 
   if (data && data.columns) {
-    dataColumns.value = data.columns.map((col) => ({
-      name: col.name,
-      comment: col.comment || '',
-      type: col.type || '',
-    }))
-    console.log('[DataBrowser] columns:', dataColumns.value)
-    // Capture primary key info from response
+    dataColumns.value = data.columns
+      .filter(col => col.name !== 'RN')
+      .map((col) => ({
+        name: col.name,
+        comment: col.comment || '',
+        type: col.type || '',
+      }))
     if (data.keys && data.keys.length > 0) {
       pkColumns.value = data.keys
     } else {
-      // Fallback: use 'id' column or first column as PK
       const colNames = dataColumns.value.map(c => c.name)
       const idCol = colNames.find(n => n.toLowerCase() === 'id')
       pkColumns.value = idCol ? [idCol] : colNames.slice(0, 1)
     }
   }
 
-  rows.value = data?.data ?? []
+  const rawRows = data?.data ?? []
+  rows.value = rawRows.map(row => {
+    const filtered = { ...row }
+    delete filtered.RN
+    return filtered
+  })
   changedRows.value = {}
   newRowUids.value = new Set()
   rows.value.forEach(row => {
@@ -751,6 +771,7 @@ async function fetchData() {
 
 async function loadData() {
   if (!connId || !schema || !tableName) return
+  await resolveDbType()
   loading.value = true
   try {
     await fetchTotal()
@@ -1062,10 +1083,10 @@ async function saveInlineChanges() {
         })
       if (insertCols.length === 0) continue
 
-      const colList = insertCols.map(c => '`' + c.name + '`').join(', ')
+      const colList = insertCols.map(c => quoteId(c.name, effectiveDbType.value)).join(', ')
       const valList = insertCols.map(c => fmtVal(merged[c.name])).join(', ')
 
-      sqlStatements.push(`INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`)
+      sqlStatements.push('INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')')
     }
 
     for (const rowKey of existingKeys) {
@@ -1075,7 +1096,7 @@ async function saveInlineChanges() {
 
       const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
       const setClauses = Object.keys(changed)
-        .map(k => `\`${k}\` = ${fmtVal(changed[k])}`)
+        .map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(changed[k]))
         .join(', ')
 
       const allWhereCols = [
@@ -1083,10 +1104,10 @@ async function saveInlineChanges() {
         ...Object.keys(changed).filter(k => !pkCols.includes(k))
       ]
       const whereClauses = allWhereCols
-        .map(k => `\`${k}\` = ${fmtVal(orig[k])}`)
+        .map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(orig[k]))
         .join(' AND ')
 
-      sqlStatements.push(`UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
+      sqlStatements.push('UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
     }
 
     if (sqlStatements.length === 0) {
@@ -1236,7 +1257,7 @@ function getOperatorPlaceholder(op) {
 function buildColumnCondition() {
   if (!currentColumn.value) return ''
   
-  const colName = `\`${currentColumn.value.name}\``
+  const colName = quoteId(currentColumn.value.name, effectiveDbType.value)
   const op = columnFilterOperator.value
   const val = columnFilterValue.value.trim()
   
@@ -1298,17 +1319,17 @@ function clearColumnFilter() {
   if (!currentColumn.value) return
   
   const colName = currentColumn.value.name
+  const quotedColName = quoteId(colName, effectiveDbType.value)
   const conditions = filterExpr.value.split(/\s+AND\s+/i).filter(c => {
     const trimmed = c.trim()
-    return !trimmed.startsWith(`\`${colName}\``) && 
+    return !trimmed.startsWith(quotedColName) && 
            !trimmed.startsWith(colName) &&
-           !trimmed.includes(`\`${colName}\``) &&
+           !trimmed.includes(quotedColName) &&
            !trimmed.includes(colName)
   })
   
   filterExpr.value = conditions.join(' AND ')
   
-  // 清除该字段的存储条件
   delete columnFilterConditions.value[colName]
   
   columnFilterDialogVisible.value = false
@@ -1337,7 +1358,7 @@ async function handleExportCommand(format) {
     } else if (format === 'json') {
       exportToJson(rows, tableName)
     } else if (format === 'sql') {
-      const sqlText = exportToSql(cols, rows, tableName)
+      const sqlText = exportToSql(cols, rows, tableName, effectiveDbType.value)
       downloadBlob(sqlText, tableName + '.sql', 'text/plain')
     }
     ElMessage({ message: '导出成功', type: 'success' })
@@ -1350,14 +1371,15 @@ async function handleExportCommand(format) {
 }
 
 async function fetchFullData() {
-  let sql = `SELECT * FROM \`${tableName}\``
-  if (filterExpr.value.trim()) {
-    sql += ` WHERE ${filterExpr.value.trim()}`
-  }
+  let orderBy = ''
   if (sortColumn.value && sortOrder.value) {
     const dir = sortOrder.value === 'descending' ? 'DESC' : 'ASC'
-    sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
+    orderBy = quoteId(sortColumn.value, effectiveDbType.value) + ' ' + dir
   }
+  const sql = buildSelectSQL(tableName, effectiveDbType.value, {
+    where: filterExpr.value.trim() || undefined,
+    orderBy: orderBy || undefined,
+  })
   const params = new URLSearchParams()
   params.append('connId', connId)
   params.append('schema', schema)
@@ -1368,14 +1390,15 @@ async function fetchFullData() {
 }
 
 async function exportToExcel() {
-  let sql = `SELECT * FROM \`${tableName}\``
-  if (filterExpr.value.trim()) {
-    sql += ` WHERE ${filterExpr.value.trim()}`
-  }
+  let orderBy = ''
   if (sortColumn.value && sortOrder.value) {
     const dir = sortOrder.value === 'descending' ? 'DESC' : 'ASC'
-    sql += ` ORDER BY \`${sortColumn.value}\` ${dir}`
+    orderBy = quoteId(sortColumn.value, effectiveDbType.value) + ' ' + dir
   }
+  const sql = buildSelectSQL(tableName, effectiveDbType.value, {
+    where: filterExpr.value.trim() || undefined,
+    orderBy: orderBy || undefined,
+  })
   const params = new URLSearchParams()
   params.append('connId', connId)
   params.append('schema', schema)
@@ -1424,16 +1447,16 @@ async function saveData() {
     return
   }
 
-  const setClauses = changedCols.map(key => `\`${key}\` = ${fmtVal(current[key])}`).join(', ')
+  const setClauses = changedCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(current[key])).join(', ')
 
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(origin).slice(0, 1)
   const allWhereCols = [
     ...pkCols,
     ...changedCols.filter(k => !pkCols.includes(k))
   ]
-  const whereClauses = allWhereCols.map(key => `\`${key}\` = ${fmtVal(origin[key])}`).join(' AND ')
+  const whereClauses = allWhereCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(origin[key])).join(' AND ')
 
-  const sql = `UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`
+  const sql = 'UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses
 
   saving.value = true
   try {
@@ -1478,9 +1501,9 @@ async function insertData() {
     return
   }
 
-  const colList = cols.map(k => `\`${k}\``).join(', ')
+  const colList = cols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
   const valList = cols.map(k => fmtVal(row[k])).join(', ')
-  const sql = `INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`
+  const sql = 'INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')'
 
   inserting.value = true
   try {
@@ -1513,8 +1536,8 @@ async function deleteRow(row) {
     return
   }
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(row).slice(0, 1)
-  const whereClauses = pkCols.map(key => `\`${key}\` = ${fmtVal(row[key])}`).join(' AND ')
-  const sql = `DELETE FROM \`${tableName}\` WHERE ${whereClauses}`
+  const whereClauses = pkCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(row[key])).join(' AND ')
+  const sql = 'DELETE FROM ' + quoteId(tableName, effectiveDbType.value) + ' WHERE ' + whereClauses
 
   try {
     const params = new URLSearchParams()
@@ -1734,15 +1757,15 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
         if (cols.length === 0) continue
 
         if (mode === 'insert') {
-          const colList = cols.map(k => '`' + k + '`').join(', ')
+          const colList = cols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
           const valList = cols.map(k => fmtVal(row[k])).join(', ')
-          sqlStatements.push(`INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList})`)
+          sqlStatements.push('INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')')
         } else {
-          const setClauses = cols.map(k => '`' + k + '` = ' + fmtVal(row[k])).join(', ')
+          const setClauses = cols.map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k])).join(', ')
           const pkCols = pkColumns.value.length > 0 ? pkColumns.value : cols.slice(0, 1)
-          const whereClauses = pkCols.filter(k => row[k] !== null).map(k => '`' + k + '` = ' + fmtVal(row[k])).join(' AND ')
+          const whereClauses = pkCols.filter(k => row[k] !== null).map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k])).join(' AND ')
           if (!whereClauses) continue
-          sqlStatements.push(`UPDATE \`${tableName}\` SET ${setClauses} WHERE ${whereClauses}`)
+          sqlStatements.push('UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
         }
       }
 

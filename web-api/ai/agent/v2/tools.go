@@ -588,7 +588,7 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef) fun
 
 	return func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
-		conn, _ := GetConn(targetConnID)
+		conn, actualDBType := GetConn(targetConnID)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
 			if len(schemaNames) > 0 {
@@ -597,7 +597,12 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef) fun
 			return nil, fmt.Errorf("%s", msg)
 		}
 
-		log.Printf("[Tool:list_tables] connId=%s, targetConn=%s, dbType=%s, dbSchema=%s\n", input.ConnID, targetConnID, dbType, dbSchema)
+		_, actualDbSchema, _ := GetDBInfo(targetConnID)
+		if actualDbSchema == "" {
+			actualDbSchema = dbSchema
+		}
+
+		log.Printf("[Tool:list_tables] connId=%s, targetConn=%s, dbType=%s, dbSchema=%s\n", input.ConnID, targetConnID, actualDBType, actualDbSchema)
 
 		listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -605,41 +610,41 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef) fun
 		var query string
 		var args []any
 
-		switch dbType {
+		switch actualDBType {
 		case "mysql", "mariadb":
-			if dbSchema != "" {
+			if actualDbSchema != "" {
 				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
-				args = []any{dbSchema}
+				args = []any{actualDbSchema}
 			} else {
 				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
 			}
 		case "oracle":
-			if dbSchema != "" {
+			if actualDbSchema != "" {
 				query = "SELECT TABLE_NAME, COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = :1 AND TABLE_TYPE = 'TABLE' ORDER BY TABLE_NAME"
-				args = []any{strings.ToUpper(dbSchema)}
+				args = []any{strings.ToUpper(actualDbSchema)}
 			} else {
 				query = "SELECT TABLE_NAME, COMMENTS FROM USER_TAB_COMMENTS WHERE TABLE_TYPE = 'TABLE' ORDER BY TABLE_NAME"
 			}
 		case "sqlite":
 			query = "SELECT name, '' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
 		case "postgresql", "postgres":
-			if dbSchema != "" {
+			if actualDbSchema != "" {
 				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname = $1 ORDER BY tablename"
-				args = []any{dbSchema}
+				args = []any{actualDbSchema}
 			} else {
 				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY tablename"
 			}
 		case "sqlserver", "mssql":
-			if dbSchema != "" {
+			if actualDbSchema != "" {
 				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' WHERE SCHEMA_NAME(t.schema_id) = @p1 ORDER BY t.name"
-				args = []any{dbSchema}
+				args = []any{actualDbSchema}
 			} else {
 				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' ORDER BY t.name"
 			}
 		default:
-			if dbSchema != "" {
+			if actualDbSchema != "" {
 				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
-				args = []any{dbSchema}
+				args = []any{actualDbSchema}
 			} else {
 				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
 			}

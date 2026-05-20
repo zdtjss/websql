@@ -436,14 +436,7 @@ import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import hljs from 'highlight.js/lib/core'
-import hljsSql from 'highlight.js/lib/languages/sql'
-import 'highlight.js/styles/stackoverflow-light.css'
-import MarkdownIt from 'markdown-it'
-import texmath from 'markdown-it-texmath'
-import katex from 'katex'
-import 'katex/dist/katex.min.css'
-import mermaid from 'mermaid'
+import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
@@ -451,102 +444,33 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 const route = useRoute()
 const systemRoutes = ['/system-management', '/role-permission', '/classical']
 
-hljs.registerLanguage('sql', hljsSql)
-
-// 初始化 mermaid
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'default',
-  securityLevel: 'loose',
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
-})
-
-let mermaidIdCounter = 0
-
-// 获取 API 基础路径
 const apiBase = import.meta.env.VITE_API_URL || ''
 
-// 初始化 markdown-it
-const md = new MarkdownIt({
-  html: true,
-  breaks: true,
-  linkify: true,
-  typographer: false,
-})
+let md = null
 
-// 使用 markdown-it-texmath 启用 KaTeX LaTeX 渲染
-md.use(texmath, {
-  engine: katex,
-  delimiters: 'dollars',
-  katexOptions: { throwOnError: false, strict: false },
-})
+async function ensureMd() {
+  if (md) return md
+  md = await getMarkdownRenderer(apiBase)
 
-// 自定义链接渲染
-md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
-  const token = tokens[idx]
-  const hrefIndex = token.attrIndex('href')
-
-  if (hrefIndex >= 0) {
-    let href = token.attrs[hrefIndex][1]
-
-    // 处理相对路径：如果以 / 开头且不是 // 开头，添加 apiBase
-    if (href && href.startsWith('/') && !href.startsWith('//')) {
-      // 更新 href 属性
-      href = apiBase + href
-      token.attrs[hrefIndex][1] = href
+  const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
+    return self.renderToken(tokens, idx, options)
+  }
+  md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+    const token = tokens[idx]
+    const info = token.info ? token.info.trim().toLowerCase() : ''
+    if (info === 'mermaid') {
+      const id = getNextMermaidId()
+      const escaped = token.content
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+      return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
     }
-
-    if (href && href.includes('/exports/')) {
-      token.attrPush(['data-export-link', 'true'])
-    }
-
-    // 所有链接都添加 target="_blank"
-    const targetIndex = token.attrIndex('target')
-    if (targetIndex < 0) {
-      token.attrPush(['target', '_blank'])
-    } else {
-      token.attrs[targetIndex][1] = '_blank'
-    }
-
-    // 外部链接额外添加 rel 属性
-    if (href.startsWith('http://') || href.startsWith('https://')) {
-      token.attrPush(['rel', 'noopener noreferrer'])
-    }
+    return defaultFenceRender(tokens, idx, options, env, self)
   }
 
-  // 使用默认的 renderToken 方法渲染 token
-  return self.renderToken(tokens, idx, options)
-}
-
-// 自定义表格渲染，添加滚动容器
-const defaultTableRender = md.renderer.rules.table_open
-md.renderer.rules.table_open = function (tokens, idx, options, env, self) {
-  return '<div class="table-wrapper"><table>'
-}
-const defaultTableCloseRender = md.renderer.rules.table_close
-md.renderer.rules.table_close = function (tokens, idx, options, env, self) {
-  return '</table></div>'
-}
-
-// 自定义 fence 渲染：mermaid 代码块转为待渲染容器，其余保持默认
-const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
-  return self.renderToken(tokens, idx, options)
-}
-md.renderer.rules.fence = function (tokens, idx, options, env, self) {
-  const token = tokens[idx]
-  const info = token.info ? token.info.trim().toLowerCase() : ''
-  if (info === 'mermaid') {
-    const id = 'mermaid-' + (++mermaidIdCounter)
-    // 对内容进行 HTML 转义，防止 XSS，mermaid.render 会处理原始文本
-    const escaped = token.content
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-    // 输出占位容器：流式输出时显示源码预览，流结束后由 doRenderMermaidBlocks 替换为 SVG 图表
-    return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
-  }
-  return defaultFenceRender(tokens, idx, options, env, self)
+  return md
 }
 
 const props = defineProps({})
@@ -786,14 +710,18 @@ async function loadConnList() {
     }
 
     if (connList.value.length > 0 && selectedSchemas.value.length === 0) {
-      const savedSchemas = (() => {
-        try {
-          const v = sessionStorage.getItem('lastSelectedSchemas')
-          return v ? JSON.parse(v) : null
-        } catch { return null }
-      })()
-      if (savedSchemas && Array.isArray(savedSchemas) && savedSchemas.length > 0) {
-        selectedSchemas.value = savedSchemas
+      const allSchemaValues = connList.value.flatMap(node => {
+        if (node.children && node.children.length > 0) {
+          return node.children.filter(c => !c.disabled).map(c => c.value)
+        }
+        if (!node.disabled && node.isSchemaLeaf) {
+          return [node.value]
+        }
+        return []
+      })
+      if (allSchemaValues.length === 1) {
+        selectedSchemas.value = allSchemaValues
+        loadTableListForSchemas()
       }
     }
   } catch (e) {
@@ -909,7 +837,7 @@ function getPrimaryConnId() {
 function buildRequestSchemas() {
   return selectedSchemas.value
     .map(v => parseSchemaValue(v))
-    .filter(Boolean)
+    .filter(p => p && p.schema !== '')
     .map(p => ({ connId: p.connId, schema: p.schema }))
 }
 
@@ -1029,65 +957,69 @@ const uploadedExcel = ref(null) // { fileId, name, columns, rows, preview }
 const excelUploadRef = useTemplateRef('excelUploadRef')
 const excelUploading = ref(false)
 
+const mdReady = ref(false)
+const hljsReady = ref(false)
+let hljsLib = null
+
+async function initHeavyDeps() {
+  const [, hljsResult] = await Promise.all([
+    ensureMd().then(() => { mdReady.value = true }),
+    getHljs().then(h => { hljsLib = h; hljsReady.value = true }),
+  ])
+}
+
 function highlightSql(text) {
   if (!text) return ''
-  try {
-    return hljs.highlight(text, { language: 'sql' }).value
-  } catch {
-    return text
+  void hljsReady.value
+  if (hljsLib) {
+    try {
+      return hljsLib.highlight(text, { language: 'sql' }).value
+    } catch {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    }
   }
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function preprocessMarkdown(text) {
+  if (!text) return ''
+  let processed = text
+  processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
+    return inner
+  })
+  processed = processed.replace(/\$\\(?:bm|mathit|mathrm|mathsf|mathtt)\{([^}]+)\}\$/g, (match, inner) => {
+    return inner
+  })
+  processed = processed.replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, '[$1]($2)')
+  processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
+    const filename = path.substring(path.lastIndexOf('/') + 1)
+    return `[${filename}](${path})`
+  })
+  processed = processed.replace(/\[([^\]]+)\]\(([^)]*)\)/g, (match, linkText, url) => {
+    if (!url || url.length === 0) {
+      return match
+    }
+    let fullUrl = url
+    if (url.startsWith('/') && !url.startsWith('//')) {
+      fullUrl = apiBase + url
+    }
+    let exportAttr = ''
+    if (fullUrl && fullUrl.includes('/exports/')) {
+      exportAttr = ' data-export-link="true"'
+    }
+    return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer"${exportAttr}>${linkText}</a>`
+  })
+  return processed
 }
 
 function renderMarkdown(text) {
   if (!text) return ''
+  void mdReady.value
+  if (!md) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+  }
   try {
-    let processed = text
-
-    // 预处理 0：处理 LaTeX \text{...} 公式，提取纯文本标题
-    // 大模型有时会用 $\text{标题}$ 或 $\textbf{标题}$ 作为文字格式输出
-    processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
-      return inner
-    })
-    // 同时处理 $\bm{...}$、$\mathit{...}$ 等常见 LaTeX 文本命令
-    processed = processed.replace(/\$\\(?:bm|mathit|mathrm|mathsf|mathtt)\{([^}]+)\}\$/g, (match, inner) => {
-      return inner
-    })
-    // 其余 LaTeX 数学公式（$\rightarrow$、$\times$、$\frac{1}{2}$ 等）由 markdown-it-texmath + KaTeX 渲染
-
-    // 预处理 1：修复 **text** 包裹链接的情况
-    // 将 **[text](url)** 转换为 [text](url)
-    processed = processed.replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, '[$1]($2)')
-
-    // 预处理 2：将反引号包裹的文件路径转换为链接
-    // 匹配 `/path/to/file` 格式，转换为 [filename](/path/to/file)
-    processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
-      const filename = path.substring(path.lastIndexOf('/') + 1)
-      return `[${filename}](${path})`
-    })
-
-    // 预处理 3：将 markdown 链接 [text](url) 转换为 HTML <a> 标签
-    // 优化：支持流式输出场景，即使链接被拆分也能正确处理
-    // 匹配规则：只要是 [text] 后面跟着 ( 开头的内容，就尝试转换为链接
-    processed = processed.replace(/\[([^\]]+)\]\(([^)]*)\)/g, (match, linkText, url) => {
-      // 如果 URL 不完整（没有闭合括号或没有文件扩展名），先保留原样
-      if (!url || url.length === 0) {
-        return match // 流式输出中，URL 还没完全接收，保持原样
-      }
-
-      // 处理相对路径：添加 apiBase
-      let fullUrl = url
-      if (url.startsWith('/') && !url.startsWith('//')) {
-        fullUrl = apiBase + url
-      }
-
-      let exportAttr = ''
-      if (fullUrl && fullUrl.includes('/exports/')) {
-        exportAttr = ' data-export-link="true"'
-      }
-
-      return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer"${exportAttr}>${linkText}</a>`
-    })
-
+    const processed = preprocessMarkdown(text)
     return md.render(processed)
   } catch (e) {
     console.error('Markdown parse error:', e)
@@ -1097,9 +1029,10 @@ function renderMarkdown(text) {
 
 // 缓存版本：用于历史消息，避免重复调用 renderMarkdown 导致 mermaid ID 变化
 function getCachedHtml(msg) {
-  if (!msg._renderedHtml || msg._lastContent !== msg.content) {
+  if (!msg._renderedHtml || msg._lastContent !== msg.content || (mdReady.value && !msg._renderedWithMd)) {
     msg._renderedHtml = renderMarkdown(msg.content)
     msg._lastContent = msg.content
+    msg._renderedWithMd = mdReady.value
   }
   return msg._renderedHtml
 }
@@ -1127,7 +1060,8 @@ async function doRenderMermaidBlocks(scrollAfter = true) {
       if (!trimmed || trimmed.length < 5) continue
       el.setAttribute('data-mermaid-processed', 'true')
       try {
-        const { svg } = await mermaid.render(id, trimmed)
+        const mermaidLib = await getMermaid()
+        const { svg } = await mermaidLib.render(id, trimmed)
         const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
         el.innerHTML =
           `<div class="mermaid-content-wrapper">` +
@@ -2700,13 +2634,6 @@ async function loadSession(id) {
   }
 }
 
-// 监听 selectedSchemas / selectedTables 变化，保存到 sessionStorage（页面刷新后恢复）
-watch(selectedSchemas, (val) => {
-  try {
-    sessionStorage.setItem('lastSelectedSchemas', JSON.stringify(val))
-  } catch (_) {}
-}, { deep: true })
-
 watch(selectedTables, (val) => {
   try {
     sessionStorage.setItem('lastSelectedTables', JSON.stringify(val))
@@ -2726,6 +2653,8 @@ function handleExportLinkClick(e) {
 }
 
 onMounted(() => {
+  initHeavyDeps()
+  preloadHeavyDeps()
   setSendToAIHandler(handlePromptSendToAI)
   getSysModel()
   loadModelList()

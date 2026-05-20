@@ -81,15 +81,11 @@
 <script setup>
 import { CopyDocument } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, ref } from 'vue'
-import hljs from 'highlight.js/lib/core'
-import * as highlightSql from 'highlight.js/lib/languages/sql'
-import 'highlight.js/styles/stackoverflow-light.css'
+import { computed, ref, watch } from 'vue'
+import { getHljs, highlightSql } from '@/utils/lazyDeps'
 import http from '../js/utils/httpProxy.js'
 import { useDbSchemaStore } from '../stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
-
-hljs.registerLanguage('sql', highlightSql.default)
 
 const visible = defineModel({ default: false })
 const { connId, schema } = defineProps({
@@ -105,10 +101,12 @@ const triggerList = ref([])
 const detailVisible = ref(false)
 const detailTitle = ref('')
 const detailCode = ref('')
-const highlightedCode = computed(() => {
-  if (!detailCode.value) return ''
-  return hljs.highlight(detailCode.value, { language: 'sql' }).value
-})
+const highlightedCode = ref('')
+
+watch(detailCode, async (val) => {
+  if (!val) { highlightedCode.value = ''; return }
+  highlightedCode.value = await highlightSql(val)
+}, { immediate: true })
 
 function onTabChange(name) {
   if (name === 'procedures') loadProcedures()

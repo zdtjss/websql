@@ -386,7 +386,7 @@ function submitNewTable() {
 }
 
 function onBrowseData(row) {
-  emit('openDataBrowser', { connId, schema, tableName: row.name })
+  emit('openDataBrowser', { connId, schema, tableName: row.name, dbType })
 }
 
 function exportTable(row) {

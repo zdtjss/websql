@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"go-web/config"
 	"go-web/logutils"
 	"go-web/utils"
 	dbutils "go-web/utils/db"
@@ -104,9 +103,6 @@ func listSchema(key string, authorization string) []*Tree {
 func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []*Tree {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return schemas
-		}
 		return []*Tree{}
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
@@ -148,17 +144,12 @@ func filterSchemasByPermission(schemas []*Tree, connId, authorization string) []
 func checkSchemaAccess(connId, schemaName, authorization string) {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower == nil || userPower.UserId != config.AdminId {
-			logutils.PanicErr(errors.New("无权访问此 Schema"))
-			return
-		}
+		logutils.PanicErr(errors.New("无权访问此 Schema"))
 		return
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		if userPower.UserId != config.AdminId {
-			logutils.PanicErr(errors.New("无权访问此 Schema"))
-		}
+		logutils.PanicErr(errors.New("无权访问此 Schema"))
 		return
 	}
 	hasConnLevel := false
@@ -248,9 +239,6 @@ func listTable(key string, schema, authorization string) []*Tree {
 func filterTreeTablesByPermission(tables []*Tree, connId, schema, authorization string) []*Tree {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower != nil && userPower.UserId == config.AdminId {
-			return tables
-		}
 		return []*Tree{}
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
@@ -307,17 +295,12 @@ func filterTablesByTreeVisLocal(tables []*Tree, connId, schema, userId string) [
 func checkTableAccess(connId, schemaName, tableName, authorization string) {
 	userPower := GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
-		if userPower == nil || userPower.UserId != config.AdminId {
-			logutils.PanicErr(errors.New("无权访问此表"))
-			return
-		}
+		logutils.PanicErr(errors.New("无权访问此表"))
 		return
 	}
 	powerDetails := findUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
-		if userPower.UserId != config.AdminId {
-			logutils.PanicErr(errors.New("无权访问此表"))
-		}
+		logutils.PanicErr(errors.New("无权访问此表"))
 		return
 	}
 	hasConnLevel := false

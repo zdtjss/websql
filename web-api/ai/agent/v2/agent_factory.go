@@ -50,7 +50,7 @@ func GetAgentFactory() *AgentFactory {
 }
 
 func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *admin.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
-	key := agentCacheKey(connID, scope.UserID)
+	key := agentCacheKey(connID, dbSchema, scope.UserID)
 	cfgHash := aiConfigHash(cfg)
 
 	f.mu.RLock()
@@ -85,8 +85,8 @@ func (f *AgentFactory) InvalidateAll() {
 	log.Printf("[AgentFactory] 缓存已全部清空\n")
 }
 
-func (f *AgentFactory) Invalidate(connID, userID string) {
-	key := agentCacheKey(connID, userID)
+func (f *AgentFactory) Invalidate(connID, dbSchema, userID string) {
+	key := agentCacheKey(connID, dbSchema, userID)
 	f.mu.Lock()
 	delete(f.cache, key)
 	f.mu.Unlock()
@@ -111,8 +111,8 @@ func (f *AgentFactory) cleanLoop() {
 	}
 }
 
-func agentCacheKey(connID, userID string) string {
-	return fmt.Sprintf("%s::%s", connID, userID)
+func agentCacheKey(connID, dbSchema, userID string) string {
+	return fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
 }
 
 func aiConfigHash(cfg *admin.AIConfig) string {
