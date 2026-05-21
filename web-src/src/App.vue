@@ -426,12 +426,12 @@
 </template>
 
 <script setup>
-import SQLConfirmInline from '@/components/SQLConfirmInline.vue'
-import PromptEditDialog from '@/components/PromptEditDialog.vue'
+import SQLConfirmInline from '@/components/ai/SQLConfirmInline.vue'
+import PromptEditDialog from '@/components/ai/PromptEditDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
-import { usePromptEditDialog } from '@/composables/usePromptEditDialog'
-import LoginDialog from '@/components/LoginDialog.vue'
-import http from '@/js/utils/httpProxy.js'
+import { usePromptEditDialog } from '@/components/ai/usePromptEditDialog'
+import LoginDialog from '@/components/auth/LoginDialog.vue'
+import http from '@/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'

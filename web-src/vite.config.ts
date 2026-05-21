@@ -82,7 +82,8 @@ export default defineConfig({
             if (match) return `views/${match[1]}`;
           }
           if (id.includes('/src/components/')) {
-            return 'components';
+            const match = id.match(/\/src\/components\/([^/]+)/);
+            if (match) return `components/${match[1]}`;
           }
         }
       }

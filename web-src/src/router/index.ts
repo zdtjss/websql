@@ -10,13 +10,13 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/system-management',
     name: 'SystemManagement',
-    component: () => import('@/views/SystemManagement.vue'),
+    component: () => import('@/views/system/SystemManagement.vue'),
     meta: { title: '系统管理' }
   },
   {
     path: '/classical',
     name: 'ClassicalView',
-    component: () => import('@/views/ClassicalView.vue'),
+    component: () => import('@/views/classical/ClassicalView.vue'),
     meta: { title: '经典视图', requiresClassicView: true }
   }
 ]
