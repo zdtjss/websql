@@ -249,6 +249,7 @@ function collectNodeKeys(nodes) {
 function syncTreeVisual() {
   if (!treeRef.value) return
   isProgrammatic = true
+  console.log('[syncTreeVisual] START')
 
   // 使用 explicitKeys 和 serverCheckedKeys 的并集来决定显示状态
   // 但要排除用户显式取消勾选的 key
@@ -341,8 +342,10 @@ function onClassicViewChanged() {
 }
 
 function handleCheck(nodeData, checkState) {
-  if (isProgrammatic) return
+  if (isProgrammatic) { console.log('[handleCheck] blocked by isProgrammatic'); return }
   const nodeKey = getNodeFullKey(nodeData)
+  console.log('[handleCheck] nodeKey:', nodeKey, 'level:', nodeData.level, 'currentLevel:', currentLevel.value, 'isChecked:', checkState.checkedKeys.includes(nodeData.id))
+  console.log('[handleCheck] explicitKeys:', [...explicitKeys], 'uncheckedKeys:', [...uncheckedKeys], 'serverCheckedKeys:', [...serverCheckedKeys])
   if (nodeData.id.startsWith('dir::')) {
     if (nodeData.children) {
       const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
@@ -357,6 +360,21 @@ function handleCheck(nodeData, checkState) {
             } else {
               explicitKeys.delete(childKey)
               uncheckedKeys.add(childKey)
+              const toUncheck = []
+              for (const key of explicitKeys) {
+                if (isDescendantOf(key, childKey)) {
+                  toUncheck.push(key)
+                }
+              }
+              for (const key of serverCheckedKeys) {
+                if (!uncheckedKeys.has(key) && isDescendantOf(key, childKey)) {
+                  toUncheck.push(key)
+                }
+              }
+              for (const key of toUncheck) {
+                explicitKeys.delete(key)
+                uncheckedKeys.add(key)
+              }
             }
           }
         }
@@ -377,6 +395,21 @@ function handleCheck(nodeData, checkState) {
   } else {
     explicitKeys.delete(nodeKey)
     uncheckedKeys.add(nodeKey)
+    const toUncheck = []
+    for (const key of explicitKeys) {
+      if (isDescendantOf(key, nodeKey)) {
+        toUncheck.push(key)
+      }
+    }
+    for (const key of serverCheckedKeys) {
+      if (!uncheckedKeys.has(key) && isDescendantOf(key, nodeKey)) {
+        toUncheck.push(key)
+      }
+    }
+    for (const key of toUncheck) {
+      explicitKeys.delete(key)
+      uncheckedKeys.add(key)
+    }
   }
   nextTick(() => syncTreeVisual())
 }
@@ -407,9 +440,48 @@ function getKeyLevel(key) {
   return 'conn'
 }
 
+function isDescendantOf(childKey, parentKey) {
+  if (!childKey.startsWith(parentKey + '::')) return false
+  return childKey.split('::').length > parentKey.split('::').length
+}
+
 function savePermissions() {
   if (!currentRole.value) return
   saving.value = true
+
+  // 直接从 el-tree 获取当前勾选状态，避免依赖 handleCheck 的异步时序问题
+  const treeChecked = treeRef.value
+    ? new Set(treeRef.value.getCheckedKeys().filter(k => !k.startsWith('dir::')))
+    : new Set()
+
+  // 只同步当前层级的树状态到 explicitKeys/uncheckedKeys，确保 cascade 逻辑正确
+  for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) continue
+    if (getKeyLevel(key) !== currentLevel.value) continue
+    if (treeChecked.has(key)) {
+      explicitKeys.add(key)
+      uncheckedKeys.delete(key)
+    } else {
+      explicitKeys.delete(key)
+      uncheckedKeys.add(key)
+      const descendantsToUncheck = []
+      for (const childKey of explicitKeys) {
+        if (isDescendantOf(childKey, key)) {
+          descendantsToUncheck.push(childKey)
+        }
+      }
+      for (const childKey of descendantsToUncheck) {
+        explicitKeys.delete(childKey)
+        uncheckedKeys.add(childKey)
+      }
+    }
+  }
+
+  console.log('[savePermissions] START - currentLevel:', currentLevel.value)
+  console.log('[savePermissions] explicitKeys:', [...explicitKeys])
+  console.log('[savePermissions] baselineCheckedKeys:', [...baselineCheckedKeys])
+  console.log('[savePermissions] uncheckedKeys:', [...uncheckedKeys])
+  console.log('[savePermissions] serverCheckedKeys:', [...serverCheckedKeys])
 
   // 根据当前编辑的层级，筛选出该层级的权限用于对比
   // 其他层级的权限保持不变，不发送 add/del 请求
@@ -489,7 +561,16 @@ function savePermissions() {
     if (p.level === 'schema' && p.schemaName) {
       const schemaKey = p.connId + '::' + p.schemaName
       if (baselineSchemaKeysWithTableChildren.has(schemaKey)) {
-        return false
+        let hasActiveChildren = false
+        for (const key of explicitKeys) {
+          if (isDescendantOf(key, schemaKey)) {
+            hasActiveChildren = true
+            break
+          }
+        }
+        if (hasActiveChildren) {
+          return false
+        }
       }
     }
     return true
@@ -544,6 +625,53 @@ function savePermissions() {
     }
   }
 
+  const deletedCurrentLevelKeys = new Set()
+  for (const key of currentBaselineKeys) {
+    if (!currentExplicitKeys.has(key)) {
+      deletedCurrentLevelKeys.add(key)
+    }
+  }
+  for (const key of uncheckedKeys) {
+    if (getKeyLevel(key) === currentLevel.value) {
+      deletedCurrentLevelKeys.add(key)
+    }
+  }
+  console.log('[savePermissions] deletedCurrentLevelKeys:', [...deletedCurrentLevelKeys])
+  console.log('[savePermissions] delPowers before cascade:', JSON.stringify(delPowers))
+  for (const key of baselineCheckedKeys) {
+    if (key.startsWith('dir::')) continue
+    if (explicitKeys.has(key)) continue
+    const keyLevel = getKeyLevel(key)
+    if (keyLevel === currentLevel.value) continue
+    let isCascaded = false
+    for (const deletedKey of deletedCurrentLevelKeys) {
+      if (isDescendantOf(key, deletedKey)) {
+        isCascaded = true
+        break
+      }
+    }
+    if (!isCascaded) continue
+    const parts = key.split('::')
+    const connId = parts[0]
+    const schema = parts[1] || null
+    const table = parts[2] || null
+    const column = parts[3] || null
+    let level = 'conn'
+    if (column) level = 'column'
+    else if (table) level = 'table'
+    else if (schema) level = 'schema'
+    delPowers.push({
+      id: '',
+      roleId,
+      connId,
+      connName: null,
+      schemaName: schema,
+      tableName: table,
+      columnName: column,
+      level,
+    })
+  }
+
   const roleData = {
     id: currentRole.value.id,
     name: currentRole.value.name,
@@ -552,15 +680,38 @@ function savePermissions() {
     viewClassic: classicViewEnabled.value ? 1 : 0,
   }
 
+  console.log('[savePermissions] FINAL roleData:', JSON.stringify(roleData))
+
   http.post('/saveRole', roleData).then(() => {
     saving.value = false
     classicViewDirty = false
     // 更新 explicitKeys：移除当前层级的旧权限，加入当前层级过滤后的权限
     for (const key of currentBaselineKeys) {
       explicitKeys.delete(key)
+      uncheckedKeys.delete(key)
     }
     for (const key of newKeySet) {
       explicitKeys.add(key)
+      uncheckedKeys.delete(key)
+    }
+    // 清理级联删除的下级权限
+    for (const key of baselineCheckedKeys) {
+      if (key.startsWith('dir::')) continue
+      let isCascaded = false
+      for (const deletedKey of deletedCurrentLevelKeys) {
+        if (isDescendantOf(key, deletedKey)) {
+          isCascaded = true
+          break
+        }
+      }
+      if (isCascaded) {
+        explicitKeys.delete(key)
+        uncheckedKeys.delete(key)
+      }
+    }
+    // 清理 uncheckedKeys 中当前层级的已处理 key
+    for (const key of deletedCurrentLevelKeys) {
+      uncheckedKeys.delete(key)
     }
     // 更新 baselineCheckedKeys：同步全量状态
     baselineCheckedKeys.clear()

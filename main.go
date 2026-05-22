@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
-	"go-web/config"
-	"go-web/https"
-	"go-web/utils/store"
-	webapi "go-web/web-api"
+	app "websql/internal/app"
+	"websql/internal/config"
+	"websql/internal/database"
+	"websql/internal/https"
+	"websql/internal/store"
+	sqlhand "websql/internal/app/sql"
 	"log"
 	"net/http"
 	"os"
@@ -36,16 +38,16 @@ func main() {
 	flag.Parse()
 
 	router.MaxMultipartMemory = 30 * 1024 * 1024
-	webapi.MainRegister(router)
+	app.MainRegister(router)
 
-	config.InitMngtDbConn()
+	database.InitMngtDbConn()
 
 	if *initSqlFile != "" {
-		config.InitDB(*initSqlFile)
+		database.InitDB(*initSqlFile)
 	}
 
 	// 从数据库加载系统配置（覆盖配置文件中的配置）
-	config.LoadConfigFromDB()
+	database.LoadConfigFromDB()
 
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
@@ -70,13 +72,13 @@ func main() {
 	go listenStartStatus()
 
 	// 启动导出文件定时清理
-	webapi.StartCleanupScheduler()
+	app.StartCleanupScheduler()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, os.Interrupt)
 	s := <-c
 	log.Printf("服务正在关闭 %s......", s)
-	webapi.ShutdownHistoryWriter()
+	sqlhand.ShutdownHistoryWriter()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
@@ -88,7 +90,7 @@ func main() {
 func startServer(server *http.Server, isHttps *bool, port *string) {
 	var err error
 	if *isHttps {
-		// 初始化 TLS 证书
+		// 初始化TLS 证书
 		https.InitCertificateFile()
 		err = server.ListenAndServeTLS(https.PemName, https.KeyName)
 	} else {
@@ -105,7 +107,7 @@ func startServer(server *http.Server, isHttps *bool, port *string) {
 func listenStartStatus() {
 	for {
 		time.Sleep(time.Millisecond)
-		// 注意，使用 InsecureSkipVerify: true 来跳过证书验证，否则总是请求失败
+		// 注意，使用InsecureSkipVerify: true 来跳过证书验证，否则总是请求失败
 		client := &http.Client{Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -118,7 +120,7 @@ func listenStartStatus() {
 		r, _ := client.Get(protocol + "://localhost:" + *port + "/api/healthCheck")
 		if r != nil {
 			r.Body.Close()
-			log.Println("==================== 系统已启动完成，端口：" + *port + " 、 https：" + strconv.FormatBool(*isHttps) + " ====================")
+			log.Println("==================== 系统已启动完成，端口：" + *port + " ，https：" + strconv.FormatBool(*isHttps) + " ====================")
 			runtime.Goexit()
 		}
 	}

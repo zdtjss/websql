@@ -207,30 +207,32 @@ def main():
         # 8. 清理临时 zip 文件
         ssh_exec(client, f"rm -f {remote_zip_path}", check=False)
 
-        # 9. 数据库表结构同步（智能迁移）
+        # 9. 数据库表结构自动对比与升级
         print("  同步数据库表结构...")
         local_sql = os.path.join(project_root, "sqlite3-init.sql")
-        local_migrate = os.path.join(project_root, "sqlite3-migrate.py")
+        local_migrate = os.path.join(project_root, "db_migrate.py")
         if os.path.exists(local_sql):
             remote_sql = f"/tmp/websql-init-{os.getpid()}.sql"
             remote_migrate = f"/tmp/websql-migrate-{os.getpid()}.py"
-            
-            # 上传 SQL 文件和迁移脚本
+            remote_backup_dir = f"{args.path}/db_backups"
+
             with SCPClient(client.get_transport()) as scp:
                 scp.put(local_sql, remote_path=remote_sql)
-                if os.path.exists(local_migrate):
-                    scp.put(local_migrate, remote_path=remote_migrate)
-            
-            # 先执行迁移脚本处理字段变更
-            if os.path.exists(local_migrate):
-                ssh_exec(client, f"python3 {remote_migrate} {args.path}/nway.sqlite3.db {remote_sql}", check=False)
-            
-            # 再执行完整 init SQL（处理新表和新配置项）
-            ssh_exec(client, f"sqlite3 {args.path}/nway.sqlite3.db < {remote_sql}")
-            
-            # 清理临时文件
+                scp.put(local_migrate, remote_path=remote_migrate)
+
+            ssh_exec(client, f"mkdir -p {remote_backup_dir}", check=False)
+            exit_code, output = ssh_exec(
+                client,
+                f"python3 {remote_migrate} --db {args.path}/nway.sqlite3.db --sql {remote_sql} --backup-dir {remote_backup_dir}",
+                check=False
+            )
+
             ssh_exec(client, f"rm -f {remote_sql} {remote_migrate}", check=False)
-            print("  ✓ 数据库表结构同步完成")
+
+            if exit_code != 0:
+                print(f"  [警告] 数据库表结构同步未完全成功 (exit {exit_code})，请检查远程日志")
+            else:
+                print("  ✓ 数据库表结构同步完成")
         else:
             print(f"  [警告] 未找到 {local_sql}，跳过表结构同步")
 

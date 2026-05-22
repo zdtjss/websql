@@ -1,4 +1,4 @@
-module go-web
+module websql
 
 go 1.26.0
 
