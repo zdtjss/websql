@@ -7,7 +7,7 @@
     </div>
 
     <!-- 新建表 Dialog -->
-    <el-dialog v-model="newTableDialogVisible" title="新建表" width="800px" :close-on-click-modal="false">
+    <el-dialog v-model="newTableDialogVisible" title="新建表" width="850px" :close-on-click-modal="false">
     <el-form :model="newTableForm" label-width="80px" size="small">
       <el-row :gutter="12">
         <el-col :span="12">
@@ -80,7 +80,7 @@
   </el-dialog>
 
   <!-- 重命名表 Dialog -->
-  <el-dialog v-model="renameDialogVisible" title="重命名表" width="400px" :close-on-click-modal="false">
+  <el-dialog v-model="renameDialogVisible" title="重命名表" width="500px" :close-on-click-modal="false">
     <el-form size="small" label-width="80px">
       <el-form-item label="原表名">
         <el-input :value="renameTarget" disabled />
@@ -158,11 +158,18 @@
           <div class="empty-icon">📋</div>
           <div>点击左侧表名查看表结构</div>
         </div>
-        <TableEditor
-          v-else
-          :tableMeta="tableMeta"
-          @tableDrop="onTableDrop"
-        />
+        <template v-else>
+          <div class="tm-editor-header">
+            <span class="tm-table-title" @click="onBrowseCurrentTable">
+              {{ selectedTable }}
+              <span v-if="selectedTableComment" class="tm-table-comment">{{ selectedTableComment }}</span>
+            </span>
+          </div>
+          <TableEditor
+            :tableMeta="tableMeta"
+            @tableDrop="onTableDrop"
+          />
+        </template>
       </div>
     </div>
   </div>
@@ -207,8 +214,14 @@ const filteredTables = computed(() => {
   )
 })
 
+const selectedTableComment = computed(() => {
+  if (!selectedTable.value) return ''
+  const t = tableList.value.find(t => t.name === selectedTable.value)
+  return t ? t.comment : ''
+})
+
 // Sidebar drag resize
-const sidebarWidth = ref(300)
+const sidebarWidth = ref(500)
 let isResizing = false
 
 function initSidebarWidth() {
@@ -233,7 +246,7 @@ function onResizeMove(e) {
   if (!parent) return
   const parentRect = parent.getBoundingClientRect()
   let newWidth = e.clientX - parentRect.left
-  newWidth = Math.max(200, Math.min(500, newWidth))
+  newWidth = Math.max(600, Math.min(800, newWidth))
   sidebarWidth.value = newWidth
 }
 
@@ -257,7 +270,7 @@ function loadTables() {
 }
 
 function onTableClick(row) {
-  onBrowseData(row)
+  selectedTable.value = row.name
 }
 
 // ── 新建表 ──────────────────────────────────────────────
@@ -387,6 +400,10 @@ function submitNewTable() {
 
 function onBrowseData(row) {
   emit('openDataBrowser', { connId, schema, tableName: row.name, dbType })
+}
+
+function onBrowseCurrentTable() {
+  emit('openDataBrowser', { connId, schema, tableName: selectedTable.value, dbType })
 }
 
 function exportTable(row) {
@@ -575,11 +592,41 @@ watch(
   flex: 1;
   overflow: auto;
   padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.tm-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 8px 4px;
+  border-bottom: 1px solid #ebeef5;
+  margin-bottom: 8px;
+}
+
+.tm-table-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+  cursor: pointer;
+}
+
+.tm-table-title:hover {
+  color: var(--accent-color, #409eff);
+}
+
+.tm-table-comment {
+  font-size: 13px;
+  font-weight: 400;
+  color: #909399;
+  margin-left: 8px;
 }
 
 /* TableEditor 在 TableManager 内时撑满高度 */
 .tm-editor :deep(.table-editor-tabs) {
-  height: calc(100vh - 120px);
+  flex: 1;
+  min-height: 0;
 }
 
 .classical-empty {
