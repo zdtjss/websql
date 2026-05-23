@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -256,9 +257,49 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 	return nil
 }
 
+var (
+	tailPipeRegex = regexp.MustCompile(`\s*2>&1\s*\|\s*tail\s+-?\d+\s*`)
+	pythonCRegex   = regexp.MustCompile(`python(?:\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
+)
+
+func preprocessCommandForWindows(command string) string {
+	command = tailPipeRegex.ReplaceAllString(command, "")
+	command = strings.ReplaceAll(command, "2>&1 | tail", "")
+	command = strings.ReplaceAll(command, "| tail -5", "")
+	command = strings.ReplaceAll(command, "| tail-5", "")
+
+	command = pythonCRegex.ReplaceAllStringFunc(command, func(match string) string {
+		parts := pythonCRegex.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		code := parts[1]
+		suffix := match[pythonCRegex.FindStringSubmatchIndex(match)[3]:]
+
+		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("websql_py_%d.py", time.Now().UnixNano()))
+		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
+			return match
+		}
+
+		if suffix != "" {
+			return fmt.Sprintf("python %s %s && del %s", tmpFile, suffix, tmpFile)
+		}
+		return fmt.Sprintf("python %s && del %s", tmpFile, tmpFile)
+	})
+
+	command = "chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && " + command
+	return command
+}
+
 func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *filesystem.ExecuteRequest) (*schema.StreamReader[*filesystem.ExecuteResponse], error) {
 	if input == nil || input.Command == "" {
 		return nil, errors.New("command is required")
+	}
+
+	command := input.Command
+
+	if runtime.GOOS == "windows" {
+		command = preprocessCommandForWindows(command)
 	}
 
 	if b.validateCommand != nil {
@@ -267,7 +308,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "cmd", "/C", input.Command)
+	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

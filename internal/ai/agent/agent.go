@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	idgen "websql/internal/pkg/idgen"
-	system "websql/internal/app/system"
 	"websql/internal/ai/agent/export"
+	system "websql/internal/app/system"
+	idgen "websql/internal/pkg/idgen"
 
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -460,6 +460,14 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				break
 			}
+			if strings.Contains(event.Err.Error(), "stream reader is empty") || strings.Contains(event.Err.Error(), "concat stream reader fail") {
+				sess.RemoveTrailingIncompleteToolCalls()
+				if fullResponse.Len() > 0 {
+					_ = sess.SaveToDB()
+				}
+				flush(StreamChunk{Type: "error", Content: "AI 处理遇到内部错误，前置工具调用可能未成功。你可以重新提问或提供更具体的指令，AI 会重新尝试处理。"})
+				break
+			}
 			errMsg := extractRootErrorMessage(event.Err)
 			flush(StreamChunk{Type: "error", Content: "AI 处理出错：" + errMsg})
 			break
@@ -763,7 +771,8 @@ func buildStaticPromptPart(dbType string) string {
 3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
 4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
 5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
-6. **禁止猜测表名**：当用户未指定表名时，必须先调用 list_tables 获取表列表及表注释，通过表注释判断目标表。只有在 list_tables 返回的表注释无法判断目标表时，才可以向用户询问确认，绝不允许凭空猜测表名
+6. **优先使用 Skill 导出**：生成 Word/PPT/Excel 报告时，直接调用 export_ppt、export_analysis_docx 或 export_excel 专属工具即可。这些工具内部会优先使用 Python Skill 生成高质量文档，若 Skill 失败则自动回退到 Go 原生实现。无需手动通过 skill、read_file、write_file、execute 工具自行拼装导出流程。
+7. **禁止猜测表名**：当用户未指定表名时，必须先调用 list_tables 获取表列表及表注释，通过表注释判断目标表。只有在 list_tables 返回的表注释无法判断目标表时，才可以向用户询问确认，绝不允许凭空猜测表名
 `)
 
 	sb.WriteString(`

@@ -227,7 +227,7 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 				return "", err
 			}
 			log.Printf("[ToolErrorRecovery] tool %s error → result - err=%v\n", tCtx.Name, err)
-			return fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error()), nil
+			return fmt.Sprintf("[tool call failed] %s\n%s", err.Error(), recoveryHint(tCtx.Name, argumentsInJSON, err)), nil
 		}
 		return result, nil
 	}, nil
@@ -245,11 +245,49 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 				return nil, err
 			}
 			log.Printf("[ToolErrorRecovery:Stream] tool %s error → result - err=%v\n", tCtx.Name, err)
-			errMsg := fmt.Sprintf("[tool call failed] %s\nPlease adjust parameters and retry.", err.Error())
+			errMsg := fmt.Sprintf("[tool call failed] %s\n%s", err.Error(), recoveryHint(tCtx.Name, argumentsInJSON, err))
 			return schema.StreamReaderFromArray([]string{errMsg}), nil
 		}
 		return result, nil
 	}, nil
+}
+
+func recoveryHint(toolName, args string, err error) string {
+	errStr := err.Error()
+	isExecuteOrSkill := toolName == "execute" || toolName == "skill"
+	if !isExecuteOrSkill {
+		return "Please adjust parameters and retry."
+	}
+
+	isPipOrPython := strings.Contains(args, "pip") ||
+		strings.Contains(args, "python") ||
+		strings.Contains(args, "matplotlib") ||
+		strings.Contains(args, "pptx") ||
+		strings.Contains(args, "docx")
+
+	isEncodingOrSyntax := strings.Contains(errStr, "UnicodeEncodeError") ||
+		strings.Contains(errStr, "SyntaxError") ||
+		strings.Contains(errStr, "gbk") ||
+		strings.Contains(errStr, "unterminated string") ||
+		strings.Contains(errStr, "illegal multibyte")
+
+	isSkillExport := strings.Contains(args, "export-word") ||
+		strings.Contains(args, "export-ppt") ||
+		strings.Contains(args, "word_generator") ||
+		strings.Contains(args, "export_ppt.py") ||
+		strings.Contains(args, "generate_notice") ||
+		strings.Contains(args, "check_fonts") ||
+		strings.Contains(args, "check_deps")
+
+	if isPipOrPython && (isEncodingOrSyntax || isSkillExport) {
+		return "Python skill execution failed on Windows. Use dedicated export tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. These tools internally prefer Python Skill (same quality) with automatic Go fallback - no manual script assembly needed."
+	}
+
+	if isSkillExport {
+		return "Skill script execution failed. Use dedicated export tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. They automatically try Python Skill first and fallback to Go if needed."
+	}
+
+	return "Please adjust parameters and retry."
 }
 
 type ToolCallLoggingMiddleware struct {

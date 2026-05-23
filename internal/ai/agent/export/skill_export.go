@@ -475,8 +475,8 @@ func NewSkillExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, inp
 
 		if IsPythonAvailable() {
 			_, err := SkillExportWord(ctx, qr, title, fileName, input.IncludeChart, chartImagePaths)
-			cleanupFiles(chartImagePaths)
 			if err == nil {
+				cleanupFiles(chartImagePaths)
 				url := fmt.Sprintf("/exports/%s.docx", fileName)
 				log.Printf("[Tool:export_docx:Skill] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
 				return &ExportAnalysisDocxOutput{
@@ -558,8 +558,8 @@ func NewSkillExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *Expor
 
 		if IsPythonAvailable() {
 			_, slideCount, err := SkillExportPPT(ctx, qr, title, fileName, chartPaths)
-			cleanupFiles(chartPaths)
 			if err == nil {
+				cleanupFiles(chartPaths)
 				url := fmt.Sprintf("/exports/%s.pptx", fileName)
 				log.Printf("[Tool:export_ppt:Skill] 成功 - slides=%d, url=%s\n", slideCount, url)
 				return &ExportPPTOutput{
