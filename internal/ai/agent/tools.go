@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
-	"websql/internal/pkg/idgen"
 	conn "websql/internal/app/conn"
 	"log"
 	"regexp"
@@ -179,10 +179,11 @@ func resolveConnID(defaultConnID, connID string, connLookup map[string]string) s
 	return connID
 }
 
-func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+		startTime := time.Now()
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
 		conn, _ := GetConn(targetConnID)
@@ -191,7 +192,9 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 			if len(schemaNames) > 0 {
 				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
 			}
-			return nil, fmt.Errorf("%s", msg)
+			err := fmt.Errorf("%s", msg)
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			return nil, err
 		}
 		sql := strings.TrimSpace(input.SQL)
 		stripped := stripSQLComments(sql)
@@ -199,13 +202,17 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "WITH") {
-			return nil, errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
+			err := errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			return nil, err
 		}
 		if strings.HasPrefix(upper, "WITH") {
 			writeKW := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
 			for _, kw := range writeKW {
 				if strings.Contains(strings.ToUpper(stripped), kw) {
-					return nil, fmt.Errorf("query_data does not allow write operations (%s) in WITH, use exec_sql", strings.TrimSpace(kw))
+					err := fmt.Errorf("query_data does not allow write operations (%s) in WITH, use exec_sql", strings.TrimSpace(kw))
+					recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+					return nil, err
 				}
 			}
 		}
@@ -231,18 +238,42 @@ func NewQueryFunc(connId string, schemas []SchemaRef) func(ctx context.Context, 
 						defer altRows.Close()
 						cols, _ := altRows.Columns()
 						data := database.GetResultRows(altConn.DriverName(), altRows)
+						recordQueryAudit(auditCtx, input.SQL, altConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
 						return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
 					}
 					log.Printf("[Tool:query_data] 自动路由查询也失败: %v，返回原始错误\n", altErr)
 				}
 			}
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
 			return nil, fmt.Errorf("query failed: %w", err)
 		}
 		defer rows.Close()
 		cols, _ := rows.Columns()
 		data := database.GetResultRows(conn.DriverName(), rows)
+		recordQueryAudit(auditCtx, input.SQL, targetConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
 		return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
 	}
+}
+
+func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affectedRows, execTimeMs int, errorMsg string) {
+	if auditCtx == nil {
+		return
+	}
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:       "agent",
+		ToolName:     "query_data",
+		SQLText:      sql,
+		SQLType:      "SELECT",
+		RiskLevel:    "low",
+		Status:       status,
+		ConnID:       connID,
+		SessionID:    auditCtx.SessionID,
+		UserID:       auditCtx.UserID,
+		UserName:     auditCtx.UserName,
+		AffectedRows: affectedRows,
+		ExecTimeMs:   execTimeMs,
+		ErrorMsg:     errorMsg,
+	})
 }
 
 func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string) (string, *sqlx.DB, string) {
@@ -398,6 +429,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+		startTime := time.Now()
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, targetConnID)
 		sql := strings.TrimSpace(input.SQL)
@@ -418,26 +450,41 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 			return nil, fmt.Errorf("%s", msg)
 		}
 
-		// 审计日志
-		auditID := idgen.RandomStr()
 		sqlType := detectSQLType(sql)
 		riskLevel := detectRiskLevel(sql)
 
 		result, err := conn.ExecContext(ctx, sql)
 		if err != nil {
-			if auditCtx != nil {
-				InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, targetConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "failed", 0, err.Error())
-			}
+			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
 			return nil, fmt.Errorf("exec failed on conn=%s: %w", targetConnID, err)
 		}
 		affected, _ := result.RowsAffected()
-		if auditCtx != nil {
-			InsertSQLAudit(auditID, auditCtx.UserID, auditCtx.UserName, targetConnID, auditCtx.SessionID, sql, sqlType, riskLevel, "success", int(affected), "")
-		}
+		recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "success", int(affected), int(time.Since(startTime).Milliseconds()), "")
 		msg := fmt.Sprintf("ok, %d rows affected（连接：%s）", affected, targetConnID)
 		log.Printf("[Tool:exec_sql] ok - %s\n", msg)
 		return &ExecOutput{AffectedRows: affected, Message: msg}, nil
 	}
+}
+
+func recordExecAudit(auditCtx *ExecAuditCtx, sql, connID, sqlType, riskLevel, status string, affectedRows, execTimeMs int, errorMsg string) {
+	if auditCtx == nil {
+		return
+	}
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:       "agent",
+		ToolName:     "exec_sql",
+		SQLText:      sql,
+		SQLType:      sqlType,
+		RiskLevel:    riskLevel,
+		Status:       status,
+		ConnID:       connID,
+		SessionID:    auditCtx.SessionID,
+		UserID:       auditCtx.UserID,
+		UserName:     auditCtx.UserName,
+		AffectedRows: affectedRows,
+		ExecTimeMs:   execTimeMs,
+		ErrorMsg:     errorMsg,
+	})
 }
 
 func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
@@ -727,7 +774,7 @@ type ImportDataOutput struct {
 	UpdatedRows  int    `json:"updatedRows"`
 }
 
-func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
+func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 		log.Printf("[Tool:import_data] fileId=%s, table=%s, mode=%s\n", input.FileID, input.TableName, input.Mode)
 		conn, _ := GetConn(connID)
@@ -877,10 +924,22 @@ func NewImportDataFunc(connID, dbType, dbSchema string) func(ctx context.Context
 		}
 		RemoveUploadedFile(input.FileID)
 
-		// 审计日志
-		auditID := idgen.RandomStr()
-		auditSQL := fmt.Sprintf("IMPORT INTO %s (%d rows, mode=%s)", input.TableName, insertedRows+updatedRows, mode)
-		InsertSQLAudit(auditID, "", "", connID, "", auditSQL, "IMPORT", "medium", "success", insertedRows+updatedRows, "")
+		if auditCtx != nil {
+			auditSQL := fmt.Sprintf("IMPORT INTO %s (%d rows, mode=%s)", input.TableName, insertedRows+updatedRows, mode)
+			audit.GetAuditService().Record(&audit.AuditEntry{
+				Source:       "agent",
+				ToolName:     "import_data",
+				SQLText:      auditSQL,
+				SQLType:      "IMPORT",
+				RiskLevel:    "medium",
+				Status:       "success",
+				ConnID:       connID,
+				SessionID:    auditCtx.SessionID,
+				UserID:       auditCtx.UserID,
+				UserName:     auditCtx.UserName,
+				AffectedRows: insertedRows + updatedRows,
+			})
+		}
 
 		var mappingDesc strings.Builder
 		for i, idx := range excelIndices {

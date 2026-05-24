@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"websql/internal/audit"
 	appperm "websql/internal/app/permission"
-	"websql/internal/pkg/idgen"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -170,10 +170,18 @@ func (m *PermissionMiddleware) logInfo(toolName, format string, args ...any) {
 }
 
 func (m *PermissionMiddleware) auditPermDenied(toolName, reason string, objects []string) {
-	auditID := idgen.RandomStr()
 	detail := fmt.Sprintf("tool=%s reason=%s objects=%v", toolName, reason, objects)
-	InsertSQLAudit(auditID, m.Scope.UserID, "", m.Scope.ConnID, "",
-		detail, "PERM_DENIED", "high", "denied", 0, detail)
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:    "agent",
+		ToolName:  toolName,
+		SQLText:   detail,
+		SQLType:   "PERM_DENIED",
+		RiskLevel: "high",
+		Status:    "denied",
+		ConnID:    m.Scope.ConnID,
+		UserID:    m.Scope.UserID,
+		ErrorMsg:  detail,
+	})
 }
 
 func (m *PermissionMiddleware) WrapInvokableToolCall(

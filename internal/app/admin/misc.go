@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"websql/internal/config"
@@ -95,8 +96,14 @@ func ListBackupData(c *gin.Context) {
 		return
 	}
 
-	current := c.GetInt("current")
-	pageSize := c.GetInt("pageSize")
+	current, _ := strconv.Atoi(c.DefaultQuery("current", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "12"))
+	if current < 1 {
+		current = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 12
+	}
 	offset := (current - 1) * pageSize
 
 	if user.Id != config.AdminId {

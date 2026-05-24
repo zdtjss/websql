@@ -36,8 +36,9 @@
                       :key="col.name"
                       :prop="col.name"
                       :label="col.name"
-                      min-width="120"
+                      :width="getColumnWidth(col.name)"
                       :show-overflow-tooltip="true"
+                      resizable
                     />
                   </el-table>
                 </div>
@@ -147,6 +148,25 @@ const thinkingExpanded = ref(false)
 const optimizeContent = ref('')
 const optimizeError = ref('')
 const abortController = ref(null)
+
+const explainColumnWidths = {
+  id: 100,
+  select_type: 150,
+  table: 350,
+  partitions: 100,
+  type: 100,
+  possible_keys: 170,
+  key: 150,
+  key_len: 100,
+  ref: 200,
+  rows: 100,
+  filtered: 100,
+  Extra: 380,
+}
+
+function getColumnWidth(colName) {
+  return explainColumnWidths[colName] || 130
+}
 
 const drawerHeight = ref(45)
 let dragging = false

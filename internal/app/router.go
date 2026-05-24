@@ -25,6 +25,7 @@ import (
 	syncdb "websql/internal/app/sync"
 	"websql/internal/app/system"
 	tree "websql/internal/app/treehandler"
+	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/middleware"
@@ -146,8 +147,13 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 	routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
 	routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
-	routerGroup.GET("/ai/agent/audit/logs", agentHandler.HandleGetSQLAuditLogs)
 	routerGroup.GET("/exports/:filename", handleExportDownload)
+
+	// 审计日志 API
+	routerGroup.GET("/audit/logs", audit.HandleGetAuditLogs)
+	routerGroup.GET("/audit/stats", audit.HandleGetAuditStats)
+	routerGroup.GET("/audit/config/get", audit.HandleGetAuditConfig)
+	routerGroup.POST("/audit/config/save", audit.HandleSaveAuditConfig)
 
 	// 数据同步与结构同步
 	routerGroup.POST("/sync/compareSchema", syncdb.CompareSchema)

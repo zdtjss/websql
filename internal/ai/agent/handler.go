@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/pkg/idgen"
 	admin "websql/internal/app/admin"
@@ -359,40 +357,6 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
-}
-
-func (h *Handler) HandleGetSQLAuditLogs(c *gin.Context) {
-	user := admin.GetUser(c.GetHeader("Authorization"))
-	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
-		return
-	}
-
-	filterUserID := c.Query("userId")
-	startTime := c.Query("startTime")
-	endTime := c.Query("endTime")
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	if pageSize > 200 {
-		pageSize = 200
-	}
-
-	scopeUserID := ""
-	if user.Id != config.AdminId {
-		scopeUserID = user.Id
-		filterUserID = ""
-	}
-
-	logs, total, err := ListSQLAuditLogsFiltered(scopeUserID, filterUserID, startTime, endTime, page, pageSize)
-	if err != nil {
-		log.Printf("[Handler] 获取审计日志失败 - userId=%s, err=%v\n", user.Id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取审计日志失败"})
-		return
-	}
-	if logs == nil {
-		logs = []SQLAuditLog{}
-	}
-	c.JSON(http.StatusOK, gin.H{"data": logs, "total": total})
 }
 
 func GetDBInfo(connID string) (string, string, string) {

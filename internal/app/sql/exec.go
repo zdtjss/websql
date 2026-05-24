@@ -13,6 +13,7 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
+	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
@@ -43,6 +44,7 @@ func ExecSQL(c *gin.Context) {
 	sqlStr := c.PostForm("sql")
 	maxLine := c.PostForm("maxLine")
 	sqlStr = strings.TrimSpace(sqlStr)
+	startTime := time.Now()
 
 	const maxSQLLength = 1024 * 1024
 	if len(sqlStr) > maxSQLLength {
@@ -110,10 +112,23 @@ func ExecSQL(c *gin.Context) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		result, err := batchExec(sqlStr, conn)
 		if err != nil {
+			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err.Error())
 			writeSQLError(c, err)
 			return
 		}
 		rspData.Data = result
+		totalAffected := 0
+		for _, row := range result {
+			if v, ok := row["受影响行数"]; ok {
+				switch n := v.(type) {
+				case int:
+					totalAffected += n
+				case int64:
+					totalAffected += int(n)
+				}
+			}
+		}
+		recordEditorAudit(c, user, connId, sqlStr, "success", totalAffected, startTime, "")
 		jsonutil.WriteJson(c.Writer, rspData)
 	} else {
 		params := make([]any, 0)
@@ -136,6 +151,7 @@ func ExecSQL(c *gin.Context) {
 		}
 
 		if err2 != nil {
+			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err2.Error())
 			writeSQLError(c, err2)
 			return
 		}
@@ -143,6 +159,7 @@ func ExecSQL(c *gin.Context) {
 
 		cts, err3 := rows.ColumnTypes()
 		if err3 != nil {
+			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err3.Error())
 			writeSQLError(c, err3)
 			return
 		}
@@ -176,6 +193,7 @@ func ExecSQL(c *gin.Context) {
 
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
+		recordEditorAudit(c, user, connId, sqlStr, "success", len(data), startTime, "")
 		jsonutil.WriteJson(c.Writer, rspData)
 	}
 }
@@ -343,4 +361,58 @@ func isSimpleQuery(sqlStr string) bool {
 		return false
 	}
 	return true
+}
+
+func recordEditorAudit(c *gin.Context, user *admin.User, connID, sqlStr, status string, affectedRows int, startTime time.Time, errorMsg string) {
+	if user == nil {
+		return
+	}
+	execTimeMs := int(time.Since(startTime).Milliseconds())
+	sqlType := detectSQLTypeForEditor(sqlStr)
+	riskLevel := detectRiskLevelForEditor(sqlStr)
+
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:       "sqleditor",
+		SQLText:      sqlStr,
+		SQLType:      sqlType,
+		RiskLevel:    riskLevel,
+		Status:       status,
+		ConnID:       connID,
+		UserID:       user.Id,
+		UserName:     user.Name,
+		ClientIP:     c.ClientIP(),
+		AffectedRows: affectedRows,
+		ExecTimeMs:   execTimeMs,
+		ErrorMsg:     errorMsg,
+	})
+}
+
+func detectSQLTypeForEditor(sql string) string {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	prefixes := []string{"SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH",
+		"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "REPLACE", "MERGE"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(upper, prefix) {
+			return prefix
+		}
+	}
+	return "OTHER"
+}
+
+func detectRiskLevelForEditor(sql string) string {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	if strings.HasPrefix(upper, "DROP") || strings.HasPrefix(upper, "TRUNCATE") {
+		return "high"
+	}
+	if strings.HasPrefix(upper, "DELETE") || strings.HasPrefix(upper, "ALTER") {
+		if !strings.Contains(upper, "WHERE") {
+			return "high"
+		}
+		return "medium"
+	}
+	if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "SHOW") ||
+		strings.HasPrefix(upper, "DESCRIBE") || strings.HasPrefix(upper, "EXPLAIN") {
+		return "low"
+	}
+	return "medium"
 }

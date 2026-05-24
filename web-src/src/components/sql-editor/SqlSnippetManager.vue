@@ -2,9 +2,12 @@
   <el-drawer
     v-model="visible"
     title="SQL 收藏夹"
-    size="420px"
+    :size="snippetDrawerWidth + 'px'"
     @close="visible = false"
   >
+    <div v-if="visible" class="drawer-drag-handle"
+        :style="{ right: snippetDrawerWidth + 'px' }"
+        @mousedown="onSnippetDrawerDragStart"></div>
     <div class="snippet-actions">
       <el-button size="small" type="primary" @click="showAddSnippet()">+ 添加当前 SQL</el-button>
     </div>
@@ -76,6 +79,8 @@ const snippets = ref([])
 const searchText = ref('')
 const addDialogVisible = ref(false)
 const formRef = useTemplateRef('formRef')
+const snippetDrawerWidth = ref(420)
+const isDraggingSnippet = ref(false)
 
 const formData = ref({ name: '', sql: '' })
 
@@ -132,6 +137,27 @@ function deleteSnippet(id) {
 function applySnippet(snippet) {
   emit('apply', snippet.sql)
   visible.value = false
+}
+
+function onSnippetDrawerDragStart(e) {
+  isDraggingSnippet.value = true
+  document.addEventListener('mousemove', onSnippetDrawerDragMove)
+  document.addEventListener('mouseup', onSnippetDrawerDragEnd)
+  e.preventDefault()
+}
+
+function onSnippetDrawerDragMove(e) {
+  if (!isDraggingSnippet.value) return
+  const newWidth = window.innerWidth - e.clientX
+  if (newWidth >= 280 && newWidth <= 1000) {
+    snippetDrawerWidth.value = newWidth
+  }
+}
+
+function onSnippetDrawerDragEnd() {
+  isDraggingSnippet.value = false
+  document.removeEventListener('mousemove', onSnippetDrawerDragMove)
+  document.removeEventListener('mouseup', onSnippetDrawerDragEnd)
 }
 
 onMounted(() => {
@@ -199,5 +225,20 @@ onMounted(() => {
   max-height: 80px;
   overflow: hidden;
   color: #606266;
+}
+
+.drawer-drag-handle {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 3000;
+  background: transparent;
+  transition: background 0.2s;
+}
+
+.drawer-drag-handle:hover {
+  background: rgba(64, 158, 255, 0.3);
 }
 </style>

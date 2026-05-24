@@ -37,6 +37,11 @@
         <el-tab-pane label="SQL 审计" name="audit" lazy>
           <SQLAuditLog />
         </el-tab-pane>
+
+        <!-- 审计配置 -->
+        <el-tab-pane label="审计配置" name="auditConfig" lazy>
+          <AuditConfig />
+        </el-tab-pane>
       </el-tabs>
     </div>
   </div>
@@ -52,6 +57,7 @@ import ConnManagement from './ConnManagement.vue'
 import DirManagement from './DirManagement.vue'
 import SystemConfig from './SystemConfig.vue'
 import SQLAuditLog from './SQLAuditLog.vue'
+import AuditConfig from './AuditConfig.vue'
 
 const router = useRouter()
 const activeTab = ref('system')

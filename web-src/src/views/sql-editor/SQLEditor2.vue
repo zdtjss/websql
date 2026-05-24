@@ -59,7 +59,11 @@
             </el-splitter-panel>
             <el-splitter-panel size="45%">
                 <div style="height: 100%; display: flex; flex-direction: column;">
-                    <div style="flex: 1; overflow: hidden;">
+                    <div v-if="sqlError" class="sql-exec-error">
+                        <div class="sql-exec-error-title">SQL 执行异常</div>
+                        <div class="sql-exec-error-body">{{ sqlError }}</div>
+                    </div>
+                    <div v-else style="flex: 1; overflow: hidden;">
                         <el-auto-resizer>
                             <template #default="{ height: autoHeight, width: autoWidth }">
                                 <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }" @paste="handlePaste2" @keydown="onTableKeydown2">
@@ -98,7 +102,10 @@
             <pre style="white-space: pre;">{{ backupData }}</pre>
         </template>
     </el-drawer>
-    <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" size="600px">
+    <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" :size="sqlDrawerWidth + 'px'">
+        <div v-if="sqlHistoryDrawerShow" class="drawer-drag-handle"
+            :style="{ right: sqlDrawerWidth + 'px' }"
+            @mousedown="onDrawerDragStart"></div>
         <div style="margin-bottom: 12px;">
             <el-input v-model="sqlHistorySearch" placeholder="搜索 SQL..." clearable size="small" />
         </div>
@@ -111,11 +118,13 @@
                     <el-tag v-else type="danger" size="small">DELETE</el-tag>
                 </template>
             </el-table-column>
-            <el-table-column prop="exec_sql" label="SQL" show-overflow-tooltip resizable>
+            <el-table-column prop="exec_sql" label="SQL" resizable>
                 <template #default="scope">
-                    <span style="cursor: pointer; color: #409eff;" @click="applySqlFromHistory(scope.row.exec_sql)" title="点击填入编辑器">
-                        {{ scope.row.exec_sql }}
-                    </span>
+                    <el-tooltip :content="scope.row.exec_sql" placement="top" popper-class="sql-history-tooltip" :show-after="400">
+                        <span class="sql-history-text" @click="applySqlFromHistory(scope.row.exec_sql)">
+                            {{ scope.row.exec_sql }}
+                        </span>
+                    </el-tooltip>
                 </template>
             </el-table-column>
             <el-table-column label="操作" width="50" resizable>
@@ -262,6 +271,7 @@ const exportDialogVisible = ref(false)
 
 const exectingSql = ref(false)
 const executionTime = ref<number | null>(null)
+const sqlError = ref('')
 const snippetVisible = ref(false)
 const optimizePanelVisible = ref(false)
 const optimizeSql = ref('')
@@ -319,6 +329,8 @@ const sqlHistorySearch = ref('')
 const sqlHistoryTotal = ref(0)
 const sqlHistoryCurrent = ref(1)
 const sqlHistoryPageSize = ref(12)
+const sqlDrawerWidth = ref(600)
+const isDraggingDrawer = ref(false)
 
 const filteredSqlHistory = computed(() => {
     const kw = sqlHistorySearch.value.trim().toLowerCase()
@@ -335,6 +347,27 @@ function showSqlHistory() {
             sqlHistoryTotal.value = resp.data.data.total || 0
             sqlHistoryDrawerShow.value = true
         })
+}
+
+function onDrawerDragStart(e: MouseEvent) {
+    isDraggingDrawer.value = true
+    document.addEventListener('mousemove', onDrawerDragMove)
+    document.addEventListener('mouseup', onDrawerDragEnd)
+    e.preventDefault()
+}
+
+function onDrawerDragMove(e: MouseEvent) {
+    if (!isDraggingDrawer.value) return
+    const newWidth = window.innerWidth - e.clientX
+    if (newWidth >= 300 && newWidth <= 1200) {
+        sqlDrawerWidth.value = newWidth
+    }
+}
+
+function onDrawerDragEnd() {
+    isDraggingDrawer.value = false
+    document.removeEventListener('mousemove', onDrawerDragMove)
+    document.removeEventListener('mouseup', onDrawerDragEnd)
 }
 
 async function handleSqlFile(options: any) {
@@ -585,6 +618,7 @@ function exec() {
     currentSelectTable.value = extractTableName(sqlExec)
     exectingSql.value = true
     executionTime.value = null
+    sqlError.value = ''
     const startTime = performance.now()
     const params = new URLSearchParams()
     params.append("connId", connId)
@@ -731,7 +765,9 @@ function exec() {
             });
             exectingSql.value = false
         }).catch((error) => {
-            console.log(error);
+            sqlError.value = error.message || '执行失败'
+            columns.value = []
+            result.value = []
             exectingSql.value = false
         });
 }
@@ -1488,6 +1524,74 @@ const dragEnd = (e: DragEvent) => {
     white-space: nowrap;
     margin-right: 4px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.sql-exec-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.sql-exec-error-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #f56c6c;
+    margin-bottom: 16px;
+}
+
+.sql-exec-error-body {
+    font-size: 13px;
+    color: var(--text-secondary, #909399);
+    max-width: 600px;
+    word-break: break-all;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+[data-theme="dark"] .sql-exec-error-title {
+    color: #f89898;
+}
+
+[data-theme="dark"] .sql-exec-error-body {
+    color: #b0b0b0;
+}
+
+.drawer-drag-handle {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    z-index: 3000;
+    background: transparent;
+    transition: background 0.2s;
+}
+
+.drawer-drag-handle:hover {
+    background: rgba(64, 158, 255, 0.3);
+}
+
+.sql-history-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    color: #409eff;
+}
+
+.sql-history-tooltip {
+    max-width: 500px !important;
+    word-break: break-all;
+    white-space: pre-wrap;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .inline-edit-badge {

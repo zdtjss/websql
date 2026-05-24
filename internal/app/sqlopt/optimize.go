@@ -353,7 +353,7 @@ func OptimizeSQLStream(c *gin.Context) {
 
 func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef) ([]tool.BaseTool, error) {
 	schemaTool, _ := toolutils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，包含字段名、类型、索引等", agentv2.NewSchemaFunc(connId, dbType, dbSchema, schemas))
-	queryTool, _ := toolutils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", agentv2.NewQueryFunc(connId, schemas))
+	queryTool, _ := toolutils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", agentv2.NewQueryFunc(connId, schemas, nil))
 
 	var validTools []tool.BaseTool
 	if schemaTool != nil {
