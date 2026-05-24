@@ -617,6 +617,8 @@ func getTableSchema(conn *sqlx.DB, dbType, schema, table string) (*TableSchema, 
 	switch dbType {
 	case "oracle":
 		conn.Get(&comment, "SELECT COMMENTS FROM USER_TAB_COMMENTS WHERE TABLE_NAME = :1", table)
+	case "sqlite":
+		comment = ""
 	default:
 		conn.Get(&comment, "SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?", schema, table)
 	}
@@ -701,6 +703,13 @@ func generateShowDDL(conn *sqlx.DB, dbType, table string) string {
 		var ddl string
 		err := conn.Get(&ddl, "SELECT DBMS_METADATA.GET_DDL('TABLE', :1) FROM DUAL", table)
 		if err != nil {
+			return ""
+		}
+		return ddl
+	case "sqlite":
+		var ddl string
+		err := conn.Get(&ddl, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table)
+		if err != nil || ddl == "" {
 			return ""
 		}
 		return ddl

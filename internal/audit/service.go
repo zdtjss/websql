@@ -145,7 +145,7 @@ func (w *asyncWriter) enqueue(record *AuditLog) {
 	select {
 	case w.ch <- record:
 	default:
-		logger.PrintErrf("审计日志队列已满，丢弃记录: %s", nil, record.SQLText[:min(100, len(record.SQLText))])
+		logger.PrintErrf("审计日志队列已满，丢弃记录: %s", nil, record.SQLText)
 	}
 }
 
@@ -210,7 +210,7 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 			r.SessionID, r.SQLText, r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
 			r.AffectedRows, r.ExecTimeMs, r.ExecTime, r.ErrorMsg, r.ClientIP)
 		if err != nil {
-			logger.PrintErrf("审计日志写入失败: %s", err, r.SQLText[:min(100, len(r.SQLText))])
+			logger.PrintErrf("审计日志写入失败: %s", err, r.SQLText)
 		}
 	}
 

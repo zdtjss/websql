@@ -3,10 +3,10 @@ package dialect
 import (
 	"bytes"
 	"fmt"
-	"websql/internal/logger"
 	"strconv"
 	"strings"
 	"time"
+	"websql/internal/logger"
 
 	"slices"
 )
@@ -24,6 +24,37 @@ var SQL_DIALECT = map[string]map[string]string{
 		"tableOptions":     "SELECT ENGINE,TABLE_COLLATION,TABLE_COMMENT,ROW_FORMAT,AUTO_INCREMENT,CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
 		"tableStatistics":  "SELECT TABLE_ROWS,DATA_LENGTH,INDEX_LENGTH,DATA_FREE,AVG_ROW_LENGTH,CREATE_TIME,UPDATE_TIME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
 		"listIndexes":      "SELECT INDEX_NAME,COLUMN_NAME,NON_UNIQUE,SEQ_IN_INDEX,INDEX_TYPE,NULLABLE,COMMENT,INDEX_COMMENT FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME,SEQ_IN_INDEX",
+	},
+	"sqlite": {
+		"listSchema": "SELECT 'main' AS schema_name",
+		"listTable":  "SELECT name AS TABLE_NAME, type AS TABLE_TYPE, '' AS table_comment FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND ?1 = ?1 ORDER BY name",
+		"listColumns": `SELECT ci.name || ' ' || ci.type AS column_name, '' AS COLUMN_COMMENT
+			FROM pragma_table_info(?1) AS ci`,
+		"listAllColumns": `SELECT m.name AS TABLE_NAME, '' AS column_name, '' AS COLUMN_COMMENT
+			FROM sqlite_master m WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' AND ?1 = ?1 ORDER BY m.name`,
+		"listTableColumns": `SELECT ci.name AS COLUMN_NAME, ci.type AS COLUMN_TYPE,
+			CASE WHEN ci."notnull" = 1 THEN 'NO' ELSE 'YES' END AS IS_NULLABLE,
+			ci.dflt_value AS COLUMN_DEFAULT,
+			'' AS COLUMN_COMMENT,
+			CASE WHEN ci.pk > 0 THEN 'PRI' ELSE '' END AS COLUMN_KEY,
+			ci.cid AS ORDINAL_POSITION,
+			NULL AS CHARACTER_MAXIMUM_LENGTH,
+			'' AS EXTRA
+			FROM pragma_table_info(?2) AS ci WHERE (?1 = ?1) ORDER BY ci.cid`,
+		"ColumnMap":       "SELECT name AS COLUMN_NAME, '' AS column_comment FROM pragma_table_info(?1) WHERE (?2 = ?2)",
+		"QueryPrimaryKey": "SELECT name AS column_name FROM pragma_table_info(?2) WHERE pk > 0 AND (?1 = ?1)",
+		"QueryColType":    "SELECT name AS column_name, type AS DATA_TYPE FROM pragma_table_info(?2) WHERE (?1 = ?1)",
+		"tableOptions":    "SELECT '' AS ENGINE, '' AS TABLE_COLLATION, '' AS TABLE_COMMENT, '' AS ROW_FORMAT, 0 AS AUTO_INCREMENT, '' AS CREATE_OPTIONS WHERE (?1 = ?1) AND (?2 = ?2) LIMIT 1",
+		"tableStatistics": "SELECT 0 AS TABLE_ROWS, 0 AS DATA_LENGTH, 0 AS INDEX_LENGTH, 0 AS DATA_FREE, 0 AS AVG_ROW_LENGTH, '' AS CREATE_TIME, '' AS UPDATE_TIME WHERE (?1 = ?1) AND (?2 = ?2) LIMIT 1",
+		"listIndexes": `SELECT il.name AS INDEX_NAME, ii.name AS COLUMN_NAME,
+			CASE WHEN il.origin = 'pk' THEN 0 ELSE CASE WHEN il."unique" = 1 THEN 0 ELSE 1 END END AS NON_UNIQUE,
+			ii.seqno AS SEQ_IN_INDEX,
+			'' AS INDEX_TYPE,
+			'YES' AS NULLABLE,
+			'' AS COMMENT,
+			'' AS INDEX_COMMENT
+			FROM pragma_index_list(?2) AS il JOIN pragma_index_info(il.name) AS ii
+			WHERE (?1 = ?1) ORDER BY il.name, ii.seqno`,
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual order by schema_name",

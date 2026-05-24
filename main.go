@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	app "websql/internal/app"
+	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/https"
@@ -49,6 +50,9 @@ func main() {
 	// 从数据库加载系统配置（覆盖配置文件中的配置）
 	database.LoadConfigFromDB()
 
+	audit.GetAuditService()
+	audit.StartAuditLogCleaner()
+
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
 	}
@@ -79,6 +83,7 @@ func main() {
 	s := <-c
 	log.Printf("服务正在关闭 %s......", s)
 	sqlhand.ShutdownHistoryWriter()
+	audit.GetAuditService().Shutdown()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

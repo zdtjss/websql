@@ -4,15 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"websql/internal/audit"
-	"websql/internal/database"
-	"websql/internal/logger"
-	"websql/internal/pkg/crypto"
-	conn "websql/internal/app/conn"
 	"log"
 	"regexp"
 	"strings"
 	"time"
+	conn "websql/internal/app/conn"
+	"websql/internal/audit"
+	"websql/internal/database"
+	"websql/internal/logger"
+	"websql/internal/pkg/crypto"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -118,7 +118,7 @@ func GetConn(connId string) (*sqlx.DB, string) {
 		return ""
 	}
 	pwd := ""
-	if cfg.Pwd != nil {
+	if cfg.Pwd != nil && cfg.DbType != "sqlite" {
 		pwd = crypto.AESDecode(*cfg.Pwd)
 	}
 	conn := database.GetConn(&database.DBParam{

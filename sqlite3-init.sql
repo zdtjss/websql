@@ -104,27 +104,47 @@ CREATE TABLE IF NOT EXISTS t_ai_session (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- SQL 审计日志表（记录危险 SQL 的执行）
-CREATE TABLE IF NOT EXISTS t_sql_audit (
+CREATE TABLE IF NOT EXISTS t_audit_log (
 	id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL,
 	user_name TEXT,
 	conn_id TEXT NOT NULL,
+	conn_name TEXT,
+	schema_name TEXT,
 	session_id TEXT,
 	sql_text TEXT NOT NULL,
 	sql_type TEXT,
 	risk_level TEXT,
-	status TEXT NOT NULL DEFAULT 'confirmed',
+	status TEXT NOT NULL DEFAULT 'success',
+	source TEXT NOT NULL DEFAULT 'sqleditor',
+	tool_name TEXT,
 	affected_rows INTEGER DEFAULT 0,
+	exec_time_ms INTEGER DEFAULT 0,
 	exec_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-	confirm_time DATETIME,
-	error_msg TEXT
+	error_msg TEXT,
+	client_ip TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_user_id ON t_audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_conn_id ON t_audit_log(conn_id);
+CREATE INDEX IF NOT EXISTS idx_audit_exec_time ON t_audit_log(exec_time);
+CREATE INDEX IF NOT EXISTS idx_audit_source ON t_audit_log(source);
+CREATE INDEX IF NOT EXISTS idx_audit_sql_type ON t_audit_log(sql_type);
+CREATE INDEX IF NOT EXISTS idx_audit_risk_level ON t_audit_log(risk_level);
+CREATE INDEX IF NOT EXISTS idx_audit_session_id ON t_audit_log(session_id);
 
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000001', 'ai.modelList', '[{"id":"model_default_001","provider":"ollama","baseUrl":"https://ollama.com","model":"deepseek-v3.2","apiKey":"","temperature":0.7,"maxTokens":0,"enableThinking":false,"isDefault":true}]', 'ai', 'AI 模型配置列表');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000002', 'ai.selectedModelId', 'model_default_001', 'ai', '当前选中的模型ID');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000003', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL');
 insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000004', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000010', 'audit.enabled', 'true', 'audit', '审计日志全局开关');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000011', 'audit.recordQuery', 'false', 'audit', '是否审计只读查询（SELECT/SHOW/DESCRIBE）');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000012', 'audit.recordWrite', 'true', 'audit', '是否审计写操作（INSERT/UPDATE/DELETE）');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000013', 'audit.recordDangerous', 'true', 'audit', '是否审计高风险操作（DROP/TRUNCATE/ALTER）');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000014', 'audit.recordAgentTools', 'true', 'audit', '是否审计 AI Agent 工具调用');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000015', 'audit.recordSQLEditor', 'true', 'audit', '是否审计 SQL 编辑器直接执行');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000016', 'audit.retentionDays', '90', 'audit', '审计日志保留天数');
+insert or ignore into t_system_config (id, config_key, config_value, config_type, remark) values ('825683877400000017', 'audit.minRiskLevel', 'low', 'audit', '最低记录风险等级（low/medium/high）');
 
 CREATE TABLE IF NOT EXISTS t_prompt (
 	id TEXT PRIMARY KEY,

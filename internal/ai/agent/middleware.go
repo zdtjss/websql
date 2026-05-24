@@ -323,7 +323,7 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 ) (adk.StreamableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		startTime := time.Now()
-		log.Printf("[ToolCall:Stream] 开始调用 - name=%s, args=%s\n", tCtx.Name, truncateStr(argumentsInJSON, 500))
+		log.Printf("[ToolCall:Stream] 开始调用 - name=%s, args=%s\n", tCtx.Name, argumentsInJSON)
 
 		reader, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
@@ -345,7 +345,7 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 					elapsed := time.Since(startTime)
 					content := contentBuf.String()
 					log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v, resultLen=%d, result=%s\n",
-						tCtx.Name, elapsed, len(content), truncateStr(content, 500))
+						tCtx.Name, elapsed, len(content), content)
 					return
 				}
 			}

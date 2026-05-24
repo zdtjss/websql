@@ -15,8 +15,32 @@
           end-placeholder="结束时间"
           format="YYYY-MM-DD HH:mm:ss"
           value-format="YYYY-MM-DD HH:mm:ss"
-          :default-time="[new Date(), new Date()]"
         />
+      </el-form-item>
+      <el-form-item label="来源">
+        <el-select v-model="queryParams.source" placeholder="全部" clearable style="width: 130px;">
+          <el-option label="Agent" value="agent" />
+          <el-option label="SQL编辑器" value="sqleditor" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="SQL类型">
+        <el-select v-model="queryParams.sqlType" placeholder="全部" clearable style="width: 120px;">
+          <el-option label="SELECT" value="SELECT" />
+          <el-option label="INSERT" value="INSERT" />
+          <el-option label="UPDATE" value="UPDATE" />
+          <el-option label="DELETE" value="DELETE" />
+          <el-option label="DROP" value="DROP" />
+          <el-option label="ALTER" value="ALTER" />
+          <el-option label="TRUNCATE" value="TRUNCATE" />
+          <el-option label="IMPORT" value="IMPORT" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="风险等级">
+        <el-select v-model="queryParams.riskLevel" placeholder="全部" clearable style="width: 100px;">
+          <el-option label="高" value="high" />
+          <el-option label="中" value="medium" />
+          <el-option label="低" value="low" />
+        </el-select>
       </el-form-item>
       <el-form-item label="用户">
         <el-select
@@ -32,38 +56,57 @@
           <el-option v-for="user in userList" :key="user.id" :label="`${user.name} (${user.loginName})`" :value="user.id" />
         </el-select>
       </el-form-item>
+      <el-form-item label="关键词">
+        <el-input v-model="queryParams.keyword" placeholder="SQL 关键字" clearable style="width: 180px;" />
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="handleSearch">查询</el-button>
         <el-button @click="handleReset">重置</el-button>
       </el-form-item>
     </el-form>
 
-    <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 340px)" v-loading="loading">
-      <el-table-column prop="execTime" label="执行时间" width="170" sortable resizable>
+    <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 380px)" v-loading="loading">
+      <el-table-column prop="execTime" label="执行时间" width="160" sortable resizable>
         <template #default="{ row }">
           {{ formatDate(row.execTime) }}
         </template>
       </el-table-column>
-      <el-table-column prop="userName" label="用户" width="100" resizable />
+      <el-table-column prop="source" label="来源" width="80" resizable>
+        <template #default="{ row }">
+          <el-tag :type="row.source === 'agent' ? '' : 'info'" size="small">
+            {{ row.source === 'agent' ? 'Agent' : '编辑器' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="userName" label="用户" width="90" resizable />
       <el-table-column prop="sqlType" label="类型" width="90" resizable>
         <template #default="{ row }">
           <el-tag :type="getTypeTag(row.sqlType)" size="small">{{ row.sqlType }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="riskLevel" label="风险" width="80" resizable>
+      <el-table-column prop="riskLevel" label="风险" width="70" resizable>
         <template #default="{ row }">
-          <el-tag :type="row.riskLevel === 'high' ? 'danger' : 'warning'" size="small">{{ row.riskLevel }}</el-tag>
+          <el-tag :type="getRiskTag(row.riskLevel)" size="small">
+            {{ getRiskLabel(row.riskLevel) }}
+          </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="90" resizable>
+      <el-table-column prop="status" label="状态" width="70" resizable>
         <template #default="{ row }">
           <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
             {{ row.status === 'success' ? '成功' : '失败' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="affectedRows" label="影响行数" width="100" resizable />
-      <el-table-column prop="sqlText" label="SQL 语句" min-width="300" show-overflow-tooltip resizable />
+      <el-table-column prop="execTimeMs" label="耗时(ms)" width="90" resizable />
+      <el-table-column prop="affectedRows" label="影响行数" width="90" resizable />
+      <el-table-column prop="sqlText" label="SQL 语句" min-width="300" resizable>
+        <template #default="{ row }">
+          <div class="sql-cell" @click="showSqlDetail(row)" style="cursor: pointer;">
+            <span class="sql-preview">{{ truncateSql(row.sqlText, 80) }}</span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column prop="errorMsg" label="错误信息" width="200" show-overflow-tooltip resizable />
     </el-table>
 
@@ -81,36 +124,50 @@
         size="small"
       />
     </div>
+
+    <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close>
+      <div style="margin-bottom: 8px; color: #909399; font-size: 13px;">
+        执行时间：{{ sqlDetail.execTime ? formatDate(sqlDetail.execTime) : '' }} | 
+        用户：{{ sqlDetail.userName }} | 
+        来源：{{ sqlDetail.source === 'agent' ? 'Agent' : 'SQL编辑器' }}
+      </div>
+      <pre class="sql-full-text">{{ sqlDetail.sqlText }}</pre>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import http from '@/utils/httpProxy.js'
 import { ElMessage } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, reactive } from 'vue'
 
 const logs = ref([])
 const loading = ref(false)
 const userList = ref([])
 const userLoading = ref(false)
-const queryParams = ref({ userId: '' })
+const queryParams = reactive({ userId: '', source: '', sqlType: '', riskLevel: '', keyword: '' })
 const dateRange = ref([])
 const currentPage = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 
+const sqlDialogVisible = ref(false)
+const sqlDetail = ref({})
+
 async function loadLogs() {
   loading.value = true
   try {
     const params = { page: currentPage.value, pageSize: pageSize.value }
-    if (queryParams.value.userId) {
-      params.userId = queryParams.value.userId
-    }
+    if (queryParams.userId) params.userId = queryParams.userId
+    if (queryParams.source) params.source = queryParams.source
+    if (queryParams.sqlType) params.sqlType = queryParams.sqlType
+    if (queryParams.riskLevel) params.riskLevel = queryParams.riskLevel
+    if (queryParams.keyword) params.keyword = queryParams.keyword
     if (dateRange.value && dateRange.value.length === 2) {
       params.startTime = dateRange.value[0]
       params.endTime = dateRange.value[1]
     }
-    const resp = await http.get('/ai/agent/audit/logs', { params })
+    const resp = await http.get('/audit/logs', { params })
     logs.value = resp.data.data || []
     total.value = resp.data.total || 0
   } catch (e) {
@@ -143,7 +200,11 @@ async function searchUsers(query) {
 }
 
 function handleReset() {
-  queryParams.value.userId = ''
+  queryParams.userId = ''
+  queryParams.source = ''
+  queryParams.sqlType = ''
+  queryParams.riskLevel = ''
+  queryParams.keyword = ''
   dateRange.value = []
   currentPage.value = 1
   loadLogs()
@@ -162,8 +223,28 @@ function formatDate(isoString) {
 }
 
 function getTypeTag(type_) {
-  const map = { DROP: 'danger', TRUNCATE: 'danger', DELETE: 'warning', ALTER: 'warning', UPDATE: 'info', INSERT: 'success', CREATE: '' }
+  const map = { DROP: 'danger', TRUNCATE: 'danger', DELETE: 'warning', ALTER: 'warning', UPDATE: 'info', INSERT: 'success', SELECT: '', CREATE: '', IMPORT: 'warning', SHOW: '', DESCRIBE: '', EXPLAIN: '' }
   return map[type_] || ''
+}
+
+function getRiskTag(level) {
+  const map = { high: 'danger', medium: 'warning', low: 'info' }
+  return map[level] || 'info'
+}
+
+function getRiskLabel(level) {
+  const map = { high: '高', medium: '中', low: '低' }
+  return map[level] || level
+}
+
+function truncateSql(sql, maxLen) {
+  if (!sql) return ''
+  return sql.length > maxLen ? sql.substring(0, maxLen) + '...' : sql
+}
+
+function showSqlDetail(row) {
+  sqlDetail.value = row
+  sqlDialogVisible.value = true
 }
 
 onMounted(() => {
@@ -174,5 +255,34 @@ onMounted(() => {
 <style scoped>
 .audit-log-container {
   padding: 16px;
+}
+
+.sql-cell {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.sql-preview {
+  color: #409eff;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+}
+
+.sql-preview:hover {
+  text-decoration: underline;
+}
+
+.sql-full-text {
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  padding: 12px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
 }
 </style>

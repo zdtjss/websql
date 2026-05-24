@@ -3,12 +3,12 @@ package database
 import (
 	"encoding/json"
 	"fmt"
-	logutils "websql/internal/logger"
-	"websql/internal/config"
 	"log"
 	"strconv"
 	"sync"
 	"time"
+
+	"websql/internal/config"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -74,7 +74,8 @@ func GetConn(param *DBParam) *sqlx.DB {
 
 	db, err := sqlx.Connect(param.DbType, makeDsn(param))
 	if err != nil {
-		logutils.PanicErrf("连接数据库失败", err)
+		log.Printf("连接数据库失败 - err=%v, param=%+v\n", err, param)
+		return nil
 	}
 	maxOpen := 50
 	if config.Cfg.DB.MaxOpenConns > 0 {
@@ -129,6 +130,8 @@ func makeDsn(param *DBParam) string {
 		return "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
 	case "mysql":
 		return fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
+	case "sqlite", "sqlite3":
+		return param.Url
 	default:
 		return param.User + ":" + param.Pwd + "@" + param.Url
 	}

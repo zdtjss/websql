@@ -506,6 +506,19 @@ func getDictPKs(conn *sqlx.DB, dbType, schema, table string) []string {
 		pks := make([]string, 0)
 		conn.Select(&pks, sql)
 		return pks
+	case "sqlite":
+		pks := make([]string, 0)
+		rows, err := conn.Query("SELECT name FROM pragma_table_info(?) WHERE pk > 0", table)
+		if err != nil {
+			return pks
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			pks = append(pks, name)
+		}
+		return pks
 	default:
 		sql := fmt.Sprintf("SELECT column_name FROM information_schema.columns WHERE TABLE_SCHEMA = '%s' AND table_name = '%s' AND column_key = 'PRI'", schema, table)
 		pks := make([]string, 0)

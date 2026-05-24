@@ -26,6 +26,10 @@ func SaveConn(c *gin.Context) {
 
 	dbParam := ConvertToDBParam(cfg)
 	db := database.GetConn(dbParam)
+	if db == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "连接失败，无法打开数据库"})
+		return
+	}
 
 	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
 
@@ -34,7 +38,7 @@ func SaveConn(c *gin.Context) {
 		savedId = idgen.RandomStr()
 		stmt, _ := database.Mngtdb.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url, db_schema, db_version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		pwdEncoded := ""
-		if cfg.Pwd != nil {
+		if cfg.Pwd != nil && *cfg.Pwd != "" {
 			pwdEncoded = crypto.AESEncode(*cfg.Pwd)
 		}
 		stmt.Exec(savedId, cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
@@ -69,6 +73,10 @@ func TestDbConn(c *gin.Context) {
 
 	dbParam := ConvertToDBParam(cfg)
 	db := database.GetConn(dbParam)
+	if db == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "连接失败，无法打开数据库"})
+		return
+	}
 
 	err := db.Ping()
 	if err != nil {
@@ -106,7 +114,6 @@ func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
 		schemaSQL = "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"
 	case "sqlite":
 		versionSQL = "SELECT SQLITE_VERSION()"
-		schemaSQL = "SELECT 'main'"
 	default:
 		versionSQL = "SELECT VERSION()"
 		schemaSQL = "SELECT DATABASE()"
@@ -116,10 +123,14 @@ func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
 	schema := ""
 
 	if err := db.Get(&version, versionSQL); err != nil {
+		log.Printf("[getDbVersionAndSchema] 获取版本失败 - dbType=%s, err=%v\n", dbType, err)
 		version = ""
 	}
 
-	if err := db.Get(&schema, schemaSQL); err != nil {
+	if dbType == "sqlite" {
+		schema = "main"
+	} else if err := db.Get(&schema, schemaSQL); err != nil {
+		log.Printf("[getDbVersionAndSchema] 获取schema失败 - dbType=%s, err=%v\n", dbType, err)
 		schema = ""
 	}
 
@@ -342,7 +353,7 @@ func GetConn(id string, authorization string) *sqlx.DB {
 	logger.PanicErr(err)
 
 	pwd := ""
-	if cfgList[0].Pwd != nil {
+	if cfgList[0].Pwd != nil && cfgList[0].DbType != "sqlite" {
 		pwd = crypto.AESDecode(*cfgList[0].Pwd)
 	}
 	cfgList[0].Pwd = &pwd
