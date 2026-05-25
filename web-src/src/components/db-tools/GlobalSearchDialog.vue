@@ -179,7 +179,7 @@ async function loadSchemaTables(schemaName) {
     const schemaObj = schemas.value.find(s => s.label === schemaName)
     const dbType = schemaObj?.data?.dbType || ''
     if (res.data && res.data.data) {
-      dbSchemaProxy.addTable(schemaName, dbType, res.data.data)
+      dbSchemaProxy.addTable(schemaName, dbType, res.data.data, filterConnId.value)
     }
   } catch (e) {}
 }
@@ -244,6 +244,7 @@ function searchTablesLocally(keyword, type) {
   for (const schemaName of schemasToSearch) {
     const allTables = dbSchemaProxy.getAll(schemaName)
     if (!allTables) continue
+    const schemaConnId = dbSchemaProxy.getConnId(schemaName)
     const tableNames = Object.keys(allTables)
     for (const tableName of tableNames) {
       const tableInfo = allTables[tableName]
@@ -258,7 +259,7 @@ function searchTablesLocally(keyword, type) {
           name: tableName,
           schema: schemaName,
           comment: self.detail || '',
-          connId: filterConnId.value || connId || ''
+          connId: schemaConnId || filterConnId.value || connId || ''
         })
       }
     }

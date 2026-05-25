@@ -67,7 +67,7 @@
     <el-form label-width="120px" :model="systemConfig">
       <el-form-item label="允许的 IP 列表">
         <el-input v-model="systemConfig.allowedIP" type="textarea" :rows="4" placeholder="请输入 IP 地址，每行一个" />
-        <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
           💡 每行一个 IP 地址，例如：127.0.0.1 或 192.168.1.100
         </div>
       </el-form-item>
@@ -88,7 +88,7 @@
       </el-form-item>
       <el-form-item label="Redis DB">
         <el-input-number v-model="systemConfig.redisDB" :min="0" :max="15" :step="1" />
-        <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
           💡 Redis 数据库编号，范围 0-15
         </div>
       </el-form-item>
@@ -164,11 +164,11 @@
         </el-form-item>
         <el-form-item label="Max Tokens">
           <el-input-number v-model="modelForm.maxTokens" :min="0" :max="modelMaxTokensMax" :step="100" placeholder="0=不限" />
-          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: #909399;">Ollama 最大 262100</span>
+          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">Ollama 最大 262100</span>
         </el-form-item>
         <el-form-item label="思考模式">
           <el-switch v-model="modelForm.enableThinking" />
-          <span style="margin-left: 10px; font-size: 12px; color: #909399;">启用后模型会输出思考过程</span>
+          <span style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">启用后模型会输出思考过程</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -499,20 +499,20 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
-  background: #fafafa;
+  background: var(--bg-secondary);
   transition: all 0.2s ease;
 }
 
 .model-item:hover {
-  border-color: #409eff;
-  background: #f5f7fa;
+  border-color: var(--accent-color);
+  background: var(--bg-hover);
 }
 
 .model-item.is-selected {
-  border-color: #67c23a;
-  background: #f0f9ff;
+  border-color: var(--success-color);
+  background: var(--bg-inline-bar);
 }
 
 .model-item-info {
@@ -524,15 +524,15 @@ onMounted(() => {
 
 .model-model {
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   font-size: 14px;
   font-family: monospace;
 }
 
 .model-provider {
   font-size: 12px;
-  color: #909399;
-  background: #f0f0f0;
+  color: var(--text-tertiary);
+  background: var(--bg-active);
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -547,7 +547,7 @@ onMounted(() => {
   margin-top: 20px;
   text-align: center;
   padding-top: 20px;
-  border-top: 1px solid #e4e7ed;
+  border-top: 1px solid var(--border-primary);
 }
 
 .bio-section {

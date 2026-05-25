@@ -1,60 +1,74 @@
 <template>
   <div class="dir-management">
-    <el-alert 
-      title="目录管理提示"
-      type="info"
-      :closable="false"
-      style="margin-bottom: 16px;"
-    >
-      <p>💡 双击节点名称可编辑，编辑后点击"保存目录结构"生效；使用复选框可批量选择目录</p>
-    </el-alert>
-    <div class="tree-toolbar">
-      <el-button type="primary" size="small" @click="checkAll">
-        <el-icon><Select /></el-icon>
-        全选
-      </el-button>
-      <el-button type="warning" size="small" @click="uncheckAll">
-        <el-icon><Close /></el-icon>
-        取消全选
-      </el-button>
-    </div>
-    <el-tree 
-      ref="dirTree"
-      :data="conCfgTreeData" 
-      draggable 
-      default-expand-all 
-      :expand-on-click-node="false"
-      show-checkbox
-      node-key="id"
-      @check="handleCheckChange"
-    >
-      <template #default="{ node, data }">
-        <div class="tree-node-content">
-          <el-input 
-            v-model="data.label" 
-            style="width: 300px; margin-right: 16px;" 
-            placeholder="目录名称"
-          />
-          <el-button type="primary" size="small" @click="appendTreeNode(data)">
-            <el-icon><Plus /></el-icon>
-            添加子节点
-          </el-button>
-          <el-popconfirm title="确定要删除这个目录吗？" @confirm="removeDir(node, data)">
-            <template #reference>
-              <el-button type="danger" size="small" style="margin-left: 8px;">
-                <el-icon><Delete /></el-icon>
-                删除
-              </el-button>
-            </template>
-          </el-popconfirm>
+    <div class="dir-panel">
+      <div class="panel-header">
+        <div class="panel-header-left">
+          <h2>目录管理</h2>
+          <span class="panel-header-desc">拖拽可调整目录顺序，勾选可批量选择目录</span>
         </div>
-      </template>
-    </el-tree>
-    <div class="tree-actions">
-      <el-button type="primary" @click="saveTree">
-        <el-icon><Check /></el-icon>
-        保存目录结构
-      </el-button>
+        <div class="panel-header-actions">
+          <el-button size="small" @click="checkAll">
+            <el-icon><Select /></el-icon>
+            全选
+          </el-button>
+          <el-button size="small" @click="uncheckAll">
+            <el-icon><Close /></el-icon>
+            取消全选
+          </el-button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <el-tree
+          ref="dirTree"
+          :data="conCfgTreeData"
+          draggable
+          default-expand-all
+          :expand-on-click-node="false"
+          show-checkbox
+          node-key="id"
+          :allow-drop="allowDrop"
+          @check="handleCheckChange"
+        >
+          <template #default="{ node, data }">
+            <div class="tree-node-content">
+              <el-icon class="node-icon" :size="16">
+                <Folder />
+              </el-icon>
+              <el-input
+                v-model="data.label"
+                class="node-input"
+                placeholder="请输入目录名称"
+                size="small"
+              />
+              <div class="node-actions">
+                <el-button type="primary" size="small" link @click="appendTreeNode(data)">
+                  <el-icon><Plus /></el-icon>
+                  添加子节点
+                </el-button>
+                <el-popconfirm title="确定要删除这个目录吗？" @confirm="removeDir(node, data)">
+                  <template #reference>
+                    <el-button type="danger" size="small" link>
+                      <el-icon><Delete /></el-icon>
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
+              </div>
+            </div>
+          </template>
+          <template #empty>
+            <div class="tree-empty">
+              <el-empty description="暂无目录数据" :image-size="80" />
+            </div>
+          </template>
+        </el-tree>
+      </div>
+      <div class="panel-footer">
+        <el-button type="primary" @click="saveTree">
+          <el-icon><Check /></el-icon>
+          保存目录结构
+        </el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -63,7 +77,7 @@
 import { ref, onMounted, nextTick, watch } from 'vue'
 import http from '@/utils/httpProxy'
 import { ElMessage } from 'element-plus'
-import { Check, Delete, Plus, Select, Close } from '@element-plus/icons-vue'
+import { Check, Delete, Plus, Select, Close, Folder } from '@element-plus/icons-vue'
 
 const emit = defineEmits(['tree-saved'])
 
@@ -75,7 +89,6 @@ const generateUniqueId = () => {
   return `temp_node_${Date.now()}_${nodeIdCounter++}`
 }
 
-// 递归为没有 id 的节点生成唯一 ID，保留后端已有的 id
 const ensureNodeIds = (nodes) => {
   for (const node of nodes) {
     if (!node.id || node.id === '') {
@@ -87,7 +100,6 @@ const ensureNodeIds = (nodes) => {
   }
 }
 
-// 获取某节点的所有子节点 ID
 const getAllChildIds = (node) => {
   const ids = []
   if (node.children && node.children.length > 0) {
@@ -99,7 +111,6 @@ const getAllChildIds = (node) => {
   return ids
 }
 
-// 获取某节点的所有祖先节点 ID
 const getAllAncestorIds = (nodes, targetId, path = []) => {
   for (const node of nodes) {
     if (node.id === targetId) {
@@ -115,34 +126,28 @@ const getAllAncestorIds = (nodes, targetId, path = []) => {
   return []
 }
 
-// 用户主动勾选的节点集合（用于保存时区分级联勾选）
 const userCheckedKeys = ref(new Set())
-// 标记是否正在通过程序设置勾选状态
 let isProgrammaticChange = false
 
-// 监听勾选变化
 const handleCheckChange = (data, checkedInfo) => {
   if (isProgrammaticChange) {
     return
   }
-  
+
   const { checkedKeys } = checkedInfo
   const isChecked = checkedKeys.includes(data.id)
-  
+
   if (isChecked) {
-    // 用户勾选节点：将该节点加入，同时移除其所有子节点（因为子节点是级联选中的）
     userCheckedKeys.value.add(data.id)
     const childIds = getAllChildIds(data)
     for (const childId of childIds) {
       userCheckedKeys.value.delete(childId)
     }
-    // 同时移除其所有祖先节点（因为父节点被级联选中了）
     const ancestorIds = getAllAncestorIds(conCfgTreeData.value, data.id)
     for (const ancestorId of ancestorIds) {
       userCheckedKeys.value.delete(ancestorId)
     }
   } else {
-    // 用户取消节点：移除该节点及其所有子节点
     userCheckedKeys.value.delete(data.id)
     const childIds = getAllChildIds(data)
     for (const childId of childIds) {
@@ -186,7 +191,6 @@ const uncheckAll = () => {
   })
 }
 
-// 从数据中提取已勾选的节点
 const extractCheckedKeys = (nodeList) => {
   const keys = []
   for (const node of nodeList) {
@@ -200,13 +204,12 @@ const extractCheckedKeys = (nodeList) => {
   return keys
 }
 
-// 初始化树的勾选状态
 const initTreeCheckedState = () => {
   if (!dirTree.value) return
-  
+
   const checkedKeys = extractCheckedKeys(conCfgTreeData.value)
   userCheckedKeys.value = new Set(checkedKeys)
-  
+
   if (checkedKeys.length > 0) {
     isProgrammaticChange = true
     nextTick(() => {
@@ -218,7 +221,6 @@ const initTreeCheckedState = () => {
   }
 }
 
-// 监听数据变化，初始化勾选状态
 watch(conCfgTreeData, () => {
   nextTick(() => {
     initTreeCheckedState()
@@ -227,9 +229,13 @@ watch(conCfgTreeData, () => {
 
 const listDirTree = () => {
   http.get("/listDirTree").then((resp) => {
-    const data = resp.data.data.length === 0 ? [{ label: "", value: "", id: "", children: [] }] : resp.data.data
-    ensureNodeIds(data)
-    conCfgTreeData.value = data
+    const data = resp.data.data
+    if (Array.isArray(data) && data.length > 0) {
+      ensureNodeIds(data)
+      conCfgTreeData.value = data
+    } else {
+      conCfgTreeData.value = []
+    }
   })
 }
 
@@ -239,6 +245,10 @@ const appendTreeNode = (data) => {
     data.children = []
   }
   data.children.push(newChild)
+}
+
+const allowDrop = (draggingNode, dropNode, type) => {
+  return type !== 'inner'
 }
 
 const removeDir = (node, data) => {
@@ -255,27 +265,33 @@ const removeDir = (node, data) => {
     }
     return false
   }
-  
+
   removeNode(conCfgTreeData.value, data)
-  
-  // 从 userCheckedKeys 中移除被删除节点及其子节点
+
   userCheckedKeys.value.delete(data.id)
   const childIds = getAllChildIds(data)
   for (const childId of childIds) {
     userCheckedKeys.value.delete(childId)
   }
-  
-  if (data.id) {
-    http.get("/delTreeNode", { params: { id: data.id } }).then((resp) => {
-      conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "", value: "", id: "", children: [] }] : resp.data.data
+
+  if (data.id && !String(data.id).startsWith('temp_node_')) {
+    http.get("/delTreeNode", { params: { id: data.id } }).then(() => {
+      ElMessage.success("删除成功")
+    }).catch(() => {
+      ElMessage.error("删除失败，请重试")
     })
   }
 }
 
 const saveTree = () => {
+  const treeData = conCfgTreeData.value
+  if (treeData.length === 0) {
+    ElMessage.warning("目录为空，无需保存")
+    return
+  }
+
   const checkedKeys = Array.from(userCheckedKeys.value)
-  
-  // 将勾选状态附加到树数据上
+
   const applyCheckedState = (nodes) => {
     for (const node of nodes) {
       node.checked = checkedKeys.includes(node.id)
@@ -284,11 +300,11 @@ const saveTree = () => {
       }
     }
   }
-  applyCheckedState(conCfgTreeData.value)
-  
-  http.post("/saveTree", conCfgTreeData.value).then(() => {
+  applyCheckedState(treeData)
+
+  http.post("/saveTree", treeData).then(() => {
     ElMessage.success("保存成功")
-    emit('tree-saved', conCfgTreeData.value)
+    emit('tree-saved', treeData)
   })
 }
 
@@ -300,28 +316,120 @@ onMounted(() => {
 <style scoped>
 .dir-management {
   padding: 20px;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
 }
 
-.tree-toolbar {
-  margin-bottom: 12px;
+.dir-panel {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.panel-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.panel-header-left h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.panel-header-desc {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.panel-header-actions {
   display: flex;
   gap: 8px;
+}
+
+.panel-body {
+  padding: 16px 20px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 200px;
+}
+
+.tree-empty {
+  padding: 40px 0;
 }
 
 .tree-node-content {
   display: flex;
   align-items: center;
-  padding: 8px 0;
+  flex: 1;
+  padding: 4px 0;
+  gap: 8px;
 }
 
-.tree-actions {
-  margin-top: 20px;
-  text-align: right;
-  padding: 20px;
-  border-top: 1px solid #e4e7ed;
+.node-icon {
+  color: var(--warning-color);
+  flex-shrink: 0;
+}
+
+.node-input {
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.node-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.tree-node-content:hover .node-actions {
+  opacity: 1;
+}
+
+.panel-footer {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-primary);
+  display: flex;
+  justify-content: flex-end;
 }
 
 :deep(.el-tree) {
   font-size: 14px;
+  background: transparent;
+}
+
+:deep(.el-tree-node__content) {
+  height: auto;
+  padding: 4px 0;
+}
+
+:deep(.el-tree-node__content:hover) {
+  background: var(--bg-hover);
+}
+
+:deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background: var(--bg-active);
+}
+
+:deep(.el-tree-node__expand-icon) {
+  color: var(--text-tertiary);
+}
+
+:deep(.el-input__wrapper) {
+  border-radius: 6px;
 }
 </style>

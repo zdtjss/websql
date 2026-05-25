@@ -16,6 +16,7 @@ interface TableEntry {
 interface SchemaEntry {
     tables: Record<string, TableEntry>
     dbType: string
+    connId: string
 }
 
 type SchemaProxy = Record<string, SchemaEntry>
@@ -38,22 +39,29 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
         callback.value.push(cb)
     }
 
-    function addTable(schema: string, dbType: string, names: any[]) {
+    function addTable(schema: string, dbType: string, names: any[], connId: string = '') {
         const tableObj: Record<string, TableEntry> = {}
         names.forEach(n => {
+            if (!n || !n.data) return
             const columnsInfo: ColumnInfo[] = []
-            for (let i = 0; i < n.data.columns.length; i++) {
-                const col = n.data.columns[i]
+            const columns = n.data.columns || []
+            for (let i = 0; i < columns.length; i++) {
+                const col = columns[i]
+                if (!col) continue
                 columnsInfo.push({
-                    label: col.name,
-                    info: col.comment,
+                    label: col.name || '',
+                    info: col.comment || '',
                     type: "property"
                 })
             }
-            tableObj[n.label] = { self: { label: n.label, type: n.type || "table", detail: n.data.text }, children: columnsInfo }
+            tableObj[n.label] = { self: { label: n.label, type: n.type || "table", detail: n.data.text || '' }, children: columnsInfo }
         })
-        schemaProxy.value[schema] = { tables: tableObj, dbType: dbType }
-        localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(schemaProxy.value))
+        schemaProxy.value[schema] = { tables: tableObj, dbType: dbType, connId: connId }
+        try {
+            localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(schemaProxy.value))
+        } catch (e) {
+            console.warn('dbSchema cache save failed', e)
+        }
     }
 
     function getTable(schema: string) {
@@ -72,6 +80,11 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
     function getDbType(schema: string) {
         const entry = schemaProxy.value[schema]
         return entry ? entry.dbType : null
+    }
+
+    function getConnId(schema: string) {
+        const entry = schemaProxy.value[schema]
+        return entry ? (entry.connId || '') : ''
     }
 
     function getDialect(schema: string) {
@@ -103,6 +116,7 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
         addTable,
         getTable,
         getDbType,
+        getConnId,
         getDialect,
         getAll,
         cleanCache

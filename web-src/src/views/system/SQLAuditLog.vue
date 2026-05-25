@@ -1,7 +1,7 @@
 <template>
   <div class="audit-log-container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <span style="font-size: 16px; font-weight: 600; color: #303133;">SQL 审计日志</span>
+      <span style="font-size: 16px; font-weight: 600; color: var(--text-primary);">SQL 审计日志</span>
       <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
     </div>
 
@@ -126,7 +126,7 @@
     </div>
 
     <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close>
-      <div style="margin-bottom: 8px; color: #909399; font-size: 13px;">
+      <div style="margin-bottom: 8px; color: var(--text-tertiary); font-size: 13px;">
         执行时间：{{ sqlDetail.execTime ? formatDate(sqlDetail.execTime) : '' }} | 
         用户：{{ sqlDetail.userName }} | 
         来源：{{ sqlDetail.source === 'agent' ? 'Agent' : 'SQL编辑器' }}
@@ -263,7 +263,7 @@ onMounted(() => {
 }
 
 .sql-preview {
-  color: #409eff;
+  color: var(--accent-color);
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 13px;
 }
@@ -273,8 +273,8 @@ onMounted(() => {
 }
 
 .sql-full-text {
-  background: #f5f7fa;
-  border: 1px solid #e4e7ed;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
   border-radius: 4px;
   padding: 12px;
   font-family: 'Consolas', 'Courier New', monospace;
@@ -284,5 +284,6 @@ onMounted(() => {
   word-break: break-all;
   max-height: 400px;
   overflow-y: auto;
+  color: var(--text-primary);
 }
 </style>

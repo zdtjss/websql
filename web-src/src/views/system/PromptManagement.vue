@@ -194,7 +194,7 @@ function handlePromptSaved() {
 
 .role-list-panel,
 .prompt-list-panel {
-  background: #fff;
+  background: var(--bg-primary);
   border-radius: 8px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   display: flex;
@@ -204,7 +204,7 @@ function handlePromptSaved() {
 
 .panel-header {
   padding: 16px 20px;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--border-primary);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -215,7 +215,7 @@ function handlePromptSaved() {
   font-size: 16px;
   font-weight: 600;
   margin: 0;
-  color: #303133;
+  color: var(--text-primary);
 }
 
 .role-search {
@@ -237,18 +237,18 @@ function handlePromptSaved() {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
-  color: #606266;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
 .role-item:hover {
-  background: #f5f7fa;
-  color: #409eff;
+  background: var(--bg-hover);
+  color: var(--accent-color);
 }
 
 .role-item.active {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--bg-inline-bar);
+  color: var(--accent-color);
   font-weight: 500;
 }
 
@@ -270,7 +270,7 @@ function handlePromptSaved() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #909399;
+  color: var(--text-tertiary);
   gap: 12px;
 }
 
@@ -281,7 +281,7 @@ function handlePromptSaved() {
 
 .empty-tip {
   text-align: center;
-  color: #909399;
+  color: var(--text-tertiary);
   padding: 40px 0;
   font-size: 14px;
 }

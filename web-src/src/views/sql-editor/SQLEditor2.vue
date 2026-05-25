@@ -5,42 +5,44 @@
             <div class="sql-toolbar">
                 <div class="toolbar-left">
                     <el-button type="primary" @click="exec" :loading="exectingSql" title="F9">
-                        <el-icon style="margin-right: 4px;"><VideoPlay /></el-icon>执行
+                        <el-icon style="margin-right: 4px;">
+                            <VideoPlay />
+                        </el-icon>执行
                     </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
                     <el-button type="success" @click="toggleOptimizePanel" title="AI SQL优化建议">优化</el-button>
                     <el-divider direction="vertical" />
                     <el-dropdown @command="handleExportResult">
-                      <el-button :disabled="result.length === 0">
-                        导出结果<el-icon class="el-icon--right"><ArrowDown /></el-icon>
-                      </el-button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="insert">INSERT SQL</el-dropdown-item>
-                          <el-dropdown-item command="update">UPDATE SQL</el-dropdown-item>
-                          <el-dropdown-item command="xlsx" divided>Excel (.xlsx)</el-dropdown-item>
-                          <el-dropdown-item command="csv">CSV</el-dropdown-item>
-                          <el-dropdown-item command="json">JSON</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
+                        <el-button :disabled="result.length === 0">
+                            导出结果<el-icon class="el-icon--right">
+                                <ArrowDown />
+                            </el-icon>
+                        </el-button>
+                        <template #dropdown>
+                            <el-dropdown-menu>
+                                <el-dropdown-item command="insert">INSERT SQL</el-dropdown-item>
+                                <el-dropdown-item command="update">UPDATE SQL</el-dropdown-item>
+                                <el-dropdown-item command="xlsx" divided>Excel (.xlsx)</el-dropdown-item>
+                                <el-dropdown-item command="csv">CSV</el-dropdown-item>
+                                <el-dropdown-item command="json">JSON</el-dropdown-item>
+                            </el-dropdown-menu>
+                        </template>
                     </el-dropdown>
                     <el-divider direction="vertical" />
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
                     <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
-                    <el-upload
-                      :show-file-list="false"
-                      accept=".sql"
-                      :http-request="handleSqlFile"
-                    >
-                      <el-button title="执行 SQL 文件">执行文件</el-button>
+                    <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">
+                        <el-button title="执行 SQL 文件">执行文件</el-button>
                     </el-upload>
                 </div>
                 <div class="toolbar-right">
                     <span v-if="executionTime !== null" class="exec-time">{{ executionTime }}ms</span>
-                    <span v-if="canInlineEdit && result.length > 0" class="inline-edit-badge" title="当前结果集有主键，支持双击单元格内联编辑">✎ 可编辑</span>
-                    <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom" :show-after="400">
+                    <span v-if="canInlineEdit && result.length > 0" class="inline-edit-badge"
+                        title="当前结果集有主键，支持双击单元格内联编辑">✎ 可编辑</span>
+                    <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom"
+                        :show-after="400">
                         <label class="modify-toggle">
                             <el-switch v-model="canModify" size="small" />
                             <span class="modify-label">{{ canModify ? '可写' : '只读' }}</span>
@@ -54,7 +56,9 @@
 
             <el-splitter-panel size="55%">
                 <div id="sqlArea" ref="sqlAreaRef" class="sql-area">
-                    <div ref="codemirror" class="codemirror" :class="{ 'table-link-cursor': tableNameUnderCursor }" @keyup="onKeyup" @keydown="onEditorKeydown" @mousemove="onEditorMousemove" @click="onEditorClick"></div>
+                    <div ref="codemirror" class="codemirror" :class="{ 'table-link-cursor': tableNameUnderCursor }"
+                        @keyup="onKeyup" @keydown="onEditorKeydown" @mousemove="onEditorMousemove"
+                        @click="onEditorClick"></div>
                 </div>
             </el-splitter-panel>
             <el-splitter-panel size="45%">
@@ -66,13 +70,10 @@
                     <div v-else style="flex: 1; overflow: hidden;">
                         <el-auto-resizer>
                             <template #default="{ height: autoHeight, width: autoWidth }">
-                                <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }" @paste="handlePaste2" @keydown="onTableKeydown2">
-                                    <el-table-v2 
-                            :columns="columns" 
-                            :data="result" 
-                            :width="totalColumnWidth" 
-                            :height="autoHeight" 
-                            :row-height="35" />
+                                <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }"
+                                    @paste="handlePaste2" @keydown="onTableKeydown2">
+                                    <el-table-v2 :columns="columns" :data="result" :width="totalColumnWidth"
+                                        :height="autoHeight" />
                                 </div>
                             </template>
                         </el-auto-resizer>
@@ -91,7 +92,7 @@
         </el-splitter>
     </div>
     <el-dialog v-model="exportDialogVisible" title="导表" width="60%" center :draggable="true" :destroyOnClose="true">
-        <DBExport :connId="connId" :schema="schema" opt="insert" :canImport="canModify" :dbType="dbType"/>
+        <DBExport :connId="connId" :schema="schema" opt="insert" :canImport="canModify" :dbType="dbType" />
     </el-dialog>
     <el-drawer v-model="backupDataDrawerShow">
         <template #header>
@@ -103,8 +104,7 @@
         </template>
     </el-drawer>
     <el-drawer v-model="sqlHistoryDrawerShow" title="SQL 执行历史" :size="sqlDrawerWidth + 'px'">
-        <div v-if="sqlHistoryDrawerShow" class="drawer-drag-handle"
-            :style="{ right: sqlDrawerWidth + 'px' }"
+        <div v-if="sqlHistoryDrawerShow" class="drawer-drag-handle" :style="{ right: sqlDrawerWidth + 'px' }"
             @mousedown="onDrawerDragStart"></div>
         <div style="margin-bottom: 12px;">
             <el-input v-model="sqlHistorySearch" placeholder="搜索 SQL..." clearable size="small" />
@@ -114,13 +114,15 @@
             <el-table-column prop="operation_type" label="类型" width="80" resizable>
                 <template #default="scope">
                     <el-tag v-if="scope.row.operation_type === 'select'" type="info" size="small">SELECT</el-tag>
-                    <el-tag v-else-if="scope.row.operation_type === 'update'" type="warning" size="small">UPDATE</el-tag>
+                    <el-tag v-else-if="scope.row.operation_type === 'update'" type="warning"
+                        size="small">UPDATE</el-tag>
                     <el-tag v-else type="danger" size="small">DELETE</el-tag>
                 </template>
             </el-table-column>
             <el-table-column prop="exec_sql" label="SQL" resizable>
                 <template #default="scope">
-                    <el-tooltip :content="scope.row.exec_sql" placement="top" popper-class="sql-history-tooltip" :show-after="400">
+                    <el-tooltip :content="scope.row.exec_sql" placement="top" popper-class="sql-history-tooltip"
+                        :show-after="400">
                         <span class="sql-history-text" @click="applySqlFromHistory(scope.row.exec_sql)">
                             {{ scope.row.exec_sql }}
                         </span>
@@ -129,15 +131,17 @@
             </el-table-column>
             <el-table-column label="操作" width="50" resizable>
                 <template #default="scope">
-                    <el-icon v-if="scope.row.operation_type !== 'select'" style="cursor: pointer;" @click="showBackupData(scope.row.id)" title="查看备份数据">
+                    <el-icon v-if="scope.row.operation_type !== 'select'" style="cursor: pointer;"
+                        @click="showBackupData(scope.row.id)" title="查看备份数据">
                         <View />
                     </el-icon>
                 </template>
             </el-table-column>
         </el-table>
         <div style="position: absolute;right: 10px;bottom: 5px;">
-            <el-pagination layout="prev, pager, next" v-model:total="sqlHistoryTotal" v-model:page-size="sqlHistoryPageSize"
-                v-model:current-page="sqlHistoryCurrent" @current-change="showSqlHistory" />
+            <el-pagination layout="prev, pager, next" v-model:total="sqlHistoryTotal"
+                v-model:page-size="sqlHistoryPageSize" v-model:current-page="sqlHistoryCurrent"
+                @current-change="showSqlHistory" />
         </div>
     </el-drawer>
     <el-dialog v-model="dataDetailsDialogVisible" :draggable="true" :title="currentSelectTable" width="1000px"
@@ -157,7 +161,8 @@
         </div>
         <template #footer>
             <div class="dialog-footer">
-                <el-button v-if="canModify && canEdit" type="primary" :loading="onDataSaving" @click="saveData(rowData)">
+                <el-button v-if="canModify && canEdit" type="primary" :loading="onDataSaving"
+                    @click="saveData(rowData)">
                     保存
                 </el-button>
                 <el-button v-if="!(canModify && canEdit)" type="primary" @click="dataDetailsDialogVisible = false">
@@ -167,19 +172,10 @@
         </template>
     </el-dialog>
 
-  <SqlSnippetManager
-    v-model="snippetVisible"
-    :current-sql="getEditorDoc()"
-    @apply="onApplySnippet"
-  />
+    <SqlSnippetManager v-model="snippetVisible" :current-sql="getEditorDoc()" @apply="onApplySnippet" />
 
-  <SQLOptimizePanel
-    v-model:visible="optimizePanelVisible"
-    :conn-id="connId"
-    :schema="schema"
-    :sql="optimizeSql"
-    :db-type="dbType"
-  />
+    <SQLOptimizePanel v-model:visible="optimizePanelVisible" :conn-id="connId" :schema="schema" :sql="optimizeSql"
+        :db-type="dbType" />
 </template>
 
 <script lang="ts" setup>
@@ -210,39 +206,39 @@ import { useTheme } from '@/utils/useTheme.ts'
 const { currentTheme } = useTheme()
 
 const lightEditorTheme = EditorView.theme({
-  '&': { backgroundColor: '#ffffff', color: '#303133' },
-  '.cm-gutters': { backgroundColor: '#fafbfc', color: '#909399', borderRight: '1px solid #ebeef5' },
-  '.cm-activeLineGutter': { backgroundColor: '#ecf5ff' },
-  '.cm-activeLine': { backgroundColor: '#f5f7fa33' },
-  '.cm-cursor': { borderLeftColor: '#303133' },
-  '.cm-selectionBackground': { backgroundColor: '#b3d8ff66' },
+    '&': { backgroundColor: '#ffffff', color: '#303133' },
+    '.cm-gutters': { backgroundColor: '#fafbfc', color: '#909399', borderRight: '1px solid #ebeef5' },
+    '.cm-activeLineGutter': { backgroundColor: '#ecf5ff' },
+    '.cm-activeLine': { backgroundColor: '#f5f7fa33' },
+    '.cm-cursor': { borderLeftColor: '#303133' },
+    '.cm-selectionBackground': { backgroundColor: '#b3d8ff66' },
 }, { dark: false })
 
 const darkEditorTheme = EditorView.theme({
-  '&': { backgroundColor: '#1e1e2e', color: '#cdd6f4' },
-  '.cm-gutters': { backgroundColor: '#1e1e2e', color: '#6c7086', borderRight: '1px solid #313244' },
-  '.cm-activeLineGutter': { backgroundColor: '#313147' },
-  '.cm-activeLine': { backgroundColor: '#2a2a3d33' },
-  '.cm-cursor': { borderLeftColor: '#cdd6f4' },
-  '.cm-selectionBackground': { backgroundColor: '#45475a66' },
+    '&': { backgroundColor: '#1e1e2e', color: '#cdd6f4' },
+    '.cm-gutters': { backgroundColor: '#1e1e2e', color: '#6c7086', borderRight: '1px solid #313244' },
+    '.cm-activeLineGutter': { backgroundColor: '#313147' },
+    '.cm-activeLine': { backgroundColor: '#2a2a3d33' },
+    '.cm-cursor': { borderLeftColor: '#cdd6f4' },
+    '.cm-selectionBackground': { backgroundColor: '#45475a66' },
 }, { dark: true })
 
 const lightHighlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: '#0550ae', fontWeight: '600' },
-  { tag: tags.string, color: '#0a3069' },
-  { tag: tags.number, color: '#0550ae' },
-  { tag: tags.comment, color: '#6e7781', fontStyle: 'italic' },
-  { tag: tags.typeName, color: '#0550ae' },
-  { tag: tags.operator, color: '#0550ae' },
-  { tag: tags.bracket, color: '#0550ae' },
-  { tag: tags.function(tags.variableName), color: '#8250df' },
-  { tag: tags.variableName, color: '#0550ae' },
-  { tag: tags.bool, color: '#0550ae' },
-  { tag: tags.null, color: '#0550ae' },
+    { tag: tags.keyword, color: '#0550ae', fontWeight: '600' },
+    { tag: tags.string, color: '#0a3069' },
+    { tag: tags.number, color: '#0550ae' },
+    { tag: tags.comment, color: '#6e7781', fontStyle: 'italic' },
+    { tag: tags.typeName, color: '#0550ae' },
+    { tag: tags.operator, color: '#0550ae' },
+    { tag: tags.bracket, color: '#0550ae' },
+    { tag: tags.function(tags.variableName), color: '#8250df' },
+    { tag: tags.variableName, color: '#0550ae' },
+    { tag: tags.bool, color: '#0550ae' },
+    { tag: tags.null, color: '#0550ae' },
 ])
 
 function getEditorTheme() {
-  return currentTheme.value === 'dark' ? darkEditorTheme : lightEditorTheme
+    return currentTheme.value === 'dark' ? darkEditorTheme : lightEditorTheme
 }
 
 const sqlCompartment = new Compartment()
@@ -260,7 +256,7 @@ const { tabId, connId, schema, schemaPath, tableName, dbType } = defineProps<{
 
 const emit = defineEmits(['openTableManager', 'openDataBrowser', 'viewTableInfo'])
 
-const sqlAreaRef:any = ref(null)
+const sqlAreaRef: any = ref(null)
 
 const maxLine = ref("15")
 const columns: any = ref([])
@@ -335,7 +331,7 @@ const isDraggingDrawer = ref(false)
 const filteredSqlHistory = computed(() => {
     const kw = sqlHistorySearch.value.trim().toLowerCase()
     if (!kw) return sqlHistoryList.value
-    return sqlHistoryList.value.filter((item: any) => 
+    return sqlHistoryList.value.filter((item: any) =>
         (item.exec_sql || '').toLowerCase().includes(kw)
     )
 })
@@ -445,7 +441,7 @@ onMounted(() => {
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
     const schemaPathLower = schemaPath.toLowerCase()
-    canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat")  != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
+    canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
 })
 
 onBeforeUnmount(() => {
@@ -457,7 +453,7 @@ watch(currentTheme, () => {
 })
 
 watch(canModify, (can) => {
-     const schemaPathLower = schemaPath.toLowerCase()
+    const schemaPathLower = schemaPath.toLowerCase()
     if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_read") != -1)) {
         ElMessage({ message: "当前可能为生产库，请谨慎修改。", type: "error" })
     }
@@ -472,16 +468,16 @@ function createEditor(editorContainer: any, doc: any) {
     }
     const isDark = currentTheme.value === 'dark'
     const cleanKeymap = standardKeymap.filter(
-            k => k.key !== "Mod-z" && k.key !== "Mod-Shift-z" && k.key !== "Mod-y"
-        )
-        const extensions = [
-            keymap.of([
-                ...cleanKeymap,
-                { key: "Mod-z", run: undo, preventDefault: true },
-                { key: "Mod-y", run: redo, preventDefault: true },
-                { key: "Mod-Shift-z", run: redo, preventDefault: true },
-                { key: 'Tab', run: insertTab, preventDefault: true },
-            ]),
+        k => k.key !== "Mod-z" && k.key !== "Mod-Shift-z" && k.key !== "Mod-y"
+    )
+    const extensions = [
+        keymap.of([
+            ...cleanKeymap,
+            { key: "Mod-z", run: undo, preventDefault: true },
+            { key: "Mod-y", run: redo, preventDefault: true },
+            { key: "Mod-Shift-z", run: redo, preventDefault: true },
+            { key: 'Tab', run: insertTab, preventDefault: true },
+        ]),
         sqlCompartment.of(sql({
             dialect: dbSchemaProxy.getDialect(schema),
             schema: <any>dbSchemaProxy.getAll(schema),
@@ -562,13 +558,13 @@ function formatSql() {
 }
 
 function toggleOptimizePanel() {
-  const sqlExec = getSelection()?.toString()
-  if (!sqlExec?.trim()) {
-    ElMessage({ message: '请先选择要优化的 SQL', type: 'warning' })
-    return
-  }
-  optimizeSql.value = sqlExec
-  optimizePanelVisible.value = true
+    const sqlExec = getSelection()?.toString()
+    if (!sqlExec?.trim()) {
+        ElMessage({ message: '请先选择要优化的 SQL', type: 'warning' })
+        return
+    }
+    optimizeSql.value = sqlExec
+    optimizePanelVisible.value = true
 }
 
 function showBackupData(backupId: any) {
@@ -641,7 +637,7 @@ function exec() {
                     width: 150,
                     minWidth: 150,
                     headerCellRenderer: ({ column }: { column: any }) => {
-                        return h('div', { 
+                        return h('div', {
                             class: "header-box",
                             onDragenter: (e: any) => e.preventDefault(),
                             onMouseenter: (e: any) => {
@@ -653,11 +649,11 @@ function exec() {
                                 if (dragLine) dragLine.style.opacity = '0'
                             }
                         }, [
-                            h('div', { 
+                            h('div', {
                                 class: "header-text",
-                                title: col.comment 
+                                title: col.comment
                             }, col.name),
-                            h('div', { 
+                            h('div', {
                                 class: "drag-line",
                                 draggable: true,
                                 style: {
@@ -690,7 +686,7 @@ function exec() {
                         const isEditing = isEditingCell(rowIndex, colKey)
                         const isChanged = isCellChanged(rowIndex, colKey)
                         const colType = col.type
-                        
+
                         if (isEditing) {
                             if (isDateType(colType)) {
                                 return h('input', {
@@ -732,14 +728,14 @@ function exec() {
                                 onBlur: () => commitInlineEdit()
                             })
                         }
-                        
+
                         const displayVal = cellData != null ? String(cellData) : ''
                         const changedStyle = isChanged ? {
-                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px', 
+                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px',
                             borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
                             cursor: 'pointer'
                         } : { cursor: 'pointer' }
-                        
+
                         return h('span', {
                             title: displayVal,
                             style: changedStyle,
@@ -773,229 +769,229 @@ function exec() {
 }
 
 function isDateType(colType: string | undefined): boolean {
-  if (!colType) return false
-  const upper = colType.toUpperCase()
-  return upper === 'DATETIME' || upper === 'DATE' || upper === 'TIMESTAMP' 
-    || upper === 'TIMESTAMP(6)' || upper.includes('TIMESTAMP')
-    || upper === 'TIMESTAMPTZ' || upper === 'TIMESTAMPLTZ'
+    if (!colType) return false
+    const upper = colType.toUpperCase()
+    return upper === 'DATETIME' || upper === 'DATE' || upper === 'TIMESTAMP'
+        || upper === 'TIMESTAMP(6)' || upper.includes('TIMESTAMP')
+        || upper === 'TIMESTAMPTZ' || upper === 'TIMESTAMPLTZ'
 }
 
 function startInlineEdit(rowIndex: number, colKey: string, event: MouseEvent) {
-  if (!canInlineEdit.value) return
-  if (tableKeys.value.length === 0) return
-  const target = event.target as HTMLElement
-  if (target.tagName === 'INPUT') return
-  editingCellRow.value = rowIndex
-  editingCellCol.value = colKey
-  const rawVal = result.value[rowIndex]?.[colKey]
-  editingCellValue.value = rawVal != null ? String(rawVal) : ''
+    if (!canInlineEdit.value) return
+    if (tableKeys.value.length === 0) return
+    const target = event.target as HTMLElement
+    if (target.tagName === 'INPUT') return
+    editingCellRow.value = rowIndex
+    editingCellCol.value = colKey
+    const rawVal = result.value[rowIndex]?.[colKey]
+    editingCellValue.value = rawVal != null ? String(rawVal) : ''
 }
 
 function commitInlineEdit() {
-  if (editingCellRow.value < 0 || !editingCellCol.value) {
-    cancelInlineEdit()
-    return
-  }
-  const rowIdx = editingCellRow.value
-  const colKey = editingCellCol.value
-  const newVal = editingCellValue.value
-  const oldVal = result.value[rowIdx]?.[colKey]
-  if (String(oldVal ?? '') !== newVal) {
-    const changeKey = rowIdx + '::' + colKey
-    const newMap = new Map(inlineChanges.value)
-    newMap.set(changeKey, newVal)
-    inlineChanges.value = newMap
-    result.value[rowIdx][colKey] = newVal
-  }
-  cancelInlineEdit()
-}
-
-function cancelInlineEdit() {
-  editingCellRow.value = -1
-  editingCellCol.value = ''
-  editingCellValue.value = ''
-}
-
-function handlePaste2(event: ClipboardEvent) {
-  const text = event.clipboardData?.getData('text/plain')
-  if (!text) return
-
-  let startRowIdx = -1
-  let startColIdx = -1
-
-  const colKeys = columns.value.map((c: any) => c.dataKey)
-
-  if (editingCellRow.value >= 0 && editingCellCol.value) {
-    startRowIdx = editingCellRow.value
-    startColIdx = colKeys.indexOf(editingCellCol.value)
-  } else if (activeCellRow2.value >= 0 && activeCellCol2.value) {
-    startRowIdx = activeCellRow2.value
-    startColIdx = colKeys.indexOf(activeCellCol2.value)
-  }
-
-  if (startRowIdx < 0 || startColIdx < 0) return
-
-  const lines = text.split('\n')
-  const grid: string[][] = []
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed) {
-      grid.push(trimmed.split('\t'))
+    if (editingCellRow.value < 0 || !editingCellCol.value) {
+        cancelInlineEdit()
+        return
     }
-  }
-  if (grid.length === 0) return
-
-  event.preventDefault()
-
-  // Save snapshot for Ctrl+Z undo
-  const snapshot: any = {
-    inlineChanges: new Map(inlineChanges.value),
-    restoredCells: [] as { rowIdx: number; colKey: string; oldVal: any }[]
-  }
-
-  cancelInlineEdit()
-
-  for (let ri = 0; ri < grid.length; ri++) {
-    const targetRowIdx = startRowIdx + ri
-    if (targetRowIdx >= result.value.length) break
-    const targetRow = result.value[targetRowIdx]
-
-    for (let ci = 0; ci < grid[ri].length; ci++) {
-      const targetColIdx = startColIdx + ci
-      if (targetColIdx >= colKeys.length) break
-      const colKey = colKeys[targetColIdx]
-      if (tableKeys.value.includes(colKey)) continue
-
-      const newVal = grid[ri][ci].trim()
-
-      // Record old value for undo
-      const changeKey = targetRowIdx + '::' + colKey
-      const oldChanged = inlineChanges.value.get(changeKey)
-      const oldVal = oldChanged !== undefined ? oldChanged : targetRow[colKey]
-      snapshot.restoredCells.push({ rowIdx: targetRowIdx, colKey, oldVal })
-
-      if (String(targetRow[colKey] ?? '') !== newVal) {
+    const rowIdx = editingCellRow.value
+    const colKey = editingCellCol.value
+    const newVal = editingCellValue.value
+    const oldVal = result.value[rowIdx]?.[colKey]
+    if (String(oldVal ?? '') !== newVal) {
+        const changeKey = rowIdx + '::' + colKey
         const newMap = new Map(inlineChanges.value)
         newMap.set(changeKey, newVal)
         inlineChanges.value = newMap
-        targetRow[colKey] = newVal
-      }
+        result.value[rowIdx][colKey] = newVal
     }
-  }
+    cancelInlineEdit()
+}
 
-  pasteSnapshot2.value = snapshot
-  activeCellRow2.value = -1
-  activeCellCol2.value = ''
+function cancelInlineEdit() {
+    editingCellRow.value = -1
+    editingCellCol.value = ''
+    editingCellValue.value = ''
+}
+
+function handlePaste2(event: ClipboardEvent) {
+    const text = event.clipboardData?.getData('text/plain')
+    if (!text) return
+
+    let startRowIdx = -1
+    let startColIdx = -1
+
+    const colKeys = columns.value.map((c: any) => c.dataKey)
+
+    if (editingCellRow.value >= 0 && editingCellCol.value) {
+        startRowIdx = editingCellRow.value
+        startColIdx = colKeys.indexOf(editingCellCol.value)
+    } else if (activeCellRow2.value >= 0 && activeCellCol2.value) {
+        startRowIdx = activeCellRow2.value
+        startColIdx = colKeys.indexOf(activeCellCol2.value)
+    }
+
+    if (startRowIdx < 0 || startColIdx < 0) return
+
+    const lines = text.split('\n')
+    const grid: string[][] = []
+    for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed) {
+            grid.push(trimmed.split('\t'))
+        }
+    }
+    if (grid.length === 0) return
+
+    event.preventDefault()
+
+    // Save snapshot for Ctrl+Z undo
+    const snapshot: any = {
+        inlineChanges: new Map(inlineChanges.value),
+        restoredCells: [] as { rowIdx: number; colKey: string; oldVal: any }[]
+    }
+
+    cancelInlineEdit()
+
+    for (let ri = 0; ri < grid.length; ri++) {
+        const targetRowIdx = startRowIdx + ri
+        if (targetRowIdx >= result.value.length) break
+        const targetRow = result.value[targetRowIdx]
+
+        for (let ci = 0; ci < grid[ri].length; ci++) {
+            const targetColIdx = startColIdx + ci
+            if (targetColIdx >= colKeys.length) break
+            const colKey = colKeys[targetColIdx]
+            if (tableKeys.value.includes(colKey)) continue
+
+            const newVal = grid[ri][ci].trim()
+
+            // Record old value for undo
+            const changeKey = targetRowIdx + '::' + colKey
+            const oldChanged = inlineChanges.value.get(changeKey)
+            const oldVal = oldChanged !== undefined ? oldChanged : targetRow[colKey]
+            snapshot.restoredCells.push({ rowIdx: targetRowIdx, colKey, oldVal })
+
+            if (String(targetRow[colKey] ?? '') !== newVal) {
+                const newMap = new Map(inlineChanges.value)
+                newMap.set(changeKey, newVal)
+                inlineChanges.value = newMap
+                targetRow[colKey] = newVal
+            }
+        }
+    }
+
+    pasteSnapshot2.value = snapshot
+    activeCellRow2.value = -1
+    activeCellCol2.value = ''
 }
 
 function onTableKeydown2(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
-    if (pasteSnapshot2.value) {
-      event.preventDefault()
-      undoPaste2()
+    if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+        if (pasteSnapshot2.value) {
+            event.preventDefault()
+            undoPaste2()
+        }
     }
-  }
 }
 
 function undoPaste2() {
-  const snapshot = pasteSnapshot2.value
-  if (!snapshot) return
+    const snapshot = pasteSnapshot2.value
+    if (!snapshot) return
 
-  inlineChanges.value = new Map(snapshot.inlineChanges)
+    inlineChanges.value = new Map(snapshot.inlineChanges)
 
-  for (const cell of snapshot.restoredCells) {
-    const { rowIdx, colKey, oldVal } = cell
-    if (rowIdx < result.value.length) {
-      result.value[rowIdx][colKey] = oldVal
+    for (const cell of snapshot.restoredCells) {
+        const { rowIdx, colKey, oldVal } = cell
+        if (rowIdx < result.value.length) {
+            result.value[rowIdx][colKey] = oldVal
+        }
     }
-  }
 
-  pasteSnapshot2.value = null
+    pasteSnapshot2.value = null
 }
 
 function isEditingCell(rowIndex: number, colKey: string) {
-  return editingCellRow.value === rowIndex && editingCellCol.value === colKey
+    return editingCellRow.value === rowIndex && editingCellCol.value === colKey
 }
 
 function isCellChanged(rowIndex: number, colKey: string) {
-  const changeKey = rowIndex + '::' + colKey
-  return inlineChanges.value.has(changeKey)
+    const changeKey = rowIndex + '::' + colKey
+    return inlineChanges.value.has(changeKey)
 }
 
 function discardInlineChanges() {
-  const changes = inlineChanges.value
-  changes.forEach((newVal, key) => {
-    const [rowStr, colKey] = key.split('::')
-    const rowIdx = parseInt(rowStr)
-    if (result.value[rowIdx]) {
-      // Restore use original value; we don't have it stored separately so keep the edit
-    }
-  })
-  inlineChanges.value = new Map()
-  result.value = [...result.value]
+    const changes = inlineChanges.value
+    changes.forEach((newVal, key) => {
+        const [rowStr, colKey] = key.split('::')
+        const rowIdx = parseInt(rowStr)
+        if (result.value[rowIdx]) {
+            // Restore use original value; we don't have it stored separately so keep the edit
+        }
+    })
+    inlineChanges.value = new Map()
+    result.value = [...result.value]
 }
 
 function saveInlineChanges() {
-  if (inlineChanges.value.size === 0) return
-  savingInline.value = true
+    if (inlineChanges.value.size === 0) return
+    savingInline.value = true
 
-  const groupedByRow = new Map<number, Map<string, string>>()
-  inlineChanges.value.forEach((newVal, key) => {
-    const [rowStr, colKey] = key.split('::')
-    const rowIdx = parseInt(rowStr)
-    if (!groupedByRow.has(rowIdx)) {
-      groupedByRow.set(rowIdx, new Map())
-    }
-    groupedByRow.get(rowIdx)!.set(colKey, newVal)
-  })
-
-  const promises: Promise<any>[] = []
-  groupedByRow.forEach((colMap, rowIdx) => {
-    const row = result.value[rowIdx]
-    if (!row) return
-
-    const pkConditions = tableKeys.value
-      .filter(k => k in row)
-      .map(k => k + ' = ' + fmtVal(row[k]))
-    
-    const setClauses: string[] = []
-    colMap.forEach((newVal, colKey) => {
-      setClauses.push(colKey + ' = ' + fmtVal(newVal))
+    const groupedByRow = new Map<number, Map<string, string>>()
+    inlineChanges.value.forEach((newVal, key) => {
+        const [rowStr, colKey] = key.split('::')
+        const rowIdx = parseInt(rowStr)
+        if (!groupedByRow.has(rowIdx)) {
+            groupedByRow.set(rowIdx, new Map())
+        }
+        groupedByRow.get(rowIdx)!.set(colKey, newVal)
     })
 
-    if (setClauses.length === 0) return
+    const promises: Promise<any>[] = []
+    groupedByRow.forEach((colMap, rowIdx) => {
+        const row = result.value[rowIdx]
+        if (!row) return
 
-    let sql: string
-    if (pkConditions.length > 0 && canEdit.value) {
-      sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + pkConditions.join(' and ')
-    } else {
-      const allWhereCols = Object.keys(row)
-        .filter((k: string) => k !== 'col-idx' && colMap.has(k))
-      const whereConditions = allWhereCols.map((k: string) => k + ' = ' + fmtVal(row[k]))
-      sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
-    }
+        const pkConditions = tableKeys.value
+            .filter(k => k in row)
+            .map(k => k + ' = ' + fmtVal(row[k]))
 
-    const params = new URLSearchParams()
-    params.append('connId', connId)
-    params.append('schema', schema)
-    params.append('tableName', currentSelectTable.value)
-    params.append('sql', sql)
-    promises.push(http.post('/execSQL', params))
-  })
+        const setClauses: string[] = []
+        colMap.forEach((newVal, colKey) => {
+            setClauses.push(colKey + ' = ' + fmtVal(newVal))
+        })
 
-  Promise.all(promises)
-    .then(() => {
-      ElMessage.success('内联更改已保存')
-      inlineChanges.value = new Map()
-      exec()
+        if (setClauses.length === 0) return
+
+        let sql: string
+        if (pkConditions.length > 0 && canEdit.value) {
+            sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + pkConditions.join(' and ')
+        } else {
+            const allWhereCols = Object.keys(row)
+                .filter((k: string) => k !== 'col-idx' && colMap.has(k))
+            const whereConditions = allWhereCols.map((k: string) => k + ' = ' + fmtVal(row[k]))
+            sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
+        }
+
+        const params = new URLSearchParams()
+        params.append('connId', connId)
+        params.append('schema', schema)
+        params.append('tableName', currentSelectTable.value)
+        params.append('sql', sql)
+        promises.push(http.post('/execSQL', params))
     })
-    .catch((err) => {
-      console.error(err)
-      ElMessage.error('保存失败')
-    })
-    .finally(() => {
-      savingInline.value = false
-    })
+
+    Promise.all(promises)
+        .then(() => {
+            ElMessage.success('内联更改已保存')
+            inlineChanges.value = new Map()
+            exec()
+        })
+        .catch((err) => {
+            console.error(err)
+            ElMessage.error('保存失败')
+        })
+        .finally(() => {
+            savingInline.value = false
+        })
 }
 
 const inlineChangeCount = computed(() => inlineChanges.value.size)
@@ -1019,8 +1015,8 @@ function saveData(rowData: any) {
     const updateColumnSets = changedKeys.map((key) => key + " = " + fmtVal(rowData[key]))
 
     const allWhereCols = [
-      ...tableKeys.value,
-      ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))
+        ...tableKeys.value,
+        ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))
     ]
     const whereColumns = allWhereCols.map((key: string) => key + " = " + fmtVal(originRowData[key]))
 
@@ -1051,29 +1047,29 @@ function saveData(rowData: any) {
 }
 
 function extractEffectiveSql(sql: string) {
-  let relSql = sql.trimStart()
-  const sqlArr = relSql.split("\n")
-  const nsql: string[] = []
-  for (let i = 0; i < sqlArr.length; i++) {
-    let row = sqlArr[i].trim()
-    if (row === "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
-      continue
+    let relSql = sql.trimStart()
+    const sqlArr = relSql.split("\n")
+    const nsql: string[] = []
+    for (let i = 0; i < sqlArr.length; i++) {
+        let row = sqlArr[i].trim()
+        if (row === "" || row.startsWith("--") || row.startsWith("//") || row.startsWith("/*")) {
+            continue
+        }
+        row = row.trimEnd()
+        if (row.endsWith(";")) {
+            nsql.push(row.substring(0, row.length - 1))
+        } else {
+            nsql.push(row)
+        }
     }
-    row = row.trimEnd()
-    if (row.endsWith(";")) {
-      nsql.push(row.substring(0, row.length - 1))
-    } else {
-      nsql.push(row)
+    relSql = nsql.join("\n")
+
+    relSql = relSql.trimEnd()
+    if (relSql.endsWith(";")) {
+        return relSql.substring(0, relSql.length - 1)
     }
-  }
-  relSql = nsql.join("\n")
 
-  relSql = relSql.trimEnd()
-  if (relSql.endsWith(";")) {
-    return relSql.substring(0, relSql.length - 1)
-  }
-
-  return relSql
+    return relSql
 }
 
 function fillSchema(relSql: string, sqlResult: string, schema: string, searchStart: number, concatStart: number): string {
@@ -1103,7 +1099,7 @@ function checkSql(sql: string) {
     const sqlArr = sql.split(";")
     for (let i = 0; i < sqlArr.length; i++) {
         const sqlLowerCase = sqlArr[i].toLowerCase().trimStart()
-        if(!canModify.value && (sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ") || sqlLowerCase.startsWith("alter "))) {
+        if (!canModify.value && (sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ") || sqlLowerCase.startsWith("alter "))) {
             ElMessage.warning("当前模式不允许修改")
             hasInvalid = true
             break
@@ -1112,7 +1108,7 @@ function checkSql(sql: string) {
             hasInvalid = true
             ElMessage.warning("请明确 where 条件")
             break
-        } 
+        }
     }
     return hasInvalid
 }
@@ -1254,114 +1250,114 @@ function getSqlLang(): SqlLanguage {
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 function onKeyup(e: KeyboardEvent) {
-  onEditorKeyup(e)
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(getSqlKey(), getEditorDoc())
-    } catch (e) {
-      // localStorage may be full, silently ignore
-    }
-  }, 500)
+    onEditorKeyup(e)
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+        try {
+            localStorage.setItem(getSqlKey(), getEditorDoc())
+        } catch (e) {
+            // localStorage may be full, silently ignore
+        }
+    }, 500)
 }
 
 function onEditorKeydown(e: KeyboardEvent) {
-  if (e.key === 'Control' || e.key === 'Meta') {
-    ctrlHeld.value = true
-    detectTableAtMouse()
-  }
+    if (e.key === 'Control' || e.key === 'Meta') {
+        ctrlHeld.value = true
+        detectTableAtMouse()
+    }
 }
 
 function onEditorKeyup(e: KeyboardEvent) {
-  if (e.key === 'Control' || e.key === 'Meta') {
-    ctrlHeld.value = false
-    tableNameUnderCursor.value = ''
-  }
+    if (e.key === 'Control' || e.key === 'Meta') {
+        ctrlHeld.value = false
+        tableNameUnderCursor.value = ''
+    }
 }
 
 function onGlobalKeyup(e: KeyboardEvent) {
-  if (e.key === 'Control' || e.key === 'Meta') {
-    ctrlHeld.value = false
-    tableNameUnderCursor.value = ''
-  }
+    if (e.key === 'Control' || e.key === 'Meta') {
+        ctrlHeld.value = false
+        tableNameUnderCursor.value = ''
+    }
 }
 
 function extractTablesFromSql(sql: string): string[] {
-  const tables: string[] = []
-  const normalized = sql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
-  const pattern = /(?:^|\s)(?:from|join|inner\s+join|left\s+(?:outer\s+)?join|right\s+(?:outer\s+)?join|full\s+(?:outer\s+)?join|cross\s+join)\s+([a-zA-Z_][a-zA-Z0-9_$#]*)/gi
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(normalized)) !== null) {
-    tables.push(match[1])
-  }
-  return tables
+    const tables: string[] = []
+    const normalized = sql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+    const pattern = /(?:^|\s)(?:from|join|inner\s+join|left\s+(?:outer\s+)?join|right\s+(?:outer\s+)?join|full\s+(?:outer\s+)?join|cross\s+join)\s+([a-zA-Z_][a-zA-Z0-9_$#]*)/gi
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(normalized)) !== null) {
+        tables.push(match[1])
+    }
+    return tables
 }
 
 function detectTableAtPosition(clientX: number, clientY: number) {
-  if (!editorView.value) return
-  const pos = editorView.value.posAtCoords({ x: clientX, y: clientY })
-  if (pos === null) {
-    tableNameUnderCursor.value = ''
-    return
-  }
-  const word = editorView.value.state.wordAt(pos)
-  if (!word) {
-    tableNameUnderCursor.value = ''
-    return
-  }
-  const state = editorView.value.state
-  let from = word.from
-  let to = word.to
-  const doc = state.doc
-  while (from > 0 && /[a-zA-Z0-9_$#]/.test(doc.sliceString(from - 1, from))) {
-    from--
-  }
-  while (to < doc.length && /[a-zA-Z0-9_$#]/.test(doc.sliceString(to, to + 1))) {
-    to++
-  }
-  const wordText = state.sliceDoc(from, to)
-  const tables = tableList.value
-  if (tables.some((t: string) => t.toLowerCase() === wordText.toLowerCase())) {
-    tableNameUnderCursor.value = wordText
-  } else {
-    const sqlTables = extractTablesFromSql(state.doc.toString())
-    if (sqlTables.some(t => t.toLowerCase() === wordText.toLowerCase())) {
-      tableNameUnderCursor.value = wordText
-    } else {
-      tableNameUnderCursor.value = ''
+    if (!editorView.value) return
+    const pos = editorView.value.posAtCoords({ x: clientX, y: clientY })
+    if (pos === null) {
+        tableNameUnderCursor.value = ''
+        return
     }
-  }
+    const word = editorView.value.state.wordAt(pos)
+    if (!word) {
+        tableNameUnderCursor.value = ''
+        return
+    }
+    const state = editorView.value.state
+    let from = word.from
+    let to = word.to
+    const doc = state.doc
+    while (from > 0 && /[a-zA-Z0-9_$#]/.test(doc.sliceString(from - 1, from))) {
+        from--
+    }
+    while (to < doc.length && /[a-zA-Z0-9_$#]/.test(doc.sliceString(to, to + 1))) {
+        to++
+    }
+    const wordText = state.sliceDoc(from, to)
+    const tables = tableList.value
+    if (tables.some((t: string) => t.toLowerCase() === wordText.toLowerCase())) {
+        tableNameUnderCursor.value = wordText
+    } else {
+        const sqlTables = extractTablesFromSql(state.doc.toString())
+        if (sqlTables.some(t => t.toLowerCase() === wordText.toLowerCase())) {
+            tableNameUnderCursor.value = wordText
+        } else {
+            tableNameUnderCursor.value = ''
+        }
+    }
 }
 
 function detectTableAtMouse() {
-  if (lastMousePos.value.x < 0) return
-  detectTableAtPosition(lastMousePos.value.x, lastMousePos.value.y)
+    if (lastMousePos.value.x < 0) return
+    detectTableAtPosition(lastMousePos.value.x, lastMousePos.value.y)
 }
 
 function onEditorMousemove(e: MouseEvent) {
-  lastMousePos.value = { x: e.clientX, y: e.clientY }
-  if (!ctrlHeld.value) {
-    if (tableNameUnderCursor.value) {
-      tableNameUnderCursor.value = ''
+    lastMousePos.value = { x: e.clientX, y: e.clientY }
+    if (!ctrlHeld.value) {
+        if (tableNameUnderCursor.value) {
+            tableNameUnderCursor.value = ''
+        }
+        return
     }
-    return
-  }
-  detectTableAtPosition(e.clientX, e.clientY)
+    detectTableAtPosition(e.clientX, e.clientY)
 }
 
 function onEditorClick(e: MouseEvent) {
-  if (!ctrlHeld.value || !tableNameUnderCursor.value) return
-  e.preventDefault()
-  e.stopPropagation()
-  const tableName = tableNameUnderCursor.value
-  tableNameUnderCursor.value = ''
-  ctrlHeld.value = false
-  emit('openDataBrowser', {
-    connId: connId,
-    schema: schema,
-    tableName: tableName,
-    dbType: dbType,
-  })
+    if (!ctrlHeld.value || !tableNameUnderCursor.value) return
+    e.preventDefault()
+    e.stopPropagation()
+    const tableName = tableNameUnderCursor.value
+    tableNameUnderCursor.value = ''
+    ctrlHeld.value = false
+    emit('openDataBrowser', {
+        connId: connId,
+        schema: schema,
+        tableName: tableName,
+        dbType: dbType,
+    })
 }
 
 function onResultDivResize(index: number, sizes: number[]) {
@@ -1394,7 +1390,7 @@ const dragStart = (e: DragEvent) => {
     x1 = e.clientX
     lastDragTime = 0 // 重置节流计时器
     dragLineElement = e.target as HTMLElement
-    
+
     // 直接从事件目标获取列信息，避免 DOM 查询延迟
     const headerBox = (e.target as HTMLElement).parentElement as HTMLElement
     if (headerBox && headerBox.classList.contains('header-box')) {
@@ -1406,18 +1402,18 @@ const dragStart = (e: DragEvent) => {
                 currentDraggingColumn = columnItem.dataKey
                 originalWidth = columnItem.width || 150
                 columnItemRef = columnItem // 直接保存引用，避免重复查找
-                
+
                 // 设置拖动标识为拖动中状态
                 dragLineElement.style.opacity = '1'
                 dragLineElement.style.backgroundColor = 'rgba(64, 158, 255, 0.3)'
             }
         }
     }
-    
+
     // 必须设置 drag effect 才能触发 dragover 事件
     e.dataTransfer!.effectAllowed = 'move'
     e.dataTransfer!.setData('text/plain', '')
-    
+
     // 添加全局拖动监听
     document.addEventListener('dragover', handleGlobalDragOver, { passive: false })
     document.addEventListener('dragend', handleGlobalDragEnd)
@@ -1426,15 +1422,15 @@ const dragStart = (e: DragEvent) => {
 const handleGlobalDragOver = (e: DragEvent) => {
     if (!currentDraggingColumn || !columnItemRef) return
     e.preventDefault()
-    
+
     // 节流：限制更新频率（每 16ms 约 60fps）
     const now = Date.now()
     if (now - lastDragTime < 8) return // 限制为 125fps，平衡性能和流畅度
     lastDragTime = now
-    
+
     const deltaX = e.clientX - x1
     const newWidth = Math.max(50, originalWidth + deltaX)
-    
+
     // 直接修改引用对象的属性
     columnItemRef.width = newWidth
 }
@@ -1447,7 +1443,7 @@ const handleGlobalDragEnd = (e: DragEvent) => {
     }
     currentDraggingColumn = null
     columnItemRef = null
-    
+
     // 移除全局监听
     document.removeEventListener('dragover', handleGlobalDragOver)
     document.removeEventListener('dragend', handleGlobalDragEnd)
@@ -1644,6 +1640,7 @@ const dragEnd = (e: DragEvent) => {
     align-items: center;
     box-sizing: border-box;
     overflow: visible;
+
     .header-text {
         flex: 1;
         max-width: calc(100% - 12px);
@@ -1657,6 +1654,7 @@ const dragEnd = (e: DragEvent) => {
         font-size: 13px;
         color: var(--text-secondary);
     }
+
     .drag-line {
         position: absolute;
         top: 0;
@@ -1669,6 +1667,7 @@ const dragEnd = (e: DragEvent) => {
         transition: all 0.15s;
         flex-shrink: 0;
         opacity: 0;
+
         &:hover {
             opacity: 1;
             border-right-color: #409eff;
@@ -1744,6 +1743,7 @@ const dragEnd = (e: DragEvent) => {
 .table-structure-dialog {
     height: 750px !important;
 }
+
 .table-structure-dialog .el-dialog__body {
     display: flex;
     flex-direction: column;
@@ -1751,10 +1751,12 @@ const dragEnd = (e: DragEvent) => {
     overflow: hidden;
     padding: 0 20px 20px;
 }
+
 .table-structure-dialog .dialog-toolbar {
     flex-shrink: 0;
     padding: 12px 0 8px;
 }
+
 .table-structure-dialog .dialog-scroll-body {
     flex: 1;
     overflow-y: auto;
@@ -1765,13 +1767,14 @@ const dragEnd = (e: DragEvent) => {
 .data-details-dialog {
     height: 750px !important;
 }
+
 .data-details-dialog .el-dialog__body {
     height: calc(100% - 140px);
     overflow-y: auto;
 }
+
 .data-details-dialog .dialog-scroll-body {
     min-height: 100%;
 }
 </style>
-<style lang="less" scoped>
-</style>
+<style lang="less" scoped></style>

@@ -85,7 +85,8 @@
         </el-select>
       </el-form-item>
       <el-form-item label="内容" prop="content">
-        <div ref="vditorContainerRef" class="vditor-container" v-loading="vditorLoading" element-loading-text="稍等片刻...">
+        <div class="vditor-wrapper" v-loading="vditorLoading" element-loading-text="稍等片刻...">
+          <div ref="vditorContainerRef" class="vditor-container"></div>
         </div>
       </el-form-item>
       <el-form-item v-if="!roleId" label="分享给">
@@ -597,6 +598,10 @@ function handleSendToAI() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.vditor-wrapper {
+  min-height: 500px;
 }
 
 .vditor-container {

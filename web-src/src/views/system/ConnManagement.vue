@@ -75,7 +75,7 @@
           <span v-else class="cell-text">{{ scope.row.url }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right" resizable>
+      <el-table-column label="操作" width="120" fixed="right" resizable>
         <template #default="scope">
           <el-tooltip v-if="isRowEditing(scope.row)" content="保存" placement="top">
             <el-icon class="action-icon" @click="saveConnCfg(scope.row)"><CircleCheck /></el-icon>
@@ -85,9 +85,7 @@
           </el-tooltip>
           <el-popconfirm title="确定要删除这个连接吗？" @confirm="delConnCfg(scope.row)">
             <template #reference>
-              <el-tooltip content="删除" placement="top">
-                <el-icon class="action-icon action-icon--danger"><Delete /></el-icon>
-              </el-tooltip>
+              <el-icon class="action-icon action-icon--danger"><Delete /></el-icon>
             </template>
           </el-popconfirm>
         </template>
@@ -295,26 +293,26 @@ listConnCfg()
 }
 
 :deep(.el-table th) {
-  background-color: #f5f7fa;
-  color: #606266;
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
 .action-icon {
   font-size: 18px;
   cursor: pointer;
-  color: #909399;
+  color: var(--text-tertiary);
   margin-right: 8px;
   vertical-align: middle;
   transition: color 0.2s;
 }
 
 .action-icon:hover {
-  color: #409eff;
+  color: var(--accent-color);
 }
 
 .action-icon--danger:hover {
-  color: #f56c6c;
+  color: var(--danger-color);
 }
 
 .action-icon.is-loading {

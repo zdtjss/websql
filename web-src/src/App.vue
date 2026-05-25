@@ -256,7 +256,7 @@
                 </template>
               </el-popover>
               <el-button class="toolbar-btn" :type="isRecording ? 'danger' : 'primary'" size="small"
-                @click="toggleRecording">
+                @click="toggleRecording" :title="isRecording ? '停止录音' : '开始录音'">
                 <el-icon style="vertical-align: middle;">
                   <component :is="isRecording ? VideoPause : Microphone" />
                 </el-icon>
@@ -402,6 +402,11 @@
     </div>
     <div class="login-button-container">
         <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+          <el-button circle size="small" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到夜色模式' : '切换到日间模式'">
+            <el-icon>
+              <component :is="currentTheme === 'light' ? Moon : Sunny" />
+            </el-icon>
+          </el-button>
           <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
             <el-icon>
               <Setting />
@@ -434,7 +439,8 @@ import LoginDialog from '@/components/auth/LoginDialog.vue'
 import http from '@/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
-import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Plus, Promotion, Setting, Share, SwitchButton, Upload, User, VideoPause } from '@element-plus/icons-vue'
+import { useTheme } from '@/utils/useTheme'
+import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Moon, Plus, Promotion, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -443,6 +449,8 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
 const route = useRoute()
 const systemRoutes = ['/system-management', '/role-permission', '/classical']
+
+const { currentTheme, toggleTheme } = useTheme()
 
 const apiBase = import.meta.env.VITE_API_URL || ''
 
@@ -2653,6 +2661,8 @@ function handleExportLinkClick(e) {
 }
 
 onMounted(() => {
+  const { initTheme } = useTheme()
+  initTheme()
   initHeavyDeps()
   preloadHeavyDeps()
   setSendToAIHandler(handlePromptSendToAI)
@@ -4124,5 +4134,599 @@ body.mermaid-resizing,
 body.mermaid-resizing * {
   cursor: ns-resize !important;
   user-select: none !important;
+}
+
+/* ========== Dark Mode Overrides ========== */
+
+/* ── Layout & Container ── */
+[data-theme="dark"] .ai-sql-panel-container {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .container {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .el-config-provider {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .login-button-container .el-button {
+  background-color: var(--bg-secondary);
+  border-color: var(--border-primary);
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .login-button-container .el-button:hover {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+/* ── Chat Messages ── */
+[data-theme="dark"] .chat-messages {
+  background: var(--bg-primary);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .chat-messages::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .chat-messages::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #585b70 0%, #45475a 100%);
+}
+
+[data-theme="dark"] .chat-messages::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #6c7086 0%, #585b70 100%);
+}
+
+/* ── Chat Bubbles ── */
+[data-theme="dark"] .chat-bubble.user {
+  background: linear-gradient(135deg, #2a4a7f 0%, #33334d 100%);
+  color: #cdd6f4;
+  box-shadow: 0 4px 12px rgba(42, 74, 127, 0.3);
+}
+
+[data-theme="dark"] .chat-bubble.user .bubble-label {
+  color: rgba(205, 214, 244, 0.85);
+}
+
+[data-theme="dark"] .chat-bubble.assistant {
+  background: linear-gradient(135deg, #252536 0%, #1e1e2e 100%);
+  color: #cdd6f4;
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .chat-bubble.assistant:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .chat-bubble.assistant .bubble-label {
+  color: var(--text-tertiary);
+}
+
+/* ── Thinking Block ── */
+[data-theme="dark"] .thinking-block {
+  border-color: rgba(108, 112, 134, 0.3);
+  background: linear-gradient(135deg, rgba(49, 50, 68, 0.6) 0%, rgba(40, 40, 60, 0.4) 100%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .thinking-block:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] .thinking-label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .thinking-label:hover {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .thinking-content {
+  color: var(--text-secondary);
+  background: rgba(30, 30, 46, 0.8);
+}
+
+[data-theme="dark"] .thinking-content code {
+  background: rgba(0, 0, 0, 0.25);
+  color: #f38ba8;
+}
+
+[data-theme="dark"] .thinking-content pre {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .thinking-content::-webkit-scrollbar-thumb {
+  background: #585b70;
+}
+
+/* ── Tool Call Block ── */
+[data-theme="dark"] .tool-call-block {
+  color: #a6e3a1;
+  background: linear-gradient(135deg, rgba(166, 227, 161, 0.1) 0%, rgba(166, 227, 161, 0.05) 100%);
+  border-color: rgba(166, 227, 161, 0.2);
+  box-shadow: 0 2px 8px rgba(166, 227, 161, 0.08);
+}
+
+/* ── Input Area ── */
+[data-theme="dark"] .input-area {
+  background: var(--bg-secondary);
+  border-top-color: var(--border-primary);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .input-label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .question-input .el-textarea__inner {
+  background: #202032;
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .question-input .el-textarea__inner:hover {
+  border-color: var(--border-secondary);
+  box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.06);
+}
+
+[data-theme="dark"] .question-input .el-textarea__inner:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.12);
+}
+
+[data-theme="dark"] .question-input .el-textarea__inner::placeholder {
+  color: var(--text-placeholder);
+}
+
+/* ── Textarea (general) ── */
+[data-theme="dark"] .el-textarea__inner {
+  background-color: #202032;
+  color: var(--text-primary);
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-textarea__inner:hover {
+  border-color: var(--border-secondary);
+}
+
+[data-theme="dark"] .el-textarea__inner:focus {
+  border-color: var(--accent-color);
+}
+
+/* ── Select / Tree-Select ── */
+[data-theme="dark"] .modern-select .el-input__wrapper,
+[data-theme="dark"] .modern-tree-select .el-input__wrapper {
+  background-color: #202032;
+  box-shadow: 0 0 0 1px var(--border-primary) inset;
+}
+
+[data-theme="dark"] .modern-select .el-input__wrapper:hover,
+[data-theme="dark"] .modern-tree-select .el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--border-secondary) inset;
+}
+
+[data-theme="dark"] .modern-select .el-input__wrapper.is-focus,
+[data-theme="dark"] .modern-tree-select .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--accent-color) inset;
+}
+
+[data-theme="dark"] .el-select-dropdown__item.selected {
+  background: linear-gradient(90deg, rgba(137, 180, 250, 0.12) 0%, transparent 100%);
+  color: var(--accent-color);
+}
+
+/* ── Table Selector ── */
+[data-theme="dark"] .table-selector-label {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .selector-badge {
+  background: linear-gradient(135deg, rgba(137, 180, 250, 0.15) 0%, rgba(137, 180, 250, 0.08) 100%);
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .selector-badge.ready {
+  background: linear-gradient(135deg, rgba(166, 227, 161, 0.15) 0%, rgba(166, 227, 161, 0.08) 100%);
+  color: var(--success-color);
+}
+
+[data-theme="dark"] .selector-skeleton {
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .selector-skeleton::after {
+  color: var(--text-placeholder);
+}
+
+[data-theme="dark"] .skeleton-shimmer {
+  background: linear-gradient(90deg, var(--bg-hover) 0%, var(--bg-active) 35%, var(--bg-hover) 65%);
+}
+
+/* ── Option Items ── */
+[data-theme="dark"] .table-option-name {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .table-option-comment {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .table-option-comment::before {
+  color: var(--text-placeholder);
+}
+
+[data-theme="dark"] .table-option-schema {
+  color: var(--accent-color);
+  background: rgba(137, 180, 250, 0.12);
+}
+
+[data-theme="dark"] .model-option-name {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .model-option-provider {
+  color: var(--text-tertiary);
+  background: var(--bg-active);
+}
+
+/* ── Schema Hints ── */
+[data-theme="dark"] .schema-hints-label {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .schema-hints-warn {
+  color: var(--danger-color);
+}
+
+/* ── Buttons ── */
+[data-theme="dark"] .toolbar-btn.el-button--primary {
+  background-color: rgba(137, 180, 250, 0.15);
+  border-color: rgba(137, 180, 250, 0.25);
+}
+
+[data-theme="dark"] .toolbar-btn.el-button--danger {
+  background-color: rgba(243, 139, 168, 0.15);
+  border-color: rgba(243, 139, 168, 0.25);
+}
+
+[data-theme="dark"] .insert-btn {
+  border-color: var(--success-color);
+  background: linear-gradient(135deg, rgba(166, 227, 161, 0.2) 0%, rgba(166, 227, 161, 0.1) 100%);
+  color: var(--success-color);
+  box-shadow: 0 2px 8px rgba(166, 227, 161, 0.12);
+}
+
+[data-theme="dark"] .insert-btn:hover {
+  background: linear-gradient(135deg, rgba(166, 227, 161, 0.3) 0%, rgba(166, 227, 161, 0.15) 100%);
+  border-color: var(--success-color);
+  box-shadow: 0 4px 12px rgba(166, 227, 161, 0.2);
+}
+
+[data-theme="dark"] .switch-view-link {
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .switch-view-link:hover {
+  color: #99c4ff;
+  background-color: rgba(137, 180, 250, 0.08);
+}
+
+/* ── SQL Confirm ── */
+[data-theme="dark"] .multi-sql-confirm {
+  border-color: var(--warning-color);
+  background: rgba(249, 226, 175, 0.08);
+}
+
+[data-theme="dark"] .sql-confirm-item {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+}
+
+/* ── Retry Confirm ── */
+[data-theme="dark"] .retry-confirm-block {
+  border-color: var(--warning-color);
+  background: rgba(249, 226, 175, 0.08);
+}
+
+/* ── Uploaded File Info ── */
+[data-theme="dark"] .uploaded-file-info {
+  background: rgba(137, 180, 250, 0.1);
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .uploaded-file-info .el-button--danger.is-text {
+  color: var(--danger-color);
+}
+
+/* ── Session Items ── */
+[data-theme="dark"] .session-item {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .session-item::before {
+  background: linear-gradient(180deg, var(--accent-color) 0%, var(--text-tertiary) 100%);
+}
+
+[data-theme="dark"] .session-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-secondary);
+}
+
+[data-theme="dark"] .session-title {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .session-time {
+  color: var(--text-secondary);
+}
+
+/* ── Prompt Popover ── */
+[data-theme="dark"] .prompt-popover-body .prompt-item:hover {
+  background: var(--bg-hover);
+}
+
+[data-theme="dark"] .prompt-popover-body .prompt-item-title {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .prompt-popover-body .prompt-item-sub {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .prompt-popover-body .prompt-empty {
+  color: var(--text-tertiary);
+}
+
+/* ── Popover ── */
+[data-theme="dark"] .el-popover {
+  --el-popover-bg-color: var(--bg-primary);
+  background-color: var(--bg-primary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-popover .el-button--default {
+  background-color: var(--bg-secondary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-popover .el-button--default:hover {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .el-popover .el-empty__description {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .el-popover .el-skeleton__item {
+  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-active) 50%, var(--bg-hover) 75%);
+}
+
+[data-theme="dark"] .el-popover .el-tabs__nav-wrap::after {
+  background-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-popover .el-tabs__item {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-popover .el-tabs__item.is-active {
+  color: var(--accent-color);
+}
+
+/* ── Dialog ── */
+[data-theme="dark"] .el-dialog {
+  --el-dialog-bg-color: var(--bg-primary);
+  --el-dialog-title-font-size: 18px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dialog .el-dialog__header {
+  border-bottom-color: var(--border-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dialog .el-dialog__title {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-dialog .el-dialog__body {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .el-dialog .el-dialog__footer {
+  border-top-color: var(--border-primary);
+}
+
+/* ── Drawer ── */
+[data-theme="dark"] .el-drawer {
+  --el-drawer-bg-color: var(--bg-primary);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-drawer__header {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-drawer__body {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ── Markdown Body (Dark) ── */
+[data-theme="dark"] .markdown-body {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .markdown-body h1,
+[data-theme="dark"] .markdown-body h2,
+[data-theme="dark"] .markdown-body h3,
+[data-theme="dark"] .markdown-body h4,
+[data-theme="dark"] .markdown-body h5,
+[data-theme="dark"] .markdown-body h6 {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .markdown-body h1 {
+  border-bottom-color: var(--border-primary);
+}
+
+[data-theme="dark"] .markdown-body h2 {
+  border-bottom-color: var(--border-primary);
+}
+
+[data-theme="dark"] .markdown-body code {
+  background: linear-gradient(135deg, rgba(49, 50, 68, 0.8) 0%, rgba(40, 40, 60, 0.6) 100%);
+  color: #f38ba8;
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .markdown-body pre {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .markdown-body blockquote {
+  color: var(--text-tertiary);
+  border-left-color: var(--text-tertiary);
+  background: rgba(108, 112, 134, 0.08);
+}
+
+[data-theme="dark"] .markdown-body table {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .markdown-body table th,
+[data-theme="dark"] .markdown-body table td {
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .markdown-body table th {
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-active) 100%);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .markdown-body table tr:nth-child(2n) {
+  background-color: rgba(30, 30, 46, 0.5);
+}
+
+[data-theme="dark"] .markdown-body table tr:hover {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="dark"] .markdown-body a {
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .markdown-body a:hover {
+  color: #99c4ff;
+}
+
+[data-theme="dark"] .markdown-body hr {
+  background: linear-gradient(90deg, var(--border-primary) 0%, var(--border-secondary) 50%, var(--border-primary) 100%);
+}
+
+[data-theme="dark"] .markdown-body strong {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .markdown-body em {
+  color: var(--text-secondary);
+}
+
+/* ── Thinking Content Markdown (Dark) ── */
+[data-theme="dark"] .thinking-content.markdown-body {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .thinking-content.markdown-body strong {
+  color: var(--text-primary);
+}
+
+/* ── User Bubble Links (Dark) ── */
+[data-theme="dark"] .chat-bubble.user a {
+  color: var(--accent-color);
+  text-decoration-color: rgba(137, 180, 250, 0.5);
+}
+
+[data-theme="dark"] .chat-bubble.user a:hover {
+  color: #99c4ff;
+  text-decoration-color: var(--accent-color);
+}
+
+/* ── Mermaid Container (Dark) ── */
+[data-theme="dark"] .mermaid-container {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .mermaid-toolbar {
+  background: rgba(30, 30, 46, 0.98);
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .mermaid-tb-sep {
+  background: var(--border-primary);
+}
+
+[data-theme="dark"] .mermaid-tb-btn {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .mermaid-tb-btn:hover {
+  color: var(--accent-color);
+  background: var(--bg-hover);
+  border-color: var(--border-secondary);
+}
+
+[data-theme="dark"] .mermaid-tb-btn:active {
+  background: var(--bg-active);
+}
+
+[data-theme="dark"] .mermaid-resize-handle {
+  border-top-color: var(--border-primary);
+}
+
+[data-theme="dark"] .mermaid-resize-dots {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .mermaid-resize-handle:hover .mermaid-resize-dots {
+  color: var(--accent-color);
+}
+
+[data-theme="dark"] .mermaid-error {
+  background: rgba(243, 139, 168, 0.08);
+  border-color: rgba(243, 139, 168, 0.25);
+  color: var(--danger-color);
+}
+
+/* ── Prompt Detail Dialog (Dark) ── */
+[data-theme="dark"] .prompt-detail-meta-label {
+  color: var(--text-tertiary);
+}
+
+[data-theme="dark"] .prompt-detail-content {
+  color: var(--text-secondary);
+}
+
+/* ── Global Search Popover (Dark) ── */
+[data-theme="dark"] .global-search-popover {
+  background-color: var(--bg-primary) !important;
+  border-color: var(--border-primary) !important;
+}
+
+[data-theme="dark"] .global-search-popover .el-scrollbar {
+  border-color: var(--border-primary);
 }
 </style>

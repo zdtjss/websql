@@ -86,7 +86,7 @@ onMounted(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #f5f7fa;
+  background: var(--bg-tertiary);
 }
 
 .page-header {
@@ -94,7 +94,7 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background: #fff;
+  background: var(--bg-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   z-index: 100;
 }
@@ -108,7 +108,7 @@ onMounted(() => {
 .page-title {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text-primary);
   margin: 0;
 }
 
@@ -120,7 +120,7 @@ onMounted(() => {
 
 .system-tabs {
   height: 100%;
-  background: #fff;
+  background: var(--bg-primary);
   border-radius: 4px;
 }
 </style>

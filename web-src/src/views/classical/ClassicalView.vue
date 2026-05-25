@@ -14,14 +14,14 @@
                 </template>
                 <GlobalSearchDialog :visible="searchPopoverVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
               </el-popover>
-              <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
-                <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
-              </el-button>
               <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
                 <el-icon :size="14"><Refresh /></el-icon>
               </el-button>
               <el-button text size="small" class="theme-toggle-btn" title="AI 对话" @click="openAiChat">
-                <el-icon :size="14"><Back /></el-icon>
+                <el-icon :size="14"><MagicStick /></el-icon>
+              </el-button>
+              <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
+                <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
                 <el-icon :size="14"><User /></el-icon>
@@ -222,7 +222,7 @@ import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
-import { Back, User } from '@element-plus/icons-vue'
+import { MagicStick, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import TableEditor from '@/components/data/TableEditor.vue'
@@ -465,7 +465,7 @@ function loadTree(node, resolve) {
   http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level, schema } })
     .then((resp) => {
       if (node.data.type === "schema") {
-        dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data)
+        dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data, conn.id)
       }
       if (resp.data.data) {
         resolve(resp.data.data.map(e => {

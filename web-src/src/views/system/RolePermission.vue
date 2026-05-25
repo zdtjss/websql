@@ -764,7 +764,7 @@ function cancelEdit() {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #f5f7fa;
+  background: var(--bg-tertiary);
 }
 .page-content {
   flex: 1;
@@ -779,7 +779,7 @@ function cancelEdit() {
 }
 .role-list-panel,
 .permission-config-panel {
-  background: #fff;
+  background: var(--bg-primary);
   border-radius: 8px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
   display: flex;
@@ -788,7 +788,7 @@ function cancelEdit() {
 }
 .panel-header {
   padding: 16px 20px;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--border-primary);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -797,7 +797,7 @@ function cancelEdit() {
   font-size: 18px;
   font-weight: 600;
   margin: 0;
-  color: #303133;
+  color: var(--text-primary);
 }
 .permission-config-content {
   flex: 1;
@@ -813,7 +813,7 @@ function cancelEdit() {
   align-items: center;
   margin-bottom: 16px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #e4e7ed;
+  border-bottom: 1px solid var(--border-primary);
   flex-shrink: 0;
 }
 .action-buttons {
@@ -847,14 +847,14 @@ function cancelEdit() {
 }
 .node-label.node-clickable {
   cursor: pointer;
-  color: #409eff;
+  color: var(--accent-color);
 }
 .node-label.node-clickable:hover {
   text-decoration: underline;
 }
 .node-comment {
   font-size: 12px;
-  color: #909399;
+  color: var(--text-tertiary);
   margin-left: 8px;
 }
 .implicit-tag {
@@ -862,8 +862,8 @@ function cancelEdit() {
   font-size: 11px;
 }
 :deep(.el-tree) .is-checked .el-checkbox__inner {
-  background-color: #409eff;
-  border-color: #409eff;
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
 }
 :deep(.el-table) {
   font-size: 14px;

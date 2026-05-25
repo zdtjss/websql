@@ -1,7 +1,7 @@
 <template>
   <div class="audit-config-container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <span style="font-size: 16px; font-weight: 600; color: #303133;">审计配置</span>
+      <span style="font-size: 16px; font-weight: 600; color: var(--text-primary);">审计配置</span>
       <el-button size="small" @click="loadConfig" :loading="loading">刷新</el-button>
     </div>
 
@@ -129,6 +129,6 @@ onMounted(() => {
 .desc {
   margin-left: 12px;
   font-size: 12px;
-  color: #909399;
+  color: var(--text-tertiary);
 }
 </style>

@@ -176,8 +176,8 @@ func ExecSQL(c *gin.Context) {
 		columnMap := map[string]string{}
 
 		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
-			columnMap = dbops.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
 			keys = dbops.QueryPrimaryKeyCached(connId, schema, realTableName, conn)
+			columnMap = dbops.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
 		}
 
 		for idx, val := range cts {

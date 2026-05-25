@@ -63,7 +63,7 @@ func (c *metaCache) getColumnMap(key string) (map[string]string, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
-	if !ok || time.Now().After(entry.expiresAt) {
+	if !ok || time.Now().After(entry.expiresAt) || entry.columnMap == nil {
 		return nil, false
 	}
 	return entry.columnMap, true
@@ -73,7 +73,7 @@ func (c *metaCache) getPrimaryKeys(key string) ([]string, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
-	if !ok || time.Now().After(entry.expiresAt) {
+	if !ok || time.Now().After(entry.expiresAt) || entry.primaryKeys == nil {
 		return nil, false
 	}
 	return entry.primaryKeys, true
@@ -81,6 +81,14 @@ func (c *metaCache) getPrimaryKeys(key string) ([]string, bool) {
 
 func (c *metaCache) set(key string, columnMap map[string]string, primaryKeys []string) {
 	c.mu.Lock()
+	if existing, ok := c.entries[key]; ok {
+		if columnMap == nil {
+			columnMap = existing.columnMap
+		}
+		if primaryKeys == nil {
+			primaryKeys = existing.primaryKeys
+		}
+	}
 	c.entries[key] = &metaCacheEntry{
 		columnMap:   columnMap,
 		primaryKeys: primaryKeys,

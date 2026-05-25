@@ -316,6 +316,38 @@
   color: var(--text-primary);
 }
 
+/* ── Border-Card Tabs ── */
+[data-theme="dark"] .el-tabs--border-card {
+  background-color: var(--bg-primary);
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .el-tabs--border-card > .el-tabs__header {
+  background-color: var(--bg-toolbar);
+  border-bottom-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-tabs--border-card > .el-tabs__header .el-tabs__item {
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+
+[data-theme="dark"] .el-tabs--border-card > .el-tabs__header .el-tabs__item.is-active {
+  color: var(--accent-color);
+  background-color: var(--bg-primary);
+  border-left-color: var(--border-primary);
+  border-right-color: var(--border-primary);
+}
+
+[data-theme="dark"] .el-tabs--border-card > .el-tabs__header .el-tabs__item:hover {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .el-tabs--border-card > .el-tabs__content {
+  color: var(--text-primary);
+}
+
 /* ── Tree ── */
 [data-theme="dark"] .el-tree {
   background-color: var(--bg-sidebar);

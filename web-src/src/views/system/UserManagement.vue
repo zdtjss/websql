@@ -160,8 +160,8 @@ loadRoles()
 }
 
 :deep(.el-table th) {
-  background-color: #f5f7fa;
-  color: #606266;
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 </style>
