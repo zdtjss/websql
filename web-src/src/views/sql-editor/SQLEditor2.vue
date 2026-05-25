@@ -4,9 +4,10 @@
 
             <div class="sql-toolbar">
                 <div class="toolbar-left">
-                    <el-button type="primary" @click="exec" :loading="exectingSql" title="F9">
+                    <el-button type="primary" @click="exec()" :disabled="exectingSql" title="F9">
                         <el-icon style="margin-right: 4px;">
-                            <VideoPlay />
+                            <Loading v-if="exectingSql" />
+                            <VideoPlay v-else />
                         </el-icon>执行
                     </el-button>
                     <el-divider direction="vertical" />
@@ -21,11 +22,11 @@
                         </el-button>
                         <template #dropdown>
                             <el-dropdown-menu>
-                                <el-dropdown-item command="insert">INSERT SQL</el-dropdown-item>
-                                <el-dropdown-item command="update">UPDATE SQL</el-dropdown-item>
-                                <el-dropdown-item command="xlsx" divided>Excel (.xlsx)</el-dropdown-item>
-                                <el-dropdown-item command="csv">CSV</el-dropdown-item>
-                                <el-dropdown-item command="json">JSON</el-dropdown-item>
+                                <el-dropdown-item :disabled="result.length === 0" command="insert">SQL  新增</el-dropdown-item>
+                                <el-dropdown-item :disabled="result.length === 0" command="update">SQL  修改</el-dropdown-item>
+                                <el-dropdown-item :disabled="result.length === 0" command="xlsx" divided>Excel (.xlsx)</el-dropdown-item>
+                                <el-dropdown-item :disabled="result.length === 0" command="csv">CSV</el-dropdown-item>
+                                <el-dropdown-item :disabled="result.length === 0" command="json">JSON</el-dropdown-item>
                             </el-dropdown-menu>
                         </template>
                     </el-dropdown>
@@ -63,6 +64,27 @@
             </el-splitter-panel>
             <el-splitter-panel size="45%">
                 <div style="height: 100%; display: flex; flex-direction: column;">
+                    <el-tabs v-if="isBatchMode && batchDisplayTabs.length > 0" v-model="activeResultTab"
+                        type="border-card" class="batch-tabs" @tab-change="onBatchTabChange">
+                        <el-tab-pane v-for="tab in batchDisplayTabs" :key="tab.name" :name="tab.name">
+                            <template #label>
+                                <span v-if="tab.type === 'modify-summary'" class="batch-tab-label batch-tab-modify">
+                                    <span class="batch-tab-index">M</span>
+                                    <span class="batch-tab-sql">修改汇总</span>
+                                    <el-tag v-if="tab.hasError" type="danger" size="small">{{ tab.allFailed ? '全部失败' : '部分失败' }}</el-tag>
+                                    <el-tag v-else-if="tab.hasRollback" type="info" size="small">已回滚</el-tag>
+                                    <el-tag v-else type="warning" size="small">{{ tab.modifyCount }}条</el-tag>
+                                </span>
+                                <el-tooltip v-else :content="tab.item?.sql || ''" placement="bottom" :show-after="400" popper-class="sql-history-tooltip">
+                                    <span class="batch-tab-label" :class="{'batch-tab-error': tab.item?.status === 'error'}">
+                                        <span class="batch-tab-sql">结果集 {{ tab.queryNum }}</span>
+                                        <el-tag v-if="tab.item?.status === 'error'" type="danger" size="small">错误</el-tag>
+                                        <el-tag v-if="tab.item?.status === 'success'" type="success" size="small">{{ (tab.item?.data || []).length }}行</el-tag>
+                                    </span>
+                                </el-tooltip>
+                            </template>
+                        </el-tab-pane>
+                    </el-tabs>
                     <div v-if="sqlError" class="sql-exec-error">
                         <div class="sql-exec-error-title">SQL 执行异常</div>
                         <div class="sql-exec-error-body">{{ sqlError }}</div>
@@ -82,7 +104,7 @@
                         <el-button type="warning" size="small" @click="saveInlineChanges" :loading="savingInline">
                             <span>保存更改</span>
                         </el-button>
-                        <el-button size="small" @click="exec(); inlineChanges.clear()">
+                        <el-button size="small" @click="exec(true); inlineChanges.clear()">
                             <span>放弃更改</span>
                         </el-button>
                         <span class="inline-count">{{ inlineChangeCount }} 处更改</span>
@@ -191,6 +213,7 @@ import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'v
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { ElMessage } from 'element-plus'
+import { ArrowDown, VideoPlay, View, Loading } from '@element-plus/icons-vue'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
@@ -288,6 +311,43 @@ const editingCellCol = ref('')
 const editingCellValue = ref('')
 const inlineChanges = ref(new Map<string, any>())
 const savingInline = ref(false)
+
+const batchResults = ref<any[]>([])
+const activeResultTab = ref('0')
+const isBatchMode = ref(false)
+
+const batchDisplayTabs = computed(() => {
+    if (!isBatchMode.value || batchResults.value.length === 0) return []
+    const tabs: { name: string; type: string; modifyCount?: number; queryNum?: number; idx?: number; item?: any; hasError?: boolean; hasRollback?: boolean; allFailed?: boolean }[] = []
+    const modifyItems = batchResults.value.filter((r: any) => r.type === 'modify')
+    if (modifyItems.length > 0) {
+        const hasError = modifyItems.some((r: any) => r.status === 'error')
+        const hasRollback = modifyItems.some((r: any) => r.status === 'rolled_back')
+        const allFailed = modifyItems.every((r: any) => r.status === 'error')
+        tabs.push({
+            name: 'modify-summary',
+            type: 'modify-summary',
+            modifyCount: modifyItems.length,
+            hasError,
+            hasRollback,
+            allFailed
+        })
+    }
+    let queryNum = 0
+    batchResults.value.forEach((item: any, idx: number) => {
+        if (item.type === 'query') {
+            queryNum++
+            tabs.push({
+                name: String(idx),
+                type: 'query',
+                queryNum,
+                idx,
+                item
+            })
+        }
+    })
+    return tabs
+})
 
 const activeCellRow2 = ref(-1)
 const activeCellCol2 = ref('')
@@ -601,17 +661,312 @@ function exportBackupData() {
     }
     excel.exportJsonToExcel(obj)
 }
-function exec() {
-    const sqlExec = getSelection()?.toString()
-    if (!sqlExec) {
-        ElMessage({ message: "请先选择SQL", type: "error" })
+function extractSqlStatements(sql: string): string[] {
+    let cleanSql = sql.replace(/\/\*[\s\S]*?\*\//g, '')
+    const lines = cleanSql.split("\n")
+    const cleanedLines: string[] = []
+    for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed === "" || trimmed.startsWith("--") || trimmed.startsWith("//")) {
+            continue
+        }
+        cleanedLines.push(line.trimEnd())
+    }
+    cleanSql = cleanedLines.join("\n").trim()
+    return cleanSql.split(";")
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 0)
+}
+
+function buildColumnDef(col: any): any {
+    return {
+        key: col.name,
+        title: col.name,
+        dataKey: col.name,
+        comment: col.comment,
+        dataType: col.type,
+        width: 150,
+        minWidth: 150,
+        headerCellRenderer: ({ column }: { column: any }) => {
+            return h('div', {
+                class: "header-box",
+                onDragenter: (e: any) => e.preventDefault(),
+                onMouseenter: (e: any) => {
+                    const dragLine = e.target.querySelector('.drag-line')
+                    if (dragLine) dragLine.style.opacity = '1'
+                },
+                onMouseleave: (e: any) => {
+                    const dragLine = e.target.querySelector('.drag-line')
+                    if (dragLine) dragLine.style.opacity = '0'
+                }
+            }, [
+                h('div', {
+                    class: "header-text",
+                    title: col.comment
+                }, col.name),
+                h('div', {
+                    class: "drag-line",
+                    draggable: true,
+                    style: {
+                        position: 'absolute',
+                        right: '-4px',
+                        top: 0,
+                        bottom: 0,
+                        width: '8px',
+                        cursor: 'ew-resize',
+                        backgroundColor: 'transparent',
+                        borderRight: '1px solid #409eff',
+                        zIndex: 999,
+                        transform: 'translateZ(999px)',
+                        opacity: 0,
+                        transition: 'opacity 0.2s'
+                    },
+                    onDragstart: (e: any) => dragStart(e),
+                    onDragend: (e: any) => dragEnd(e),
+                    onMouseenter: (e: any) => {
+                        e.target.style.opacity = '1'
+                    },
+                    onMouseleave: (e: any) => {
+                        e.target.style.opacity = '0'
+                    }
+                })
+            ])
+        },
+        cellRenderer: ({ cellData, rowData, column, rowIndex }: { cellData: any, rowData: any, column: any, rowIndex: number }) => {
+            const colKey = column.dataKey as string
+            const isEditing = isEditingCell(rowIndex, colKey)
+            const isChanged = isCellChanged(rowIndex, colKey)
+            const colType = col.type
+
+            if (isEditing) {
+                if (isDateType(colType)) {
+                    return h('input', {
+                        type: 'datetime-local',
+                        value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
+                        style: {
+                            width: '100%', height: '28px', border: '1px solid #409eff',
+                            borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                            background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                            boxSizing: 'border-box'
+                        },
+                        onInput: (e: Event) => {
+                            const target = e.target as HTMLInputElement
+                            editingCellValue.value = target.value + ':00'
+                        },
+                        onKeyup: (e: KeyboardEvent) => {
+                            if (e.key === 'Enter') commitInlineEdit()
+                            if (e.key === 'Escape') cancelInlineEdit()
+                        },
+                        onBlur: () => commitInlineEdit()
+                    })
+                }
+                return h('input', {
+                    value: editingCellValue.value,
+                    style: {
+                        width: '100%', height: '28px', border: '1px solid #409eff',
+                        borderRadius: '4px', padding: '0 4px', fontSize: '12px',
+                        background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                        boxSizing: 'border-box'
+                    },
+                    onInput: (e: Event) => {
+                        const target = e.target as HTMLInputElement
+                        editingCellValue.value = target.value
+                    },
+                    onKeyup: (e: KeyboardEvent) => {
+                        if (e.key === 'Enter') commitInlineEdit()
+                        if (e.key === 'Escape') cancelInlineEdit()
+                    },
+                    onBlur: () => commitInlineEdit()
+                })
+            }
+
+            const displayVal = cellData != null ? String(cellData) : ''
+            const changedStyle = isChanged ? {
+                backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px',
+                borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
+                cursor: 'pointer'
+            } : { cursor: 'pointer' }
+
+            return h('span', {
+                title: displayVal,
+                style: changedStyle,
+                onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
+            }, displayVal)
+        }
+    }
+}
+
+function buildRowNumberColumn(): any {
+    return {
+        dataKey: "col-idx",
+        width: 60,
+        fixed: true,
+        cellRenderer: ({ cellData, rowIndex }: { cellData: any, rowIndex: number }) => {
+            return h('div', {},
+                [h('div', { class: "el-table-v2__cell-text", title: cellData }, cellData), h('div', { class: "data-view", onClick: () => openDataDetails(rowIndex) })]
+            )
+        }
+    }
+}
+
+function applyResultToUI(data: any) {
+    canEdit.value = data.canEdit || false
+    tableKeys.value = data.keys || []
+    columns.value = (data.columns || []).map((col: any) => buildColumnDef(col))
+    columns.value.unshift(buildRowNumberColumn())
+    result.value = data.data || []
+    result.value.forEach((row: any, idx: number) => {
+        row["col-idx"] = idx + 1
+    })
+}
+
+function displayBatchResult(idx: number) {
+    const item = batchResults.value[idx]
+    if (!item) return
+
+    if (item.status === 'error') {
+        sqlError.value = item.error
+        columns.value = []
+        result.value = []
+        canEdit.value = false
+        tableKeys.value = []
         return
     }
+
+    sqlError.value = ''
+    currentSelectTable.value = extractTableName(item.sql || '')
+    applyResultToUI(item)
+    if (item.status === 'rolled_back') {
+        canEdit.value = false
+    }
+}
+
+function displayModifySummary() {
+    sqlError.value = ''
+    currentSelectTable.value = ''
+    const modifyItems = batchResults.value.filter((item: any) => item.type === 'modify')
+    if (modifyItems.length === 0) return
+
+    const summaryColumns: any[] = [
+        { name: 'SQL', type: 'VARCHAR', comment: '' },
+        { name: '状态', type: 'VARCHAR', comment: '' },
+        { name: '受影响行数', type: 'BIGINT', comment: '' },
+        { name: '备注', type: 'VARCHAR', comment: '' },
+    ]
+
+    const summaryData = modifyItems.map((item: any) => {
+        const row: any = {
+            'SQL': item.sql,
+            '状态': item.status === 'success' ? '成功' : item.status === 'rolled_back' ? '已回滚' : '失败',
+            '受影响行数': item.affected || 0,
+            '备注': item.error || (item.status === 'rolled_back' ? '事务回滚' : ''),
+        }
+        return row
+    })
+
+    canEdit.value = false
+    tableKeys.value = []
+    columns.value = summaryColumns.map((col: any) => buildColumnDef(col))
+    const sqlCol = columns.value.find((c: any) => c.dataKey === 'SQL')
+    if (sqlCol) sqlCol.width = 300
+    const remarkCol = columns.value.find((c: any) => c.dataKey === '备注')
+    if (remarkCol) remarkCol.width = 200
+    columns.value.unshift(buildRowNumberColumn())
+    result.value = summaryData
+    result.value.forEach((row: any, idx: number) => {
+        row['col-idx'] = idx + 1
+    })
+}
+
+function onBatchTabChange(tabName: string | number) {
+    const name = String(tabName)
+    if (name === 'modify-summary') {
+        displayModifySummary()
+        return
+    }
+    const idx = parseInt(name)
+    if (!isNaN(idx)) {
+        displayBatchResult(idx)
+    }
+}
+
+function getSqlPreview(sql: string): string {
+    if (!sql) return ''
+    const firstLine = sql.split('\n')[0].trim()
+    if (firstLine.length > 30) {
+        return firstLine.substring(0, 30) + '...'
+    }
+    return firstLine
+}
+
+function execBatch(statements: string[]) {
+    for (const stmt of statements) {
+        if (checkSql(stmt)) {
+            return
+        }
+    }
+
+    isBatchMode.value = true
+    exectingSql.value = true
+    executionTime.value = null
+    sqlError.value = ''
+    batchResults.value = []
+    activeResultTab.value = '0'
+    columns.value = []
+    result.value = []
+
+    const startTime = performance.now()
+    const fullSql = statements.join(";")
+
+    const params = new URLSearchParams()
+    params.append("connId", connId)
+    params.append("schema", schema)
+    params.append("sql", fullSql)
+    params.append("maxLine", maxLine.value)
+    params.append("batch", "true")
+
+    http.post("/execSQL", params)
+        .then((resp) => {
+            executionTime.value = Math.round(performance.now() - startTime)
+            batchResults.value = resp.data.data.results || []
+            if (batchDisplayTabs.value.length > 0) {
+                const firstTab = batchDisplayTabs.value[0]
+                activeResultTab.value = firstTab.name
+                if (firstTab.type === 'modify-summary') {
+                    displayModifySummary()
+                } else if (firstTab.idx !== undefined) {
+                    displayBatchResult(firstTab.idx)
+                }
+            }
+            exectingSql.value = false
+        }).catch((error) => {
+            sqlError.value = error.message || '执行失败'
+            columns.value = []
+            result.value = []
+            exectingSql.value = false
+        })
+}
+
+function exec(silent = false) {
+    const sqlExec = getSelection()?.toString()
+    if (!sqlExec) {
+        if (!silent) ElMessage({ message: "请先选择SQL", type: "error" })
+        return
+    }
+
+    const statements = extractSqlStatements(sqlExec)
+    if (statements.length > 1) {
+        execBatch(statements)
+        return
+    }
+
     const effiectiveSql = extractEffectiveSql(sqlExec)
     if (checkSql(effiectiveSql)) {
         return
     }
     currentSelectTable.value = extractTableName(sqlExec)
+    isBatchMode.value = false
+    batchResults.value = []
     exectingSql.value = true
     executionTime.value = null
     sqlError.value = ''
@@ -625,147 +980,14 @@ function exec() {
     http.post("/execSQL", params)
         .then((resp) => {
             executionTime.value = Math.round(performance.now() - startTime)
-            canEdit.value = resp.data.data.canEdit
-            tableKeys.value = resp.data.data.keys || []
-            columns.value = resp.data.data.columns.map((col: any) => {
-                const colDef: any = {
-                    key: col.name,
-                    title: col.name,
-                    dataKey: col.name,
-                    comment: col.comment,
-                    dataType: col.type,
-                    width: 150,
-                    minWidth: 150,
-                    headerCellRenderer: ({ column }: { column: any }) => {
-                        return h('div', {
-                            class: "header-box",
-                            onDragenter: (e: any) => e.preventDefault(),
-                            onMouseenter: (e: any) => {
-                                const dragLine = e.target.querySelector('.drag-line')
-                                if (dragLine) dragLine.style.opacity = '1'
-                            },
-                            onMouseleave: (e: any) => {
-                                const dragLine = e.target.querySelector('.drag-line')
-                                if (dragLine) dragLine.style.opacity = '0'
-                            }
-                        }, [
-                            h('div', {
-                                class: "header-text",
-                                title: col.comment
-                            }, col.name),
-                            h('div', {
-                                class: "drag-line",
-                                draggable: true,
-                                style: {
-                                    position: 'absolute',
-                                    right: '-4px',
-                                    top: 0,
-                                    bottom: 0,
-                                    width: '8px',
-                                    cursor: 'ew-resize',
-                                    backgroundColor: 'transparent',
-                                    borderRight: '1px solid #409eff',
-                                    zIndex: 999,
-                                    transform: 'translateZ(999px)',
-                                    opacity: 0,
-                                    transition: 'opacity 0.2s'
-                                },
-                                onDragstart: (e: any) => dragStart(e),
-                                onDragend: (e: any) => dragEnd(e),
-                                onMouseenter: (e: any) => {
-                                    e.target.style.opacity = '1'
-                                },
-                                onMouseleave: (e: any) => {
-                                    e.target.style.opacity = '0'
-                                }
-                            })
-                        ])
-                    },
-                    cellRenderer: ({ cellData, rowData, column, rowIndex }: { cellData: any, rowData: any, column: any, rowIndex: number }) => {
-                        const colKey = column.dataKey as string
-                        const isEditing = isEditingCell(rowIndex, colKey)
-                        const isChanged = isCellChanged(rowIndex, colKey)
-                        const colType = col.type
-
-                        if (isEditing) {
-                            if (isDateType(colType)) {
-                                return h('input', {
-                                    type: 'datetime-local',
-                                    value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
-                                    style: {
-                                        width: '100%', height: '28px', border: '1px solid #409eff',
-                                        borderRadius: '4px', padding: '0 4px', fontSize: '12px',
-                                        background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                        boxSizing: 'border-box'
-                                    },
-                                    onInput: (e: Event) => {
-                                        const target = e.target as HTMLInputElement
-                                        editingCellValue.value = target.value + ':00'
-                                    },
-                                    onKeyup: (e: KeyboardEvent) => {
-                                        if (e.key === 'Enter') commitInlineEdit()
-                                        if (e.key === 'Escape') cancelInlineEdit()
-                                    },
-                                    onBlur: () => commitInlineEdit()
-                                })
-                            }
-                            return h('input', {
-                                value: editingCellValue.value,
-                                style: {
-                                    width: '100%', height: '28px', border: '1px solid #409eff',
-                                    borderRadius: '4px', padding: '0 4px', fontSize: '12px',
-                                    background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                                    boxSizing: 'border-box'
-                                },
-                                onInput: (e: Event) => {
-                                    const target = e.target as HTMLInputElement
-                                    editingCellValue.value = target.value
-                                },
-                                onKeyup: (e: KeyboardEvent) => {
-                                    if (e.key === 'Enter') commitInlineEdit()
-                                    if (e.key === 'Escape') cancelInlineEdit()
-                                },
-                                onBlur: () => commitInlineEdit()
-                            })
-                        }
-
-                        const displayVal = cellData != null ? String(cellData) : ''
-                        const changedStyle = isChanged ? {
-                            backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px',
-                            borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
-                            cursor: 'pointer'
-                        } : { cursor: 'pointer' }
-
-                        return h('span', {
-                            title: displayVal,
-                            style: changedStyle,
-                            onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
-                        }, displayVal)
-                    }
-                }
-                return colDef
-            })
-            columns.value.unshift({
-                dataKey: "col-idx",
-                width: 60,
-                fixed: true,
-                cellRenderer: ({ cellData, rowIndex }: { cellData: any, rowIndex: number }) => {
-                    return h('div', {},
-                        [h('div', { class: "el-table-v2__cell-text", title: cellData }, cellData), h('div', { class: "data-view", onClick: () => openDataDetails(rowIndex) })]
-                    )
-                }
-            })
-            result.value = resp.data.data.data
-            result.value.forEach((row: any, idx: number) => {
-                row["col-idx"] = idx + 1
-            });
+            applyResultToUI(resp.data.data)
             exectingSql.value = false
         }).catch((error) => {
             sqlError.value = error.message || '执行失败'
             columns.value = []
             result.value = []
             exectingSql.value = false
-        });
+        })
 }
 
 function isDateType(colType: string | undefined): boolean {
@@ -981,9 +1203,9 @@ function saveInlineChanges() {
 
     Promise.all(promises)
         .then(() => {
-            ElMessage.success('内联更改已保存')
+            ElMessage.success('已保存成功')
             inlineChanges.value = new Map()
-            exec()
+            exec(true)
         })
         .catch((err) => {
             console.error(err)
@@ -1099,7 +1321,7 @@ function checkSql(sql: string) {
     const sqlArr = sql.split(";")
     for (let i = 0; i < sqlArr.length; i++) {
         const sqlLowerCase = sqlArr[i].toLowerCase().trimStart()
-        if (!canModify.value && (sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ") || sqlLowerCase.startsWith("alter "))) {
+        if (!canModify.value && (sqlLowerCase.startsWith("update ") || sqlLowerCase.startsWith("delete ") || sqlLowerCase.startsWith("alter ") || sqlLowerCase.startsWith("insert ") || sqlLowerCase.startsWith("drop ") || sqlLowerCase.startsWith("create ") || sqlLowerCase.startsWith("truncate "))) {
             ElMessage.warning("当前模式不允许修改")
             hasInvalid = true
             break
@@ -1775,6 +1997,78 @@ const dragEnd = (e: DragEvent) => {
 
 .data-details-dialog .dialog-scroll-body {
     min-height: 100%;
+}
+
+.batch-tabs {
+    flex-shrink: 0;
+    border-bottom: none;
+}
+
+.batch-tabs .el-tabs__header {
+    margin-bottom: 0;
+}
+
+.batch-tabs .el-tabs__content {
+    display: none;
+}
+
+.batch-tabs .el-tabs__item {
+    padding: 0 12px;
+    height: 32px;
+    line-height: 32px;
+    font-size: 12px;
+}
+
+.batch-tab-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.batch-tab-index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--el-color-primary-light-8);
+    color: var(--el-color-primary);
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.batch-tab-error .batch-tab-index {
+    background: var(--el-color-danger-light-8);
+    color: var(--el-color-danger);
+}
+
+.batch-tab-sql {
+    white-space: nowrap;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.batch-tab-error .batch-tab-sql {
+    color: var(--el-color-danger);
+}
+
+.batch-tab-rolled-back .batch-tab-index {
+    background: var(--el-color-info-light-8);
+    color: var(--el-color-info);
+}
+
+.batch-tab-rolled-back .batch-tab-sql {
+    color: var(--el-color-info);
+    text-decoration: line-through;
+}
+
+.batch-tab-modify .batch-tab-index {
+    background: var(--el-color-warning-light-8);
+    color: var(--el-color-warning);
+    font-size: 10px;
+    font-weight: 700;
 }
 </style>
 <style lang="less" scoped></style>
