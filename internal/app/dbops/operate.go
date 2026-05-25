@@ -314,7 +314,11 @@ func ListTableColumns(connIdParam string, tableName, schema, authorization strin
 	dc := conn.GetConn(connIdParam, authorization)
 	rows, err := dc.Queryx(dialect.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
 	logger.PanicErr(err)
-	result := database.GetResultRows(dc.DriverName(), rows)
+	result, err := database.GetResultRows(dc.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("获取列信息失败", err)
+		return []map[string]any{}
+	}
 
 	access := permission.GetTableAccessDowngraded(connIdParam, schema, tableName, authorization)
 	if access.Level == permission.AccessFull {
@@ -516,7 +520,12 @@ func TableOptions(c *gin.Context) {
 	}
 	rows, err := dc.Queryx(sqlStr, args...)
 	logger.PanicErr(err)
-	data := database.GetResultRows(dc.DriverName(), rows)
+	data, err := database.GetResultRows(dc.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("获取表详情失败", err)
+		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
+		return
+	}
 	if len(data) > 0 {
 		jsonutil.WriteJson(c.Writer, data[0])
 	} else {
@@ -544,7 +553,12 @@ func TableStatistics(c *gin.Context) {
 	}
 	rows, err := dc.Queryx(sqlStr, args...)
 	logger.PanicErr(err)
-	data := database.GetResultRows(dc.DriverName(), rows)
+	data, err := database.GetResultRows(dc.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("获取表统计信息失败", err)
+		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
+		return
+	}
 	if len(data) > 0 {
 		jsonutil.WriteJson(c.Writer, data[0])
 	} else {
@@ -572,6 +586,11 @@ func ListIndexes(c *gin.Context) {
 	}
 	rows, err := dc.Queryx(sqlStr, args...)
 	logger.PanicErr(err)
-	data := database.GetResultRows(dc.DriverName(), rows)
+	data, err := database.GetResultRows(dc.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("获取索引信息失败", err)
+		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
+		return
+	}
 	jsonutil.WriteJson(c.Writer, data)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,9 +30,10 @@ func InitMngtDbConn() {
 		panic(err)
 	}
 	if config.Cfg.DB.DriverName == "sqlite" {
-		sqlxDb.SetMaxOpenConns(2)
-		sqlxDb.SetMaxIdleConns(2)
+		sqlxDb.SetMaxOpenConns(5)
+		sqlxDb.SetMaxIdleConns(3)
 		sqlxDb.SetConnMaxLifetime(0)
+		sqlxDb.SetConnMaxIdleTime(5 * time.Minute)
 		initSQLitePragma(sqlxDb)
 	} else {
 		mngtMaxOpen := config.Cfg.DB.MaxOpenConns
@@ -52,7 +54,7 @@ func InitMngtDbConn() {
 func initSQLitePragma(db *sqlx.DB) {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
+		"PRAGMA busy_timeout=30000",
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA cache_size=-64000",
 		"PRAGMA temp_store=MEMORY",
@@ -202,4 +204,58 @@ func loadSystemConfigValue(key string, target any) {
 			*t = arr
 		}
 	}
+}
+
+func IsRetryableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "is locked") {
+		return true
+	}
+	if strings.Contains(msg, "Deadlock found") ||
+		strings.Contains(msg, "try restarting transaction") ||
+		strings.Contains(msg, "1213") ||
+		strings.Contains(msg, "1205") {
+		return true
+	}
+	return false
+}
+
+func RetryOnBusy(fn func() error, maxRetries int, baseDelay time.Duration) error {
+	var err error
+	for i := 0; i <= maxRetries; i++ {
+		err = fn()
+		if err == nil || !IsRetryableErr(err) {
+			return err
+		}
+		if i < maxRetries {
+			delay := baseDelay * time.Duration(1<<uint(i))
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
+			time.Sleep(delay)
+		}
+	}
+	return err
+}
+
+func MngtdbExec(query string, args ...any) error {
+	return RetryOnBusy(func() error {
+		_, err := Mngtdb.Exec(query, args...)
+		return err
+	}, 3, 50*time.Millisecond)
+}
+
+func MngtdbBeginx() (*sqlx.Tx, error) {
+	var tx *sqlx.Tx
+	err := RetryOnBusy(func() error {
+		var err error
+		tx, err = Mngtdb.Beginx()
+		return err
+	}, 3, 50*time.Millisecond)
+	return tx, err
 }

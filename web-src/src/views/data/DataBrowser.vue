@@ -216,11 +216,10 @@
     :visible="columnFilterDialogVisible"
     placement="bottom"
     :width="350"
-    trigger="click"
+    trigger="manual"
     :virtual-ref="filterTriggerRef"
     virtual-triggering
     :title="'字段过滤 - ' + (currentColumn?.name || '')"
-    @update:visible="handlePopoverVisibleChange"
   >
     <el-form label-width="60px" size="small" @click.stop>
       <el-form-item label="操作符">
@@ -658,6 +657,7 @@ onBeforeUnmount(() => {
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer)
   }
+  document.removeEventListener('mousedown', onFilterPopoverMouseDown)
 })
 
 function handleImportCommand(command) {
@@ -1217,17 +1217,18 @@ function getRowValue(row, colName) {
 }
 
 function openColumnFilter(col, event) {
+  if (currentColumn.value?.name === col.name && columnFilterDialogVisible.value) {
+    columnFilterDialogVisible.value = false
+    return
+  }
   currentColumn.value = col
-  // 设置虚拟引用为点击的事件目标
   filterTriggerRef.value = event.currentTarget
   
-  // 从存储中读取该字段的过滤条件，如果没有则使用默认值
   const savedCondition = columnFilterConditions.value[col.name]
   if (savedCondition) {
     columnFilterOperator.value = savedCondition.operator
     columnFilterValue.value = savedCondition.value
   } else {
-    // 新字段，使用默认值
     columnFilterOperator.value = '='
     columnFilterValue.value = ''
   }
@@ -1235,10 +1236,11 @@ function openColumnFilter(col, event) {
   columnFilterDialogVisible.value = true
 }
 
-function handlePopoverVisibleChange(visible) {
-  columnFilterDialogVisible.value = visible
-  if (!visible && currentColumn.value) {
-  }
+function onFilterPopoverMouseDown(e) {
+  if (!columnFilterDialogVisible.value) return
+  if (e.target.closest('.el-popper')) return
+  if (filterTriggerRef.value && (filterTriggerRef.value === e.target || filterTriggerRef.value.contains(e.target))) return
+  columnFilterDialogVisible.value = false
 }
 
 function getOperatorPlaceholder(op) {
@@ -1798,6 +1800,7 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
 
 onMounted(() => {
   loadData()
+  document.addEventListener('mousedown', onFilterPopoverMouseDown)
 })
 
 function openTableStructure() {

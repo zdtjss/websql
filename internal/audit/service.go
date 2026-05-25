@@ -187,35 +187,42 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 		return
 	}
 
-	tx, err := database.Mngtdb.Beginx()
-	if err != nil {
-		logger.PrintErrf("审计日志事务创建失败", err)
-		return
-	}
-
-	insertSQL := `INSERT INTO t_audit_log (id, user_id, user_name, conn_id, conn_name, schema_name, session_id, sql_text, sql_type, risk_level, status, source, tool_name, affected_rows, exec_time_ms, exec_time, error_msg, client_ip)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	stmt, err := tx.Preparex(insertSQL)
-	if err != nil {
-		tx.Rollback()
-		if !strings.Contains(err.Error(), "no such table") && !strings.Contains(err.Error(), "doesn't exist") {
-			logger.PrintErrf("审计日志 Prepare 失败", err)
-		}
-		return
-	}
-	defer stmt.Close()
-
-	for _, r := range batch {
-		_, err := stmt.Exec(r.ID, r.UserID, r.UserName, r.ConnID, r.ConnName, r.SchemaName,
-			r.SessionID, r.SQLText, r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
-			r.AffectedRows, r.ExecTimeMs, r.ExecTime, r.ErrorMsg, r.ClientIP)
+	err := database.RetryOnBusy(func() error {
+		tx, err := database.Mngtdb.Beginx()
 		if err != nil {
-			logger.PrintErrf("审计日志写入失败: %s", err, r.SQLText)
+			return err
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		logger.PrintErrf("审计日志事务提交失败", err)
+		insertSQL := `INSERT INTO t_audit_log (id, user_id, user_name, conn_id, conn_name, schema_name, session_id, sql_text, sql_type, risk_level, status, source, tool_name, affected_rows, exec_time_ms, exec_time, error_msg, client_ip)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		stmt, err := tx.Preparex(insertSQL)
+		if err != nil {
+			tx.Rollback()
+			if !strings.Contains(err.Error(), "no such table") && !strings.Contains(err.Error(), "doesn't exist") {
+				logger.PrintErrf("审计日志 Prepare 失败", err)
+			}
+			return err
+		}
+		defer stmt.Close()
+
+		for _, r := range batch {
+			_, err := stmt.Exec(r.ID, r.UserID, r.UserName, r.ConnID, r.ConnName, r.SchemaName,
+				r.SessionID, r.SQLText, r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
+				r.AffectedRows, r.ExecTimeMs, r.ExecTime, r.ErrorMsg, r.ClientIP)
+			if err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return nil
+	}, 3, 100*time.Millisecond)
+
+	if err != nil {
+		logger.PrintErrf("审计日志写入失败(已重试)", err)
 	}
 }
 

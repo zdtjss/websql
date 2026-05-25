@@ -368,7 +368,12 @@ func queryAllData(conn *sqlx.DB, dbType string, sql string) []map[string]any {
 		return nil
 	}
 	defer rows.Close()
-	return database.GetResultRows(dbType, rows)
+	data, err := database.GetResultRows(dbType, rows)
+	if err != nil {
+		logger.PrintErrf("数据查询失败", err)
+		return nil
+	}
+	return data
 }
 
 func findCommonColumns(data1, data2 []map[string]any) []string {

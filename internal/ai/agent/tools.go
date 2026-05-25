@@ -237,7 +237,11 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 					if altErr == nil {
 						defer altRows.Close()
 						cols, _ := altRows.Columns()
-						data := database.GetResultRows(altConn.DriverName(), altRows)
+						data, err := database.GetResultRows(altConn.DriverName(), altRows)
+						if err != nil {
+							logger.PrintErrf("查询数据失败", err)
+							return nil, fmt.Errorf("query failed: %w", err)
+						}
 						recordQueryAudit(auditCtx, input.SQL, altConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
 						return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
 					}
@@ -249,7 +253,11 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 		}
 		defer rows.Close()
 		cols, _ := rows.Columns()
-		data := database.GetResultRows(conn.DriverName(), rows)
+		data, err := database.GetResultRows(conn.DriverName(), rows)
+		if err != nil {
+			logger.PrintErrf("查询数据失败", err)
+			return nil, fmt.Errorf("query failed: %w", err)
+		}
 		recordQueryAudit(auditCtx, input.SQL, targetConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
 		return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
 	}
@@ -754,7 +762,11 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 		return sb.String()
 	}
 	defer rows.Close()
-	data := database.GetResultRows(conn.DriverName(), rows)
+	data, err := database.GetResultRows(conn.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("获取列信息失败", err)
+		return sb.String()
+	}
 	for _, row := range data {
 		fmt.Fprintf(&sb, "  %v\n", row)
 	}

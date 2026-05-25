@@ -1,9 +1,11 @@
 package database
 
 import (
+	"fmt"
+	"reflect"
+
 	"websql/internal/dialect"
 	"websql/internal/logger"
-	"reflect"
 
 	"github.com/jmoiron/sqlx"
 	"slices"
@@ -23,10 +25,13 @@ func dereferenceValue(v any) any {
 	return v
 }
 
-func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
+func GetResultRows(dbtype string, rows *sqlx.Rows) ([]map[string]any, error) {
 	dataMaps := make([]map[string]any, 0)
 	cts, err := rows.ColumnTypes()
-	logger.PanicErrf("获取字段类型失败", err)
+	if err != nil {
+		logger.PrintErrf("获取字段类型失败", err)
+		return nil, fmt.Errorf("获取字段类型失败: %w", err)
+	}
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -43,7 +48,10 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 			valuesPoints[i] = &values[i]
 		}
 
-		rows.Scan(valuesPoints...)
+		if err := rows.Scan(valuesPoints...); err != nil {
+			logger.PrintErrf("数据行扫描失败", err)
+			return nil, fmt.Errorf("数据行扫描失败: %w", err)
+		}
 
 		row := make(map[string]any)
 
@@ -51,17 +59,25 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) []map[string]any {
 			key := columns[i]
 			colType := colTypeMap[key]
 			actualVal := dereferenceValue(values[i])
-			row[key] = *dialect.ConvertColHandler[dbtype](&colType, &actualVal, true)
+			converted := dialect.ConvertColHandler[dbtype](&colType, &actualVal, true)
+			if converted != nil {
+				row[key] = *converted
+			} else {
+				row[key] = nil
+			}
 		}
 		dataMaps = append(dataMaps, row)
 	}
-	return dataMaps
+	return dataMaps, nil
 }
 
-func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) []map[string]any {
+func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) ([]map[string]any, error) {
 	dataMaps := make([]map[string]any, 0)
 	cts, err := rows.ColumnTypes()
-	logger.PanicErrf("获取字段类型失败", err)
+	if err != nil {
+		logger.PrintErrf("获取字段类型失败", err)
+		return nil, fmt.Errorf("获取字段类型失败: %w", err)
+	}
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -78,7 +94,10 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) []map[string]any {
 			valuesPoints[i] = &values[i]
 		}
 
-		rows.Scan(valuesPoints...)
+		if err := rows.Scan(valuesPoints...); err != nil {
+			logger.PrintErrf("数据行扫描失败", err)
+			return nil, fmt.Errorf("数据行扫描失败: %w", err)
+		}
 
 		row := make(map[string]any)
 
@@ -86,11 +105,16 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) []map[string]any {
 			key := columns[i]
 			colType := colTypeMap[key]
 			actualVal := dereferenceValue(values[i])
-			row[key] = *dialect.ConvertColHandler[dbtype](&colType, &actualVal, false)
+			converted := dialect.ConvertColHandler[dbtype](&colType, &actualVal, false)
+			if converted != nil {
+				row[key] = *converted
+			} else {
+				row[key] = nil
+			}
 		}
 		dataMaps = append(dataMaps, row)
 	}
-	return dataMaps
+	return dataMaps, nil
 }
 
 func KeyIdx(keys, columns []string) []int {

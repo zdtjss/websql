@@ -86,22 +86,30 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 			switch *colType {
 			case "TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT":
 				iv, err := strconv.ParseInt(strVal, 10, 64)
-				logger.PanicErrf("数字解析失败", err)
-				if overSign && iv > 9007199254740992 {
+				if err != nil {
+					logger.PrintErrf("MySQL INT解析失败, colType=%s, val=%s", err, *colType, strVal)
+					v = strVal
+				} else if overSign && iv > 9007199254740992 {
 					v = fmt.Sprintf("s:%d", iv)
 				} else {
 					v = iv
 				}
 			case "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE":
 				fv, err := strconv.ParseFloat(strVal, 64)
-				logger.PanicErrf("数字解析失败", err)
-				if overSign && fv > 9007199254740992 {
+				if err != nil {
+					logger.PrintErrf("MySQL FLOAT解析失败, colType=%s, val=%s", err, *colType, strVal)
+					v = strVal
+				} else if overSign && fv > 9007199254740992 {
 					v = fmt.Sprintf("s:%f", fv)
 				} else {
 					v = fv
 				}
 			case "BOOL", "BOOLEAN":
-				v = b[0] != byte(0)
+				if len(b) > 0 {
+					v = b[0] != byte(0)
+				} else {
+					v = false
+				}
 			case "BIT":
 				ba := bytes.NewBufferString("")
 				for idx := range b {
@@ -132,7 +140,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				if err != nil {
 					f, err2 := strconv.ParseFloat(strVal, 64)
 					if err2 != nil {
-						logger.PrintErrf("NUMBER类型解析失败: %s", err2)
+						logger.PrintErrf("Oracle NUMBER类型解析失败: %s", err2)
 						v = strVal
 					} else {
 						if overSign && f > 9007199254740992 {
@@ -151,7 +159,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 			case "INTEGER":
 				i, err := strconv.ParseInt(strVal, 10, 64)
 				if err != nil {
-					logger.PrintErrf("INTEGER类型解析失败", err)
+					logger.PrintErrf("Oracle INTEGER类型解析失败", err)
 					v = strVal
 				} else {
 					if overSign && i > 9007199254740992 {
@@ -190,20 +198,36 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 		switch *colType {
 		case "float", "double", "decimal", "numeric":
 			f, err := strconv.ParseFloat(*val, 64)
-			logger.PanicErr(err)
+			if err != nil {
+				logger.PrintErrf("MySQL ParseVal FLOAT解析失败", err)
+				var r any = *val
+				return &r
+			}
 			retVal = f
 		case "int", "bigint", "smallint", "mediumint", "tinyint":
 			f, err := strconv.ParseFloat(*val, 64)
-			logger.PanicErr(err)
+			if err != nil {
+				logger.PrintErrf("MySQL ParseVal INT解析失败", err)
+				var r any = *val
+				return &r
+			}
 			retVal = int64(f)
 		case "bit":
-			if (*val)[0:2] == "b'" {
+			if len(*val) >= 3 && (*val)[0:2] == "b'" {
 				b, err := strconv.ParseBool((*val)[2:3])
-				logger.PanicErr(err)
+				if err != nil {
+					logger.PrintErrf("MySQL ParseVal BIT解析失败", err)
+					var r any = *val
+					return &r
+				}
 				retVal = b
 			} else {
 				f, err := strconv.ParseBool(*val)
-				logger.PanicErr(err)
+				if err != nil {
+					logger.PrintErrf("MySQL ParseVal BOOL解析失败", err)
+					var r any = *val
+					return &r
+				}
 				retVal = f
 			}
 		default:
@@ -222,19 +246,34 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			i, err := strconv.ParseInt(*val, 10, 64)
 			if err != nil && strings.Contains(err.Error(), "invalid syntax") {
 				f, err := strconv.ParseFloat(*val, 64)
-				logger.PanicErr(err)
+				if err != nil {
+					logger.PrintErrf("Oracle ParseVal NUMBER/FLOAT解析失败", err)
+					var r any = *val
+					return &r
+				}
 				retVal = f
+			} else if err != nil {
+				logger.PrintErrf("Oracle ParseVal NUMBER解析失败", err)
+				var r any = *val
+				return &r
 			} else {
-				logger.PanicErr(err)
 				retVal = i
 			}
 		case "INTEGER":
 			f, err := strconv.ParseInt(*val, 10, 64)
-			logger.PanicErr(err)
+			if err != nil {
+				logger.PrintErrf("Oracle ParseVal INTEGER解析失败", err)
+				var r any = *val
+				return &r
+			}
 			retVal = f
 		case "TIMESTAMP(6)":
 			f, err := time.Parse("2006-01-02 15:04:05", *val)
-			logger.PanicErr(err)
+			if err != nil {
+				logger.PrintErrf("Oracle ParseVal TIMESTAMP解析失败", err)
+				var r any = *val
+				return &r
+			}
 			retVal = f
 		default:
 			var r any = *val

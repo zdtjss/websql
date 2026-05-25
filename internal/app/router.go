@@ -49,11 +49,11 @@ var proxyHttpClient = &http.Client{
 
 func MainRegister(router *gin.Engine) {
 
-	router.Use(middleware.CustomRecovery())
 	router.Use(gzip.Gzip(gzip.DefaultCompression,
 		gzip.WithExcludedPaths([]string{"/assets/"}),
 		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
 	))
+	router.Use(middleware.CustomRecovery())
 	router.Use(middleware.LoginRateLimitMiddleware())
 	router.Use(middleware.APIRateLimitMiddleware())
 	router.Use(middleware.CircuitBreakerMiddleware())

@@ -120,7 +120,12 @@ func ListBackupData(c *gin.Context) {
 	logger.PrintErr(err)
 	defer rows.Close()
 
-	data := database.GetResultRows(database.Mngtdb.DriverName(), rows)
+	data, err := database.GetResultRows(database.Mngtdb.DriverName(), rows)
+	if err != nil {
+		logger.PrintErrf("查询操作日志失败", err)
+		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
+		return
+	}
 	jsonutil.WriteJson(c.Writer, map[string]any{"data": data, "total": total})
 }
 

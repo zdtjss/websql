@@ -75,6 +75,10 @@ func ExecSQL(c *gin.Context) {
 
 	authorization := c.GetHeader("Authorization")
 	conn := conn.GetConn(connId, authorization)
+	if conn == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "数据库连接不可用，请检查连接配置或稍后重试"})
+		return
+	}
 	userVal, _ := c.Get("currentUser")
 	user, _ := userVal.(*admin.User)
 
@@ -212,7 +216,12 @@ func ExecSQL(c *gin.Context) {
 			keyIdx = database.KeyIdx(keys, columnNameList)
 		}
 
-		data := database.GetResultRows(conn.DriverName(), rows)
+		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
+		if dataErr != nil {
+			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, dataErr.Error())
+			writeSQLError(c, dataErr)
+			return
+		}
 
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
@@ -316,7 +325,11 @@ func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) 
 		return
 	}
 	defer rows.Close()
-	data := database.GetResultRows(conn.DriverName(), rows)
+	data, dataErr := database.GetResultRows(conn.DriverName(), rows)
+	if dataErr != nil {
+		logger.PrintErrf("备份数据读取失败", dataErr)
+		return
+	}
 
 	historyWriter.enqueue(&historyRecord{
 		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
@@ -599,7 +612,17 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 			keyIdx = database.KeyIdx(keys, columnNameList)
 		}
 
-		data := database.GetResultRows(conn.DriverName(), rows)
+		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
+		if dataErr != nil {
+			result.Status = "error"
+			msg := dataErr.Error()
+			msg = sanitize.RedactCredentials(msg)
+			if len(msg) > 500 {
+				msg = msg[:500] + "..."
+			}
+			result.Error = msg
+			return result
+		}
 
 		result.Status = "success"
 		result.Columns = columnList

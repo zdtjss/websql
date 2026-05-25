@@ -2,7 +2,6 @@ package conn
 
 import (
 	"bytes"
-	"errors"
 	"log"
 	"strconv"
 	"strings"
@@ -345,12 +344,20 @@ func GetConn(id string, authorization string) *sqlx.DB {
 	userPower := admin.GetUserPower(authorization)
 	if config.Cfg.IsRemote {
 		if !admin.CheckConnAccess(userPower, id) {
-			logger.PanicErr(errors.New("无权访问"))
+			logger.PrintErrf("无权访问连接: %s", nil, id)
+			return nil
 		}
 	}
 	cfgList := []ConnCfg{}
 	err := database.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", id)
-	logger.PanicErr(err)
+	if err != nil {
+		logger.PrintErrf("查询连接配置失败: %s", err, id)
+		return nil
+	}
+	if len(cfgList) == 0 {
+		logger.PrintErrf("连接配置不存在: %s", nil, id)
+		return nil
+	}
 
 	pwd := ""
 	if cfgList[0].Pwd != nil && cfgList[0].DbType != "sqlite" {
@@ -358,7 +365,11 @@ func GetConn(id string, authorization string) *sqlx.DB {
 	}
 	cfgList[0].Pwd = &pwd
 
-	return database.GetConn(ConvertToDBParam(&cfgList[0]))
+	db := database.GetConn(ConvertToDBParam(&cfgList[0]))
+	if db == nil {
+		logger.PrintErrf("数据库连接创建失败: %s", nil, id)
+	}
+	return db
 }
 
 func GetConnNoCheck(connId string) *sqlx.DB {

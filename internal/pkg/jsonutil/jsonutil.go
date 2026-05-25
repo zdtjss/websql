@@ -2,11 +2,11 @@ package jsonutil
 
 import (
 	"encoding/json"
-	"websql/internal/logger"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"websql/internal/logger"
 )
 
 func ToJsonString(v any) []byte {
@@ -28,7 +28,14 @@ func ToJsonString2(v any) ([]byte, error) {
 
 func WriteJson(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	data := ToJsonString(Result{Code: 200, Data: v})
+	data, err := json.Marshal(Result{Code: 200, Data: v})
+	if err != nil {
+		logger.PrintErrf("JSON序列化失败", err)
+		errData := []byte(`{"code":500,"msg":"数据序列化失败"}`)
+		w.Header().Set("Content-Length", strconv.Itoa(len(errData)))
+		w.Write(errData)
+		return
+	}
 	length := len(data)
 	w.Header().Set("Content-Length", strconv.Itoa(length))
 	w.Write(data)

@@ -79,34 +79,40 @@ func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
 		return
 	}
 
-	tx, err := database.Mngtdb.Beginx()
-	if err != nil {
-		logger.PrintErrf("历史记录事务创建失败", err)
-		return
-	}
-
-	insertSQL := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
-	stmt, err := tx.Preparex(insertSQL)
-	if err != nil {
-		tx.Rollback()
-		logger.PrintErrf("历史记录 Prepare 失败", err)
-		return
-	}
-	defer stmt.Close()
-
-	for _, r := range batch {
-		dataVal := r.Data
-		if dataVal == "" {
-			dataVal = "NULL"
-		}
-		_, err := stmt.Exec(r.Id, r.User, r.ConnId, r.OperationType, r.ExecTime, r.ExecSql, dataVal)
+	err := database.RetryOnBusy(func() error {
+		tx, err := database.Mngtdb.Beginx()
 		if err != nil {
-			logger.PrintErrf("历史记录写入失败: %s", err, r.ExecSql[:min(100, len(r.ExecSql))])
+			return err
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		logger.PrintErrf("历史记录事务提交失败", err)
+		insertSQL := "insert into t_history (id,user,conn_id,operation_type,exec_time,exec_sql,data) values(?,?,?,?,?,?,?)"
+		stmt, err := tx.Preparex(insertSQL)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		defer stmt.Close()
+
+		for _, r := range batch {
+			dataVal := r.Data
+			if dataVal == "" {
+				dataVal = "NULL"
+			}
+			_, err := stmt.Exec(r.Id, r.User, r.ConnId, r.OperationType, r.ExecTime, r.ExecSql, dataVal)
+			if err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return nil
+	}, 3, 100*time.Millisecond)
+
+	if err != nil {
+		logger.PrintErrf("历史记录写入失败(已重试)", err)
 	}
 }
 

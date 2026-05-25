@@ -48,7 +48,10 @@ func QueryForExport(conn *sqlx.DB, sql string) (*QueryResult, error) {
 		return nil, fmt.Errorf("获取列信息失败：%w", err)
 	}
 
-	data := database.GetResultRowsForExport(conn.DriverName(), rows)
+	data, err := database.GetResultRowsForExport(conn.DriverName(), rows)
+	if err != nil {
+		return nil, fmt.Errorf("获取查询结果失败：%w", err)
+	}
 	return &QueryResult{Columns: cols, Data: data}, nil
 }
 

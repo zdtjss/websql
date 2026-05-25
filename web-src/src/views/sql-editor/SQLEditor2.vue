@@ -4,11 +4,11 @@
 
             <div class="sql-toolbar">
                 <div class="toolbar-left">
-                    <el-button type="primary" @click="exec()" :disabled="exectingSql" title="F9">
+                    <el-button :type="exectingSql ? 'danger' : 'primary'" @click="exectingSql ? stopExec() : exec()" :title="exectingSql ? '终止执行' : 'F9'">
                         <el-icon style="margin-right: 4px;">
                             <Loading v-if="exectingSql" />
                             <VideoPlay v-else />
-                        </el-icon>执行
+                        </el-icon>{{ exectingSql ? '终止' : '执行' }}
                     </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
@@ -219,6 +219,7 @@ import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
 import SQLOptimizePanel from '@/components/sql-editor/SQLOptimizePanel.vue'
 
+import axios from 'axios'
 import http from '@/utils/httpProxy.js'
 import excel from '@/utils/excel.js'
 import copyToClipboard from '@/utils/copy-to-clipboard.js'
@@ -289,6 +290,7 @@ const codemirror = ref()
 const exportDialogVisible = ref(false)
 
 const exectingSql = ref(false)
+let abortController: AbortController | null = null
 const executionTime = ref<number | null>(null)
 const sqlError = ref('')
 const snippetVisible = ref(false)
@@ -925,7 +927,8 @@ function execBatch(statements: string[]) {
     params.append("maxLine", maxLine.value)
     params.append("batch", "true")
 
-    http.post("/execSQL", params)
+    abortController = new AbortController()
+    http.post("/execSQL", params, { signal: abortController.signal })
         .then((resp) => {
             executionTime.value = Math.round(performance.now() - startTime)
             batchResults.value = resp.data.data.results || []
@@ -939,11 +942,17 @@ function execBatch(statements: string[]) {
                 }
             }
             exectingSql.value = false
+            abortController = null
         }).catch((error) => {
-            sqlError.value = error.message || '执行失败'
+            if (axios.isCancel(error)) {
+                sqlError.value = '执行已终止'
+            } else {
+                sqlError.value = error.message || '执行失败'
+            }
             columns.value = []
             result.value = []
             exectingSql.value = false
+            abortController = null
         })
 }
 
@@ -977,17 +986,35 @@ function exec(silent = false) {
     params.append("tableName", currentSelectTable.value)
     params.append("sql", effiectiveSql)
     params.append("maxLine", maxLine.value)
-    http.post("/execSQL", params)
+    abortController = new AbortController()
+    http.post("/execSQL", params, { signal: abortController.signal })
         .then((resp) => {
             executionTime.value = Math.round(performance.now() - startTime)
             applyResultToUI(resp.data.data)
             exectingSql.value = false
+            abortController = null
         }).catch((error) => {
-            sqlError.value = error.message || '执行失败'
+            if (axios.isCancel(error)) {
+                sqlError.value = '执行已终止'
+            } else {
+                sqlError.value = error.message || '执行失败'
+            }
             columns.value = []
             result.value = []
             exectingSql.value = false
+            abortController = null
         })
+}
+
+function stopExec() {
+    if (abortController) {
+        abortController.abort()
+        abortController = null
+    }
+    exectingSql.value = false
+    sqlError.value = '执行已终止'
+    columns.value = []
+    result.value = []
 }
 
 function isDateType(colType: string | undefined): boolean {
