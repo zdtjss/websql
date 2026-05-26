@@ -92,10 +92,10 @@
                     <div v-else style="flex: 1; overflow: hidden;">
                         <el-auto-resizer>
                             <template #default="{ height: autoHeight, width: autoWidth }">
-                                <div :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }"
-                                    @paste="handlePaste2" @keydown="onTableKeydown2">
-                                    <el-table-v2 :columns="columns" :data="result" :width="totalColumnWidth"
-                                        :height="autoHeight" />
+                                <div ref="resultScrollRef" :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }"
+                                    @paste="handlePaste2" @keydown="onTableKeydown2" @scroll="onResultScroll">
+                                    <el-table-v2 :columns="columns" :data="result" :width="Math.max(totalColumnWidth, autoWidth)"
+                                        :height="autoHeight" scrollbar-always-on />
                                 </div>
                             </template>
                         </el-auto-resizer>
@@ -355,6 +355,36 @@ const activeCellRow2 = ref(-1)
 const activeCellCol2 = ref('')
 const pasteSnapshot2 = ref<any>(null)
 
+const resultScrollRef = ref<HTMLElement | null>(null)
+let cachedVScrollbar: HTMLElement | null = null
+let rafId: number | null = null
+
+function getVScrollbar(): HTMLElement | null {
+    if (cachedVScrollbar && cachedVScrollbar.isConnected) return cachedVScrollbar
+    const container = resultScrollRef.value
+    if (!container) return null
+    cachedVScrollbar = container.querySelector('.el-vl__vertical') as HTMLElement
+    return cachedVScrollbar
+}
+
+function applyVScrollbarOffset() {
+    const container = resultScrollRef.value
+    if (!container) return
+    const scrollLeft = container.scrollLeft
+    const containerWidth = container.clientWidth
+    const tableWidth = Math.max(totalColumnWidth.value, containerWidth)
+    const vScrollbar = getVScrollbar()
+    if (vScrollbar) {
+        vScrollbar.style.transform = `translateX(${containerWidth - tableWidth + scrollLeft}px)`
+    }
+    rafId = null
+}
+
+function onResultScroll() {
+    if (rafId !== null) return
+    rafId = requestAnimationFrame(applyVScrollbarOffset)
+}
+
 const tableList = computed(() => {
     try {
         return dbSchemaProxy.getTable(schema).map((t: any) => t.label)
@@ -512,6 +542,10 @@ onBeforeUnmount(() => {
 
 watch(currentTheme, () => {
     reconfigureTheme()
+})
+
+watch([result, totalColumnWidth], () => {
+    nextTick(() => onResultScroll())
 })
 
 watch(canModify, (can) => {
@@ -1705,7 +1739,7 @@ const dragEnd = (e: DragEvent) => {
 </script>
 <style>
 .sql-editor-panel {
-    height: calc(100vh - 60px);
+    height: calc(100vh - 38px);
 }
 
 /* ── Toolbar ── */
@@ -1874,6 +1908,29 @@ const dragEnd = (e: DragEvent) => {
 /* ── Result Table ── */
 .el-table-v2__header-cell-text {
     user-select: text;
+}
+
+.el-table-v2__main {
+    overflow: visible !important;
+}
+
+[data-theme="dark"] .el-scrollbar__thumb {
+    background-color: rgba(255, 255, 255, 0.35) !important;
+}
+
+[data-theme="dark"] .el-scrollbar__thumb:hover {
+    background-color: rgba(255, 255, 255, 0.55) !important;
+}
+
+.el-table-v2__row-cell {
+    overflow: hidden !important;
+}
+
+.el-table-v2__row-cell > span {
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    display: block !important;
 }
 
 .el-table-v2__header-row,

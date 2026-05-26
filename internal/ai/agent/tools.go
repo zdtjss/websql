@@ -193,7 +193,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 				msg += fmt.Sprintf("。可用 schema 名：%v（作为 connId 传入），默认连接ID：%s", schemaNames, connId)
 			}
 			err := fmt.Errorf("%s", msg)
-			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, err
 		}
 		sql := strings.TrimSpace(input.SQL)
@@ -203,7 +203,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "WITH") {
 			err := errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
-			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, err
 		}
 		if strings.HasPrefix(upper, "WITH") {
@@ -211,7 +211,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 			for _, kw := range writeKW {
 				if strings.Contains(strings.ToUpper(stripped), kw) {
 					err := fmt.Errorf("query_data does not allow write operations (%s) in WITH, use exec_sql", strings.TrimSpace(kw))
-					recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+					recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 					return nil, err
 				}
 			}
@@ -248,7 +248,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 					log.Printf("[Tool:query_data] 自动路由查询也失败: %v，返回原始错误\n", altErr)
 				}
 			}
-			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, fmt.Errorf("query failed: %w", err)
 		}
 		defer rows.Close()
@@ -463,7 +463,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 
 		result, err := conn.ExecContext(ctx, sql)
 		if err != nil {
-			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, fmt.Errorf("exec failed on conn=%s: %w", targetConnID, err)
 		}
 		affected, _ := result.RowsAffected()

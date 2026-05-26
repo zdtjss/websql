@@ -11,7 +11,7 @@
             <el-table-column prop="name" label="角色名称" resizable />
             <el-table-column label="操作" width="80" resizable>
               <template #default="scope">
-                <el-button type="danger" size="small" :icon="Delete" @click.stop="deleteRole(scope.row)" />
+                <el-button type="danger" link size="small" :icon="Delete" @click.stop="deleteRole(scope.row)" />
               </template>
             </el-table-column>
           </el-table>
@@ -768,13 +768,13 @@ function cancelEdit() {
 }
 .page-content {
   flex: 1;
-  padding: 20px;
+  padding: 10px;
   overflow: hidden;
 }
 .role-permission-container {
   display: grid;
   grid-template-columns: 300px 1fr;
-  gap: 20px;
+  gap: 10px;
   height: 100%;
 }
 .role-list-panel,

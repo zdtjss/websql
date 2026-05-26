@@ -95,7 +95,7 @@
     <el-pagination
       v-model:current-page="pagination.page"
       v-model:page-size="pagination.pageSize"
-      :page-sizes="[10, 20, 50, 100]"
+      :page-sizes="[20, 50, 100]"
       :total="pagination.total"
       layout="total, sizes, prev, pager, next, jumper"
       style="margin-top: 16px; justify-content: right;"

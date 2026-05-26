@@ -37,15 +37,16 @@ type TableDataList struct {
 }
 
 type SQLResultItem struct {
-	SQL      string         `json:"sql"`
-	Status   string         `json:"status"`
-	Type     string         `json:"type"`
-	Error    string         `json:"error,omitempty"`
-	Columns  []Column       `json:"columns,omitempty"`
-	Data     []map[string]any `json:"data,omitempty"`
-	CanEdit  bool           `json:"canEdit,omitempty"`
-	Keys     []string       `json:"keys,omitempty"`
-	Affected int64          `json:"affected,omitempty"`
+	SQL        string         `json:"sql"`
+	Status     string         `json:"status"`
+	Type       string         `json:"type"`
+	Error      string         `json:"error,omitempty"`
+	AuditError string         `json:"-"`
+	Columns    []Column       `json:"columns,omitempty"`
+	Data       []map[string]any `json:"data,omitempty"`
+	CanEdit    bool           `json:"canEdit,omitempty"`
+	Keys       []string       `json:"keys,omitempty"`
+	Affected   int64          `json:"affected,omitempty"`
 }
 
 type BatchSQLResult struct {
@@ -504,6 +505,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 			rs, err := tx.ExecContext(queryCtx, sqlStr)
 			if err != nil {
 				result.Status = "error"
+				result.AuditError = audit.FormatErrorWithStack(err)
 				msg := err.Error()
 				msg = sanitize.RedactCredentials(msg)
 				if len(msg) > 500 {
@@ -517,6 +519,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 			rs, err := conn.ExecContext(queryCtx, sqlStr)
 			if err != nil {
 				result.Status = "error"
+				result.AuditError = audit.FormatErrorWithStack(err)
 				msg := err.Error()
 				msg = sanitize.RedactCredentials(msg)
 				if len(msg) > 500 {
@@ -559,6 +562,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 
 		if err != nil {
 			result.Status = "error"
+			result.AuditError = audit.FormatErrorWithStack(err)
 			msg := err.Error()
 			msg = sanitize.RedactCredentials(msg)
 			if len(msg) > 500 {
@@ -572,6 +576,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 		cts, err3 := rows.ColumnTypes()
 		if err3 != nil {
 			result.Status = "error"
+			result.AuditError = audit.FormatErrorWithStack(err3)
 			msg := err3.Error()
 			msg = sanitize.RedactCredentials(msg)
 			if len(msg) > 500 {
@@ -615,6 +620,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
 		if dataErr != nil {
 			result.Status = "error"
+			result.AuditError = audit.FormatErrorWithStack(dataErr)
 			msg := dataErr.Error()
 			msg = sanitize.RedactCredentials(msg)
 			if len(msg) > 500 {
@@ -719,7 +725,11 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 		auditStatus = "failed"
 		for i := range results {
 			if results[i].Status == "error" {
-				auditErrorMsg = results[i].Error
+				if results[i].AuditError != "" {
+					auditErrorMsg = results[i].AuditError
+				} else {
+					auditErrorMsg = results[i].Error
+				}
 				break
 			}
 		}

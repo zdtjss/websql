@@ -114,13 +114,25 @@ onMounted(() => {
 
 .page-content {
   flex: 1;
-  padding: 20px;
+  padding: 10px;
   overflow: hidden;
 }
 
 .system-tabs {
   height: 100%;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-primary);
   border-radius: 4px;
+}
+
+.system-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  overflow: hidden;
+}
+
+.system-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  overflow: hidden;
 }
 </style>

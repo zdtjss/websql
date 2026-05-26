@@ -1,6 +1,11 @@
 package audit
 
-import "time"
+import (
+	"fmt"
+	"runtime"
+	"strings"
+	"time"
+)
 
 type AuditLog struct {
 	ID           string     `json:"id" db:"id"`
@@ -51,4 +56,27 @@ type AuditEntry struct {
 	UserID       string
 	UserName     string
 	ClientIP     string
+}
+
+func FormatErrorWithStack(err error) string {
+	if err == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(err.Error())
+	sb.WriteString("\n\nStack:\n")
+	pcs := make([]uintptr, 64)
+	n := runtime.Callers(2, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		fmt.Fprintf(&sb, "%s\n\t%s:%d\n", frame.Function, frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+	if sb.Len() > 8192 {
+		return sb.String()[:8192] + "\n... (truncated)"
+	}
+	return sb.String()
 }

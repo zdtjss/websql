@@ -30,7 +30,7 @@ func InitMngtDbConn() {
 		panic(err)
 	}
 	if config.Cfg.DB.DriverName == "sqlite" {
-		sqlxDb.SetMaxOpenConns(5)
+		sqlxDb.SetMaxOpenConns(10)
 		sqlxDb.SetMaxIdleConns(3)
 		sqlxDb.SetConnMaxLifetime(0)
 		sqlxDb.SetConnMaxIdleTime(5 * time.Minute)

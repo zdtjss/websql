@@ -2,7 +2,9 @@
   "isRemote": true,
   "db": {
     "type": "sqlite",
-    "dsn": "./nway.sqlite3.db"
+    "dsn": "./nway.sqlite3.db",
+    "maxOpenConns": 10,
+    "maxIdleConns": 3
   },
   "https": {
     "enable": true,

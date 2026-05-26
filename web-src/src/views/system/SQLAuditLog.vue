@@ -65,54 +65,61 @@
       </el-form-item>
     </el-form>
 
-    <el-table :data="logs" stripe border style="width: 100%" max-height="calc(100vh - 380px)" v-loading="loading">
-      <el-table-column prop="execTime" label="执行时间" width="160" sortable resizable>
-        <template #default="{ row }">
-          {{ formatDate(row.execTime) }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="source" label="来源" width="80" resizable>
-        <template #default="{ row }">
-          <el-tag :type="row.source === 'agent' ? '' : 'info'" size="small">
-            {{ row.source === 'agent' ? 'Agent' : '编辑器' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="userName" label="用户" width="90" resizable />
-      <el-table-column prop="sqlType" label="类型" width="90" resizable>
-        <template #default="{ row }">
-          <el-tag :type="getTypeTag(row.sqlType)" size="small">{{ row.sqlType }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="riskLevel" label="风险" width="70" resizable>
-        <template #default="{ row }">
-          <el-tag :type="getRiskTag(row.riskLevel)" size="small">
-            {{ getRiskLabel(row.riskLevel) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="status" label="状态" width="70" resizable>
-        <template #default="{ row }">
-          <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
-            {{ row.status === 'success' ? '成功' : '失败' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="execTimeMs" label="耗时(ms)" width="90" resizable />
-      <el-table-column prop="affectedRows" label="影响行数" width="90" resizable />
-      <el-table-column prop="sqlText" label="SQL 语句" min-width="300" resizable>
-        <template #default="{ row }">
-          <div class="sql-cell" @click="showSqlDetail(row)" style="cursor: pointer;">
-            <span class="sql-preview">{{ truncateSql(row.sqlText, 80) }}</span>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="errorMsg" label="错误信息" width="200" show-overflow-tooltip resizable />
-    </el-table>
+    <div class="table-wrapper">
+      <el-table :data="logs" stripe border style="width: 100%" height="100%" v-loading="loading">
+        <el-table-column prop="execTime" label="执行时间" width="160" sortable resizable>
+          <template #default="{ row }">
+            {{ formatDate(row.execTime) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="source" label="来源" width="80" resizable>
+          <template #default="{ row }">
+            <el-tag :type="row.source === 'agent' ? '' : 'info'" size="small">
+              {{ row.source === 'agent' ? 'Agent' : '编辑器' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="userName" label="用户" width="90" resizable />
+        <el-table-column prop="sqlType" label="类型" width="90" resizable>
+          <template #default="{ row }">
+            <el-tag :type="getTypeTag(row.sqlType)" size="small">{{ row.sqlType }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="riskLevel" label="风险" width="70" resizable>
+          <template #default="{ row }">
+            <el-tag :type="getRiskTag(row.riskLevel)" size="small">
+              {{ getRiskLabel(row.riskLevel) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="70" resizable>
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
+              {{ row.status === 'success' ? '成功' : '失败' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="execTimeMs" label="耗时(ms)" width="90" resizable />
+        <el-table-column prop="affectedRows" label="影响行数" width="90" resizable />
+        <el-table-column prop="sqlText" label="SQL 语句" min-width="300" resizable>
+          <template #default="{ row }">
+            <div class="sql-cell" @click="showSqlDetail(row)" style="cursor: pointer;">
+              <span class="sql-preview" :title="row.sqlText">{{ row.sqlText }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="errorMsg" label="错误信息" min-width="200" resizable>
+          <template #default="{ row }">
+            <div v-if="row.errorMsg" class="error-cell" @click="showErrorDetail(row)" style="cursor: pointer;">
+              <span class="error-preview" :title="row.errorMsg">{{ row.errorMsg }}</span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!loading && logs.length === 0" description="暂无审计日志" />
+    </div>
 
-    <el-empty v-if="!loading && logs.length === 0" description="暂无审计日志" />
-
-    <div v-if="total > 0" style="display: flex; justify-content: flex-end; margin-top: 12px;">
+    <div v-if="total > 0" class="pagination-bar">
       <el-pagination
         v-model:current-page="currentPage"
         v-model:page-size="pageSize"
@@ -132,6 +139,10 @@
         来源：{{ sqlDetail.source === 'agent' ? 'Agent' : 'SQL编辑器' }}
       </div>
       <pre class="sql-full-text">{{ sqlDetail.sqlText }}</pre>
+    </el-dialog>
+
+    <el-dialog v-model="errorDialogVisible" title="错误详情" width="700px" destroy-on-close>
+      <pre class="error-full-text">{{ errorDetail }}</pre>
     </el-dialog>
   </div>
 </template>
@@ -153,6 +164,9 @@ const total = ref(0)
 
 const sqlDialogVisible = ref(false)
 const sqlDetail = ref({})
+
+const errorDialogVisible = ref(false)
+const errorDetail = ref('')
 
 async function loadLogs() {
   loading.value = true
@@ -237,14 +251,14 @@ function getRiskLabel(level) {
   return map[level] || level
 }
 
-function truncateSql(sql, maxLen) {
-  if (!sql) return ''
-  return sql.length > maxLen ? sql.substring(0, maxLen) + '...' : sql
-}
-
 function showSqlDetail(row) {
   sqlDetail.value = row
   sqlDialogVisible.value = true
+}
+
+function showErrorDetail(row) {
+  errorDetail.value = row.errorMsg
+  errorDialogVisible.value = true
 }
 
 onMounted(() => {
@@ -255,6 +269,22 @@ onMounted(() => {
 <style scoped>
 .audit-log-container {
   padding: 16px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.table-wrapper {
+  flex: 1;
+  overflow: hidden;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  height: 60px;
+  flex-shrink: 0;
 }
 
 .sql-cell {
@@ -263,6 +293,11 @@ onMounted(() => {
 }
 
 .sql-preview {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--accent-color);
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 13px;
@@ -285,5 +320,40 @@ onMounted(() => {
   max-height: 400px;
   overflow-y: auto;
   color: var(--text-primary);
+}
+
+.error-cell {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.error-preview {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--el-color-danger);
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+}
+
+.error-preview:hover {
+  text-decoration: underline;
+}
+
+.error-full-text {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 500px;
+  overflow-y: auto;
+  color: var(--el-color-danger);
 }
 </style>

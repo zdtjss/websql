@@ -796,6 +796,11 @@
 /* Pagination improvements */
 .el-pagination {
     --el-pagination-font-size: 13px;
+    --el-pagination-select-width: 128px;
+}
+
+.el-pagination .el-select {
+    width: var(--el-pagination-select-width) !important;
 }
 
 /* Tag improvements */
