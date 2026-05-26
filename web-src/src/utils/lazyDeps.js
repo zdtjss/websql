@@ -79,9 +79,9 @@ export async function getMarkdownRenderer(apiBase = '') {
 
 let mermaidInstance = null
 let mermaidInitPromise = null
-let mermaidIdCounter = 0
+let currentMermaidTheme = 'default'
 
-async function initMermaid() {
+async function initMermaid(theme = 'default') {
   if (mermaidInstance) return mermaidInstance
   if (mermaidInitPromise) return mermaidInitPromise
 
@@ -89,10 +89,11 @@ async function initMermaid() {
     const { default: mermaid } = await import('mermaid')
     mermaid.initialize({
       startOnLoad: false,
-      theme: 'default',
+      theme,
       securityLevel: 'loose',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
     })
+    currentMermaidTheme = theme
     mermaidInstance = mermaid
     return mermaidInstance
   })()
@@ -101,11 +102,31 @@ async function initMermaid() {
 }
 
 export async function getMermaid() {
-  return await initMermaid()
+  return await initMermaid(currentMermaidTheme)
+}
+
+export async function switchMermaidTheme(theme) {
+  if (theme === currentMermaidTheme && mermaidInstance) return
+  currentMermaidTheme = theme
+  if (mermaidInstance) {
+    mermaidInstance.initialize({ theme })
+  } else {
+    await initMermaid(theme)
+  }
 }
 
 export function getNextMermaidId() {
-  return 'mermaid-' + (++mermaidIdCounter)
+  return 'mermaid-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)
+}
+
+const mermaidSvgCache = new Map()
+
+export function getMermaidSvgCache() {
+  return mermaidSvgCache
+}
+
+export function clearMermaidSvgCache() {
+  mermaidSvgCache.clear()
 }
 
 let hljsInstance = null

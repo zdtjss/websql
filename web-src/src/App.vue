@@ -8,8 +8,11 @@
       <div class="container">
         <!-- 会话历史消息 -->
         <div ref="msgContainer" class="chat-messages">
+          <div v-if="hiddenMsgCount > 0" class="load-more-msgs" @click="showAllHistory = true">
+            ↑ 点击加载更早的 {{ hiddenMsgCount }} 条消息
+          </div>
           <!-- 思考过程（历史中的，可折叠） -->
-          <div v-for="(msg, idx) in chatHistory" :key="'h' + idx">
+          <div v-for="(msg, vIdx) in visibleChatHistory.msgs" :key="'h' + (visibleChatHistory.offset + vIdx)">
             <div v-if="msg.role === 'thinking'" class="thinking-block">
               <div class="thinking-label" style="cursor:pointer;" @click="toggleThinking(msg)">
                 💭 思考过程 <span style="font-size:11px;">{{ msg.collapsed ? '▶ 展开' : '▼ 折叠' }}</span>
@@ -35,19 +38,19 @@
           <!-- 实时思考过程（流式中） -->
           <div v-if="thinkingText && loading" class="thinking-block">
             <div class="thinking-label">💭 思考中...</div>
-            <div class="thinking-content markdown-body" v-html="renderMarkdown(thinkingText)"></div>
+            <div class="thinking-content markdown-body" v-html="thinkingHtml"></div>
           </div>
 
           <!-- 流式输出中 -->
           <div v-if="streamingContent" class="chat-bubble assistant">
             <div class="bubble-label">AI</div>
-            <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingContent)"></div>
+            <div class="bubble-content markdown-body" v-html="streamingHtml"></div>
           </div>
 
           <!-- 危险SQL确认后的流式输出 -->
           <div v-if="streamingExecContent" class="chat-bubble assistant">
             <div class="bubble-label">AI</div>
-            <div class="bubble-content markdown-body" v-html="renderMarkdown(streamingExecContent)"></div>
+            <div class="bubble-content markdown-body" v-html="streamingExecHtml"></div>
           </div>
 
           <div v-if="loading" style="color:#909399;font-size:13px;padding:4px 0;">AI 正在处理...</div>
@@ -205,7 +208,7 @@
                       </div>
                     </div>
                     <el-divider v-if="promptDetail.connSchemas?.length || promptDetail.tables?.length" style="margin: 12px 0;" />
-                    <div class="prompt-detail-content markdown-body" v-html="md.render(promptDetail.content)"></div>
+                    <div class="prompt-detail-content markdown-body" v-html="renderMarkdown(promptDetail.content)"></div>
                   </div>
                   <template #footer>
                     <el-button @click="promptDetailVisible = false">关闭</el-button>
@@ -442,7 +445,7 @@ import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
 import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Moon, Plus, Promotion, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps } from '@/utils/lazyDeps'
+import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
@@ -451,6 +454,16 @@ const route = useRoute()
 const systemRoutes = ['/system-management', '/role-permission', '/classical']
 
 const { currentTheme, toggleTheme } = useTheme()
+
+watch(currentTheme, async (theme) => {
+  await switchMermaidTheme(theme === 'dark' ? 'dark' : 'default')
+  clearMermaidSvgCache()
+  chatHistory.value.forEach(msg => {
+    msg._renderedHtml = null
+    msg._lastContent = null
+  })
+  nextTick(() => doRenderMermaidBlocks(false))
+})
 
 const apiBase = import.meta.env.VITE_API_URL || ''
 
@@ -467,6 +480,11 @@ async function ensureMd() {
     const token = tokens[idx]
     const info = token.info ? token.info.trim().toLowerCase() : ''
     if (info === 'mermaid') {
+      const source = token.content.trim()
+      const svgCache = getMermaidSvgCache()
+      if (svgCache.has(source)) {
+        return svgCache.get(source)
+      }
       const id = getNextMermaidId()
       const escaped = token.content
         .replace(/&/g, '&amp;')
@@ -475,7 +493,23 @@ async function ensureMd() {
         .replace(/"/g, '&quot;')
       return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
     }
-    return defaultFenceRender(tokens, idx, options, env, self)
+    const lang = info || ''
+    const rawCode = token.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    let encodedContent = ''
+    try {
+      encodedContent = btoa(encodeURIComponent(rawCode))
+    } catch (_) {}
+    const defaultHtml = defaultFenceRender(tokens, idx, options, env, self)
+    return `<div class="code-block-wrapper">` +
+      `<div class="code-block-header">` +
+        `<span class="code-block-lang">${lang}</span>` +
+        `<button class="code-copy-btn" data-code="${encodedContent}" title="复制代码">复制</button>` +
+      `</div>` +
+      defaultHtml +
+    `</div>`
   }
 
   return md
@@ -492,12 +526,23 @@ const abortController = ref(null)
 const isRecording = ref(false)
 const thinkingText = ref('')
 const streamingContent = ref('')
-const streamingExecContent = ref('') // 用于危险SQL确认后的流式响应
+const streamingExecContent = ref('')
 const chatHistory = ref([])
 const sessionId = ref('')
 const lastSql = ref('')
 const msgContainer = useTemplateRef('msgContainer')
 let speechRecognition = null
+
+const VISIBLE_MSG_LIMIT = 30
+const showAllHistory = ref(false)
+const visibleChatHistory = computed(() => {
+  if (showAllHistory.value || chatHistory.value.length <= VISIBLE_MSG_LIMIT) {
+    return { msgs: chatHistory.value, offset: 0 }
+  }
+  const offset = chatHistory.value.length - VISIBLE_MSG_LIMIT
+  return { msgs: chatHistory.value.slice(offset), offset }
+})
+const hiddenMsgCount = computed(() => visibleChatHistory.value.offset)
 
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
 const canUseClassicView = ref(false)
@@ -991,7 +1036,12 @@ function highlightSql(text) {
 
 function preprocessMarkdown(text) {
   if (!text) return ''
-  let processed = text
+  const codeBlocks = []
+  let processed = text.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, (match) => {
+    const placeholder = `\x00CB${codeBlocks.length}\x00`
+    codeBlocks.push(match)
+    return placeholder
+  })
   processed = processed.replace(/\$\\(?:text|textbf|textit)\{([^}]+)\}\$/g, (match, inner) => {
     return inner
   })
@@ -1017,6 +1067,7 @@ function preprocessMarkdown(text) {
     }
     return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer"${exportAttr}>${linkText}</a>`
   })
+  processed = processed.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)])
   return processed
 }
 
@@ -1045,69 +1096,79 @@ function getCachedHtml(msg) {
   return msg._renderedHtml
 }
 
-// 渲染 DOM 中所有未处理的 mermaid 容器
-let isMermaidRendering = false
+function buildMermaidInnerHtml(svg, source) {
+  const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return `<div class="mermaid-content-wrapper">` +
+    `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
+    `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
+  `</div>` +
+  `<div class="mermaid-resize-handle" title="拖拽调整高度">` +
+    `<span class="mermaid-resize-dots">⋯</span>` +
+  `</div>` +
+  `<div class="mermaid-toolbar">` +
+    `<button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
+    `</button>` +
+    `<button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>` +
+    `<button class="mermaid-tb-btn" data-action="zoom-in" title="放大">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
+    `</button>` +
+    `<span class="mermaid-tb-sep"></span>` +
+    `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
+    `</button>` +
+    `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+    `</button>` +
+  `</div>`
+}
 
 async function doRenderMermaidBlocks(scrollAfter = true) {
-  if (isMermaidRendering) return
-  isMermaidRendering = true
-  try {
+  await nextTick()
+  const containers = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
+  const visibleContainers = [...containers].filter(el => el.offsetParent !== null)
+  if (visibleContainers.length === 0) return
+
+  const CONCURRENCY = 3
+  const batches = []
+  for (let i = 0; i < visibleContainers.length; i += CONCURRENCY) {
+    batches.push(visibleContainers.slice(i, i + CONCURRENCY))
+  }
+
+  for (const batch of batches) {
+    await Promise.allSettled(batch.map(el => renderSingleMermaid(el)))
+  }
+
+  if (scrollAfter && visibleContainers.length > 0) {
     await nextTick()
-    const containers = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
-    for (const el of containers) {
-      // 跳过隐藏的容器（如折叠的思考区域）
-      if (el.offsetParent === null) continue
-      const id = el.getAttribute('data-mermaid-id')
-      const source = el.getAttribute('data-mermaid-source')
-        ?.replace(/&quot;/g, '"')
-        .replace(/&gt;/g, '>')
-        .replace(/&lt;/g, '<')
-        .replace(/&amp;/g, '&')
-      if (!id || !source) continue
-      const trimmed = source.trim()
-      if (!trimmed || trimmed.length < 5) continue
-      el.setAttribute('data-mermaid-processed', 'true')
-      try {
-        const mermaidLib = await getMermaid()
-        const { svg } = await mermaidLib.render(id, trimmed)
-        const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        el.innerHTML =
-          `<div class="mermaid-content-wrapper">` +
-            `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
-            `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
-          `</div>` +
-          `<div class="mermaid-resize-handle" title="拖拽调整高度">` +
-            `<span class="mermaid-resize-dots">⋯</span>` +
-          `</div>` +
-          `<div class="mermaid-toolbar">` +
-            `<button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">` +
-              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
-            `</button>` +
-            `<button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>` +
-            `<button class="mermaid-tb-btn" data-action="zoom-in" title="放大">` +
-              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
-            `</button>` +
-            `<span class="mermaid-tb-sep"></span>` +
-            `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
-              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
-            `</button>` +
-            `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
-              `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
-            `</button>` +
-          `</div>`
-      } catch (e) {
-        console.warn('Mermaid render error:', e)
-        el.innerHTML = `<pre class="mermaid-error"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
-      }
+    if (msgContainer.value) {
+      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
-    if (scrollAfter && containers.length > 0) {
-      await nextTick()
-      if (msgContainer.value) {
-        msgContainer.value.scrollTop = msgContainer.value.scrollHeight
-      }
-    }
-  } finally {
-    isMermaidRendering = false
+  }
+}
+
+async function renderSingleMermaid(el) {
+  const id = el.getAttribute('data-mermaid-id')
+  const source = el.getAttribute('data-mermaid-source')
+    ?.replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+  if (!id || !source) return
+  const trimmed = source.trim()
+  if (!trimmed || trimmed.length < 5) return
+
+  el.setAttribute('data-mermaid-processed', 'true')
+  try {
+    const mermaidLib = await getMermaid()
+    const { svg } = await mermaidLib.render(id, trimmed)
+    const innerHtml = buildMermaidInnerHtml(svg, source)
+    el.innerHTML = innerHtml
+    const svgCache = getMermaidSvgCache()
+    svgCache.set(trimmed, `<div class="mermaid-container" data-mermaid-processed="true">${innerHtml}</div>`)
+  } catch (e) {
+    console.warn('Mermaid render error:', e)
+    el.innerHTML = `<pre class="mermaid-error"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
   }
 }
 
@@ -1119,24 +1180,13 @@ function scrollToBottom() {
   })
 }
 
-// 流式输出中检测已完成的 mermaid 代码块并立即渲染
-// 原理：统计 streamingContent 中 ```mermaid 开始标记和对应的 ``` 结束标记数量，
-// 当有新的完整代码块闭合时触发渲染（带防抖）
-let lastRenderedMermaidCount = 0
-let mermaidRenderTimer = null
-
-function tryRenderStreamingMermaid() {
-  const content = streamingContent.value
-  if (!content.includes('```mermaid')) return
-
-  // 统计已闭合的 mermaid 代码块数量
+function countClosedMermaidBlocks(content) {
   let closedCount = 0
   let searchFrom = 0
   while (true) {
     const startIdx = content.indexOf('```mermaid', searchFrom)
     if (startIdx === -1) break
     const afterStart = startIdx + '```mermaid'.length
-    // 找到对应的闭合 ```（跳过开始标记同行的内容）
     const lineEnd = content.indexOf('\n', afterStart)
     if (lineEnd === -1) break
     const closeIdx = content.indexOf('\n```', lineEnd)
@@ -1144,15 +1194,81 @@ function tryRenderStreamingMermaid() {
     closedCount++
     searchFrom = closeIdx + 4
   }
+  return closedCount
+}
+
+const streamingHtml = ref('')
+const streamingExecHtml = ref('')
+const thinkingHtml = ref('')
+let streamingRenderTimer = null
+let streamingExecRenderTimer = null
+let thinkingRenderTimer = null
+let lastStreamingMermaidCount = 0
+let lastStreamingExecMermaidCount = 0
+let lastThinkingMermaidCount = 0
+
+watch(streamingContent, () => {
+  if (streamingRenderTimer) clearTimeout(streamingRenderTimer)
+  streamingRenderTimer = setTimeout(() => {
+    streamingHtml.value = renderMarkdown(streamingContent.value)
+    nextTick(() => {
+      const content = streamingContent.value
+      if (content && content.includes('```mermaid')) {
+        const closedCount = countClosedMermaidBlocks(content)
+        if (closedCount > lastStreamingMermaidCount) {
+          lastStreamingMermaidCount = closedCount
+          doRenderMermaidBlocks(true)
+        }
+      }
+    })
+    streamingRenderTimer = null
+  }, 50)
+}, { immediate: true })
+
+watch(streamingExecContent, () => {
+  if (streamingExecRenderTimer) clearTimeout(streamingExecRenderTimer)
+  streamingExecRenderTimer = setTimeout(() => {
+    streamingExecHtml.value = renderMarkdown(streamingExecContent.value)
+    nextTick(() => {
+      const content = streamingExecContent.value
+      if (content && content.includes('```mermaid')) {
+        const closedCount = countClosedMermaidBlocks(content)
+        if (closedCount > lastStreamingExecMermaidCount) {
+          lastStreamingExecMermaidCount = closedCount
+          doRenderMermaidBlocks(true)
+        }
+      }
+    })
+    streamingExecRenderTimer = null
+  }, 50)
+}, { immediate: true })
+
+watch(thinkingText, () => {
+  if (thinkingRenderTimer) clearTimeout(thinkingRenderTimer)
+  thinkingRenderTimer = setTimeout(() => {
+    thinkingHtml.value = renderMarkdown(thinkingText.value)
+    thinkingRenderTimer = null
+  }, 50)
+}, { immediate: true })
+
+// 流式输出中检测已完成的 mermaid 代码块并立即渲染
+let lastRenderedMermaidCount = 0
+let mermaidRenderTimer = null
+
+function tryRenderStreamingMermaid() {
+  const content = streamingContent.value
+  if (!content.includes('```mermaid')) return
+
+  const closedCount = countClosedMermaidBlocks(content)
 
   if (closedCount > lastRenderedMermaidCount) {
     lastRenderedMermaidCount = closedCount
-    // 防抖：300ms 内不重复触发
+    lastStreamingMermaidCount = closedCount
     if (mermaidRenderTimer) clearTimeout(mermaidRenderTimer)
     mermaidRenderTimer = setTimeout(() => {
       doRenderMermaidBlocks(true)
       mermaidRenderTimer = null
-    }, 300)
+    }, 100)
   }
 }
 
@@ -1189,6 +1305,8 @@ function handleMermaidWheel(e) {
   const wrap = container.querySelector('.mermaid-svg-wrap')
   if (!wrap) return
 
+  wrap.classList.add('smooth-transition')
+
   const oldScale = parseFloat(wrap.dataset.scale || 1)
   const delta = e.deltaY > 0 ? -0.1 : 0.1
   const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
@@ -1209,6 +1327,8 @@ function handleMermaidWheel(e) {
   wrap.dataset.translateX = +newTx.toFixed(1)
   wrap.dataset.translateY = +newTy.toFixed(1)
   updateMermaidWrapTransform(wrap)
+
+  setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
 }
 
 function handleMermaidMouseDown(e) {
@@ -1218,12 +1338,13 @@ function handleMermaidMouseDown(e) {
   if (e.target.closest('.mermaid-toolbar')) return
   if (e.target.closest('.mermaid-resize-handle')) return
 
-  // 处理工具栏按钮点击（事件委托）
   const btn = e.target.closest('.mermaid-tb-btn')
-  if (btn) return // 工具栏按钮不触发拖拽
+  if (btn) return
 
   const wrap = container.querySelector('.mermaid-svg-wrap')
   if (!wrap) return
+
+  wrap.classList.remove('smooth-transition')
 
   e.preventDefault()
   mermaidDragState.isDragging = true
@@ -1248,24 +1369,30 @@ function handleMermaidToolbarClick(e) {
   switch (action) {
     case 'zoom-in': {
       if (!wrap) break
+      wrap.classList.add('smooth-transition')
       const s = Math.min(5, +(parseFloat(wrap.dataset.scale || 1) + 0.25).toFixed(2))
       wrap.dataset.scale = s
       updateMermaidWrapTransform(wrap)
+      setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
     }
     case 'zoom-out': {
       if (!wrap) break
+      wrap.classList.add('smooth-transition')
       const s = Math.max(0.25, +(parseFloat(wrap.dataset.scale || 1) - 0.25).toFixed(2))
       wrap.dataset.scale = s
       updateMermaidWrapTransform(wrap)
+      setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
     }
     case 'zoom-reset': {
       if (!wrap) break
+      wrap.classList.add('smooth-transition')
       wrap.dataset.scale = 1
       wrap.dataset.translateX = 0
       wrap.dataset.translateY = 0
       updateMermaidWrapTransform(wrap)
+      setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
     }
     case 'toggle-source': {
@@ -1420,6 +1547,10 @@ async function sendMessage() {
   thinkingText.value = ''
   streamingContent.value = ''
   lastRenderedMermaidCount = 0
+  lastStreamingMermaidCount = 0
+  lastStreamingExecMermaidCount = 0
+  lastThinkingMermaidCount = 0
+  showAllHistory.value = false
   scrollToBottom()
 
   const apiBase = import.meta.env.VITE_API_URL || ''
@@ -2660,6 +2791,21 @@ function handleExportLinkClick(e) {
   window.open(href, '_blank')
 }
 
+function handleCodeCopyClick(e) {
+  const btn = e.target.closest('.code-copy-btn')
+  if (!btn) return
+  const encoded = btn.dataset.code
+  if (!encoded) return
+  try {
+    const code = decodeURIComponent(atob(encoded))
+    navigator.clipboard.writeText(code).then(() => {
+      const orig = btn.textContent
+      btn.textContent = '✓'
+      setTimeout(() => { btn.textContent = orig }, 1500)
+    })
+  } catch (_) {}
+}
+
 onMounted(() => {
   const { initTheme } = useTheme()
   initTheme()
@@ -2695,6 +2841,7 @@ onMounted(() => {
   document.addEventListener('mouseup', handleMermaidResizeUp)
   window.addEventListener('session-expired', handleSessionExpiredEvent)
   document.addEventListener('click', handleExportLinkClick)
+  document.addEventListener('click', handleCodeCopyClick)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
   nextTick(() => {
@@ -2723,6 +2870,7 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', handleMermaidResizeUp)
   window.removeEventListener('session-expired', handleSessionExpiredEvent)
   document.removeEventListener('click', handleExportLinkClick)
+  document.removeEventListener('click', handleCodeCopyClick)
   if (msgContainer.value) {
     msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
     msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)
@@ -4099,7 +4247,6 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-svg-wrap {
   text-align: center;
   transform-origin: 0 0;
-  transition: transform 0.15s ease;
 }
 .mermaid-svg-wrap svg {
   max-width: 100%;
@@ -4728,5 +4875,99 @@ body.mermaid-resizing * {
 
 [data-theme="dark"] .global-search-popover .el-scrollbar {
   border-color: var(--border-primary);
+}
+
+/* ── Code Block Wrapper & Copy Button ── */
+.code-block-wrapper {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: linear-gradient(180deg, #2d2d2d 0%, #1e1e1e 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.code-block-lang {
+  font-size: 11px;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+.code-copy-btn {
+  font-size: 12px;
+  color: #9ca3af;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  line-height: 1.4;
+}
+.code-copy-btn:hover {
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.code-block-wrapper pre {
+  margin: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+[data-theme="dark"] .code-block-header {
+  background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-active) 100%);
+  border-bottom-color: var(--border-primary);
+}
+[data-theme="dark"] .code-block-lang {
+  color: var(--text-tertiary);
+}
+[data-theme="dark"] .code-copy-btn {
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-primary);
+}
+[data-theme="dark"] .code-copy-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Load More Messages ── */
+.load-more-msgs {
+  text-align: center;
+  padding: 10px 0;
+  margin: 4px 0;
+  font-size: 13px;
+  color: #909399;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.2s;
+  user-select: none;
+}
+.load-more-msgs:hover {
+  color: #1976d2;
+  background: rgba(25, 118, 210, 0.06);
+}
+[data-theme="dark"] .load-more-msgs {
+  color: var(--text-tertiary);
+}
+[data-theme="dark"] .load-more-msgs:hover {
+  color: var(--accent-color);
+  background: rgba(137, 180, 250, 0.06);
+}
+
+/* ── Mermaid Smooth Transition ── */
+.mermaid-svg-wrap.smooth-transition {
+  transition: transform 0.2s ease-out;
 }
 </style>
