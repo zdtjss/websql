@@ -20,10 +20,12 @@ nway.pem
 nway.s3db
 web-src/package-lock.json
 static/
-nway.sqlite3.db
 web-src/auto-imports.d.ts
 web-src/components.d.ts
 exports/
 __pycache__/
 data/
 docs/
+release/
+
+nway.sqlite3**.db

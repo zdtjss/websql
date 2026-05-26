@@ -26,7 +26,7 @@ create table if not exists t_role (
 	view_classic integer default 0
 );
 
-insert into t_role (id, name) values ('825683877266722816', 'admin');
+insert into t_role (id, name, view_classic) values ('825683877266722816', 'admin', 1);
 
 create table if not exists t_tree (
 	id varchar(36) primary key,

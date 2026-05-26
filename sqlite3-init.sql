@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS t_role (
 	view_classic INTEGER DEFAULT 0
 );
 
-insert into t_role (id, name) values ('825683877266722816', 'admin');
+insert into t_role (id, name, view_classic) values ('825683877266722816', 'admin', 1);
 
 CREATE TABLE IF NOT EXISTS t_tree (
 	id TEXT PRIMARY KEY,
