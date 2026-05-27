@@ -357,6 +357,10 @@ func QueryTableInfo(key string, schema, authorization string) []*conn.Table {
 	tables := make([]*conn.Table, 0)
 	dc := conn.GetConn(key, authorization)
 
+	if dc == nil {
+		panic(errors.New("数据库连接失败"))
+	}
+
 	var querySQL string
 	if schema != "" {
 		querySQL = dialect.SQL_DIALECT[dc.DriverName()]["listTable"]
