@@ -58,7 +58,7 @@
             </div>
             <div class="permission-tree-wrapper">
               <div class="permission-tree-container">
-                <el-tree ref="treeRef" :data="treeData" :props="treeProps" node-key="id" show-checkbox check-strictly :default-expand-all="true" @check="handleCheck" @node-click="handleNodeClick">
+                <el-tree ref="treeRef" :key="treeKey" :data="treeData" :props="treeProps" node-key="id" show-checkbox check-strictly :default-expand-all="true" :default-checked-keys="treeCheckedKeys" :check-on-click-leaf="false" @check="handleCheck" @node-click="handleNodeClick">
                   <template #default="{ node, data }">
                     <span class="tree-node">
                       <el-icon v-if="data.level === 'dir'"><Folder /></el-icon>
@@ -100,6 +100,8 @@ const selectedTableLabel = ref('')
 
 const treeRef = useTemplateRef('treeRef')
 const treeData = ref([])
+const treeKey = ref(0) // 递增 key，强制 el-tree 重建以确保 default-checked-keys 生效
+const treeCheckedKeys = ref([]) // 计算好的勾选 key 列表，传给 default-checked-keys
 const saving = ref(false)
 const treeProps = { children: 'children', label: 'label' }
 
@@ -219,8 +221,64 @@ function loadTree() {
     currentTreeNodeKeys.clear()
     collectNodeKeys(treeData.value)
     captureServerChecked(treeData.value)
-    nextTick(() => syncTreeVisual())
+    // 计算应该勾选的 keys，然后通过递增 treeKey 强制 el-tree 重建
+    // 重建时 default-checked-keys 会在树初始化阶段直接生效，不存在时序问题
+    computeAndApplyCheckedKeys()
   })
+}
+
+function computeAndApplyCheckedKeys() {
+  // 使用 explicitKeys 和 serverCheckedKeys 的并集来决定显示状态
+  // 但要排除用户显式取消勾选的 key
+  const combinedKeys = new Set()
+  for (const key of explicitKeys) {
+    combinedKeys.add(key)
+  }
+  for (const key of serverCheckedKeys) {
+    if (!uncheckedKeys.has(key)) {
+      combinedKeys.add(key)
+    }
+  }
+
+  const checkedKeys = []
+  for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) continue
+    if (combinedKeys.has(key)) {
+      checkedKeys.push(key)
+    }
+  }
+
+  implicitKeys.clear()
+  computeImplicitKeysFromCombined(combinedKeys)
+
+  const allVisualKeys = [...checkedKeys]
+  for (const key of currentTreeNodeKeys) {
+    if (key.startsWith('dir::')) continue
+    if (implicitKeys.has(key) && !allVisualKeys.includes(key)) {
+      allVisualKeys.push(key)
+    }
+  }
+
+  // 处理 dir 节点的全选状态
+  for (const key of currentTreeNodeKeys) {
+    if (!key.startsWith('dir::')) continue
+    const dirNode = findNodeInTree(treeData.value, key)
+    if (!dirNode || !dirNode.children || dirNode.children.length === 0) continue
+    const connChildren = dirNode.children.filter(c => c.level === 'conn')
+    if (connChildren.length === 0) continue
+    const selectedCount = connChildren.filter(c => allVisualKeys.includes(c.id)).length
+    if (selectedCount === connChildren.length) {
+      allVisualKeys.push(key)
+    } else if (selectedCount > 0) {
+      implicitKeys.add(key)
+    }
+  }
+
+  console.log('[computeAndApplyCheckedKeys] allVisualKeys:', allVisualKeys)
+
+  // 设置 default-checked-keys 并递增 key 强制重建树
+  treeCheckedKeys.value = allVisualKeys
+  treeKey.value++
 }
 
 function getNodeFullKey(n) {
@@ -229,12 +287,16 @@ function getNodeFullKey(n) {
 
 function captureServerChecked(nodes) {
   serverCheckedKeys.clear()
+  _collectServerChecked(nodes)
+}
+
+function _collectServerChecked(nodes) {
   for (const n of nodes) {
     if (n.checked && !n.id.startsWith('dir::')) {
       serverCheckedKeys.add(getNodeFullKey(n))
     }
     if (n.children && n.children.length > 0) {
-      captureServerChecked(n.children)
+      _collectServerChecked(n.children)
     }
   }
 }
@@ -249,7 +311,6 @@ function collectNodeKeys(nodes) {
 function syncTreeVisual() {
   if (!treeRef.value) return
   isProgrammatic = true
-  console.log('[syncTreeVisual] START')
 
   // 使用 explicitKeys 和 serverCheckedKeys 的并集来决定显示状态
   // 但要排除用户显式取消勾选的 key
@@ -296,6 +357,7 @@ function syncTreeVisual() {
     }
   }
 
+  // 用户交互后同步视觉状态，此时树节点已存在，setCheckedKeys 可靠
   treeRef.value.setCheckedKeys(allVisualKeys)
   nextTick(() => { isProgrammatic = false })
 }
