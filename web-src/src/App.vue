@@ -1908,9 +1908,10 @@ function applyMermaidCustomHeight(mermaidId, height) {
   if (!container) return
   const wrapper = container.querySelector('.mermaid-content-wrapper')
   if (wrapper) {
-    wrapper.style.maxHeight = height + 'px'
+    wrapper.style.height = height + 'px'
+    wrapper.style.maxHeight = 'none'
   }
-  container.style.maxHeight = (height + 60) + 'px'
+  container.style.maxHeight = 'none'
 }
 
 // 重新应用所有自定义高度（Vue 重新渲染后调用）
