@@ -1915,11 +1915,11 @@ const dragEnd = (e: DragEvent) => {
 }
 
 [data-theme="dark"] .el-scrollbar__thumb {
-    background-color: rgba(255, 255, 255, 0.35) !important;
+    background-color: rgba(121, 121, 121, 0.4) !important;
 }
 
 [data-theme="dark"] .el-scrollbar__thumb:hover {
-    background-color: rgba(255, 255, 255, 0.55) !important;
+    background-color: rgba(121, 121, 121, 0.6) !important;
 }
 
 .el-table-v2__row-cell {
@@ -1976,8 +1976,8 @@ const dragEnd = (e: DragEvent) => {
 
         &:hover {
             opacity: 1;
-            border-right-color: #409eff;
-            background: rgba(64, 158, 255, 0.08);
+            border-right-color: var(--accent-color);
+            background: rgba(0, 122, 204, 0.08);
         }
     }
 }
@@ -2017,9 +2017,9 @@ const dragEnd = (e: DragEvent) => {
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    background: #fffbe6;
-    border-top: 1px solid #ffe58f;
-    border-bottom: 1px solid #ffe58f;
+    background: var(--bg-row-changed);
+    border-top: 1px solid var(--border-primary);
+    border-bottom: 1px solid var(--border-primary);
     margin-top: -1px;
 }
 
@@ -2031,18 +2031,18 @@ const dragEnd = (e: DragEvent) => {
 
 .inline-count {
     font-size: 12px;
-    color: #ad6800;
+    color: var(--warning-color);
     margin-left: 4px;
 }
 
 [data-theme="dark"] .db-inline-bar {
-    background: #3d3a1a;
-    border-top: 1px solid #5a5522;
-    border-bottom: 1px solid #5a5522;
+    background: var(--bg-row-changed);
+    border-top: 1px solid var(--border-secondary);
+    border-bottom: 1px solid var(--border-secondary);
 }
 
 [data-theme="dark"] .inline-count {
-    color: #e0c068;
+    color: var(--warning-color);
 }
 
 /* ── Table Structure Dialog ── */
