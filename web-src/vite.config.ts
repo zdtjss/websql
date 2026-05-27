@@ -28,7 +28,7 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    include: ['vditor'],
+    include: ['vditor', 'mermaid'],
   },
   build: {
     commonjsOptions: {

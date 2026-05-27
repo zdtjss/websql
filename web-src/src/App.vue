@@ -482,10 +482,11 @@ async function ensureMd() {
     if (info === 'mermaid') {
       const source = token.content.trim()
       const svgCache = getMermaidSvgCache()
-      if (svgCache.has(source)) {
-        return svgCache.get(source)
-      }
       const id = getNextMermaidId()
+      if (svgCache.has(source)) {
+        // 缓存命中：用缓存的内部 HTML，但始终生成带 data-mermaid-id 的外层容器
+        return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
+      }
       const escaped = token.content
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -1014,6 +1015,24 @@ const mdReady = ref(false)
 const hljsReady = ref(false)
 let hljsLib = null
 
+// 当 markdown-it 加载完成后，强制清除所有消息的渲染缓存并重新渲染
+// 这确保了在 md 加载前收到的消息能正确渲染 mermaid 图表
+watch(mdReady, (ready) => {
+  if (ready && chatHistory.value.length > 0) {
+    // 清除缓存，强制下次渲染时使用 markdown-it
+    chatHistory.value.forEach(msg => {
+      if (msg._renderedWithMd === false) {
+        msg._renderedHtml = null
+        msg._lastContent = null
+      }
+    })
+    // 触发 Vue 重新渲染后检查 mermaid
+    nextTick(() => {
+      doRenderMermaidBlocks(false)
+    })
+  }
+})
+
 async function initHeavyDeps() {
   const [, hljsResult] = await Promise.all([
     ensureMd().then(() => { mdReady.value = true }),
@@ -1034,8 +1053,74 @@ function highlightSql(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// 自动检测未被 code fence 包裹的 mermaid 代码并包裹为 ```mermaid ... ```
+// 这解决了 AI 有时不用 code fence 直接输出 mermaid 代码的问题
+function autoWrapMermaidCode(text) {
+  // 如果已经有 ```mermaid 包裹，不处理
+  if (/```mermaid/i.test(text)) return text
+  
+  // mermaid 图表类型关键字（必须在行首或段落首）
+  const mermaidKeywords = /^(graph\s+(TD|TB|BT|RL|LR)|flowchart\s+(TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph|journey|mindmap|timeline|quadrantChart|sankey|xychart|block-beta)/m
+  
+  if (!mermaidKeywords.test(text)) return text
+  
+  // 检测 mermaid 代码块的范围
+  const match = text.match(mermaidKeywords)
+  if (!match) return text
+  
+  const startIdx = match.index
+  const before = text.substring(0, startIdx).trimEnd()
+  const afterStart = text.substring(startIdx)
+  
+  // 尝试找到 mermaid 代码的结束位置：
+  // mermaid 代码通常以连续的缩进行组成，遇到空行后的非缩进非 mermaid 语法行即结束
+  const lines = afterStart.split('\n')
+  let endLineIdx = lines.length
+  let foundEmptyLine = false
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmedLine = line.trim()
+    
+    if (trimmedLine === '') {
+      foundEmptyLine = true
+      continue
+    }
+    
+    // 在空行之后，如果遇到明显不是 mermaid 语法的行，认为 mermaid 结束
+    if (foundEmptyLine) {
+      // mermaid 语法行通常以这些开头：缩进、style、classDef、click、linkStyle、subgraph、end、%%
+      const isMermaidLine = /^\s+/.test(line) || 
+        /^(style|classDef|click|linkStyle|subgraph|end|%%|class\s)/.test(trimmedLine)
+      if (!isMermaidLine) {
+        endLineIdx = i
+        break
+      }
+      foundEmptyLine = false
+    }
+  }
+  
+  const mermaidContent = lines.slice(0, endLineIdx).join('\n').trimEnd()
+  const after = lines.slice(endLineIdx).join('\n').trimStart()
+  
+  let result = ''
+  if (before) {
+    result = before + '\n\n'
+  }
+  result += '```mermaid\n' + mermaidContent + '\n```'
+  if (after) {
+    result += '\n\n' + after
+  }
+  return result
+}
+
 function preprocessMarkdown(text) {
   if (!text) return ''
+  
+  // 自动检测未被 code fence 包裹的 mermaid 代码并包裹
+  // 匹配以 mermaid 图表关键字开头的独立段落（不在 ``` 内）
+  text = autoWrapMermaidCode(text)
+  
   const codeBlocks = []
   let processed = text.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, (match) => {
     const placeholder = `\x00CB${codeBlocks.length}\x00`
@@ -1114,6 +1199,9 @@ function buildMermaidInnerHtml(svg, source) {
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
     `</button>` +
     `<span class="mermaid-tb-sep"></span>` +
+    `<button class="mermaid-tb-btn" data-action="fullscreen" title="全屏">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>` +
+    `</button>` +
     `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
     `</button>` +
@@ -1125,21 +1213,22 @@ function buildMermaidInnerHtml(svg, source) {
 
 async function doRenderMermaidBlocks(scrollAfter = true) {
   await nextTick()
+  // 查找所有未处理的 mermaid 容器（不限于可见的，避免因 timing 问题遗漏）
   const containers = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
-  const visibleContainers = [...containers].filter(el => el.offsetParent !== null)
-  if (visibleContainers.length === 0) return
+  if (containers.length === 0) return
 
   const CONCURRENCY = 3
+  const toRender = [...containers]
   const batches = []
-  for (let i = 0; i < visibleContainers.length; i += CONCURRENCY) {
-    batches.push(visibleContainers.slice(i, i + CONCURRENCY))
+  for (let i = 0; i < toRender.length; i += CONCURRENCY) {
+    batches.push(toRender.slice(i, i + CONCURRENCY))
   }
 
   for (const batch of batches) {
     await Promise.allSettled(batch.map(el => renderSingleMermaid(el)))
   }
 
-  if (scrollAfter && visibleContainers.length > 0) {
+  if (scrollAfter && toRender.length > 0) {
     await nextTick()
     if (msgContainer.value) {
       msgContainer.value.scrollTop = msgContainer.value.scrollHeight
@@ -1158,17 +1247,117 @@ async function renderSingleMermaid(el) {
   const trimmed = source.trim()
   if (!trimmed || trimmed.length < 5) return
 
+  // 标记为已处理，防止重复渲染
   el.setAttribute('data-mermaid-processed', 'true')
-  try {
-    const mermaidLib = await getMermaid()
-    const { svg } = await mermaidLib.render(id, trimmed)
-    const innerHtml = buildMermaidInnerHtml(svg, source)
-    el.innerHTML = innerHtml
-    const svgCache = getMermaidSvgCache()
-    svgCache.set(trimmed, `<div class="mermaid-container" data-mermaid-processed="true">${innerHtml}</div>`)
-  } catch (e) {
-    console.warn('Mermaid render error:', e)
-    el.innerHTML = `<pre class="mermaid-error"><code>${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+  
+  // 带重试的渲染（mermaid 内部动态 import 可能因缓存过期失败）
+  const MAX_RETRIES = 2
+  let lastError = null
+  
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const mermaidLib = await getMermaid()
+      const renderId = 'mermaid-r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6)
+      const { svg } = await mermaidLib.render(renderId, trimmed)
+      const innerHtml = buildMermaidInnerHtml(svg, source)
+      el.innerHTML = innerHtml
+      const svgCache = getMermaidSvgCache()
+      svgCache.set(trimmed, innerHtml)
+      // 关键修复：SVG 渲染成功后，清除包含此 mermaid 源码的消息的 HTML 缓存
+      invalidateMermaidMsgCache(trimmed)
+      return // 成功，退出
+    } catch (e) {
+      lastError = e
+      // 如果是动态 import 失败（网络/缓存问题），等待后重试
+      const isImportError = e && (
+        String(e.message || '').includes('Failed to fetch dynamically imported module') ||
+        String(e.message || '').includes('Importing a module script failed') ||
+        String(e.message || '').includes('error loading dynamically imported module')
+      )
+      if (isImportError && attempt < MAX_RETRIES) {
+        console.warn(`Mermaid dynamic import failed (attempt ${attempt + 1}), retrying...`)
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+        continue
+      }
+      break
+    }
+  }
+  
+  // 所有重试都失败
+  console.warn('Mermaid render error for source:', trimmed.substring(0, 100), lastError)
+  const escapedSource = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  el.innerHTML = `<pre class="mermaid-error"><code>${escapedSource}</code></pre><div class="mermaid-error-hint">⚠️ 图表渲染失败，请刷新页面重试</div>`
+}
+
+// 清除包含指定 mermaid 源码的消息的渲染缓存
+function invalidateMermaidMsgCache(mermaidSource) {
+  for (const msg of chatHistory.value) {
+    if (msg.role === 'assistant' && msg.content && msg.content.includes('mermaid')) {
+      // 清除缓存，下次渲染时 getCachedHtml 会重新调用 renderMarkdown
+      // renderMarkdown 的 fence renderer 会命中 SVG 缓存
+      msg._renderedHtml = null
+      msg._lastContent = null
+    }
+  }
+}
+
+// ── MutationObserver：自动检测新插入的 mermaid 容器并渲染 ──
+// 这是最可靠的方式，彻底消除所有 timing 问题
+let mermaidObserver = null
+let mermaidObserverTimer = null
+
+function setupMermaidObserver() {
+  if (mermaidObserver) return
+  mermaidObserver = new MutationObserver((mutations) => {
+    // 检查是否有新的未处理 mermaid 容器被插入
+    let hasNew = false
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList') {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1) continue
+          if (node.matches && node.matches('.mermaid-container[data-mermaid-processed="false"]')) {
+            hasNew = true
+            break
+          }
+          if (node.querySelector && node.querySelector('.mermaid-container[data-mermaid-processed="false"]')) {
+            hasNew = true
+            break
+          }
+        }
+      }
+      // 也检查 innerHTML 变化（v-html 更新时触发）
+      if (mutation.type === 'childList' && mutation.target.querySelector) {
+        if (mutation.target.querySelector('.mermaid-container[data-mermaid-processed="false"]')) {
+          hasNew = true
+        }
+      }
+      if (hasNew) break
+    }
+    if (hasNew) {
+      // 防抖：短时间内多次 DOM 变化只触发一次渲染
+      if (mermaidObserverTimer) clearTimeout(mermaidObserverTimer)
+      mermaidObserverTimer = setTimeout(() => {
+        doRenderMermaidBlocks(true)
+        mermaidObserverTimer = null
+      }, 100)
+    }
+    // 每次 DOM 变化后重新应用自定义高度（Vue 重新渲染会重置 inline style）
+    if (mermaidCustomHeights.size > 0) {
+      reapplyAllMermaidCustomHeights()
+    }
+  })
+  // 观察整个 document.body，确保无论 mermaid 容器出现在哪里都能被检测到
+  mermaidObserver.observe(document.body, { childList: true, subtree: true })
+}
+
+function teardownMermaidObserver() {
+  if (mermaidObserver) {
+    mermaidObserver.disconnect()
+    mermaidObserver = null
+  }
+  if (mermaidObserverTimer) {
+    clearTimeout(mermaidObserverTimer)
+    mermaidObserverTimer = null
   }
 }
 
@@ -1219,6 +1408,12 @@ watch(streamingContent, () => {
           lastStreamingMermaidCount = closedCount
           doRenderMermaidBlocks(true)
         }
+      }
+      // 即使 countClosedMermaidBlocks 未检测到新块，也检查 DOM 中是否有未渲染的容器
+      // 这处理了 autoWrapMermaidCode 自动包裹的情况
+      const unprocessed = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
+      if (unprocessed.length > 0) {
+        doRenderMermaidBlocks(true)
       }
     })
     streamingRenderTimer = null
@@ -1366,6 +1561,9 @@ function handleMermaidToolbarClick(e) {
   const wrap = container.querySelector('.mermaid-svg-wrap')
   const action = btn.dataset.action
 
+  // 阻止事件冒泡，防止触发拖拽等其他行为
+  e.stopPropagation()
+
   switch (action) {
     case 'zoom-in': {
       if (!wrap) break
@@ -1395,6 +1593,10 @@ function handleMermaidToolbarClick(e) {
       setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
     }
+    case 'fullscreen': {
+      handleMermaidFullscreen(container)
+      break
+    }
     case 'toggle-source': {
       const src = container.querySelector('.mermaid-source-preview')
       if (!src || !wrap) break
@@ -1413,7 +1615,201 @@ function handleMermaidToolbarClick(e) {
       }).catch(() => {})
       break
     }
+    case 'exit-fullscreen': {
+      exitMermaidFullscreen()
+      break
+    }
   }
+}
+
+// ── Mermaid 全屏功能 ──
+function handleMermaidFullscreen(container) {
+  // 获取 mermaid 源码
+  const sourceEl = container.querySelector('.mermaid-source-preview code')
+  const svgWrap = container.querySelector('.mermaid-svg-wrap')
+  if (!svgWrap && !sourceEl) return
+
+  const svgHtml = svgWrap ? svgWrap.innerHTML : ''
+  const source = sourceEl ? sourceEl.textContent : ''
+
+  // 创建全屏遮罩
+  const overlay = document.createElement('div')
+  overlay.className = 'mermaid-fullscreen-overlay'
+  overlay.innerHTML = `
+    <div class="mermaid-fullscreen-container" data-mermaid-fullscreen="true">
+      <div class="mermaid-fullscreen-content">
+        <div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svgHtml}</div>
+      </div>
+      <div class="mermaid-fullscreen-toolbar">
+        <button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>
+        <button class="mermaid-tb-btn" data-action="zoom-in" title="放大">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <span class="mermaid-tb-sep"></span>
+        <button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <span class="mermaid-tb-sep"></span>
+        <button class="mermaid-tb-btn mermaid-tb-btn-exit" data-action="exit-fullscreen" title="退出全屏 (Esc)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+    </div>
+  `
+
+  // 保存源码到 overlay 上，供复制使用
+  overlay._mermaidSource = source
+
+  document.body.appendChild(overlay)
+  document.body.classList.add('mermaid-fullscreen-active')
+
+  // 绑定全屏内的事件
+  const fsContainer = overlay.querySelector('.mermaid-fullscreen-container')
+  const fsContent = overlay.querySelector('.mermaid-fullscreen-content')
+
+  // 全屏专用 transform 更新（transform-origin: center center 模式）
+  // 只用 translate 做平移，scale 自动以元素中心为基准
+  function updateFsTransform(fsWrap) {
+    const s = parseFloat(fsWrap.dataset.scale || 1)
+    const tx = parseFloat(fsWrap.dataset.translateX || 0)
+    const ty = parseFloat(fsWrap.dataset.translateY || 0)
+    fsWrap.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
+  }
+
+  // 全屏内工具栏点击
+  overlay.addEventListener('click', (e) => {
+    const fsBtn = e.target.closest('.mermaid-tb-btn[data-action]')
+    if (!fsBtn) return
+    e.stopPropagation()
+    const fsAction = fsBtn.dataset.action
+    const fsWrap = overlay.querySelector('.mermaid-svg-wrap')
+
+    switch (fsAction) {
+      case 'zoom-in': {
+        if (!fsWrap) break
+        fsWrap.classList.add('smooth-transition')
+        const s = Math.min(5, +(parseFloat(fsWrap.dataset.scale || 1) + 0.25).toFixed(2))
+        fsWrap.dataset.scale = s
+        updateFsTransform(fsWrap)
+        setTimeout(() => fsWrap.classList.remove('smooth-transition'), 200)
+        break
+      }
+      case 'zoom-out': {
+        if (!fsWrap) break
+        fsWrap.classList.add('smooth-transition')
+        const s = Math.max(0.25, +(parseFloat(fsWrap.dataset.scale || 1) - 0.25).toFixed(2))
+        fsWrap.dataset.scale = s
+        updateFsTransform(fsWrap)
+        setTimeout(() => fsWrap.classList.remove('smooth-transition'), 200)
+        break
+      }
+      case 'zoom-reset': {
+        if (!fsWrap) break
+        fsWrap.classList.add('smooth-transition')
+        fsWrap.dataset.scale = 1
+        fsWrap.dataset.translateX = 0
+        fsWrap.dataset.translateY = 0
+        updateFsTransform(fsWrap)
+        setTimeout(() => fsWrap.classList.remove('smooth-transition'), 200)
+        break
+      }
+      case 'copy-source': {
+        const src = overlay._mermaidSource || ''
+        if (!src) break
+        navigator.clipboard.writeText(src).then(() => {
+          const origHtml = fsBtn.innerHTML
+          fsBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+          setTimeout(() => { fsBtn.innerHTML = origHtml }, 1200)
+        }).catch(() => {})
+        break
+      }
+      case 'exit-fullscreen': {
+        exitMermaidFullscreen()
+        break
+      }
+    }
+  })
+
+  // 全屏内拖拽
+  let fsDrag = { isDragging: false, startX: 0, startY: 0, startTx: 0, startTy: 0 }
+
+  fsContent.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return
+    if (e.target.closest('.mermaid-fullscreen-toolbar')) return
+    const fsWrap = overlay.querySelector('.mermaid-svg-wrap')
+    if (!fsWrap) return
+    fsWrap.classList.remove('smooth-transition')
+    e.preventDefault()
+    fsDrag.isDragging = true
+    fsDrag.startX = e.clientX
+    fsDrag.startY = e.clientY
+    fsDrag.startTx = parseFloat(fsWrap.dataset.translateX || 0)
+    fsDrag.startTy = parseFloat(fsWrap.dataset.translateY || 0)
+    fsContent.style.cursor = 'grabbing'
+  })
+
+  const fsMouseMove = (e) => {
+    if (!fsDrag.isDragging) return
+    const fsWrap = overlay.querySelector('.mermaid-svg-wrap')
+    if (!fsWrap) return
+    const dx = e.clientX - fsDrag.startX
+    const dy = e.clientY - fsDrag.startY
+    fsWrap.dataset.translateX = +(fsDrag.startTx + dx).toFixed(1)
+    fsWrap.dataset.translateY = +(fsDrag.startTy + dy).toFixed(1)
+    updateFsTransform(fsWrap)
+  }
+
+  const fsMouseUp = () => {
+    if (!fsDrag.isDragging) return
+    fsDrag.isDragging = false
+    fsContent.style.cursor = 'grab'
+  }
+
+  document.addEventListener('mousemove', fsMouseMove)
+  document.addEventListener('mouseup', fsMouseUp)
+
+  // 全屏内滚轮缩放（Ctrl+滚轮）— 原地缩放
+  // transform-origin: center center 意味着 scale 自动以元素中心为基准
+  // 只需改 scale，不需要调整 translate
+  fsContent.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return
+    e.preventDefault()
+    const fsWrap = overlay.querySelector('.mermaid-svg-wrap')
+    if (!fsWrap) return
+    fsWrap.classList.add('smooth-transition')
+    const oldScale = parseFloat(fsWrap.dataset.scale || 1)
+    const delta = e.deltaY > 0 ? -0.1 : 0.1
+    const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
+    if (newScale === oldScale) return
+
+    fsWrap.dataset.scale = newScale
+    updateFsTransform(fsWrap)
+    setTimeout(() => fsWrap.classList.remove('smooth-transition'), 200)
+  }, { passive: false })
+
+  // 保存清理函数
+  overlay._cleanup = () => {
+    document.removeEventListener('mousemove', fsMouseMove)
+    document.removeEventListener('mouseup', fsMouseUp)
+  }
+
+  // 点击遮罩背景退出
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) {
+      exitMermaidFullscreen()
+    }
+  })
+}
+
+function exitMermaidFullscreen() {
+  const overlay = document.querySelector('.mermaid-fullscreen-overlay')
+  if (!overlay) return
+  if (overlay._cleanup) overlay._cleanup()
+  overlay.remove()
+  document.body.classList.remove('mermaid-fullscreen-active')
 }
 
 function handleMermaidMouseMove(e) {
@@ -1452,12 +1848,14 @@ function handleMermaidKeyUp(e) {
 }
 
 // ── Mermaid 容器高度拖拽调整 ──
+// 存储用户自定义的高度（key: data-mermaid-id, value: height in px）
+const mermaidCustomHeights = new Map()
+
 const mermaidResizeState = {
   isResizing: false,
   startY: 0,
   startHeight: 0,
-  activeWrapper: null,
-  activeContainer: null,
+  activeMermaidId: null,
 }
 
 function handleMermaidResizeDown(e) {
@@ -1468,6 +1866,8 @@ function handleMermaidResizeDown(e) {
   if (!container) return
   const wrapper = container.querySelector('.mermaid-content-wrapper')
   if (!wrapper) return
+  const mermaidId = container.getAttribute('data-mermaid-id')
+  if (!mermaidId) return
 
   e.preventDefault()
   e.stopPropagation()
@@ -1475,34 +1875,49 @@ function handleMermaidResizeDown(e) {
   mermaidResizeState.isResizing = true
   mermaidResizeState.startY = e.clientY
   mermaidResizeState.startHeight = wrapper.offsetHeight
-  mermaidResizeState.activeWrapper = wrapper
-  mermaidResizeState.activeContainer = container
+  mermaidResizeState.activeMermaidId = mermaidId
 
   document.body.classList.add('mermaid-resizing')
 }
 
 function handleMermaidResizeMove(e) {
   if (!mermaidResizeState.isResizing) return
-  const wrapper = mermaidResizeState.activeWrapper
-  if (!wrapper) return
+  const mermaidId = mermaidResizeState.activeMermaidId
+  if (!mermaidId) return
 
   const dy = e.clientY - mermaidResizeState.startY
   const newHeight = Math.max(100, mermaidResizeState.startHeight + dy)
-  wrapper.style.maxHeight = newHeight + 'px'
-
-  // 同步更新容器的 max-height（wrapper + toolbar + padding）
-  const container = mermaidResizeState.activeContainer
-  if (container) {
-    container.style.maxHeight = (newHeight + 60) + 'px'
-  }
+  
+  // 存储自定义高度
+  mermaidCustomHeights.set(mermaidId, newHeight)
+  
+  // 应用到当前 DOM
+  applyMermaidCustomHeight(mermaidId, newHeight)
 }
 
 function handleMermaidResizeUp() {
   if (!mermaidResizeState.isResizing) return
   mermaidResizeState.isResizing = false
-  mermaidResizeState.activeWrapper = null
-  mermaidResizeState.activeContainer = null
+  mermaidResizeState.activeMermaidId = null
   document.body.classList.remove('mermaid-resizing')
+}
+
+// 将自定义高度应用到指定 mermaid 容器
+function applyMermaidCustomHeight(mermaidId, height) {
+  const container = document.querySelector(`.mermaid-container[data-mermaid-id="${mermaidId}"]`)
+  if (!container) return
+  const wrapper = container.querySelector('.mermaid-content-wrapper')
+  if (wrapper) {
+    wrapper.style.maxHeight = height + 'px'
+  }
+  container.style.maxHeight = (height + 60) + 'px'
+}
+
+// 重新应用所有自定义高度（Vue 重新渲染后调用）
+function reapplyAllMermaidCustomHeights() {
+  for (const [mermaidId, height] of mermaidCustomHeights) {
+    applyMermaidCustomHeight(mermaidId, height)
+  }
 }
 
 function stopGeneration() {
@@ -1733,6 +2148,9 @@ async function sendMessage() {
     // 流结束后渲染 mermaid 图表
     scrollToBottom()
     doRenderMermaidBlocks()
+    // 延迟再次检查：处理 md 异步加载完成后 getCachedHtml 重新渲染的情况
+    setTimeout(() => doRenderMermaidBlocks(false), 500)
+    setTimeout(() => doRenderMermaidBlocks(false), 1500)
   }
 }
 
@@ -2497,7 +2915,13 @@ function toggleRecording() {
 
 function handleEscKey(e) {
   if (e.key === 'Escape' || e.keyCode === 27) {
-    // ESC 键关闭面板的逻辑已移除
+    // ESC 退出 mermaid 全屏
+    const overlay = document.querySelector('.mermaid-fullscreen-overlay')
+    if (overlay) {
+      e.preventDefault()
+      e.stopPropagation()
+      exitMermaidFullscreen()
+    }
   }
 }
 
@@ -2806,11 +3230,42 @@ function handleCodeCopyClick(e) {
   } catch (_) {}
 }
 
+// ── msgContainer 事件绑定/解绑（核心修复：使用 watch 确保 DOM 重建后事件重新绑定） ──
+// 当 v-if/v-else 切换导致 msgContainer DOM 元素被销毁重建时，
+// 仅在 onMounted 中绑定一次会导致事件丢失。用 watch 监听 ref 变化来自动重绑。
+let _prevMsgEl = null
+function attachMsgContainerEvents(el) {
+  if (!el || el === _prevMsgEl) return
+  // 先清理旧元素上的事件（如果有）
+  detachMsgContainerEvents(_prevMsgEl)
+  _prevMsgEl = el
+  el.addEventListener('wheel', handleMermaidWheel, { passive: false })
+  el.addEventListener('mousedown', handleMermaidMouseDown)
+  el.addEventListener('mousedown', handleMermaidResizeDown)
+}
+function detachMsgContainerEvents(el) {
+  if (!el) return
+  el.removeEventListener('wheel', handleMermaidWheel)
+  el.removeEventListener('mousedown', handleMermaidMouseDown)
+  el.removeEventListener('mousedown', handleMermaidResizeDown)
+}
+
+// watch msgContainer ref：每当 DOM 元素出现/变化时重新绑定事件
+watch(msgContainer, (newEl, oldEl) => {
+  if (oldEl && oldEl !== newEl) {
+    detachMsgContainerEvents(oldEl)
+  }
+  if (newEl) {
+    attachMsgContainerEvents(newEl)
+  }
+}, { flush: 'post' })
+
 onMounted(() => {
   const { initTheme } = useTheme()
   initTheme()
   initHeavyDeps()
   preloadHeavyDeps()
+  setupMermaidObserver()
   setSendToAIHandler(handlePromptSendToAI)
   getSysModel()
   loadModelList()
@@ -2839,17 +3294,16 @@ onMounted(() => {
   document.addEventListener('mouseup', handleMermaidMouseUp)
   document.addEventListener('mousemove', handleMermaidResizeMove)
   document.addEventListener('mouseup', handleMermaidResizeUp)
+  document.addEventListener('click', handleMermaidToolbarClick)
   window.addEventListener('session-expired', handleSessionExpiredEvent)
   document.addEventListener('click', handleExportLinkClick)
   document.addEventListener('click', handleCodeCopyClick)
   const authorization = new URLSearchParams(window.location.search).get('authorization')
   showLoginBtn.value = !authorization
+  // msgContainer 事件绑定由 watch 自动处理，此处做一次兜底确保首次渲染时也能绑定
   nextTick(() => {
     if (msgContainer.value) {
-      msgContainer.value.addEventListener('wheel', handleMermaidWheel, { passive: false })
-      msgContainer.value.addEventListener('mousedown', handleMermaidMouseDown)
-      msgContainer.value.addEventListener('mousedown', handleMermaidResizeDown)
-      msgContainer.value.addEventListener('click', handleMermaidToolbarClick)
+      attachMsgContainerEvents(msgContainer.value)
     }
   })
   // 空闲时预加载 Vditor 模块，用户打开编辑器时无需等待
@@ -2868,15 +3322,13 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', handleMermaidMouseUp)
   document.removeEventListener('mousemove', handleMermaidResizeMove)
   document.removeEventListener('mouseup', handleMermaidResizeUp)
+  document.removeEventListener('click', handleMermaidToolbarClick)
   window.removeEventListener('session-expired', handleSessionExpiredEvent)
   document.removeEventListener('click', handleExportLinkClick)
   document.removeEventListener('click', handleCodeCopyClick)
-  if (msgContainer.value) {
-    msgContainer.value.removeEventListener('wheel', handleMermaidWheel)
-    msgContainer.value.removeEventListener('mousedown', handleMermaidMouseDown)
-    msgContainer.value.removeEventListener('mousedown', handleMermaidResizeDown)
-    msgContainer.value.removeEventListener('click', handleMermaidToolbarClick)
-  }
+  detachMsgContainerEvents(_prevMsgEl)
+  _prevMsgEl = null
+  teardownMermaidObserver()
   document.body.classList.remove('mermaid-ctrl-held', 'mermaid-dragging')
 })
 </script>
@@ -4188,6 +4640,12 @@ body.mermaid-dragging .mermaid-container {
   max-height: 300px;
   overflow: auto;
 }
+.mermaid-error-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #e6a23c;
+  text-align: center;
+}
 .mermaid-toolbar {
   position: absolute;
   top: 8px;
@@ -4969,5 +5427,103 @@ body.mermaid-resizing * {
 /* ── Mermaid Smooth Transition ── */
 .mermaid-svg-wrap.smooth-transition {
   transition: transform 0.2s ease-out;
+}
+
+/* ── Mermaid 全屏模式 ── */
+.mermaid-fullscreen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 99999;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: mermaid-fs-fadein 0.2s ease;
+}
+@keyframes mermaid-fs-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+body.mermaid-fullscreen-active {
+  overflow: hidden !important;
+}
+.mermaid-fullscreen-container {
+  position: relative;
+  width: 95vw;
+  height: 92vh;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mermaid-fullscreen-content {
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.mermaid-fullscreen-content .mermaid-svg-wrap {
+  transform-origin: center center;
+  text-align: center;
+}
+.mermaid-fullscreen-content .mermaid-svg-wrap svg {
+  max-width: none;
+  max-height: none;
+}
+.mermaid-fullscreen-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border-radius: 8px;
+  padding: 6px 8px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.mermaid-fullscreen-toolbar .mermaid-tb-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+.mermaid-tb-btn-exit {
+  color: #e53e3e !important;
+}
+.mermaid-tb-btn-exit:hover {
+  background: #fff5f5 !important;
+  border-color: #fed7d7 !important;
+}
+
+/* 全屏模式暗色主题 */
+[data-theme="dark"] .mermaid-fullscreen-overlay {
+  background: rgba(0, 0, 0, 0.92);
+}
+[data-theme="dark"] .mermaid-fullscreen-container {
+  background: var(--bg-secondary, #1e1e2e);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+[data-theme="dark"] .mermaid-fullscreen-toolbar {
+  background: rgba(30, 30, 46, 0.95);
+  border-color: var(--border-primary, #45475a);
+}
+[data-theme="dark"] .mermaid-tb-btn-exit {
+  color: #f87171 !important;
+}
+[data-theme="dark"] .mermaid-tb-btn-exit:hover {
+  background: rgba(248, 113, 113, 0.1) !important;
+  border-color: rgba(248, 113, 113, 0.3) !important;
 }
 </style>

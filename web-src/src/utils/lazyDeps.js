@@ -95,6 +95,15 @@ async function initMermaid(theme = 'default') {
     })
     currentMermaidTheme = theme
     mermaidInstance = mermaid
+
+    // 预热：用一个最简单的 flowchart 触发 mermaid 加载 flowDiagram 模块
+    // 这样后续真正渲染时不会因为动态 import 失败而报错
+    try {
+      await mermaid.render('mermaid-warmup-' + Date.now(), 'flowchart LR\n    A-->B')
+    } catch (_) {
+      // 预热失败不影响后续使用，mermaid 会在下次 render 时重试
+    }
+
     return mermaidInstance
   })()
 
@@ -168,5 +177,7 @@ export function preloadHeavyDeps() {
   requestIdleCallback(() => {
     initMarkdownRenderer()
     initHljs()
+    // 预加载 mermaid（包括 flowchart 模块），避免首次渲染时动态 import 失败
+    initMermaid()
   })
 }
