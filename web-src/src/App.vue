@@ -153,9 +153,13 @@
                             <el-button text type="primary">
                               <el-icon v-if="!prompt.isShared" @click.stop="handlePromptEdit(prompt.id)" title="编辑"><Edit /></el-icon>
                             </el-button>
-                            <el-button v-if="!prompt.isShared" style="margin-left: -10px;" text type="danger" @click.stop="handleDeletePrompt(prompt)" title="删除">
-                              <el-icon><Delete /></el-icon>
-                            </el-button>
+                            <el-popconfirm v-if="!prompt.isShared" title="确定要删除？" @confirm="handleDeletePrompt(prompt)">
+                              <template #reference>
+                                <el-button style="margin-left: -10px;" text type="danger" title="删除" @click.stop>
+                                  <el-icon><Delete /></el-icon>
+                                </el-button>
+                              </template>
+                            </el-popconfirm>
                           </div>
                         </div>
                       </div>
@@ -241,11 +245,15 @@
                         </div>
                       </div>
                       <div class="session-actions">
-                        <el-button type="danger" size="small" text @click.stop="confirmDeleteSession(sess.id)">
-                          <el-icon>
-                            <Delete />
-                          </el-icon>  
-                        </el-button>
+                        <el-popconfirm title="确定要删除这个会话吗？" @confirm="deleteSession(sess.id)">
+                          <template #reference>
+                            <el-button type="danger" size="small" text @click.stop>
+                              <el-icon>
+                                <Delete />
+                              </el-icon>  
+                            </el-button>
+                          </template>
+                        </el-popconfirm>
                       </div>
                     </div>
                   </div>
@@ -1194,19 +1202,18 @@ function buildMermaidInnerHtml(svg, source) {
     `<button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
     `</button>` +
-    `<button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>` +
+    `<button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">100%</button>` +
     `<button class="mermaid-tb-btn" data-action="zoom-in" title="放大">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>` +
-    `</button>` +
-    `<span class="mermaid-tb-sep"></span>` +
-    `<button class="mermaid-tb-btn" data-action="fullscreen" title="全屏">` +
-      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>` +
     `</button>` +
     `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
     `</button>` +
     `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+    `</button>` +
+     `<button class="mermaid-tb-btn" data-action="fullscreen" title="全屏">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>` +
     `</button>` +
   `</div>`
 }
@@ -1500,16 +1507,15 @@ function handleMermaidWheel(e) {
   const wrap = container.querySelector('.mermaid-svg-wrap')
   if (!wrap) return
 
-  wrap.classList.add('smooth-transition')
-
   const oldScale = parseFloat(wrap.dataset.scale || 1)
   const delta = e.deltaY > 0 ? -0.1 : 0.1
   const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
   if (newScale === oldScale) return
 
-  const rect = container.getBoundingClientRect()
-  const mx = e.clientX - rect.left
-  const my = e.clientY - rect.top
+  const cw = container.querySelector('.mermaid-content-wrapper')
+  const rect = cw ? cw.getBoundingClientRect() : container.getBoundingClientRect()
+  const mx = rect.width / 2
+  const my = rect.height / 2
 
   const oldTx = parseFloat(wrap.dataset.translateX || 0)
   const oldTy = parseFloat(wrap.dataset.translateY || 0)
@@ -1522,8 +1528,6 @@ function handleMermaidWheel(e) {
   wrap.dataset.translateX = +newTx.toFixed(1)
   wrap.dataset.translateY = +newTy.toFixed(1)
   updateMermaidWrapTransform(wrap)
-
-  setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
 }
 
 function handleMermaidMouseDown(e) {
@@ -1568,8 +1572,20 @@ function handleMermaidToolbarClick(e) {
     case 'zoom-in': {
       if (!wrap) break
       wrap.classList.add('smooth-transition')
-      const s = Math.min(5, +(parseFloat(wrap.dataset.scale || 1) + 0.25).toFixed(2))
-      wrap.dataset.scale = s
+      const oldScale = parseFloat(wrap.dataset.scale || 1)
+      const s = Math.min(5, +(oldScale + 0.25).toFixed(2))
+      if (s !== oldScale) {
+        const cw = container.querySelector('.mermaid-content-wrapper')
+        const rect = cw ? cw.getBoundingClientRect() : container.getBoundingClientRect()
+        const mx = rect.width / 2
+        const my = rect.height / 2
+        const oldTx = parseFloat(wrap.dataset.translateX || 0)
+        const oldTy = parseFloat(wrap.dataset.translateY || 0)
+        const ratio = s / oldScale
+        wrap.dataset.scale = s
+        wrap.dataset.translateX = +(mx - (mx - oldTx) * ratio).toFixed(1)
+        wrap.dataset.translateY = +(my - (my - oldTy) * ratio).toFixed(1)
+      }
       updateMermaidWrapTransform(wrap)
       setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
@@ -1577,8 +1593,20 @@ function handleMermaidToolbarClick(e) {
     case 'zoom-out': {
       if (!wrap) break
       wrap.classList.add('smooth-transition')
-      const s = Math.max(0.25, +(parseFloat(wrap.dataset.scale || 1) - 0.25).toFixed(2))
-      wrap.dataset.scale = s
+      const oldScale = parseFloat(wrap.dataset.scale || 1)
+      const s = Math.max(0.25, +(oldScale - 0.25).toFixed(2))
+      if (s !== oldScale) {
+        const cw = container.querySelector('.mermaid-content-wrapper')
+        const rect = cw ? cw.getBoundingClientRect() : container.getBoundingClientRect()
+        const mx = rect.width / 2
+        const my = rect.height / 2
+        const oldTx = parseFloat(wrap.dataset.translateX || 0)
+        const oldTy = parseFloat(wrap.dataset.translateY || 0)
+        const ratio = s / oldScale
+        wrap.dataset.scale = s
+        wrap.dataset.translateX = +(mx - (mx - oldTx) * ratio).toFixed(1)
+        wrap.dataset.translateY = +(my - (my - oldTy) * ratio).toFixed(1)
+      }
       updateMermaidWrapTransform(wrap)
       setTimeout(() => wrap.classList.remove('smooth-transition'), 200)
       break
@@ -1638,21 +1666,19 @@ function handleMermaidFullscreen(container) {
   overlay.innerHTML = `
     <div class="mermaid-fullscreen-container" data-mermaid-fullscreen="true">
       <div class="mermaid-fullscreen-content">
-        <div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svgHtml}</div>
+        <div class="mermaid-svg-wrap" data-scale="2" data-translate-x="0" data-translate-y="0">${svgHtml}</div>
       </div>
       <div class="mermaid-fullscreen-toolbar">
         <button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         </button>
-        <button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">1:1</button>
+        <button class="mermaid-tb-btn" data-action="zoom-reset" title="重置">100%</button>
         <button class="mermaid-tb-btn" data-action="zoom-in" title="放大">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         </button>
-        <span class="mermaid-tb-sep"></span>
         <button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
-        <span class="mermaid-tb-sep"></span>
         <button class="mermaid-tb-btn mermaid-tb-btn-exit" data-action="exit-fullscreen" title="退出全屏 (Esc)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
         </button>
@@ -1678,6 +1704,9 @@ function handleMermaidFullscreen(container) {
     const ty = parseFloat(fsWrap.dataset.translateY || 0)
     fsWrap.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`
   }
+
+  const initialFsWrap = overlay.querySelector('.mermaid-svg-wrap')
+  if (initialFsWrap) updateFsTransform(initialFsWrap)
 
   // 全屏内工具栏点击
   overlay.addEventListener('click', (e) => {
@@ -2815,20 +2844,14 @@ async function loadPrompts() {
   }
 }
 
-function handleDeletePrompt(prompt) {
-  ElMessageBox.confirm(
-    `确定要删除提示词 "${prompt.title}" 吗？`,
-    '确认删除',
-    { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
-  ).then(async () => {
-    try {
-      await http.get('/delPrompt', { params: { id: prompt.id } })
-      ElMessage.success('删除成功')
-      loadPrompts()
-    } catch (e) {
-      ElMessage.error('删除失败')
-    }
-  }).catch(() => {})
+async function handleDeletePrompt(prompt) {
+  try {
+    await http.get('/delPrompt', { params: { id: prompt.id } })
+    ElMessage.success('删除成功')
+    loadPrompts()
+  } catch (e) {
+    ElMessage.error('删除失败')
+  }
 }
 
 function handleViewPromptDetail(prompt) {
@@ -3069,24 +3092,6 @@ async function loadSessionList() {
   } finally {
     loadingSessions.value = false
   }
-}
-
-function confirmDeleteSession(id) {
-  ElMessageBox.confirm(
-    '确定要删除这个会话吗？删除后无法恢复！',
-    '删除确认',
-    {
-      confirmButtonText: '确定删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    }
-  )
-    .then(async () => {
-      await deleteSession(id)
-    })
-    .catch(() => {
-      // 用户取消
-    })
 }
 
 async function deleteSession(id) {
@@ -3646,7 +3651,7 @@ onUnmounted(() => {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
   line-height: 1.7;
-  color: #d4d4d4;
+  color: #1f2937;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
@@ -4568,9 +4573,7 @@ onUnmounted(() => {
   margin: 12px 0;
   padding: 16px;
   padding-top: 16px;
-  background: #1e1e1e;
   border-radius: 10px;
-  border: 1px solid #3c3c3c;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   overflow: hidden;
   text-align: center;
@@ -4592,10 +4595,10 @@ body.mermaid-dragging .mermaid-container {
 
 /* Mermaid 内容包装器，负责滚动 */
 .mermaid-content-wrapper {
-  max-height: 540px;
-  overflow: auto;
+  max-height: 500px;
   position: relative;
   z-index: 0;
+  overflow: hidden;
 }
 .mermaid-source-preview {
   margin: 0;
@@ -4626,6 +4629,27 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-source-preview::selection {
   background: rgba(25, 118, 210, 0.3);
   color: #ffffff;
+}
+
+.mermaid-container .edgeLabel,
+.mermaid-container .edgeLabel p {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #333;
+}
+.mermaid-container .labelBkg {
+  background: transparent !important;
+}
+
+.mermaid-fullscreen-container {
+  background: var(--bg-secondary, #1e1e2e);
+  box-shadow: 0 8px 40px rgba(255, 255, 255, 0.6);
+}
+
+[data-theme="dark"] .mermaid-container .edgeLabel,
+[data-theme="dark"] .mermaid-container .edgeLabel p {
+  color: #d4d4d4;
 }
 
 [data-theme="dark"] .mermaid-source-preview {
@@ -4661,12 +4685,8 @@ body.mermaid-dragging .mermaid-container {
   align-items: center;
   gap: 2px;
   z-index: 100;
-  background: rgba(30,30,30,0.98);
   backdrop-filter: blur(8px);
-  border-radius: 6px;
   padding: 4px;
-  border: 1px solid #3c3c3c;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -4699,7 +4719,7 @@ body.mermaid-dragging .mermaid-container {
   white-space: nowrap;
 }
 .mermaid-tb-btn:hover {
-  color: #569cd6;
+  color: #0fa1ef;
   background: rgba(0, 122, 204, 0.15);
   border-color: rgba(0, 122, 204, 0.3);
 }
@@ -4708,6 +4728,16 @@ body.mermaid-dragging .mermaid-container {
 }
 .mermaid-tb-btn svg {
   flex-shrink: 0;
+}
+.mermaid-container .node rect,
+.mermaid-container .node polygon,
+.mermaid-container .node path,
+.mermaid-container .cluster rect,
+.mermaid-container .cluster path,
+.mermaid-container .subgraph rect,
+.mermaid-container .subgraph path {
+  rx: 8;
+  ry: 8;
 }
 .mermaid-svg-wrap {
   text-align: center;
@@ -5391,7 +5421,7 @@ body.mermaid-resizing * {
   right: 0;
   bottom: 0;
   z-index: 99999;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(220, 220, 220, 0.85);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -5407,11 +5437,8 @@ body.mermaid-fullscreen-active {
 }
 .mermaid-fullscreen-container {
   position: relative;
-  width: 95vw;
-  height: 92vh;
-  background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+  width: 98vw;
+  height: 96vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -5441,24 +5468,12 @@ body.mermaid-fullscreen-active {
   align-items: center;
   gap: 4px;
   z-index: 10;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(8px);
-  border-radius: 8px;
   padding: 6px 8px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 .mermaid-fullscreen-toolbar .mermaid-tb-btn {
   width: 32px;
   height: 32px;
   font-size: 13px;
-}
-.mermaid-tb-btn-exit {
-  color: #e53e3e !important;
-}
-.mermaid-tb-btn-exit:hover {
-  background: #fff5f5 !important;
-  border-color: #fed7d7 !important;
 }
 
 /* 全屏模式暗色主题 */
@@ -5468,16 +5483,5 @@ body.mermaid-fullscreen-active {
 [data-theme="dark"] .mermaid-fullscreen-container {
   background: var(--bg-secondary, #1e1e2e);
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
-}
-[data-theme="dark"] .mermaid-fullscreen-toolbar {
-  background: rgba(30, 30, 46, 0.95);
-  border-color: var(--border-primary, #45475a);
-}
-[data-theme="dark"] .mermaid-tb-btn-exit {
-  color: #f87171 !important;
-}
-[data-theme="dark"] .mermaid-tb-btn-exit:hover {
-  background: rgba(248, 113, 113, 0.1) !important;
-  border-color: rgba(248, 113, 113, 0.3) !important;
 }
 </style>

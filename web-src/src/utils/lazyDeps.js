@@ -152,6 +152,8 @@ async function initHljs() {
       import('highlight.js/styles/stackoverflow-light.css'),
     ])
     hljs.registerLanguage('sql', hljsSql)
+    hljs.registerLanguage('mysql', hljsSql)
+    hljs.registerLanguage('mariadb', hljsSql)
     hljsInstance = hljs
     return hljsInstance
   })()

@@ -29,7 +29,7 @@
                     size="small"
                     style="width: 100%"
                     border
-                    :header-cell-style="{ background: '#f0f5ff', color: '#1d39c4', fontWeight: '600' }"
+                    :header-cell-style="headerCellStyle"
                   >
                     <el-table-column
                       v-for="col in explainResult.columns"
@@ -106,6 +106,7 @@ import { ref, computed, watch, onUnmounted, useTemplateRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
 import { getMarkdownRenderer, getHljs } from '@/utils/lazyDeps'
+import { useTheme } from '@/utils/useTheme'
 import http from '@/utils/httpProxy.js'
 
 let md = null
@@ -118,8 +119,6 @@ async function initDeps() {
     getHljs(),
   ])
   hljsLib = hljsInstance
-  hljsLib.registerLanguage('mysql', hljsLib.getLanguage('sql'))
-  hljsLib.registerLanguage('mariadb', hljsLib.getLanguage('sql'))
   md = mdInstance
   mdReady.value = true
 }
@@ -131,6 +130,15 @@ const { connId, schema, sql } = defineProps({
   schema: String,
   sql: String,
   dbType: String
+})
+
+const { currentTheme } = useTheme()
+
+const headerCellStyle = computed(() => {
+  if (currentTheme.value === 'dark') {
+    return { background: '#2d2d2d', color: '#d4d4d4', fontWeight: '600' }
+  }
+  return { background: '#f0f5ff', color: '#1d39c4', fontWeight: '600' }
 })
 
 const drawerRef = useTemplateRef('drawerRef')
@@ -466,20 +474,44 @@ onUnmounted(() => {
 
 .toolbar-area {
   display: flex;
-  align-items: flex-start;
-  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  height: 100%;
+}
+
+:deep(.el-drawer__body) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .optimize-tabs {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .optimize-tabs :deep(.el-tabs__header) {
   margin-bottom: 0;
+  flex-shrink: 0;
+  background: #fff;
 }
 
 .optimize-tabs :deep(.el-tabs__nav-wrap::after) {
   display: none;
+}
+
+.optimize-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  overflow-y: auto !important;
+  min-height: 0;
+}
+
+:deep(.el-drawer__header) {
+  margin-bottom: 6px !important;
+  padding: 6px !important;
 }
 
 .tab-label {
@@ -489,7 +521,6 @@ onUnmounted(() => {
 }
 
 .tab-body {
-  padding-top: 12px;
   min-height: 120px;
 }
 
@@ -714,5 +745,88 @@ onUnmounted(() => {
 
 .optimize-empty {
   padding: 20px 0;
+}
+
+[data-theme="dark"] .explain-section {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+}
+
+[data-theme="dark"] .explain-table-wrapper {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .optimize-tabs :deep(.el-tabs__header) {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .raw-header {
+  background: #1e1e1e;
+  color: #9ca3af;
+}
+
+[data-theme="dark"] .raw-content {
+  color: #4ec9b0;
+}
+
+[data-theme="dark"] .thinking-section {
+  background: rgba(0, 122, 204, 0.08);
+  border-color: rgba(0, 122, 204, 0.2);
+}
+
+[data-theme="dark"] .thinking-header {
+  background: rgba(0, 122, 204, 0.12);
+  color: #9cdcfe;
+}
+
+[data-theme="dark"] .thinking-content {
+  color: #9cdcfe;
+}
+
+[data-theme="dark"] .markdown-body {
+  color: #d4d4d4;
+}
+
+[data-theme="dark"] .markdown-body :deep(h1),
+[data-theme="dark"] .markdown-body :deep(h2),
+[data-theme="dark"] .markdown-body :deep(h3),
+[data-theme="dark"] .markdown-body :deep(h4) {
+  color: #d4d4d4;
+}
+
+[data-theme="dark"] .markdown-body :deep(strong) {
+  color: #d4d4d4;
+}
+
+[data-theme="dark"] .markdown-body :deep(th),
+[data-theme="dark"] .markdown-body :deep(td) {
+  border-color: #3c3c3c;
+}
+
+[data-theme="dark"] .markdown-body :deep(th) {
+  background: linear-gradient(180deg, #2d2d2d 0%, #3c3c3c 100%);
+}
+
+[data-theme="dark"] .markdown-body :deep(blockquote) {
+  color: #9cdcfe;
+  border-left-color: #007acc;
+  background: rgba(0, 122, 204, 0.1);
+}
+
+[data-theme="dark"] .code-block-wrapper .code-copy-btn {
+  color: #808080;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #3c3c3c;
+}
+
+[data-theme="dark"] .code-block-wrapper .code-copy-btn:hover {
+  color: #d4d4d4;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: #555;
+}
+
+[data-theme="dark"] .markdown-body :deep(.hljs) {
+  background: #1e1e1e;
+  border-color: #3c3c3c;
 }
 </style>

@@ -28,4 +28,6 @@ data/
 docs/
 release/
 
-nway.sqlite3**.db
+nway.sqlite3**.db**
+
+node_modules/

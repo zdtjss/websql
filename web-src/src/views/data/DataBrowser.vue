@@ -1820,6 +1820,13 @@ watch(
 )
 </script>
 
+<style>
+.cell-range-selected {
+  background-color: #68a6eb !important;
+  outline: none !important;
+  outline-offset: -1px;
+}
+</style>
 
 <style scoped>
 .data-browser {
@@ -1945,25 +1952,6 @@ watch(
 [data-theme="dark"] :deep(.row-new td) {
   background-color: #1a2a1a !important;
   border-left-color: #4caf50;
-}
-
-:deep(.cell-range-selected) {
-  background-color: #d4e6ff !important;
-  outline: 2px solid #409eff;
-  outline-offset: -1px;
-}
-
-[data-theme="dark"] :deep(.cell-range-selected) {
-  background-color: #2a3a5a !important;
-  outline-color: #89b4fa;
-}
-
-:deep(.cell-selected-sel) {
-  background-color: rgba(64, 158, 255, 0.08);
-}
-
-[data-theme="dark"] :deep(.cell-selected-sel) {
-  background-color: rgba(137, 180, 250, 0.12);
 }
 
 :deep(.row-changed td) {
