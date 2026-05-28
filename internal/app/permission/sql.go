@@ -280,6 +280,13 @@ func CheckSQLPermission(analysis *SQLAnalysis, connId, authorization string) {
 	}
 }
 
+func parseColumnNameForPerm(raw string) string {
+	if idx := strings.Index(raw, "  "); idx > 0 {
+		return strings.TrimSpace(raw[:idx])
+	}
+	return strings.TrimSpace(raw)
+}
+
 func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *TableColumnAccess {
 	if !config.Cfg.IsRemote {
 		return &TableColumnAccess{Level: AccessFull}
@@ -323,7 +330,8 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 			if p.SchemaName != nil && *p.SchemaName == schemaName {
 				hasTableOrColumnForSchema = true
 				if p.TableName != nil && *p.TableName == tableName && p.ColumnName != nil {
-					allowedCols[*p.ColumnName] = true
+					colName := parseColumnNameForPerm(*p.ColumnName)
+					allowedCols[colName] = true
 				}
 			}
 		}

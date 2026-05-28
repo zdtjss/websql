@@ -9,6 +9,13 @@ import (
 	"websql/internal/config"
 )
 
+func parseColumnName(raw string) string {
+	if idx := strings.Index(raw, "  "); idx > 0 {
+		return strings.TrimSpace(raw[:idx])
+	}
+	return strings.TrimSpace(raw)
+}
+
 type PermissionScope struct {
 	UserID              string
 	ConnID              string
@@ -87,11 +94,12 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		case "column":
 			if pSchema == schemaName && pTable != "" && pColumn != "" {
 				hasTableOrColumnForSchema = true
+				colName := parseColumnName(pColumn)
 				if !scope.AllowedTables[pTable] {
 					if scope.AllowedColumns[pTable] == nil {
 						scope.AllowedColumns[pTable] = make(map[string]bool)
 					}
-					scope.AllowedColumns[pTable][pColumn] = true
+					scope.AllowedColumns[pTable][colName] = true
 					columnCount++
 				}
 			}
@@ -107,6 +115,13 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		scope.HasFullSchemaAccess = true
 		log.Printf("[PermScope] Schema级完整权限 - user=%s, conn=%s, schema=%s\n", userId, connId, schemaName)
 		return scope
+	}
+
+	for table := range scope.AllowedColumns {
+		if scope.AllowedTables[table] {
+			delete(scope.AllowedTables, table)
+			log.Printf("[PermScope] 权限降级 - 表 %s 同时存在表级和字段级权限，以字段级权限为准\n", table)
+		}
 	}
 
 	if hasConnPerm {

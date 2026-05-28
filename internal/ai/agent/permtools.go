@@ -225,16 +225,45 @@ func marshalPermDecision(decision *PermDecisionOutput) string {
 
 func unmarshalPermDecision(result string) (*PermDecisionOutput, error) {
 	var decision PermDecisionOutput
-	if err := json.Unmarshal([]byte(result), &decision); err != nil {
-		jsonStart := strings.Index(result, "{")
-		jsonEnd := strings.LastIndex(result, "}")
-		if jsonStart >= 0 && jsonEnd > jsonStart {
-			if err2 := json.Unmarshal([]byte(result[jsonStart:jsonEnd+1]), &decision); err2 != nil {
-				return nil, fmt.Errorf("parse permission decision failed: %w (original: %w)", err2, err)
+	if err := json.Unmarshal([]byte(result), &decision); err == nil {
+		return &decision, nil
+	}
+
+	lastClose := strings.LastIndex(result, "}")
+	if lastClose < 0 {
+		return nil, fmt.Errorf("parse permission decision failed: no JSON object found in output")
+	}
+
+	depth := 0
+	startPos := -1
+	for i := lastClose; i >= 0; i-- {
+		switch result[i] {
+		case '}':
+			depth++
+		case '{':
+			depth--
+			if depth == 0 {
+				startPos = i
+				i = -1
 			}
+		}
+	}
+
+	if startPos >= 0 {
+		jsonStr := result[startPos : lastClose+1]
+		if err := json.Unmarshal([]byte(jsonStr), &decision); err == nil {
 			return &decision, nil
 		}
-		return nil, fmt.Errorf("parse permission decision failed: %w", err)
 	}
-	return &decision, nil
+
+	jsonStart := strings.Index(result, "{")
+	jsonEnd := strings.LastIndex(result, "}")
+	if jsonStart >= 0 && jsonEnd > jsonStart {
+		if err := json.Unmarshal([]byte(result[jsonStart:jsonEnd+1]), &decision); err != nil {
+			return nil, fmt.Errorf("parse permission decision failed: %w", err)
+		}
+		return &decision, nil
+	}
+
+	return nil, fmt.Errorf("parse permission decision failed: no JSON object found in output")
 }

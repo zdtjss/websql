@@ -301,7 +301,8 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 		m.logDeny("get_table_schema", "部分表无权限", deniedTables)
 	}
 	if len(filtered) == 0 {
-		output := SchemaOutput{Schema: "提示：请提供正确的表名。您传入的名称无法访问。"}
+		deniedMsg := fmt.Sprintf("权限不足：您无权访问以下表 %v，请使用您有权限的表重新生成查询。", deniedTables)
+		output := SchemaOutput{Schema: deniedMsg}
 		outputJSON, _ := json.Marshal(output)
 		return string(outputJSON), nil
 	}
@@ -324,29 +325,43 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 		}
 	}
 
-	if !hasColumnRestrictions {
-		return result, nil
+	var schemaResult string
+	if hasColumnRestrictions {
+		m.logInfo("get_table_schema", "执行DDL列级过滤")
+
+		var output SchemaOutput
+		if err := json.Unmarshal([]byte(result), &output); err != nil {
+			m.logDeny("get_table_schema", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
+			safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
+			return string(safeOutput), nil
+		}
+
+		if output.Schema != "" {
+			filteredSchema := filterDDLByScope(output.Schema, filtered, m.Scope)
+			if filteredSchema != "" {
+				output.Schema = filteredSchema
+			}
+		}
+		outputJSON, _ := json.Marshal(output)
+		schemaResult = string(outputJSON)
+	} else {
+		schemaResult = result
 	}
 
-	m.logInfo("get_table_schema", "执行DDL列级过滤")
-
-	var output SchemaOutput
-	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		m.logDeny("get_table_schema", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
-		safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
-		return string(safeOutput), nil
-	}
-
-	if output.Schema != "" {
-		filteredSchema := filterDDLByScope(output.Schema, filtered, m.Scope)
-		if filteredSchema != "" {
-			output.Schema = filteredSchema
+	if len(deniedTables) > 0 {
+		var output SchemaOutput
+		if err := json.Unmarshal([]byte(schemaResult), &output); err != nil {
+			deniedMsg := fmt.Sprintf("权限不足：您无权访问以下表 %v，请使用您有权限的表重新生成查询。", deniedTables)
+			output = SchemaOutput{Schema: deniedMsg}
 			outputJSON, _ := json.Marshal(output)
 			return string(outputJSON), nil
 		}
+		output.Schema += fmt.Sprintf("\n\n注意：您无权访问以下表 %v，请勿在SQL中引用这些表，请使用您有权限的表重新生成查询。", deniedTables)
+		outputJSON, _ := json.Marshal(output)
+		return string(outputJSON), nil
 	}
 
-	return result, nil
+	return schemaResult, nil
 }
 
 func (m *PermissionMiddleware) postFilterSync(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (string, error) {
@@ -738,8 +753,11 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 		m.logDeny("get_table_schema(stream)", "部分表无权限", deniedTables)
 	}
 	if len(filtered) == 0 {
+		deniedMsg := fmt.Sprintf("权限不足：您无权访问以下表 %v，请使用您有权限的表重新生成查询。", deniedTables)
 		sr, sw := schema.Pipe[string](1)
-		sw.Send("提示：请提供正确的表名。您传入的名称无法访问。", nil)
+		output := SchemaOutput{Schema: deniedMsg}
+		outputJSON, _ := json.Marshal(output)
+		sw.Send(string(outputJSON), nil)
 		sw.Close()
 		return sr, nil
 	}
@@ -758,37 +776,65 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 		}
 	}
 
-	if !hasColumnRestrictions {
-		return endpoint(ctx, string(newArgs), opts...)
-	}
+	var schemaResult string
+	if hasColumnRestrictions {
+		m.logInfo("get_table_schema(stream)", "执行DDL列级过滤")
 
-	m.logInfo("get_table_schema(stream)", "执行DDL列级过滤")
-
-	reader, err := endpoint(ctx, string(newArgs), opts...)
-	if err != nil {
-		return nil, err
-	}
-	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
+		reader, err := endpoint(ctx, string(newArgs), opts...)
+		if err != nil {
+			return nil, err
 		}
-		sb.WriteString(chunk)
-	}
-	rawResult := sb.String()
+		var sb strings.Builder
+		for {
+			chunk, recvErr := reader.Recv()
+			if recvErr != nil {
+				break
+			}
+			sb.WriteString(chunk)
+		}
+		rawResult := sb.String()
 
-	var output SchemaOutput
-	if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
-		m.logDeny("get_table_schema(stream)", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
-		safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
-		return schema.StreamReaderFromArray([]string{string(safeOutput)}), nil
+		var output SchemaOutput
+		if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
+			m.logDeny("get_table_schema(stream)", "结果JSON解析失败，拒绝返回未过滤DDL", nil)
+			safeOutput, _ := json.Marshal(SchemaOutput{Schema: ""})
+			return schema.StreamReaderFromArray([]string{string(safeOutput)}), nil
+		}
+		if output.Schema != "" {
+			output.Schema = filterDDLByScope(output.Schema, filtered, m.Scope)
+		}
+		outputJSON, _ := json.Marshal(output)
+		schemaResult = string(outputJSON)
+	} else {
+		reader, err := endpoint(ctx, string(newArgs), opts...)
+		if err != nil {
+			return nil, err
+		}
+		var sb strings.Builder
+		for {
+			chunk, recvErr := reader.Recv()
+			if recvErr != nil {
+				break
+			}
+			sb.WriteString(chunk)
+		}
+		schemaResult = sb.String()
 	}
-	if output.Schema != "" {
-		output.Schema = filterDDLByScope(output.Schema, filtered, m.Scope)
+
+	if len(deniedTables) > 0 {
+		var output SchemaOutput
+		if err := json.Unmarshal([]byte(schemaResult), &output); err != nil {
+			deniedMsg := fmt.Sprintf("权限不足：您无权访问以下表 %v，请使用您有权限的表重新生成查询。", deniedTables)
+			output = SchemaOutput{Schema: deniedMsg}
+			outputJSON, _ := json.Marshal(output)
+			return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
+		}
+		output.Schema += fmt.Sprintf("\n\n注意：您无权访问以下表 %v，请勿在SQL中引用这些表，请使用您有权限的表重新生成查询。", deniedTables)
+		outputJSON, _ := json.Marshal(output)
+		return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
 	}
-	outputJSON, _ := json.Marshal(output)
-	return schema.StreamReaderFromArray([]string{string(outputJSON)}), nil
+
+	return schema.StreamReaderFromArray([]string{schemaResult}), nil
 }
 
 type permCheckResult struct {
