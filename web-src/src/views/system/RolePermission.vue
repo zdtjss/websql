@@ -56,6 +56,9 @@
             <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
               <el-switch v-model="classicViewEnabled" active-text="允许使用经典视图" inactive-text="禁止使用经典视图" @change="onClassicViewChanged" />
             </div>
+            <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
+              <el-switch v-model="modifyDataEnabled" active-text="允许修改数据" inactive-text="禁止修改数据" @change="onModifyDataChanged" />
+            </div>
             <div class="permission-tree-wrapper">
               <div class="permission-tree-container">
                 <el-tree ref="treeRef" :key="treeKey" :data="treeData" :props="treeProps" node-key="id" show-checkbox check-strictly :default-expand-all="true" :default-checked-keys="treeCheckedKeys" :check-on-click-leaf="false" @check="handleCheck" @node-click="handleNodeClick">
@@ -121,6 +124,10 @@ const uncheckedKeys = reactive(new Set())
 const classicViewEnabled = ref(false)
 // classicViewDirty: 经典视图开关是否有变更
 let classicViewDirty = false
+// modifyDataEnabled: 是否允许该角色修改数据
+const modifyDataEnabled = ref(true)
+// modifyDataDirty: 修改数据开关是否有变更
+let modifyDataDirty = false
 
 let isProgrammatic = false
 
@@ -141,7 +148,7 @@ function createRole() {
     inputPattern: /.+/,
     inputErrorMessage: '角色名称不能为空',
   }).then(({ value }) => {
-    http.post('/saveRole', { id: '', name: value, addPowers: [], delPowers: [], viewClassic: 0 }).then(() => {
+    http.post('/saveRole', { id: '', name: value, addPowers: [], delPowers: [], viewClassic: 0, allowModify: 1 }).then(() => {
       loadRoles()
     })
   })
@@ -152,6 +159,8 @@ function handleRoleChange(role) {
   currentRole.value = role
   classicViewEnabled.value = !!(role.viewClassic)
   classicViewDirty = false
+  modifyDataEnabled.value = !!(role.allowModify)
+  modifyDataDirty = false
   initExplicitKeysFromRole(role)
   navigateToLevel('conn')
 }
@@ -401,6 +410,10 @@ function isImplicitNode(nodeId) {
 
 function onClassicViewChanged() {
   classicViewDirty = true
+}
+
+function onModifyDataChanged() {
+  modifyDataDirty = true
 }
 
 function handleCheck(nodeData, checkState) {
@@ -740,6 +753,7 @@ function savePermissions() {
     addPowers,
     delPowers,
     viewClassic: classicViewEnabled.value ? 1 : 0,
+    allowModify: modifyDataEnabled.value ? 1 : 0,
   }
 
   console.log('[savePermissions] FINAL roleData:', JSON.stringify(roleData))
@@ -747,6 +761,7 @@ function savePermissions() {
   http.post('/saveRole', roleData).then(() => {
     saving.value = false
     classicViewDirty = false
+    modifyDataDirty = false
     // 更新 explicitKeys：移除当前层级的旧权限，加入当前层级过滤后的权限
     for (const key of currentBaselineKeys) {
       explicitKeys.delete(key)
@@ -804,6 +819,7 @@ function savePermissions() {
       })
     }
     currentRole.value.viewClassic = classicViewEnabled.value ? 1 : 0
+    currentRole.value.allowModify = modifyDataEnabled.value ? 1 : 0
     loadRoles()
     navigateToLevel(currentLevel.value)
     ElMessage.success('保存成功')
@@ -815,6 +831,7 @@ function savePermissions() {
 function cancelEdit() {
   if (currentRole.value) {
     classicViewEnabled.value = !!(currentRole.value.viewClassic)
+    modifyDataEnabled.value = !!(currentRole.value.allowModify)
     initExplicitKeysFromRole(currentRole.value)
     loadTree()
   }

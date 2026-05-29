@@ -42,10 +42,10 @@
                     <span v-if="executionTime !== null" class="exec-time">{{ executionTime }}ms</span>
                     <span v-if="canInlineEdit && result.length > 0" class="inline-edit-badge"
                         title="当前结果集有主键，支持双击单元格内联编辑">✎ 可编辑</span>
-                    <el-tooltip :content="canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据'" placement="bottom"
+                    <el-tooltip :content="roleForbidModify ? '当前角色禁止修改数据' : (canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据')" placement="bottom"
                         :show-after="400">
                         <label class="modify-toggle">
-                            <el-switch v-model="canModify" size="small" />
+                            <el-switch v-model="canModify" size="small" :disabled="roleForbidModify" />
                             <span class="modify-label">{{ canModify ? '可写' : '只读' }}</span>
                         </label>
                     </el-tooltip>
@@ -307,6 +307,7 @@ const dataDetailsDialogVisible = ref(false)
 const onDataSaving = ref(false)
 
 const canModify = ref(false)
+const roleForbidModify = ref(false)
 
 const editingCellRow = ref(-1)
 const editingCellCol = ref('')
@@ -533,7 +534,18 @@ onMounted(() => {
     const doc = localStorage.getItem(getSqlKey()) || "\n\n\n\n\n"
     createEditor(codemirror, doc);
     const schemaPathLower = schemaPath.toLowerCase()
-    canModify.value = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
+    const schemaCanModify = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
+    http.get('/canModifyData').then(resp => {
+        const allowed = resp.data.data?.allowed !== false
+        if (!allowed) {
+            roleForbidModify.value = true
+            canModify.value = false
+        } else {
+            canModify.value = schemaCanModify
+        }
+    }).catch(() => {
+        canModify.value = schemaCanModify
+    })
 })
 
 onBeforeUnmount(() => {
@@ -549,8 +561,13 @@ watch([result, totalColumnWidth], () => {
 })
 
 watch(canModify, (can) => {
+    if (roleForbidModify.value && can) {
+        canModify.value = false
+        ElMessage({ message: "当前角色禁止修改数据，请联系管理员开通", type: "warning" })
+        return
+    }
     const schemaPathLower = schemaPath.toLowerCase()
-    if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_read") != -1)) {
+    if (can && !(schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1)) {
         ElMessage({ message: "当前可能为生产库，请谨慎修改。", type: "error" })
     }
 })

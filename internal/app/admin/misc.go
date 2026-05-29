@@ -619,6 +619,32 @@ func CanUseClassicView(c *gin.Context) {
 	jsonutil.WriteJson(c.Writer, gin.H{"allowed": allowed})
 }
 
+func CanModifyData(c *gin.Context) {
+	authorization := c.GetHeader("Authorization")
+	user := GetUser(authorization)
+	if user == nil {
+		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		return
+	}
+
+	allowed := false
+	roles := []*Role{}
+	err := database.Mngtdb.Select(&roles,
+		"select r.id, r.name, r.allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", user.Id)
+	if err != nil {
+		logger.PrintErr(err)
+		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		return
+	}
+	for _, role := range roles {
+		if role.AllowModify > 0 {
+			allowed = true
+			break
+		}
+	}
+	jsonutil.WriteJson(c.Writer, gin.H{"allowed": allowed})
+}
+
 func getConnNoCheckInternal(connId string) *sqlx.DB {
 	if connId == "" {
 		return nil

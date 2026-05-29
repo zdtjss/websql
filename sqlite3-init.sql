@@ -24,10 +24,11 @@ CREATE TABLE IF NOT EXISTS t_power (
 CREATE TABLE IF NOT EXISTS t_role (
 	id TEXT PRIMARY KEY,
 	name TEXT,
-	view_classic INTEGER DEFAULT 0
+	view_classic INTEGER DEFAULT 0,
+	allow_modify INTEGER DEFAULT 1
 );
 
-insert into t_role (id, name, view_classic) values ('825683877266722816', 'admin', 1);
+insert into t_role (id, name, view_classic, allow_modify) values ('825683877266722816', 'admin', 1, 1);
 
 CREATE TABLE IF NOT EXISTS t_tree (
 	id TEXT PRIMARY KEY,

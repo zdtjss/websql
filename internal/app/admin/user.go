@@ -333,6 +333,17 @@ func FindUserPowerDetails(userId string) []*PowerDetail {
 	return findUserPowerDetails(userId)
 }
 
+func FindUserRoles(userId string) []*Role {
+	roles := []*Role{}
+	err := database.Mngtdb.Select(&roles,
+		"select r.id, r.name, r.allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", userId)
+	if err != nil {
+		logger.PrintErr(err)
+		return nil
+	}
+	return roles
+}
+
 func findUserRole(userIdList []any) map[string][]*UserRole {
 	userCount := len(userIdList)
 	if userCount == 0 {

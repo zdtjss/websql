@@ -146,7 +146,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
-	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx)
+	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
@@ -665,20 +665,29 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 	}
 }
 
-func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx) ([]tool.BaseTool, error) {
+func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) ([]tool.BaseTool, error) {
 	conn, _ := GetConn(connID)
 	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas, auditCtx))
-	execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx))
 	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas))
 	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释。当用户未指定表名时，优先调用此工具获取表列表，通过表注释判断目标表，而非猜测表名", NewListTablesFunc(connID, dbType, dbSchema, schemas))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
 	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", export.NewExportAnalysisDocxFunc(conn))
-	importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx))
 	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 
-	allTools := []tool.BaseTool{queryTool, execTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, importDataTool, currentDateInfoTool}
+	allTools := []tool.BaseTool{queryTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, currentDateInfoTool}
+
+	if scope.AllowModify {
+		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx))
+		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx))
+		if execTool != nil {
+			allTools = append(allTools, execTool)
+		}
+		if importDataTool != nil {
+			allTools = append(allTools, importDataTool)
+		}
+	}
 	// 过滤掉 nil（InferTool 失败时）
 	var validTools []tool.BaseTool
 	for _, t := range allTools {

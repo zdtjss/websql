@@ -25,6 +25,7 @@ type PermissionScope struct {
 	HasFullSchemaAccess bool
 	AllowedTables       map[string]bool
 	AllowedColumns      map[string]map[string]bool
+	AllowModify         bool
 }
 
 type PermissionError struct {
@@ -44,11 +45,21 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 		IsRemote:       config.Cfg.IsRemote,
 		AllowedTables:  make(map[string]bool),
 		AllowedColumns: make(map[string]map[string]bool),
+		AllowModify:    true,
 	}
 
 	if !scope.IsRemote {
 		log.Printf("[PermScope] 非远程模式，跳过权限检查 - user=%s\n", userId)
 		return scope
+	}
+
+	scope.AllowModify = false
+	roles := admin.FindUserRoles(userId)
+	for _, role := range roles {
+		if role.AllowModify > 0 {
+			scope.AllowModify = true
+			break
+		}
 	}
 
 	powerList := admin.FindUserPowerDetails(userId)
@@ -244,10 +255,16 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 
 func (s *PermissionScope) DescribeForPrompt() string {
 	if !s.IsRemote || s.HasFullConnAccess {
+		if !s.AllowModify {
+			return "\n\n## 数据修改权限（最高优先级）\n当前角色**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。\n"
+		}
 		return ""
 	}
 
 	if s.HasFullSchemaAccess {
+		if !s.AllowModify {
+			return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema %s 的完整访问权限，但**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。", s.SchemaName)
+		}
 		return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema %s 的完整访问权限。禁止访问其他 Schema。", s.SchemaName)
 	}
 
@@ -274,6 +291,10 @@ func (s *PermissionScope) DescribeForPrompt() string {
 			}
 			fmt.Fprintf(&sb, "字段级权限 - 表 `%s`：仅允许 [%s]，其他字段禁止使用\n", table, strings.Join(colList, ", "))
 		}
+	}
+
+	if !s.AllowModify {
+		sb.WriteString("\n**禁止修改数据**：你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。\n")
 	}
 
 	return sb.String()

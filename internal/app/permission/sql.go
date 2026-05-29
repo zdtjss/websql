@@ -578,6 +578,23 @@ type SQLPermissionResult struct {
 	Message        string
 }
 
+func CheckUserCanModify(authorization string) bool {
+	if !config.Cfg.IsRemote {
+		return true
+	}
+	user := admin.GetUser(authorization)
+	if user == nil {
+		return false
+	}
+	roles := admin.FindUserRoles(user.Id)
+	for _, role := range roles {
+		if role.AllowModify > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPermissionResult {
 	analysis := AnalyzeSQL(sqlStr, schema)
 	return CheckAnalysisPermission(analysis, connId, authorization)
@@ -585,6 +602,14 @@ func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPe
 
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
+
+	if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
+		if !CheckUserCanModify(authorization) {
+			result.Allowed = false
+			result.Message = "当前角色禁止修改数据，无法执行写操作"
+			return result
+		}
+	}
 
 	for _, t := range analysis.ReadTables {
 		access := GetTableAccessDowngraded(connId, t.Schema, t.Name, authorization)

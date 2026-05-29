@@ -23,10 +23,11 @@ create table if not exists t_power (
 create table if not exists t_role (
 	id varchar(36) primary key,
 	name varchar(64),
-	view_classic integer default 0
+	view_classic integer default 0,
+	allow_modify integer default 1
 );
 
-insert into t_role (id, name, view_classic) values ('825683877266722816', 'admin', 1);
+insert into t_role (id, name, view_classic, allow_modify) values ('825683877266722816', 'admin', 1, 1);
 
 create table if not exists t_tree (
 	id varchar(36) primary key,

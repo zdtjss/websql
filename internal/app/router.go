@@ -100,6 +100,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
 	routerGroup.GET("/permissionTree", admin.GetPermissionTree)
 	routerGroup.GET("/canUseClassicView", admin.CanUseClassicView)
+	routerGroup.GET("/canModifyData", admin.CanModifyData)
 
 	routerGroup.GET("/promptList", admin.PromptList)
 	routerGroup.GET("/promptListByRole", admin.PromptListByRole)

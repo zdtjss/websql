@@ -20,6 +20,7 @@ type Role struct {
 	Name        string         `json:"name"`
 	PowerList   []*PowerDetail `json:"powerList"`
 	ViewClassic int            `json:"viewClassic" db:"view_classic"`
+	AllowModify int            `json:"allowModify" db:"allow_modify"`
 }
 
 type UserRole struct {
@@ -35,6 +36,7 @@ type RoleSave struct {
 	AddPowers   []*PowerDetail `json:"addPowers"`
 	DelPowers   []*PowerDetail `json:"delPowers"`
 	ViewClassic int            `json:"viewClassic"`
+	AllowModify int            `json:"allowModify"`
 }
 
 type Power struct {
@@ -71,10 +73,10 @@ func SaveRole(c *gin.Context) {
 
 	if role.Id == "" {
 		role.Id = idgen.RandomStr()
-		_, err := tx.Exec("insert into t_role (id, name, view_classic) values (?, ?, ?)", role.Id, role.Name, role.ViewClassic)
+		_, err := tx.Exec("insert into t_role (id, name, view_classic, allow_modify) values (?, ?, ?, ?)", role.Id, role.Name, role.ViewClassic, role.AllowModify)
 		logger.PanicErrf("保存角色失败", err)
 	} else {
-		_, err := tx.Exec("update t_role set name = ?, view_classic = ? where id = ?", role.Name, role.ViewClassic, role.Id)
+		_, err := tx.Exec("update t_role set name = ?, view_classic = ?, allow_modify = ? where id = ?", role.Name, role.ViewClassic, role.AllowModify, role.Id)
 		logger.PanicErrf("更新角色失败", err)
 	}
 
@@ -228,7 +230,7 @@ func nullIfEmpty(s string) any {
 
 func RoleList(c *gin.Context) {
 	roleList := []*Role{}
-	err := database.Mngtdb.Select(&roleList, "select id, name, view_classic from t_role")
+	err := database.Mngtdb.Select(&roleList, "select id, name, view_classic, allow_modify from t_role")
 	logger.PanicErr(err)
 
 	roleIdList := make([]any, len(roleList))

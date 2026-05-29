@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"websql/internal/audit"
 	appperm "websql/internal/app/permission"
+	"websql/internal/audit"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -190,11 +190,27 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
+		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
+			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+				return "", &PermissionError{
+					Message: "当前角色禁止修改数据，无法执行写操作",
+					Objects: []string{},
+				}
+			}, nil
+		}
 		m.logAllow(tCtx.Name, "skip(conn_full)")
 		return endpoint, nil
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
+			return "", &PermissionError{
+				Message: "当前角色禁止修改数据，无法执行写操作",
+				Objects: []string{},
+			}
+		}
 		switch tCtx.Name {
 		case "get_table_schema":
 			return m.checkSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
@@ -221,11 +237,27 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
+		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
+			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+				return nil, &PermissionError{
+					Message: "当前角色禁止修改数据，无法执行写操作",
+					Objects: []string{},
+				}
+			}, nil
+		}
 		m.logAllow(tCtx.Name+"(stream)", "skip(conn_full)")
 		return endpoint, nil
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
+			return nil, &PermissionError{
+				Message: "当前角色禁止修改数据，无法执行写操作",
+				Objects: []string{},
+			}
+		}
 		switch tCtx.Name {
 		case "get_table_schema":
 			return m.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
