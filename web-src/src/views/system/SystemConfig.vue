@@ -162,9 +162,9 @@
         <el-form-item label="Temperature">
           <el-slider v-model="modelForm.temperature" :min="0" :max="2" :step="0.1" show-input />
         </el-form-item>
-        <el-form-item label="Max Tokens">
-          <el-input-number v-model="modelForm.maxTokens" :min="0" :max="modelMaxTokensMax" :step="100" placeholder="0=不限" />
-          <span v-if="modelMaxTokensMax !== Infinity" style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">Ollama 最大 262100</span>
+        <el-form-item label="上下文窗口">
+          <el-input-number v-model="modelForm.maxContextTokens" :min="0" :step="1000" placeholder="0=自动推断" />
+          <span style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">模型上下文窗口大小（tokens），0 表示使用默认值 128000</span>
         </el-form-item>
         <el-form-item label="思考模式">
           <el-switch v-model="modelForm.enableThinking" />
@@ -188,7 +188,7 @@ import http from '@/utils/httpProxy'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { Check, Coin, Connection, Delete, Edit, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 const emit = defineEmits(['config-saved'])
@@ -218,6 +218,21 @@ const modelTesting = ref(false)
 const testingOutterUser = ref(false)
 const savingAll = ref(false)
 
+const knownContextWindows = {
+  'deepseek-v4-flash': 1000000,
+  'deepseek-v4-pro': 1000000,
+  'gemma4:31b-cloud': 256000
+}
+
+const inferContextTokens = (model) => {
+  if (!model) return 0
+  const lower = model.toLowerCase()
+  for (const [k, v] of Object.entries(knownContextWindows)) {
+    if (lower.includes(k)) return v
+  }
+  return 0
+}
+
 const modelForm = ref({
   id: '',
   provider: 'ollama',
@@ -225,21 +240,16 @@ const modelForm = ref({
   model: '',
   apiKey: '',
   temperature: 0.7,
-  maxTokens: 0,
+  maxContextTokens: 0,
   enableThinking: false
 })
 
-const modelMaxTokensMax = computed(() => {
-  return modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
-    || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
-    ? 262100 : Infinity
-})
-
-watch(() => modelForm.value.baseUrl, () => {
-  const isOllama = modelForm.value.baseUrl.toLowerCase().startsWith('https://ollama.com')
-    || modelForm.value.baseUrl.toLowerCase().startsWith('http://ollama.com')
-  if (isOllama && modelForm.value.maxTokens > 262100) {
-    modelForm.value.maxTokens = 262100
+watch(() => modelForm.value.model, (newModel) => {
+  if (newModel && modelForm.value.maxContextTokens === 0) {
+    const inferred = inferContextTokens(newModel)
+    if (inferred > 0) {
+      modelForm.value.maxContextTokens = inferred
+    }
   }
 })
 
@@ -297,7 +307,7 @@ const showAddModelDialog = () => {
     model: '',
     apiKey: '',
     temperature: 0.7,
-    maxTokens: 0,
+    maxContextTokens: 0,
     enableThinking: false
   }
   modelDialogVisible.value = true
@@ -312,7 +322,7 @@ const showEditModelDialog = (model) => {
     model: model.model,
     apiKey: model.apiKey || '',
     temperature: model.temperature || 0.7,
-    maxTokens: model.maxTokens || 0,
+    maxContextTokens: model.maxContextTokens || 0,
     enableThinking: model.enableThinking || false
   }
   modelDialogVisible.value = true

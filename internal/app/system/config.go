@@ -49,15 +49,15 @@ type SystemConfigAll struct {
 }
 
 type AIModelItem struct {
-	Id             string  `json:"id"`
-	Provider       string  `json:"provider"`
-	BaseURL        string  `json:"baseUrl"`
-	Model          string  `json:"model"`
-	ApiKey         string  `json:"apiKey"`
-	Temperature    float32 `json:"temperature"`
-	MaxTokens      int     `json:"maxTokens"`
-	EnableThinking bool    `json:"enableThinking"`
-	IsDefault      bool    `json:"isDefault"`
+	Id               string  `json:"id"`
+	Provider         string  `json:"provider"`
+	BaseURL          string  `json:"baseUrl"`
+	Model            string  `json:"model"`
+	ApiKey           string  `json:"apiKey"`
+	Temperature      float32 `json:"temperature"`
+	MaxContextTokens int     `json:"maxContextTokens"`
+	EnableThinking   bool    `json:"enableThinking"`
+	IsDefault        bool    `json:"isDefault"`
 }
 
 type AIModelBrief struct {
@@ -77,7 +77,6 @@ type AIConfig struct {
 	Model            string  `json:"model"`
 	ApiKey           string  `json:"apiKey"`
 	Temperature      float32 `json:"temperature"`
-	MaxTokens        int     `json:"maxTokens"`
 	MaxContextTokens int     `json:"maxContextTokens"`
 	EnableThinking   bool    `json:"enableThinking"`
 }
@@ -151,7 +150,6 @@ func GetAIConfigFromDB() *AIConfig {
 	model := GetSystemConfigValue("ai.model")
 	apiKey := GetSystemConfigValue("ai.apiKey")
 	temperatureStr := GetSystemConfigValue("ai.temperature")
-	maxTokensStr := GetSystemConfigValue("ai.maxTokens")
 	enableThinkingStr := GetSystemConfigValue("ai.enableThinking")
 
 	if provider == "" && baseUrl == "" && model == "" && apiKey == "" {
@@ -164,20 +162,12 @@ func GetAIConfigFromDB() *AIConfig {
 			temperature = float32(v)
 		}
 	}
-	var maxTokens int
-	if maxTokensStr != "" {
-		if v, err := strconv.Atoi(maxTokensStr); err == nil {
-			maxTokens = v
-		}
-	}
-
 	return &AIConfig{
 		Provider:       provider,
 		BaseURL:        baseUrl,
 		Model:          model,
 		ApiKey:         apiKey,
 		Temperature:    temperature,
-		MaxTokens:      maxTokens,
 		EnableThinking: enableThinkingStr == "true",
 	}
 }
@@ -188,7 +178,6 @@ func SaveAIConfigToDB(cfg AIConfig) {
 		{ConfigKey: "ai.baseUrl", ConfigValue: cfg.BaseURL, ConfigType: "ai", Remark: "AI 服务基础 URL"},
 		{ConfigKey: "ai.model", ConfigValue: cfg.Model, ConfigType: "ai", Remark: "AI 模型名称"},
 		{ConfigKey: "ai.temperature", ConfigValue: fmt.Sprintf("%.1f", cfg.Temperature), ConfigType: "ai", Remark: "生成随机性 0.0-2.0"},
-		{ConfigKey: "ai.maxTokens", ConfigValue: strconv.Itoa(cfg.MaxTokens), ConfigType: "ai", Remark: "最大生成 token 数"},
 		{ConfigKey: "ai.enableThinking", ConfigValue: fmt.Sprintf("%t", cfg.EnableThinking), ConfigType: "ai", Remark: "启用思考模式"},
 	}
 
@@ -303,13 +292,13 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 				for _, m := range modelList {
 					if m.Id == targetId {
 						return &AIConfig{
-							Provider:       m.Provider,
-							BaseURL:        m.BaseURL,
-							Model:          m.Model,
-							ApiKey:         m.ApiKey,
-							Temperature:    m.Temperature,
-							MaxTokens:      m.MaxTokens,
-							EnableThinking: m.EnableThinking,
+							Provider:         m.Provider,
+							BaseURL:          m.BaseURL,
+							Model:            m.Model,
+							ApiKey:           m.ApiKey,
+							Temperature:      m.Temperature,
+							MaxContextTokens: m.MaxContextTokens,
+							EnableThinking:   m.EnableThinking,
 						}
 					}
 				}
@@ -324,13 +313,13 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 		if err == nil && len(modelList) > 0 {
 			m := modelList[0]
 			return &AIConfig{
-				Provider:       m.Provider,
-				BaseURL:        m.BaseURL,
-				Model:          m.Model,
-				ApiKey:         m.ApiKey,
-				Temperature:    m.Temperature,
-				MaxTokens:      m.MaxTokens,
-				EnableThinking: m.EnableThinking,
+				Provider:         m.Provider,
+				BaseURL:          m.BaseURL,
+				Model:            m.Model,
+				ApiKey:           m.ApiKey,
+				Temperature:      m.Temperature,
+				MaxContextTokens: m.MaxContextTokens,
+				EnableThinking:   m.EnableThinking,
 			}
 		}
 	}
@@ -373,17 +362,12 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 		model := GetSystemConfigValue("ai.model")
 		apiKey := GetSystemConfigValue("ai.apiKey")
 		temperatureStr := GetSystemConfigValue("ai.temperature")
-		maxTokensStr := GetSystemConfigValue("ai.maxTokens")
 		enableThinkingStr := GetSystemConfigValue("ai.enableThinking")
 
 		if provider != "" || baseURL != "" || model != "" {
 			temperature := float32(0.7)
 			if temperatureStr != "" {
 				fmt.Sscanf(temperatureStr, "%f", &temperature)
-			}
-			maxTokens := 0
-			if maxTokensStr != "" {
-				fmt.Sscanf(maxTokensStr, "%d", &maxTokens)
 			}
 			enableThinking := enableThinkingStr == "true"
 
@@ -394,7 +378,6 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 				Model:          model,
 				ApiKey:         apiKey,
 				Temperature:    temperature,
-				MaxTokens:      maxTokens,
 				EnableThinking: enableThinking,
 				IsDefault:      true,
 			}
@@ -410,7 +393,7 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 			})
 
 			if database.Mngtdb != nil {
-				database.Mngtdb.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.maxTokens', 'ai.enableThinking')")
+				database.Mngtdb.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.enableThinking')")
 				logger.PrintErr(errors.New("已删除旧的 AI 配置字段"))
 			}
 

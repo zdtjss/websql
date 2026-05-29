@@ -117,7 +117,7 @@ func agentCacheKey(connID, dbSchema, userID string) string {
 
 func aiConfigHash(cfg *system.AIConfig) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%s|%.2f|%d|%t", cfg.Provider, cfg.BaseURL, cfg.Model, cfg.ApiKey, cfg.Temperature, cfg.MaxTokens, cfg.EnableThinking)
+	fmt.Fprintf(h, "%s|%s|%s|%s|%.2f|%d|%t", cfg.Provider, cfg.BaseURL, cfg.Model, cfg.ApiKey, cfg.Temperature, cfg.MaxContextTokens, cfg.EnableThinking)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 

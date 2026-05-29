@@ -104,32 +104,31 @@ type SessionDetailMessage struct {
 // ──────────────────────────────────────────────
 
 const (
-	maxHistoryRounds = 20
-	maxIterations    = 50
+	maxIterations = 50
 
 	defaultContextTokens = 128000
 )
 
-// computeSummarizationTrigger 根据配置的模型上下文窗口计算摘要触发阈值。
-// 取模型窗口的 85%，留 15% 余量给当前轮次的响应。兜底 128000。
 func computeSummarizationTrigger(cfg *system.AIConfig) int {
-	if cfg.MaxContextTokens > 0 {
-		return cfg.MaxContextTokens * 85 / 100
+	ctxTokens := cfg.MaxContextTokens
+	if ctxTokens <= 0 {
+		ctxTokens = defaultContextTokens
 	}
-	return defaultContextTokens
+	return ctxTokens * 85 / 100
 }
 
 // 全局 CheckPointStore（单实例共享）
 var globalCheckPointStore = newAutoCheckPointStore()
 
 type SQLAgent struct {
-	runner   *adk.Runner
-	agent    *adk.ChatModelAgent
-	sessions *SessionStore
-	dbType   string
-	dbSchema string
-	scope    *PermissionScope
-	schemas  []SchemaRef
+	runner           *adk.Runner
+	agent            *adk.ChatModelAgent
+	sessions         *SessionStore
+	dbType           string
+	dbSchema         string
+	scope            *PermissionScope
+	schemas          []SchemaRef
+	maxContextTokens int
 }
 
 func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
@@ -156,7 +155,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	summarizationMW, err := summarization.New(ctx, &summarization.Config{
 		Model: cm,
 		Trigger: &summarization.TriggerCondition{
-			ContextTokens: triggerTokens,
+			ContextTokens:   triggerTokens,
+			ContextMessages: 200,
 		},
 		TokenCounter: estimateTokenCount,
 	})
@@ -255,7 +255,13 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	if sessions == nil {
 		sessions, _ = NewSessionStore()
 	}
-	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope, schemas: schemas}, nil
+
+	resolvedCtxTokens := cfg.MaxContextTokens
+	if resolvedCtxTokens <= 0 {
+		resolvedCtxTokens = defaultContextTokens
+	}
+
+	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens}, nil
 }
 
 // RunStream 流式执行（首次查询）
@@ -282,8 +288,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	}
 
 	allMsgs := sess.GetMessages()
-	truncated := truncateSessionMessages(allMsgs)
-	log.Printf("[Agent] 历史消息 - total=%d, truncated=%d\n", len(allMsgs), len(truncated))
+	log.Printf("[Agent] 历史消息 - total=%d, maxContextTokens=%d\n", len(allMsgs), a.maxContextTokens)
 
 	if !a.scope.HasAnyAccess() {
 		flush(StreamChunk{Type: "error", Content: "您暂时没有可访问的数据表权限，请联系管理员开通。"})
@@ -297,7 +302,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	}
 	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, "", req.TableContext, a.scope, req.Schemas)
 
-	if detectPreviousExecution(truncated) {
+	if detectPreviousExecution(allMsgs) {
 		sysPrompt += "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +
 			"你必须基于对话历史中实际执行的 tool_calls 参数和 tool 返回结果来回答，" +
 			"禁止凭记忆编造。如果历史中没有相关信息，直接告知用户，禁止猜测。\n"
@@ -314,7 +319,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	messages := []adk.Message{
 		&schema.Message{Role: schema.System, Content: sysPrompt},
 	}
-	for _, msg := range truncated {
+	for _, msg := range allMsgs {
 		switch msg.Role {
 		case "user":
 			messages = append(messages, &schema.Message{Role: schema.User, Content: msg.Content})
@@ -334,13 +339,6 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
-	// 修复历史消息序列：截断后可能出现孤立的 tool 消息，
-	// 必须在传入 Runner 前修复，否则 OpenAI API 会拒绝请求。
-	// 注意：不可在 middleware 中修复，否则会破坏 ReAct 循环内部状态。
-	messages = repairToolMessageSequence(messages)
-
-	// 使用 Runner.Run 执行，传入 CheckPointID 以支持中断恢复
-	// CheckPointID 使用 sessionID，确保同一会话的中断可以恢复
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
 
@@ -575,13 +573,6 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 // 辅助函数
 // ──────────────────────────────────────────────
 
-func truncateSessionMessages(msgs []SessionMessage) []SessionMessage {
-	if len(msgs) <= maxHistoryRounds*2 {
-		return msgs
-	}
-	return msgs[len(msgs)-maxHistoryRounds*2:]
-}
-
 // detectPreviousExecution 检查会话历史中是否有过工具调用（查询/写入）
 func detectPreviousExecution(msgs []SessionMessage) bool {
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -652,13 +643,6 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 			t := cfg.Temperature
 			openaiCfg.Temperature = &t
 		}
-		if cfg.MaxTokens > 0 {
-			maxTokens := cfg.MaxTokens
-			if isOllamaURL(cfg.BaseURL) && maxTokens > 262100 {
-				maxTokens = 262100
-			}
-			openaiCfg.MaxTokens = &maxTokens
-		}
 		return openai.NewChatModel(ctx, openaiCfg)
 	default:
 		return nil, fmt.Errorf("不支持的 AI 提供商：%s", cfg.Provider)
@@ -708,10 +692,26 @@ func estimateTokenCount(_ context.Context, input *summarization.TokenCounterInpu
 	total := 0
 	for _, msg := range input.Messages {
 		total += estimateTextTokens(msg.Content)
+		for _, tc := range msg.ToolCalls {
+			total += estimateTextTokens(tc.Function.Name)
+			total += estimateTextTokens(tc.Function.Arguments)
+			total += 4
+		}
+		if msg.ToolCallID != "" {
+			total += estimateTextTokens(msg.ToolCallID) + 3
+		}
+		if msg.ToolName != "" {
+			total += estimateTextTokens(msg.ToolName) + 3
+		}
+		if msg.Name != "" {
+			total += estimateTextTokens(msg.Name) + 3
+		}
+		total += 6
 	}
 	for _, tool := range input.Tools {
 		total += estimateTextTokens(tool.Desc)
 	}
+	total = total * 115 / 100
 	return total, nil
 }
 

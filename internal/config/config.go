@@ -72,7 +72,6 @@ type Config struct {
 		Model          string  `json:"model"`
 		ApiKey         string  `json:"apiKey"`
 		Temperature    float32 `json:"temperature"`
-		MaxTokens      int     `json:"maxTokens"`
 		EnableThinking bool    `json:"enableThinking"`
 	} `json:"ai"`
 }

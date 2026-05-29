@@ -355,13 +355,6 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 	}, nil
 }
 
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 const defaultReductionMaxRows = 100
 
 type ReductionMiddleware struct {
@@ -434,102 +427,4 @@ func (m *ReductionMiddleware) reduceQueryResult(result string) string {
 	reducedJSON, _ := json.Marshal(output)
 	log.Printf("[Reduction] query_data 结果精简 - 原始行数=%d, 保留行数=%d\n", totalRows, maxRows)
 	return string(reducedJSON)
-}
-
-func repairToolMessageSequence(msgs []*schema.Message) []*schema.Message {
-	if len(msgs) <= 1 {
-		return msgs
-	}
-
-	validToolCallIDs := make(map[string]bool, len(msgs))
-	for _, msg := range msgs {
-		if msg.Role == schema.Assistant {
-			for _, tc := range msg.ToolCalls {
-				validToolCallIDs[tc.ID] = true
-			}
-		}
-	}
-
-	var filtered []*schema.Message
-	for _, msg := range msgs {
-		if msg.Role != schema.Tool {
-			filtered = append(filtered, msg)
-		} else if msg.ToolCallID != "" && validToolCallIDs[msg.ToolCallID] {
-			filtered = append(filtered, msg)
-		} else {
-			log.Printf("[MessageRepair] 跳过孤立 tool 消息 - toolCallID=%s, toolName=%s\n",
-				msg.ToolCallID, msg.ToolName)
-		}
-	}
-
-	ordered := repairToolMessageOrder(filtered)
-
-	return repairUnansweredToolCalls(ordered)
-}
-
-func repairToolMessageOrder(msgs []*schema.Message) []*schema.Message {
-	var result []*schema.Message
-	for _, msg := range msgs {
-		if msg.Role != schema.Tool {
-			result = append(result, msg)
-			continue
-		}
-
-		if len(result) == 0 {
-			log.Printf("[MessageRepair] 跳过首条 tool 消息 - toolCallID=%s\n", msg.ToolCallID)
-			continue
-		}
-
-		prev := result[len(result)-1]
-		if prev.Role == schema.Assistant && len(prev.ToolCalls) > 0 {
-			result = append(result, msg)
-		} else if prev.Role == schema.Tool {
-			result = append(result, msg)
-		} else {
-			log.Printf("[MessageRepair] 跳过位置不当的 tool 消息 - toolCallID=%s, prevRole=%s\n",
-				msg.ToolCallID, prev.Role)
-		}
-	}
-	return result
-}
-
-func repairUnansweredToolCalls(msgs []*schema.Message) []*schema.Message {
-	if len(msgs) == 0 {
-		return msgs
-	}
-
-	answeredToolCalls := make(map[string]bool, len(msgs))
-	for _, msg := range msgs {
-		if msg.Role == schema.Tool && msg.ToolCallID != "" {
-			answeredToolCalls[msg.ToolCallID] = true
-		}
-	}
-
-	var result []*schema.Message
-	for _, msg := range msgs {
-		if msg.Role != schema.Assistant || len(msg.ToolCalls) == 0 {
-			result = append(result, msg)
-			continue
-		}
-
-		var remaining []schema.ToolCall
-		for _, tc := range msg.ToolCalls {
-			if answeredToolCalls[tc.ID] {
-				remaining = append(remaining, tc)
-			}
-		}
-
-		switch {
-		case len(remaining) == 0:
-			result = append(result, schema.AssistantMessage(msg.Content, nil))
-			log.Printf("[MessageRepair] 移除无响应的 assistant tool_calls - content=%q\n",
-				truncateStr(msg.Content, 50))
-		case len(remaining) < len(msg.ToolCalls):
-			result = append(result, schema.AssistantMessage(msg.Content, remaining))
-		default:
-			result = append(result, msg)
-		}
-	}
-
-	return result
 }
