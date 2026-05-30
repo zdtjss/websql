@@ -1,12 +1,14 @@
 package permission
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
+	"websql/internal/logger"
 )
 
 type SQLAnalysis struct {
@@ -280,11 +282,47 @@ func CheckSQLPermission(analysis *SQLAnalysis, connId, authorization string) {
 	}
 }
 
-func parseColumnNameForPerm(raw string) string {
-	if idx := strings.Index(raw, "  "); idx > 0 {
-		return strings.TrimSpace(raw[:idx])
+type RoleTableAccess struct {
+	Level          ColumnAccessLevel
+	AllowedColumns map[string]bool
+}
+
+func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableName string) *RoleTableAccess {
+	r := admin.ResolveRolePermissions(roleDetails)
+	sp := r.BySchema[schemaName]
+
+	hasColumnForTable := false
+	if sp != nil {
+		if tp, exists := sp.ByTable[tableName]; exists && len(tp.Columns) > 0 {
+			hasColumnForTable = true
+		}
 	}
-	return strings.TrimSpace(raw)
+	effectiveRestriction := false
+	if sp != nil {
+		effectiveRestriction = sp.HasTableLevelInSchema || hasColumnForTable
+	}
+
+	if r.HasConnLevel && !effectiveRestriction {
+		return &RoleTableAccess{Level: AccessFull}
+	}
+	if sp != nil && sp.HasSchemaLevel && !effectiveRestriction {
+		return &RoleTableAccess{Level: AccessFull}
+	}
+
+	if sp == nil {
+		return &RoleTableAccess{Level: AccessNone}
+	}
+	tp := sp.ByTable[tableName]
+	if tp == nil {
+		return &RoleTableAccess{Level: AccessNone}
+	}
+	if tp.HasTableLevel {
+		return &RoleTableAccess{Level: AccessFull}
+	}
+	if len(tp.Columns) > 0 {
+		return &RoleTableAccess{Level: AccessColumn, AllowedColumns: tp.Columns}
+	}
+	return &RoleTableAccess{Level: AccessNone}
 }
 
 func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *TableColumnAccess {
@@ -302,54 +340,25 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 		return &TableColumnAccess{Level: AccessNone}
 	}
 
-	hasConnLevel := false
-	hasSchemaLevel := false
-	hasTableLevel := false
-	hasTableOrColumnForSchema := false
-	allowedCols := make(map[string]bool)
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
 
-	for _, p := range powerDetails {
-		if p.ConnId != connId {
-			continue
+	bestAccess := &TableColumnAccess{Level: AccessNone}
+	for _, roleDetails := range byRole {
+		roleAccess := resolveRoleTableAccess(roleDetails, schemaName, tableName)
+		if roleAccess.Level == AccessFull {
+			return &TableColumnAccess{Level: AccessFull}
 		}
-		switch p.Level {
-		case "conn":
-			hasConnLevel = true
-		case "schema":
-			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				hasSchemaLevel = true
+		if roleAccess.Level == AccessColumn {
+			if bestAccess.Level == AccessNone {
+				bestAccess = &TableColumnAccess{Level: AccessColumn, AllowedColumns: make(map[string]bool)}
 			}
-		case "table":
-			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				hasTableOrColumnForSchema = true
-				if p.TableName != nil && *p.TableName == tableName {
-					hasTableLevel = true
-				}
-			}
-		case "column":
-			if p.SchemaName != nil && *p.SchemaName == schemaName {
-				hasTableOrColumnForSchema = true
-				if p.TableName != nil && *p.TableName == tableName && p.ColumnName != nil {
-					colName := parseColumnNameForPerm(*p.ColumnName)
-					allowedCols[colName] = true
-				}
+			for col := range roleAccess.AllowedColumns {
+				bestAccess.AllowedColumns[col] = true
 			}
 		}
 	}
 
-	if hasConnLevel && !hasTableOrColumnForSchema {
-		return &TableColumnAccess{Level: AccessFull}
-	}
-	if hasSchemaLevel && !hasTableOrColumnForSchema {
-		return &TableColumnAccess{Level: AccessFull}
-	}
-	if hasTableLevel {
-		return &TableColumnAccess{Level: AccessFull}
-	}
-	if len(allowedCols) > 0 {
-		return &TableColumnAccess{Level: AccessColumn, AllowedColumns: allowedCols}
-	}
-	return &TableColumnAccess{Level: AccessNone}
+	return bestAccess
 }
 
 func GetTableAccessDowngraded(connId, schemaName, tableName, authorization string) *TableColumnAccess {
@@ -439,8 +448,10 @@ func CheckTableWritePermission(connId string, schemaName string, tableName strin
 	if !config.Cfg.IsRemote {
 		return
 	}
-	admin.CheckSchemaAccess(connId, schemaName, authorization)
-	admin.CheckTableAccess(connId, schemaName, tableName, authorization)
+	CheckTablePermission(connId, schemaName, tableName, authorization)
+	if !CheckUserCanModify(authorization) {
+		logger.PanicErr(errors.New("当前角色禁止修改数据"))
+	}
 }
 
 func StripComments(sql string) string {

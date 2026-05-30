@@ -135,6 +135,8 @@ func GetPermissionTree(c *gin.Context) {
 		user := GetUser(authorization)
 		if user == nil || user.Id != config.AdminId {
 			logger.PrintErr(errors.New("无权访问"))
+			c.JSON(403, gin.H{"code": 403, "msg": "无权访问"})
+			return
 		}
 	}
 

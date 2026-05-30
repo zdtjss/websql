@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	conn "websql/internal/app/conn"
+	admin "websql/internal/app/admin"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -101,8 +102,11 @@ type CurrentDateInfoOutput struct {
 	DateTime string `json:"dateTime"`
 }
 
-func GetConn(connId string) (*sqlx.DB, string) {
+func GetConn(connId, userId string) (*sqlx.DB, string) {
 	if connId == "" {
+		return nil, ""
+	}
+	if !admin.CheckConnAccessByUserId(userId, connId) {
 		return nil, ""
 	}
 	cfgList := []conn.ConnCfg{}
@@ -179,14 +183,14 @@ func resolveConnID(defaultConnID, connID string, connLookup map[string]string) s
 	return connID
 }
 
-func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
+func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, userId string) func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 		startTime := time.Now()
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
-		conn, _ := GetConn(targetConnID)
+		conn, _ := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
 			if len(schemaNames) > 0 {
@@ -224,7 +228,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fu
 		rows, err := conn.QueryxContext(queryCtx, sql)
 		if err != nil {
 			if input.ConnID == "" && targetConnID == connId {
-				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId); altConn != nil {
+				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId, userId); altConn != nil {
 					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, altSchema)
 					altRawSQL := strings.TrimSpace(input.SQL)
 					altSQL := qualifyBareTableNames(altRawSQL, altConn.DriverName(), altSchema)
@@ -284,12 +288,12 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 	})
 }
 
-func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string) (string, *sqlx.DB, string) {
+func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string, userId string) (string, *sqlx.DB, string) {
 	schema := extractSchemaFromSQL(sql)
 	if schema != "" {
 		altConnID, ok := connLookup[strings.ToUpper(schema)]
 		if ok && altConnID != defaultConnID {
-			altConn, _ := GetConn(altConnID)
+			altConn, _ := GetConn(altConnID, userId)
 			if altConn != nil {
 				return altConnID, altConn, schema
 			}
@@ -306,7 +310,7 @@ func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID 
 			continue
 		}
 		seen[altConnID] = true
-		altConn, _ := GetConn(altConnID)
+		altConn, _ := GetConn(altConnID, userId)
 		if altConn == nil {
 			continue
 		}
@@ -433,7 +437,7 @@ type ExecAuditCtx struct {
 	SessionID string
 }
 
-func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
+func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, userId string) func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
@@ -449,7 +453,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx) fun
 		if !isDefaultConn && input.ConnID != "" {
 			log.Printf("[Tool:exec_sql] 非默认连接操作：原始connId=%s → 目标连接=%s（默认=%s）", input.ConnID, targetConnID, connId)
 		}
-		conn, _ := GetConn(targetConnID)
+		conn, _ := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s（原始输入 connId=%s，解析后=%s）", targetConnID, input.ConnID, targetConnID)
 			if len(schemaNames) > 0 {
@@ -495,7 +499,7 @@ func recordExecAudit(auditCtx *ExecAuditCtx, sql, connID, sqlType, riskLevel, st
 	})
 }
 
-func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
+func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef, userId string) func(ctx context.Context, input *SchemaInput) (*SchemaOutput, error) {
 	schemaConnMap := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 
@@ -506,12 +510,12 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 			schemaName, _ := splitSchemaTable(table, dbSchema)
 			if schemaName != "" && schemaName != dbSchema {
 				if targetConnID, ok := schemaConnMap[strings.ToUpper(schemaName)]; ok {
-					if c, t := GetConn(targetConnID); c != nil {
+					if c, t := GetConn(targetConnID, userId); c != nil {
 						return c, t, targetConnID
 					}
 				}
 			}
-			c, t := GetConn(connId)
+			c, t := GetConn(connId, userId)
 			return c, t, connId
 		}
 
@@ -614,7 +618,7 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 					if altConnID == connId {
 						continue
 					}
-					altConn, altDBType := GetConn(altConnID)
+					altConn, altDBType := GetConn(altConnID, userId)
 					if altConn == nil {
 						continue
 					}
@@ -637,13 +641,13 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ct
 	}
 }
 
-func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef) func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
+func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef, userId string) func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
 	connLookup := buildConnLookup(schemas)
 	schemaNames := buildSchemaNames(schemas)
 
 	return func(ctx context.Context, input *ListTablesInput) (*ListTablesOutput, error) {
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
-		conn, actualDBType := GetConn(targetConnID)
+		conn, actualDBType := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
 			if len(schemaNames) > 0 {
@@ -786,10 +790,10 @@ type ImportDataOutput struct {
 	UpdatedRows  int    `json:"updatedRows"`
 }
 
-func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
+func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx, userId string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 		log.Printf("[Tool:import_data] fileId=%s, table=%s, mode=%s\n", input.FileID, input.TableName, input.Mode)
-		conn, _ := GetConn(connID)
+		conn, _ := GetConn(connID, userId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}

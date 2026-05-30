@@ -50,7 +50,7 @@ func GetAgentFactory() *AgentFactory {
 }
 
 func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
-	key := agentCacheKey(connID, dbSchema, scope.UserID)
+	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas)
 	cfgHash := aiConfigHash(cfg)
 
 	f.mu.RLock()
@@ -85,8 +85,8 @@ func (f *AgentFactory) InvalidateAll() {
 	log.Printf("[AgentFactory] 缓存已全部清空\n")
 }
 
-func (f *AgentFactory) Invalidate(connID, dbSchema, userID string) {
-	key := agentCacheKey(connID, dbSchema, userID)
+func (f *AgentFactory) Invalidate(connID, dbSchema, userID string, schemas []SchemaRef) {
+	key := agentCacheKey(connID, dbSchema, userID, schemas)
 	f.mu.Lock()
 	delete(f.cache, key)
 	f.mu.Unlock()
@@ -111,8 +111,12 @@ func (f *AgentFactory) cleanLoop() {
 	}
 }
 
-func agentCacheKey(connID, dbSchema, userID string) string {
-	return fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
+func agentCacheKey(connID, dbSchema, userID string, schemas []SchemaRef) string {
+	key := fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
+	for _, s := range schemas {
+		key += fmt.Sprintf("::%s/%s", s.ConnID, s.Schema)
+	}
+	return key
 }
 
 func aiConfigHash(cfg *system.AIConfig) string {

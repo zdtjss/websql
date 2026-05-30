@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/config"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type User struct {
@@ -130,16 +133,15 @@ func SaveUser(c *gin.Context) {
 	if user.Id == "" {
 		user.Id = idgen.RandomStr()
 		stmt, _ := tx.Prepare("insert into t_user (id, name, login_name, pwd, bio) values (?, ?, ?, ?, '')")
-		tx.Stmt(stmt).Exec(user.Id, user.Name, user.LoginName, Md5sum(user.Pwd))
+		tx.Stmt(stmt).Exec(user.Id, user.Name, user.LoginName, HashPassword(user.Pwd))
 	} else {
 		var pwdDb string
 		rowE := tx.QueryRow("select pwd from t_user where id = ?", user.Id)
 		rowE.Scan(&pwdDb)
-		newPwd := Md5sum(user.Pwd)
-		if user.Pwd == "" || pwdDb == newPwd {
+		if user.Pwd == "" || CheckPassword(user.Pwd, pwdDb) {
 			user.Pwd = pwdDb
 		} else {
-			user.Pwd = newPwd
+			user.Pwd = HashPassword(user.Pwd)
 		}
 		stmt, _ := tx.Prepare("update t_user set name = ?, login_name = ?, pwd = ? where id = ?")
 		tx.Stmt(stmt).Exec(user.Name, user.LoginName, user.Pwd, user.Id)
@@ -154,6 +156,10 @@ func SaveUser(c *gin.Context) {
 	}
 	err := tx.Commit()
 	logger.PanicErrf("保存用户失败", err)
+
+	currentUser := GetUser(c.GetHeader("Authorization"))
+	recordPermissionAudit("save_user", fmt.Sprintf("用户 %s (id=%s, loginName=%s) 保存", user.Name, user.Id, user.LoginName), currentUser.Id, currentUser.Name)
+
 	jsonutil.WriteJson(c.Writer, "")
 }
 
@@ -189,11 +195,11 @@ func ChangePassword(c *gin.Context) {
 	if err != nil {
 		logger.PanicErr(errors.New("用户信息异常"))
 	}
-	if currentPwd != Md5sum(oldPwd) {
+	if !CheckPassword(oldPwd, currentPwd) {
 		logger.PanicErr(errors.New("旧密码不正确"))
 	}
 
-	_, err = database.Mngtdb.Exec("update t_user set pwd = ? where id = ?", Md5sum(newPwd), user.Id)
+	_, err = database.Mngtdb.Exec("update t_user set pwd = ? where id = ?", HashPassword(newPwd), user.Id)
 	if err != nil {
 		logger.PanicErr(errors.New("修改密码失败"))
 	}
@@ -215,7 +221,7 @@ func InitUser(c *gin.Context) {
 	CheckAdminPower(c)
 	userId := idgen.RandomStr()
 	_, err := database.Mngtdb.Exec("insert into t_user (id, name, login_name, pwd, bio) values (?, ?, ?, ?, '')",
-		userId, "admin", "admin", Md5sum("admin123"))
+		userId, "admin", "admin", HashPassword("admin123"))
 	logger.PanicErrf("初始化用户失败", err)
 	jsonutil.WriteJson(c.Writer, "初始化成功")
 }
@@ -237,11 +243,70 @@ func checkUserExist(user *User, tx *sqlx.Tx) {
 	}
 }
 
+func HashPassword(s string) string {
+	hash, err := bcrypt.GenerateFromPassword([]byte(s), bcrypt.DefaultCost)
+	if err != nil {
+		logger.PanicErr(err)
+	}
+	return string(hash)
+}
+
+func CheckPassword(plainPassword, hashedPassword string) bool {
+	if strings.HasPrefix(hashedPassword, "$2a$") || strings.HasPrefix(hashedPassword, "$2b$") {
+		return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(plainPassword)) == nil
+	}
+	return Md5sum(plainPassword) == hashedPassword
+}
+
 func Md5sum(s string) string {
 	h := md5.New()
 	h.Write([]byte(s))
 	h.Write([]byte("dd5ac9a6fa2da9aaacc3cccca15b9707"))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+type auditEntry struct {
+	id        string
+	userId    string
+	userName  string
+	source    string
+	toolName  string
+	sqlText   string
+	sqlType   string
+	riskLevel string
+	status    string
+}
+
+var auditCh = make(chan *auditEntry, 256)
+
+func init() {
+	go func() {
+		for entry := range auditCh {
+			_, err := database.Mngtdb.Exec(
+				`INSERT INTO t_audit_log (id, user_id, user_name, source, tool_name, sql_text, sql_type, risk_level, status, exec_time)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+				entry.id, entry.userId, entry.userName, entry.source, entry.toolName, entry.sqlText, entry.sqlType, entry.riskLevel, entry.status)
+			logger.PrintErr(err)
+		}
+	}()
+}
+
+func recordPermissionAudit(toolName, sqlText, userId, userName string) {
+	select {
+	case auditCh <- &auditEntry{
+		id:        idgen.RandomStr(),
+		userId:    userId,
+		userName:  userName,
+		source:    "permission",
+		toolName:  toolName,
+		sqlText:   sqlText,
+		sqlType:   "PERMISSION_CHANGE",
+		riskLevel: "high",
+		status:    "success",
+	}:
+	default:
+		log.Printf("[Audit] 审计日志通道已满，丢弃记录: toolName=%s, userId=%s\n", toolName, userId)
+	}
 }
 
 func DelUser(c *gin.Context) {
@@ -270,14 +335,77 @@ func findByBio(bioKey string) *User {
 	return &users[0]
 }
 
+type tokenLocalCache struct {
+	mu      sync.RWMutex
+	entries map[string]*tokenCacheEntry
+}
+
+type tokenCacheEntry struct {
+	user      *User
+	expiresAt time.Time
+}
+
+var tokenCache = &tokenLocalCache{
+	entries: make(map[string]*tokenCacheEntry, 16),
+}
+
+const tokenCacheTTL = 30 * time.Minute
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			tokenCache.mu.Lock()
+			now := time.Now()
+			for k, v := range tokenCache.entries {
+				if now.After(v.expiresAt) {
+					delete(tokenCache.entries, k)
+				}
+			}
+			tokenCache.mu.Unlock()
+		}
+	}()
+}
+
+func (c *tokenLocalCache) get(token string) (*User, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[token]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.entries, token)
+		c.mu.Unlock()
+		return nil, false
+	}
+	return entry.user, true
+}
+
+func (c *tokenLocalCache) set(token string, user *User) {
+	c.mu.Lock()
+	c.entries[token] = &tokenCacheEntry{
+		user:      user,
+		expiresAt: time.Now().Add(tokenCacheTTL),
+	}
+	c.mu.Unlock()
+}
+
 func findByToken(token string) *User {
+	if user, ok := tokenCache.get(token); ok {
+		return user
+	}
+
 	var users []User
 
 	cfg := config.Cfg
 	req, err := http.NewRequest("GET", cfg.OutterUser, nil)
 	logger.PanicErr(err)
 	req.Header.Add("Authorization", token)
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	logger.PanicErr(err)
 	body, err := io.ReadAll(resp.Body)
 	logger.PanicErr(err)
@@ -299,6 +427,9 @@ func findByToken(token string) *User {
 	if len(users) == 0 {
 		return nil
 	}
+
+	tokenCache.set(token, &users[0])
+
 	return &users[0]
 }
 

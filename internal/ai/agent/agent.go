@@ -650,10 +650,10 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) ([]tool.BaseTool, error) {
-	conn, _ := GetConn(connID)
-	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas, auditCtx))
-	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas))
-	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释。当用户未指定表名时，优先调用此工具获取表列表，通过表注释判断目标表，而非猜测表名", NewListTablesFunc(connID, dbType, dbSchema, schemas))
+	conn, _ := GetConn(connID, scope.UserID)
+	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
+	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释。当用户未指定表名时，优先调用此工具获取表列表，通过表注释判断目标表，而非猜测表名", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
@@ -663,8 +663,8 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	allTools := []tool.BaseTool{queryTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, currentDateInfoTool}
 
 	if scope.AllowModify {
-		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx))
-		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx))
+		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
+		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx, scope.UserID))
 		if execTool != nil {
 			allTools = append(allTools, execTool)
 		}
@@ -911,7 +911,7 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 		sb.WriteString("**多 Schema 上下文**（按数据库连接分组，相同连接内的 schema 可直接 JOIN）：\n")
 		for _, connID := range connOrder {
 			g := connMap[connID]
-			dbConn, _ := GetConn(connID)
+			dbConn, _ := GetConn(connID, scope.UserID)
 			typeStr := ""
 			if dbConn != nil {
 				typeStr = dbConn.DriverName()

@@ -78,31 +78,17 @@ func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 		return []*conn.Tree{}
 	}
 
-	allowedSchemas := make(map[string]bool)
-	hasConnLevel := false
-	hasSchemaOrLowerLevel := false
-	for _, p := range powerDetails {
-		if p.ConnId != connId {
-			continue
-		}
-		switch p.Level {
-		case "conn":
-			hasConnLevel = true
-		case "schema":
-			if p.SchemaName != nil {
-				allowedSchemas[*p.SchemaName] = true
-				hasSchemaOrLowerLevel = true
-			}
-		case "table", "column":
-			if p.SchemaName != nil {
-				allowedSchemas[*p.SchemaName] = true
-				hasSchemaOrLowerLevel = true
-			}
-		}
-	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
 
-	if hasConnLevel && !hasSchemaOrLowerLevel {
-		return allSchemas
+	allowedSchemas := make(map[string]bool)
+	for _, roleDetails := range byRole {
+		r := admin.ResolveRolePermissions(roleDetails)
+		if r.HasConnLevel {
+			return allSchemas
+		}
+		for schema := range r.BySchema {
+			allowedSchemas[schema] = true
+		}
 	}
 
 	filtered := make([]*conn.Tree, 0, len(allSchemas))
@@ -171,34 +157,20 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 		return []*conn.Tree{}
 	}
 
-	allowedTables := make(map[string]bool)
-	hasConnLevel := false
-	hasSchemaLevel := false
-	hasTableOrColumnLevel := false
-	for _, p := range powerDetails {
-		if p.ConnId != key {
-			continue
-		}
-		switch p.Level {
-		case "conn":
-			hasConnLevel = true
-		case "schema":
-			if p.SchemaName != nil && *p.SchemaName == schema {
-				hasSchemaLevel = true
-			}
-		case "table", "column":
-			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
-				allowedTables[*p.TableName] = true
-				hasTableOrColumnLevel = true
-			}
-		}
-	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, key)
 
-	if hasConnLevel && !hasTableOrColumnLevel {
-		return allTables
-	}
-	if hasSchemaLevel && !hasTableOrColumnLevel {
-		return allTables
+	allowedTables := make(map[string]bool)
+	for _, roleDetails := range byRole {
+		r := admin.ResolveRolePermissions(roleDetails)
+		if r.CanAccessAllTablesInSchema(schema) {
+			return allTables
+		}
+		sp := r.BySchema[schema]
+		if sp != nil {
+			for tableName := range sp.ByTable {
+				allowedTables[tableName] = true
+			}
+		}
 	}
 
 	filtered := make([]*conn.Tree, 0, len(allTables))

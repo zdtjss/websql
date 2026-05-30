@@ -273,71 +273,26 @@ func FilterTablesByPermission(tables []*Table, connId, schema string, userPower 
 }
 
 func checkPowerByParam(powerDetails []*admin.PowerDetail, param *admin.PowerCheckParam) bool {
-	if param.SchemaName == "" {
-		for _, power := range powerDetails {
-			if power.ConnId == param.ConnId && power.Level == "conn" {
-				return true
-			}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, param.ConnId)
+
+	for _, roleDetails := range byRole {
+		if checkPowerByParamForRole(roleDetails, param) {
+			return true
 		}
-		return false
-	}
-
-	hasConnPermission := false
-	hasSchemaPermission := false
-	hasTablePermission := false
-	hasColumnPermission := false
-	hasTableOrColumnForSchema := false
-
-	for _, power := range powerDetails {
-		if power.ConnId != param.ConnId {
-			continue
-		}
-
-		switch power.Level {
-		case "conn":
-			hasConnPermission = true
-		case "schema":
-			if power.SchemaName != nil && *power.SchemaName == param.SchemaName {
-				hasSchemaPermission = true
-			}
-		case "table":
-			if power.SchemaName != nil && power.TableName != nil {
-				if *power.SchemaName == param.SchemaName {
-					hasTableOrColumnForSchema = true
-					if *power.TableName == param.TableName {
-						hasTablePermission = true
-					}
-				}
-			}
-		case "column":
-			if power.SchemaName != nil && power.TableName != nil && power.ColumnName != nil {
-				if *power.SchemaName == param.SchemaName {
-					hasTableOrColumnForSchema = true
-					if *power.TableName == param.TableName {
-						hasColumnPermission = true
-					}
-				}
-			}
-		}
-	}
-
-	if hasConnPermission && !hasTableOrColumnForSchema {
-		return true
-	}
-
-	if hasSchemaPermission && !hasTableOrColumnForSchema {
-		return true
-	}
-
-	if hasTablePermission {
-		return true
-	}
-
-	if hasColumnPermission {
-		return true
 	}
 
 	return false
+}
+
+func checkPowerByParamForRole(roleDetails []*admin.PowerDetail, param *admin.PowerCheckParam) bool {
+	r := admin.ResolveRolePermissions(roleDetails)
+	if param.ColumnName != "" {
+		return r.CanAccessColumn(param.SchemaName, param.TableName, param.ColumnName)
+	}
+	if param.TableName != "" {
+		return r.CanAccessTable(param.SchemaName, param.TableName)
+	}
+	return r.CanAccessSchema(param.SchemaName)
 }
 
 func GetConn(id string, authorization string) *sqlx.DB {

@@ -103,7 +103,7 @@ func Login(c *gin.Context) {
 	switch loginType {
 	case "pwd":
 		user = findByLoginName(loginName)
-		if user == nil || user.Pwd != Md5sum(pwd) {
+		if user == nil || !CheckPassword(pwd, user.Pwd) {
 			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "用户名或密码不正确"})
 			return
 		}
@@ -126,9 +126,6 @@ func Login(c *gin.Context) {
 	}
 	power := findUserPower(user.Id)
 	token := idgen.SecureRandomToken()
-	if loginType == "token" {
-		token = key
-	}
 	c.Header("Authentication", token)
 	userPowerVal := UserPower{UserId: user.Id, Power: power}
 	store.Add(formatStoreKey(token), userPowerVal)

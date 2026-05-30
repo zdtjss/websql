@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	admin "websql/internal/app/admin"
 	"websql/internal/pkg/idgen"
 
 	"github.com/gin-gonic/gin"
@@ -254,7 +255,13 @@ func HandlePreMatchColumns(c *gin.Context) {
 		return
 	}
 
-	conn, dbType := GetConn(req.ConnID)
+	var preMatchUserId string
+	if authorization := c.GetHeader("Authorization"); authorization != "" {
+		if user := admin.GetUser(authorization); user != nil {
+			preMatchUserId = user.Id
+		}
+	}
+	conn, dbType := GetConn(req.ConnID, preMatchUserId)
 	if conn == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "数据库连接不存在"})
 		return

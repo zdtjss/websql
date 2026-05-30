@@ -17,134 +17,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-var (
-	rePrimaryTable  = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
-	reCommaTable    = regexp.MustCompile(`\s*,\s*(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
-	reMetadataTable = regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)`)
-	reCTE           = regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
-	reStopClause    = regexp.MustCompile(`(?i)\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|VALUES|SET|ON|LATERAL)\b`)
-	reAsAlias       = regexp.MustCompile(`(?i)^AS\s+\w+`)
-	reIdent         = regexp.MustCompile(`^\w+`)
-)
-
-func extractTablesFromSQL(sql string) []string {
-	tables := make(map[string]bool)
-
-	cteNames := make(map[string]bool)
-	for _, match := range reCTE.FindAllStringSubmatch(sql, -1) {
-		if len(match) > 1 {
-			cteNames[strings.ToLower(match[1])] = true
-		}
-	}
-
-	for _, idx := range rePrimaryTable.FindAllStringSubmatchIndex(sql, -1) {
-		if len(idx) >= 4 {
-			tableName := stripBackticks(sql[idx[2]:idx[3]])
-			if isValidTableNameExtract(tableName) && !cteNames[strings.ToLower(tableName)] {
-				tables[tableName] = true
-			}
-
-			afterMatch := sql[idx[1]:]
-			if stopMatch := reStopClause.FindStringIndex(afterMatch); stopMatch != nil {
-				afterMatch = afterMatch[:stopMatch[0]]
-			}
-
-			afterMatch = skipTableAlias(afterMatch)
-
-			for {
-				trimmed := strings.TrimLeft(afterMatch, " \t\n\r")
-				if !strings.HasPrefix(trimmed, ",") {
-					break
-				}
-				commaMatch := reCommaTable.FindStringSubmatch(trimmed)
-				if len(commaMatch) < 2 {
-					break
-				}
-				commaTableName := stripBackticks(commaMatch[1])
-				if isValidTableNameExtract(commaTableName) && !cteNames[strings.ToLower(commaTableName)] {
-					remainingAfterTable := trimmed[len(commaMatch[0]):]
-					if len(remainingAfterTable) == 0 || remainingAfterTable[0] != '(' {
-						tables[commaTableName] = true
-					}
-				}
-				afterMatch = skipTableAlias(trimmed[len(commaMatch[0]):])
-			}
-		}
-	}
-
-	for _, match := range reMetadataTable.FindAllStringSubmatch(sql, -1) {
-		if len(match) > 1 {
-			tableName := stripBackticks(match[1])
-			if isValidTableNameExtract(tableName) {
-				tables[tableName] = true
-			}
-		}
-	}
-
-	result := make([]string, 0, len(tables))
-	for table := range tables {
-		result = append(result, table)
-	}
-	return result
-}
-
-func isValidTableNameExtract(name string) bool {
-	if name == "" || isSQLKeyword(name) {
-		return false
-	}
-	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
-		return false
-	}
-	return true
-}
-
-func skipTableAlias(s string) string {
-	s = strings.TrimLeft(s, " \t\n\r")
-	if loc := reAsAlias.FindStringIndex(s); loc != nil {
-		return s[loc[1]:]
-	}
-	if len(s) > 0 && s[0] != ',' && s[0] != '(' && s[0] != ')' {
-		if loc := reIdent.FindStringIndex(s); loc != nil {
-			word := s[:loc[1]]
-			if !isSQLKeyword(word) {
-				return s[loc[1]:]
-			}
-		}
-	}
-	return s
-}
-
-func stripBackticks(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 {
-		if (s[0] == '`' && s[len(s)-1] == '`') ||
-			(s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
-		}
-	}
-	return s
-}
-
-func isSQLKeyword(s string) bool {
-	keywords := map[string]bool{
-		"DUAL": true, "AS": true, "SET": true, "SELECT": true,
-		"FROM": true, "WHERE": true, "JOIN": true, "INNER": true,
-		"LEFT": true, "RIGHT": true, "OUTER": true, "ON": true,
-		"GROUP": true, "BY": true, "ORDER": true, "HAVING": true,
-		"LIMIT": true, "OFFSET": true, "UNION": true, "ALL": true,
-		"INSERT": true, "INTO": true, "VALUES": true, "UPDATE": true,
-		"DELETE": true, "CREATE": true, "ALTER": true, "DROP": true,
-		"TABLE": true, "INDEX": true, "VIEW": true, "DATABASE": true,
-		"SCHEMA": true, "COLUMN": true, "KEY": true, "PRIMARY": true,
-		"FOREIGN": true, "REFERENCES": true, "CONSTRAINT": true,
-		"AND": true, "OR": true, "NOT": true, "IN": true, "EXISTS": true,
-		"BETWEEN": true, "LIKE": true, "IS": true, "NULL": true,
-		"ASC": true, "DESC": true, "DISTINCT": true, "COUNT": true,
-		"SUM": true, "AVG": true, "MIN": true, "MAX": true,
-	}
-	return keywords[strings.ToUpper(s)]
-}
-
 type PermissionMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 	Scope     *PermissionScope
@@ -466,7 +338,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 
 	if m.Scope.HasFullSchemaAccess {
 		m.logAllow("query_data", "schema_full(fast)")
-		tables := extractTablesFromSQL(sql)
+		tables := appperm.ExtractTablesFromSQL(sql)
 		result, err := endpoint(ctx, args, opts...)
 		if err != nil {
 			return "", err
@@ -486,7 +358,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 	}
 
 	m.logAllow("query_data", "agent")
-	tables := extractTablesFromSQL(sql)
+	tables := appperm.ExtractTablesFromSQL(sql)
 	result, err := endpoint(ctx, args, opts...)
 	if err != nil {
 		return "", err
@@ -501,7 +373,7 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 		return "", err
 	}
 
-	tables := extractTablesFromSQL(input.SQL)
+	tables := appperm.ExtractTablesFromSQL(input.SQL)
 	for _, table := range tables {
 		if !m.Scope.IsTableAllowed(table) {
 			m.logDeny("query_data", "无权访问表", []string{table})
@@ -574,7 +446,7 @@ func (m *PermissionMiddleware) checkExecAccessFallback(ctx context.Context, args
 		return "", err
 	}
 
-	for _, table := range extractTablesFromSQL(input.SQL) {
+	for _, table := range appperm.ExtractTablesFromSQL(input.SQL) {
 		if !m.Scope.IsTableAllowed(table) {
 			m.logDeny("exec_sql", "无权访问表", []string{table})
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
@@ -636,7 +508,7 @@ func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, ar
 		return "", err
 	}
 
-	tables := extractTablesFromSQL(input.SQL)
+	tables := appperm.ExtractTablesFromSQL(input.SQL)
 	for _, table := range tables {
 		if !m.Scope.IsTableAllowed(table) {
 			m.logDeny("export", "无权访问表", []string{table})
@@ -880,7 +752,7 @@ type permCheckResult struct {
 func (m *PermissionMiddleware) getPermCheckFunc(toolName string) func(ctx context.Context, sql string) (*permCheckResult, error) {
 	return func(ctx context.Context, sql string) (*permCheckResult, error) {
 		if m.Scope.HasFullSchemaAccess {
-			tables := extractTablesFromSQL(sql)
+			tables := appperm.ExtractTablesFromSQL(sql)
 			needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
 			return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil
 		}
@@ -903,7 +775,7 @@ func (m *PermissionMiddleware) getPermCheckFunc(toolName string) func(ctx contex
 			}, nil
 		}
 
-		tables := extractTablesFromSQL(sql)
+		tables := appperm.ExtractTablesFromSQL(sql)
 		needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
 		return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil
 	}
@@ -1004,7 +876,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 	}
 
 	sqlStr, _ := raw["sql"].(string)
-	tables := extractTablesFromSQL(sqlStr)
+	tables := appperm.ExtractTablesFromSQL(sqlStr)
 	if sqlStr != "" {
 		for _, table := range tables {
 			if !m.Scope.IsTableAllowed(table) {

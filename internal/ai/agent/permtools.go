@@ -47,10 +47,10 @@ type PermTableAccess struct {
 	AllowedColumns []string `json:"allowedColumns"`
 }
 
-func newGetTableStructureFunc(connID, dbSchema string) func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
+func newGetTableStructureFunc(connID, dbSchema, userId string) func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 	return func(ctx context.Context, input *PermTableStructureInput) (*PermTableStructureOutput, error) {
 		log.Printf("[PermAgent:get_table_structure] tables=%v\n", input.Tables)
-		conn, _ := GetConn(connID)
+		conn, _ := GetConn(connID, userId)
 		if conn == nil {
 			return nil, fmt.Errorf("db conn not found: %s", connID)
 		}
@@ -170,7 +170,7 @@ func getTableColumnsFromConn(conn *sqlx.DB, dbSchema, tableName string) ([]rawCo
 func newGetUserPermissionsFunc(userID, connID, schemaName string) func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
 	return func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
 		log.Printf("[PermAgent:get_user_permissions] userID=%s, connID=%s, schema=%s\n", userID, connID, schemaName)
-		scope := BuildPermissionScope(userID, connID, schemaName)
+		scope := BuildPermissionScope(userID, connID, []string{schemaName})
 		output := &PermUserPermissionsOutput{
 			ConnID:              connID,
 			SchemaName:          schemaName,

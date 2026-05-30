@@ -2,7 +2,6 @@ package admin
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -89,6 +88,10 @@ func SaveRole(c *gin.Context) {
 
 	err := tx.Commit()
 	logger.PanicErrf("保存角色失败", err)
+
+	currentUser := GetUser(c.GetHeader("Authorization"))
+	recordPermissionAudit("save_role", fmt.Sprintf("角色 %s (id=%s) 保存，新增权限%d条，删除权限%d条", role.Name, role.Id, len(role.AddPowers), len(role.DelPowers)), currentUser.Id, currentUser.Name)
+
 	jsonutil.WriteJson(c.Writer, "保存成功")
 }
 
@@ -101,6 +104,18 @@ func insertPowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 	args := make([]any, 0, len(powers)*7)
 
 	for _, power := range powers {
+		switch power.Level {
+		case "conn":
+			power.SchemaName = nil
+			power.TableName = nil
+			power.ColumnName = nil
+		case "schema":
+			power.TableName = nil
+			power.ColumnName = nil
+		case "table":
+			power.ColumnName = nil
+		}
+
 		id := idgen.RandomStr()
 		values = append(values, "(?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
@@ -174,14 +189,14 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 	for _, p := range powers {
 		if p.Level == "table" && p.TableName != nil {
 			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'table'",
-				roleId, p.ConnId, ptrToString(p.SchemaName), *p.TableName, "table")
+			roleId, p.ConnId, ptrToString(p.SchemaName), *p.TableName)
 		}
 	}
 
 	for _, p := range powers {
 		if p.Level == "column" && p.ColumnName != nil {
 			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and column_name = ? and power_level = 'column'",
-				roleId, p.ConnId, ptrToString(p.SchemaName), ptrToString(p.TableName), *p.ColumnName, "column")
+			roleId, p.ConnId, ptrToString(p.SchemaName), ptrToString(p.TableName), *p.ColumnName)
 		}
 	}
 }
@@ -205,19 +220,19 @@ func DelRole(c *gin.Context) {
 	CheckAdminPower(c)
 	id := c.Query("id")
 
-	userCount := 0
-	database.Mngtdb.Select(&userCount, "select count(*) from t_user_role where role_id = ?", id)
-	if userCount > 0 {
-		logger.PanicErr(errors.New("有用户，不能删除"))
-	}
+	tx, _ := database.Mngtdb.Beginx()
+	defer tx.Rollback()
 
-	powerCount := 0
-	database.Mngtdb.Select(&powerCount, "select count(*) from t_power where role_id = ?", id)
-	if powerCount > 0 {
-		logger.PanicErr(errors.New("有权限，不能删除"))
-	}
+	tx.Exec("delete from t_power where role_id = ?", id)
+	tx.Exec("delete from t_user_role where role_id = ?", id)
+	tx.Exec("delete from t_role where id = ?", id)
 
-	database.Mngtdb.Exec("delete from t_role where id = ?", id)
+	err := tx.Commit()
+	logger.PanicErrf("删除角色失败", err)
+
+	currentUser := GetUser(c.GetHeader("Authorization"))
+	recordPermissionAudit("del_role", fmt.Sprintf("删除角色 id=%s", id), currentUser.Id, currentUser.Name)
+
 	jsonutil.WriteJson(c.Writer, "")
 }
 
@@ -275,6 +290,10 @@ func SaveRolePermission(c *gin.Context) {
 
 	err := tx.Commit()
 	logger.PanicErrf("保存权限失败", err)
+
+	currentUser := GetUser(c.GetHeader("Authorization"))
+	recordPermissionAudit("save_role_permission", fmt.Sprintf("角色 id=%s 权限变更，新增权限%d条，删除权限%d条", role.Id, len(role.AddPowers), len(role.DelPowers)), currentUser.Id, currentUser.Name)
+
 	jsonutil.WriteJson(c.Writer, "保存成功")
 }
 

@@ -119,26 +119,16 @@ func filterSchemasByPermission(schemas []*conn.Tree, connId, authorization strin
 	if len(powerDetails) == 0 {
 		return []*conn.Tree{}
 	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+
 	allowedSchemas := make(map[string]bool)
-	for _, p := range powerDetails {
-		if p.ConnId != connId {
-			continue
-		}
-		switch p.Level {
-		case "conn":
+	for _, roleDetails := range byRole {
+		r := admin.ResolveRolePermissions(roleDetails)
+		if r.HasConnLevel {
 			return schemas
-		case "schema":
-			if p.SchemaName != nil {
-				allowedSchemas[*p.SchemaName] = true
-			}
-		case "table":
-			if p.SchemaName != nil {
-				allowedSchemas[*p.SchemaName] = true
-			}
-		case "column":
-			if p.SchemaName != nil {
-				allowedSchemas[*p.SchemaName] = true
-			}
+		}
+		for schema := range r.BySchema {
+			allowedSchemas[schema] = true
 		}
 	}
 	filtered := make([]*conn.Tree, 0)
@@ -212,38 +202,20 @@ func filterTreeTablesByPermission(tables []*conn.Tree, connId, schema, authoriza
 	if len(powerDetails) == 0 {
 		return []*conn.Tree{}
 	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+
 	allowedTables := make(map[string]bool)
-	hasConnLevel := false
-	hasSchemaLevel := false
-	hasTableOrColumnLevel := false
-	for _, p := range powerDetails {
-		if p.ConnId != connId {
-			continue
+	for _, roleDetails := range byRole {
+		r := admin.ResolveRolePermissions(roleDetails)
+		if r.CanAccessAllTablesInSchema(schema) {
+			return tables
 		}
-		switch p.Level {
-		case "conn":
-			hasConnLevel = true
-		case "schema":
-			if p.SchemaName != nil && *p.SchemaName == schema {
-				hasSchemaLevel = true
-			}
-		case "table":
-			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
-				allowedTables[*p.TableName] = true
-				hasTableOrColumnLevel = true
-			}
-		case "column":
-			if p.SchemaName != nil && *p.SchemaName == schema && p.TableName != nil {
-				allowedTables[*p.TableName] = true
-				hasTableOrColumnLevel = true
+		sp := r.BySchema[schema]
+		if sp != nil {
+			for tableName := range sp.ByTable {
+				allowedTables[tableName] = true
 			}
 		}
-	}
-	if hasConnLevel && !hasTableOrColumnLevel {
-		return tables
-	}
-	if hasSchemaLevel && !hasTableOrColumnLevel {
-		return tables
 	}
 	filtered := make([]*conn.Tree, 0)
 	for _, t := range tables {

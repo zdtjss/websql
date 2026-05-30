@@ -9,13 +9,6 @@ import (
 	"websql/internal/config"
 )
 
-func parseColumnName(raw string) string {
-	if idx := strings.Index(raw, "  "); idx > 0 {
-		return strings.TrimSpace(raw[:idx])
-	}
-	return strings.TrimSpace(raw)
-}
-
 type PermissionScope struct {
 	UserID              string
 	ConnID              string
@@ -37,11 +30,11 @@ func (e *PermissionError) Error() string {
 	return fmt.Sprintf("%s: %v", e.Message, e.Objects)
 }
 
-func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
+func BuildPermissionScope(userId, connId string, schemaNames []string) *PermissionScope {
 	scope := &PermissionScope{
 		UserID:         userId,
 		ConnID:         connId,
-		SchemaName:     schemaName,
+		SchemaName:     firstNonEmpty(schemaNames),
 		IsRemote:       config.Cfg.IsRemote,
 		AllowedTables:  make(map[string]bool),
 		AllowedColumns: make(map[string]map[string]bool),
@@ -65,83 +58,74 @@ func BuildPermissionScope(userId, connId, schemaName string) *PermissionScope {
 	powerList := admin.FindUserPowerDetails(userId)
 	log.Printf("[PermScope] 用户权限记录数=%d - user=%s, conn=%s\n", len(powerList), userId, connId)
 
-	hasConnPerm := false
-	hasSchemaPerm := false
-	hasTableOrColumnForSchema := false
-	tableCount := 0
-	columnCount := 0
+	byRole := admin.GroupPowerDetailsByRole(powerList, connId)
 
-	for _, power := range powerList {
-		if power.ConnId != connId {
-			continue
+	schemaSet := make(map[string]bool)
+	for _, s := range schemaNames {
+		if s != "" {
+			schemaSet[s] = true
 		}
+	}
 
-		pSchema := ""
-		if power.SchemaName != nil {
-			pSchema = *power.SchemaName
-		}
-		pTable := ""
-		if power.TableName != nil {
-			pTable = *power.TableName
-		}
-		pColumn := ""
-		if power.ColumnName != nil {
-			pColumn = *power.ColumnName
-		}
+	for _, roleDetails := range byRole {
+		r := admin.ResolveRolePermissions(roleDetails)
 
-		switch power.Level {
-		case "conn":
-			hasConnPerm = true
-		case "schema":
-			if pSchema == schemaName {
-				hasSchemaPerm = true
+		if r.HasConnLevel {
+			hasRestriction := false
+			for s := range schemaSet {
+				if sp := r.BySchema[s]; sp != nil && sp.HasRestriction() {
+					hasRestriction = true
+					break
+				}
 			}
-		case "table":
-			if pSchema == schemaName && pTable != "" {
-				scope.AllowedTables[pTable] = true
-				hasTableOrColumnForSchema = true
-				tableCount++
+			if !hasRestriction {
+				scope.HasFullConnAccess = true
+				log.Printf("[PermScope] 连接级完整权限 - user=%s, conn=%s\n", userId, connId)
+				return scope
 			}
-		case "column":
-			if pSchema == schemaName && pTable != "" && pColumn != "" {
-				hasTableOrColumnForSchema = true
-				colName := parseColumnName(pColumn)
-				if !scope.AllowedTables[pTable] {
-					if scope.AllowedColumns[pTable] == nil {
-						scope.AllowedColumns[pTable] = make(map[string]bool)
+		}
+
+		for s := range schemaSet {
+			sp := r.BySchema[s]
+			if sp != nil && sp.HasSchemaLevel && !sp.HasRestriction() {
+				scope.HasFullSchemaAccess = true
+				log.Printf("[PermScope] Schema级完整权限 - user=%s, conn=%s\n", userId, connId)
+				return scope
+			}
+		}
+
+		for s := range schemaSet {
+			sp := r.BySchema[s]
+			if sp == nil {
+				continue
+			}
+			for tableName, tp := range sp.ByTable {
+				if tp.HasTableLevel {
+					scope.AllowedTables[tableName] = true
+				}
+				for col := range tp.Columns {
+					if scope.AllowedColumns[tableName] == nil {
+						scope.AllowedColumns[tableName] = make(map[string]bool)
 					}
-					scope.AllowedColumns[pTable][colName] = true
-					columnCount++
+					scope.AllowedColumns[tableName][strings.ToLower(col)] = true
 				}
 			}
 		}
 	}
 
-	if hasConnPerm && !hasTableOrColumnForSchema {
-		scope.HasFullConnAccess = true
-		log.Printf("[PermScope] 连接级完整权限 - user=%s, conn=%s\n", userId, connId)
-		return scope
-	}
-	if hasSchemaPerm && !hasTableOrColumnForSchema {
-		scope.HasFullSchemaAccess = true
-		log.Printf("[PermScope] Schema级完整权限 - user=%s, conn=%s, schema=%s\n", userId, connId, schemaName)
-		return scope
-	}
-
-	for table := range scope.AllowedColumns {
-		if scope.AllowedTables[table] {
-			delete(scope.AllowedTables, table)
-			log.Printf("[PermScope] 权限降级 - 表 %s 同时存在表级和字段级权限，以字段级权限为准\n", table)
-		}
-	}
-
-	if hasConnPerm {
-		log.Printf("[PermScope] 连接级权限(降级) - user=%s, conn=%s, 有具体表/字段权限\n", userId, connId)
-	}
-	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schema=%s, tables=%d, columnTables=%d(columns=%d)\n",
-		userId, connId, schemaName, len(scope.AllowedTables), len(scope.AllowedColumns), columnCount)
+	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, tables=%d, columnTables=%d\n",
+		userId, connId, schemaNames, len(scope.AllowedTables), len(scope.AllowedColumns))
 
 	return scope
+}
+
+func firstNonEmpty(ss []string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (s *PermissionScope) SkipChecks() bool {
@@ -181,8 +165,8 @@ func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
 	if s.SkipChecks() || s.HasFullSchemaAccess || s.AllowedTables[table] {
 		return true
 	}
-	if s.AllowedColumns[table] != nil {
-		return s.AllowedColumns[table][column]
+	if cols, ok := s.AllowedColumns[table]; ok {
+		return cols[strings.ToLower(column)]
 	}
 	return false
 }

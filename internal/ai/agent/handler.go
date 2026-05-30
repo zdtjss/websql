@@ -155,7 +155,8 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 	} else if req.Schema != "" {
 		dbSchema = req.Schema
 	}
-	scope := BuildPermissionScope(user.Id, connID, dbSchema)
+	schemaNames := collectSchemaNames(connID, dbSchema, req)
+	scope := BuildPermissionScope(user.Id, connID, schemaNames)
 
 	return &requestParams{
 		cfg:       cfg,
@@ -376,6 +377,29 @@ func GetDBInfo(connID string) (string, string, string) {
 		return ""
 	}
 	return cfg.DbType, deref(cfg.DbSchema), deref(cfg.DbVersion)
+}
+
+func collectSchemaNames(connID, dbSchema string, req *ChatRequest) []string {
+	seen := make(map[string]bool)
+	var names []string
+	if dbSchema != "" {
+		seen[dbSchema] = true
+		names = append(names, dbSchema)
+	}
+	for _, s := range req.Schemas {
+		if s.Schema != "" && !seen[s.Schema] {
+			seen[s.Schema] = true
+			names = append(names, s.Schema)
+		}
+	}
+	if req.Schema != "" && !seen[req.Schema] {
+		seen[req.Schema] = true
+		names = append(names, req.Schema)
+	}
+	if len(names) == 0 {
+		names = append(names, dbSchema)
+	}
+	return names
 }
 
 func detectSQLType(sql string) string {

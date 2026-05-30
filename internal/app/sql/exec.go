@@ -94,13 +94,6 @@ func ExecSQL(c *gin.Context) {
 		}
 	}
 
-	analysis := permission.AnalyzeSQL(sqlStr, schema)
-	permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
-	if !permResult.Allowed {
-		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
-		return
-	}
-
 	if strings.Contains(sqlStr, ";") {
 		for _, singleSQL := range strings.Split(sqlStr, ";") {
 			singleSQL = strings.TrimSpace(singleSQL)
@@ -113,6 +106,13 @@ func ExecSQL(c *gin.Context) {
 				c.JSON(200, gin.H{"code": 500, "msg": subResult.Message})
 				return
 			}
+		}
+	} else {
+		analysis := permission.AnalyzeSQL(sqlStr, schema)
+		permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
+		if !permResult.Allowed {
+			c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+			return
 		}
 	}
 

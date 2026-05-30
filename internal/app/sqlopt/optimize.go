@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"websql/internal/app/conn"
+	admin "websql/internal/app/admin"
 	"websql/internal/app/system"
 	agentv2 "websql/internal/ai/agent"
 	"websql/internal/config"
@@ -263,7 +264,14 @@ func OptimizeSQLStream(c *gin.Context) {
 	log.Printf("[OptAgent] 模型初始化成功 - provider=%s, model=%s\n", aiCfg.Provider, aiCfg.Model)
 
 	schemas := []agentv2.SchemaRef{{ConnID: connId, Schema: dbSchema}}
-	optTools, err := buildOptTools(connId, dbType, dbSchema, schemas)
+	authorization := c.GetHeader("Authorization")
+	var optUserId string
+	if authorization != "" {
+		if user := admin.GetUser(authorization); user != nil {
+			optUserId = user.Id
+		}
+	}
+	optTools, err := buildOptTools(connId, dbType, dbSchema, schemas, optUserId)
 	if err != nil {
 		logger.PrintErrf("创建优化Agent工具失败", err)
 		flush(agentv2.StreamChunk{Type: "error", Content: "工具初始化失败: " + err.Error()})
@@ -351,9 +359,9 @@ func OptimizeSQLStream(c *gin.Context) {
 	log.Printf("[OptAgent] 优化流程结束 - connID=%s\n", connId)
 }
 
-func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef) ([]tool.BaseTool, error) {
-	schemaTool, _ := toolutils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，包含字段名、类型、索引等", agentv2.NewSchemaFunc(connId, dbType, dbSchema, schemas))
-	queryTool, _ := toolutils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", agentv2.NewQueryFunc(connId, schemas, nil))
+func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef, userId string) ([]tool.BaseTool, error) {
+	schemaTool, _ := toolutils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，包含字段名、类型、索引等", agentv2.NewSchemaFunc(connId, dbType, dbSchema, schemas, userId))
+	queryTool, _ := toolutils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", agentv2.NewQueryFunc(connId, schemas, nil, userId))
 
 	var validTools []tool.BaseTool
 	if schemaTool != nil {
