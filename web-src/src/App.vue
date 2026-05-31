@@ -1125,8 +1125,6 @@ function autoWrapMermaidCode(text) {
 function preprocessMarkdown(text) {
   if (!text) return ''
   
-  // 自动检测未被 code fence 包裹的 mermaid 代码并包裹
-  // 匹配以 mermaid 图表关键字开头的独立段落（不在 ``` 内）
   text = autoWrapMermaidCode(text)
   
   const codeBlocks = []
@@ -1160,7 +1158,28 @@ function preprocessMarkdown(text) {
     }
     return `<a href="${fullUrl}" target="_blank" rel="noopener noreferrer"${exportAttr}>${linkText}</a>`
   })
-  processed = processed.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)])
+  processed = processed.replace(/\x00CB(\d+)\x00/g, (_, i) => {
+    const block = codeBlocks[parseInt(i)]
+    if (block.startsWith('```')) return block
+    const inner = block.slice(1, -1)
+    if (!inner.includes('$')) return block
+    const mathRegex = /\$([^$\s](?:[^$]*[^$\s])?)\$/g
+    const segments = []
+    let lastIndex = 0
+    let m
+    while ((m = mathRegex.exec(inner)) !== null) {
+      const before = inner.substring(lastIndex, m.index)
+      if (before.trim()) segments.push('`' + before.trim() + '`')
+      segments.push(m[0])
+      lastIndex = m.index + m[0].length
+    }
+    const after = inner.substring(lastIndex)
+    if (after.trim()) segments.push('`' + after.trim() + '`')
+    if (segments.length <= 1) return block
+    const hasIdentifier = segments.some(s => s.startsWith('`') && /[a-zA-Z\u4e00-\u9fff]/.test(s))
+    if (!hasIdentifier) return block
+    return segments.join(' ')
+  })
   return processed
 }
 
@@ -4423,6 +4442,25 @@ onUnmounted(() => {
   color: #c62828;
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
+.markdown-body eq {
+  display: inline;
+}
+.markdown-body eqn {
+  display: block;
+  text-align: center;
+  margin: 1em 0;
+}
+.markdown-body eq code,
+.markdown-body eqn code {
+  padding: 0;
+  margin: 0;
+  font-size: inherit;
+  background: none;
+  border-radius: 0;
+  font-family: inherit;
+  color: inherit;
+  border: none;
+}
 .markdown-body pre {
   overflow: auto;
   font-size: 13px;
@@ -4806,6 +4844,17 @@ body.mermaid-resizing * {
   background: linear-gradient(135deg, #2d2d2d 0%, #3c3c3c 100%);
   color: #d16969;
   border-color: rgba(255, 255, 255, 0.1);
+}
+[data-theme="dark"] .markdown-body eq code,
+[data-theme="dark"] .markdown-body eqn code {
+  padding: 0;
+  margin: 0;
+  font-size: inherit;
+  background: none;
+  border-radius: 0;
+  font-family: inherit;
+  color: inherit;
+  border: none;
 }
 
 [data-theme="dark"] .markdown-body pre {

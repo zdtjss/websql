@@ -1,0 +1,97 @@
+/* Element Plus 自定义暗色主题 - VSCode Dark+ 风格 */
+/* 此文件在 element-plus/theme-chalk/dark/css-vars.css 之后导入 */
+
+html.dark {
+  /* ========== 背景色 ========== */
+  --el-bg-color: #1e1e1e;
+  --el-bg-color-overlay: #252526;
+  --el-bg-color-page: #1e1e1e;
+  
+  /* ========== 填充色 ========== */
+  --el-fill-color: #252526;
+  --el-fill-color-light: #2a2d2e;
+  --el-fill-color-lighter: #37373d;
+  --el-fill-color-extra-light: #252526;
+  --el-fill-color-blank: #1e1e1e;
+  --el-fill-color-dark: #2a2d2e;
+  --el-fill-color-darker: #37373d;
+  
+  /* ========== 文本色 ========== */
+  --el-text-color-primary: #d4d4d4;
+  --el-text-color-regular: #9cdcfe;
+  --el-text-color-secondary: #808080;
+  --el-text-color-placeholder: #6a6a6a;
+  --el-text-color-disabled: #505050;
+  
+  /* ========== 边框色 ========== */
+  --el-border-color: #3c3c3c;
+  --el-border-color-light: #3c3c3c;
+  --el-border-color-lighter: #505050;
+  --el-border-color-extra-light: #505050;
+  --el-border-color-dark: #3c3c3c;
+  --el-border-color-darker: #2a2d2e;
+  
+  /* ========== 主题色 ========== */
+  --el-color-primary: #007acc;
+  --el-color-primary-light-3: #1a8ad4;
+  --el-color-primary-light-5: #3399db;
+  --el-color-primary-light-7: #4da8e1;
+  --el-color-primary-light-8: #66b7e8;
+  --el-color-primary-light-9: #80c6ee;
+  --el-color-primary-dark-2: #006bb3;
+  
+  /* ========== 成功色 ========== */
+  --el-color-success: #4ec9b0;
+  --el-color-success-light-3: #5dd9b8;
+  --el-color-success-light-5: #6ce9c0;
+  --el-color-success-light-7: #7bf9c8;
+  --el-color-success-light-8: #8afcd0;
+  --el-color-success-light-9: #99ffd8;
+  --el-color-success-dark-2: #3db89f;
+  
+  /* ========== 警告色 ========== */
+  --el-color-warning: #dcdcaa;
+  --el-color-warning-light-3: #e8e8b8;
+  --el-color-warning-light-5: #f4f4c6;
+  --el-color-warning-light-7: #ffffd4;
+  --el-color-warning-light-8: #ffffdd;
+  --el-color-warning-light-9: #ffffe6;
+  --el-color-warning-dark-2: #c9b896;
+  
+  /* ========== 危险色 ========== */
+  --el-color-danger: #f44747;
+  --el-color-danger-light-3: #f77a7a;
+  --el-color-danger-light-5: #fa9a9a;
+  --el-color-danger-light-7: #fdbaba;
+  --el-color-danger-light-8: #fecaca;
+  --el-color-danger-light-9: #fed5d5;
+  --el-color-danger-dark-2: #d63a3a;
+  
+  /* ========== 错误色 ========== */
+  --el-color-error: #f44747;
+  --el-color-error-light-3: #f77a7a;
+  --el-color-error-light-5: #fa9a9a;
+  --el-color-error-light-7: #fdbaba;
+  --el-color-error-light-8: #fecaca;
+  --el-color-error-light-9: #fed5d5;
+  --el-color-error-dark-2: #d63a3a;
+  
+  /* ========== 信息色 ========== */
+  --el-color-info: #808080;
+  --el-color-info-light-3: #999999;
+  --el-color-info-light-5: #b3b3b3;
+  --el-color-info-light-7: #cccccc;
+  --el-color-info-light-8: #d9d9d9;
+  --el-color-info-light-9: #e6e6e6;
+  --el-color-info-dark-2: #6a6a6a;
+  
+  /* ========== 遮罩色 ========== */
+  --el-mask-color: rgba(0, 0, 0, 0.5);
+  --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
+  
+  /* ========== 框阴影 ========== */
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --el-box-shadow-lighter: 0 2px 4px rgba(0, 0, 0, 0.3);
+  --el-box-shadow-dark: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
