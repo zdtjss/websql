@@ -291,20 +291,14 @@ func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableN
 	r := admin.ResolveRolePermissions(roleDetails)
 	sp := r.BySchema[schemaName]
 
-	// 判断当前表是否有更具体的限制（仅针对当前表）
-	hasSpecificRestrictionForTable := false
-	if sp != nil {
-		if tp, exists := sp.ByTable[tableName]; exists {
-			if tp.HasTableLevel || len(tp.Columns) > 0 {
-				hasSpecificRestrictionForTable = true
-			}
-		}
-	}
+	// 判断该 schema 下是否存在更具体的限制（table 级或 column 级配置）
+	// 如果存在，则 conn/schema 级权限降级，以具体配置为准
+	schemaHasRestriction := sp != nil && sp.HasRestriction()
 
-	if r.HasConnLevel && !hasSpecificRestrictionForTable {
+	if r.HasConnLevel && !schemaHasRestriction {
 		return &RoleTableAccess{Level: AccessFull}
 	}
-	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
+	if sp != nil && sp.HasSchemaLevel && !schemaHasRestriction {
 		return &RoleTableAccess{Level: AccessFull}
 	}
 
@@ -313,17 +307,17 @@ func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableN
 	}
 	tp := sp.ByTable[tableName]
 	if tp == nil {
-		// 当前表没有任何配置，但用户有 conn 级或 schema 级权限时应放行
-		if r.HasConnLevel || (sp != nil && sp.HasSchemaLevel) {
-			return &RoleTableAccess{Level: AccessFull}
-		}
+		// 当前表没有任何配置
+		// 如果有 conn/schema 级权限但 schema 下有其他表的限制，当前表不在限制列表中
+		// → 不允许访问（因为限制意味着"只允许访问配置的表"）
 		return &RoleTableAccess{Level: AccessNone}
+	}
+	// 最具体优先：如果有 column 级配置，即使同时有 table 级也以 column 级为准
+	if len(tp.Columns) > 0 {
+		return &RoleTableAccess{Level: AccessColumn, AllowedColumns: tp.Columns}
 	}
 	if tp.HasTableLevel {
 		return &RoleTableAccess{Level: AccessFull}
-	}
-	if len(tp.Columns) > 0 {
-		return &RoleTableAccess{Level: AccessColumn, AllowedColumns: tp.Columns}
 	}
 	return &RoleTableAccess{Level: AccessNone}
 }

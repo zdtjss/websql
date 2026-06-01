@@ -55,9 +55,7 @@
             <el-alert title="勾选复选框授予权限，点击节点名称进入下一级。上级权限包含下级（如勾选连接则拥有其下所有权限）。「子级已选」表示下级有权限配置但当前节点本身未直接授权。" type="info" :closable="false" style="margin-bottom: 12px; flex-shrink: 0;" />
             <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
               <el-switch v-model="classicViewEnabled" active-text="允许使用经典视图" inactive-text="禁止使用经典视图" @change="onClassicViewChanged" />
-            </div>
-            <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
-              <el-switch v-model="modifyDataEnabled" active-text="允许修改数据" inactive-text="禁止修改数据" @change="onModifyDataChanged" />
+              <el-switch v-model="modifyDataEnabled" style="margin-left: 20px;" active-text="允许修改数据" inactive-text="禁止修改数据" @change="onModifyDataChanged" />
             </div>
             <div class="permission-tree-wrapper">
               <div class="permission-tree-container">

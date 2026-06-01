@@ -289,28 +289,19 @@ func (sp *SchemaPermResult) HasRestriction() bool {
 func (r *RolePermResult) CanAccessTable(schema, table string) bool {
 	sp := r.BySchema[schema]
 
-	// 判断当前表是否有更具体的限制（仅针对当前表，而非整个 schema）
-	hasSpecificRestrictionForTable := false
-	if sp != nil {
-		if tp, exists := sp.ByTable[table]; exists {
-			// 该表有 table 级或 column 级配置，说明有针对性限制
-			if tp.HasTableLevel || len(tp.Columns) > 0 {
-				hasSpecificRestrictionForTable = true
-			}
-		}
-	}
+	// 判断该 schema 下是否存在更具体的限制（table 级或 column 级配置）
+	schemaHasRestriction := sp != nil && sp.HasRestriction()
 
-	// conn 级权限：如果当前表没有更具体的配置，直接放行
-	// 如果当前表有具体配置，则以具体配置为准（下面继续判断）
-	if r.HasConnLevel && !hasSpecificRestrictionForTable {
+	// conn 级权限：如果该 schema 下没有更具体的配置，直接放行
+	if r.HasConnLevel && !schemaHasRestriction {
 		return true
 	}
 	// schema 级权限：同理
-	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
+	if sp != nil && sp.HasSchemaLevel && !schemaHasRestriction {
 		return true
 	}
 
-	// 有具体配置时，检查该表是否在 ByTable 中（table 级或 column 级都算有权限）
+	// 有限制时，检查该表是否在 ByTable 中（table 级或 column 级都算有权限）
 	if sp != nil {
 		_, exists := sp.ByTable[table]
 		return exists
@@ -321,20 +312,13 @@ func (r *RolePermResult) CanAccessTable(schema, table string) bool {
 func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	sp := r.BySchema[schema]
 
-	// 判断当前表是否有更具体的限制
-	hasSpecificRestrictionForTable := false
-	if sp != nil {
-		if tp, exists := sp.ByTable[table]; exists {
-			if tp.HasTableLevel || len(tp.Columns) > 0 {
-				hasSpecificRestrictionForTable = true
-			}
-		}
-	}
+	// 判断该 schema 下是否存在更具体的限制
+	schemaHasRestriction := sp != nil && sp.HasRestriction()
 
-	if r.HasConnLevel && !hasSpecificRestrictionForTable {
+	if r.HasConnLevel && !schemaHasRestriction {
 		return true
 	}
-	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
+	if sp != nil && sp.HasSchemaLevel && !schemaHasRestriction {
 		return true
 	}
 	if sp == nil {
@@ -344,10 +328,14 @@ func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	if tp == nil {
 		return false
 	}
+	// 最具体优先：如果有 column 级配置，即使同时有 table 级也以 column 级为准
+	if len(tp.Columns) > 0 {
+		return tp.Columns[column]
+	}
 	if tp.HasTableLevel {
 		return true
 	}
-	return tp.Columns[column]
+	return false
 }
 
 func ParseColumnName(raw string) string {

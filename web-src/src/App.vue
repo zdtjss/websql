@@ -170,7 +170,7 @@
                           <el-icon class="is-loading"><Loading /></el-icon>
                         </div>
                         <div v-else-if="systemPrompts.length === 0" class="prompt-empty">暂无系统提示词</div>
-                        <div v-for="prompt in systemPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
+                        <div v-for="prompt in systemPrompts" title="点击发送给大模型" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
                             <div v-if="prompt.connSchemas && prompt.connSchemas.length > 1" class="prompt-item-sub">

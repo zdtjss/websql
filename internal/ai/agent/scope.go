@@ -100,14 +100,16 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 				continue
 			}
 			for tableName, tp := range sp.ByTable {
-				if tp.HasTableLevel {
-					scope.AllowedTables[tableName] = true
-				}
-				for col := range tp.Columns {
-					if scope.AllowedColumns[tableName] == nil {
-						scope.AllowedColumns[tableName] = make(map[string]bool)
+				// 最具体优先：如果有 column 级配置，即使同时有 table 级也以 column 级为准
+				if len(tp.Columns) > 0 {
+					for col := range tp.Columns {
+						if scope.AllowedColumns[tableName] == nil {
+							scope.AllowedColumns[tableName] = make(map[string]bool)
+						}
+						scope.AllowedColumns[tableName][strings.ToLower(col)] = true
 					}
-					scope.AllowedColumns[tableName][strings.ToLower(col)] = true
+				} else if tp.HasTableLevel {
+					scope.AllowedTables[tableName] = true
 				}
 			}
 		}
