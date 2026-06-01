@@ -313,7 +313,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	if req.ExcelData != nil && req.ExcelData.FileID != "" {
 		sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Excel 文件（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
 			req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
-		sysPrompt += "请先用 get_table_schema 确认目标表存在并获取表结构，然后向用户明确说明：1）目标表名 2）操作模式（插入/更新/插入+更新）3）字段映射关系 4）预计影响行数。等用户确认后再调用 import_data 工具。如果用户没有指定目标表，请询问用户。\n"
+		sysPrompt += "请按「数据导入流程」操作：先确认目标表，向用户说明操作模式、字段映射和影响行数，等用户确认后再调用 import_data。\n"
 	}
 
 	// 构建 Eino 消息列表
@@ -559,11 +559,20 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			role = mo.Message.Role
 		}
 
+		log.Printf("[Agent] 事件输出 - role=%s, isStreaming=%v, hasStream=%v, hasMsg=%v, toolCalls=%d, exit=%v\n",
+			role, mo.IsStreaming, mo.MessageStream != nil, mo.Message != nil, func() int {
+				if mo.Message != nil {
+					return len(mo.Message.ToolCalls)
+				}
+				return 0
+			}(), hasExit)
+
 		if mo.IsStreaming && mo.MessageStream != nil {
 			var accContent strings.Builder
 			for {
 				chunk, recvErr := mo.MessageStream.Recv()
 				if recvErr != nil {
+					log.Printf("[Agent] MessageStream.Recv 结束 - role=%s, accLen=%d, err=%v\n", role, accContent.Len(), recvErr)
 					break
 				}
 				if chunk.ReasoningContent != "" {
@@ -588,14 +597,19 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 					ToolName:   msg.ToolName,
 				})
 			}
-		} else if role == schema.Assistant && mo.Message != nil && len(mo.Message.ToolCalls) > 0 {
+		} else if role == schema.Assistant && mo.Message != nil {
 			msg := mo.Message
-			sm := SessionMessage{
-				Role:      "assistant",
-				Content:   msg.Content,
-				ToolCalls: sessionToolCallsFromSchema(msg.ToolCalls),
+			if len(msg.ToolCalls) > 0 {
+				sess.AppendMessageNoSave(SessionMessage{
+					Role:      "assistant",
+					Content:   msg.Content,
+					ToolCalls: sessionToolCallsFromSchema(msg.ToolCalls),
+				})
+			} else if msg.Content != "" {
+				fullResponse.WriteString(msg.Content)
+				flush(StreamChunk{Type: "content", Content: msg.Content})
+				sess.AppendMessageNoSave(SessionMessage{Role: string(role), Content: msg.Content})
 			}
-			sess.AppendMessageNoSave(sm)
 		}
 
 		if hasExit {
@@ -745,19 +759,19 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) ([]tool.BaseTool, error) {
 	conn, _ := GetConn(connID, scope.UserID)
-	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
-	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
-	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释。当用户未指定表名时，优先调用此工具获取表列表，通过表注释判断目标表，而非猜测表名", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据", export.NewExportExcelFunc(conn))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel", export.NewExportExcelWithChartFunc(conn))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿", export.NewExportPPTFunc(conn))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word）", export.NewExportAnalysisDocxFunc(conn))
+	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
+	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据，须传入 sql 参数", export.NewExportExcelFunc(conn))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel，图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿，优先使用 content 模式（直接传入分析文本）避免重复查询", export.NewExportPPTFunc(conn))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word），优先使用 content 模式（直接传入分析文本）", export.NewExportAnalysisDocxFunc(conn))
 	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 
 	allTools := []tool.BaseTool{queryTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, currentDateInfoTool}
 
 	if scope.AllowModify {
-		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
+		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
 		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx, scope.UserID))
 		if execTool != nil {
 			allTools = append(allTools, execTool)
@@ -867,45 +881,31 @@ func buildStaticPromptPart(dbType string) string {
 	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为富有洞察且具有中国特色的分析结论。")
 	sb.WriteString("\n\n")
 
-	sb.WriteString(`## 行为准则（必须遵守）
-1. 准确性第一：生成 SQL 前必须通过 get_table_schema 验证表名和字段名，禁止臆测
-2. 禁止 SELECT *：必须显式列出所需字段，除非用户明确要求导出全部列
-3. 控制查询量：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
-4. 透明可追溯：每次查询/操作后必须在回复中明确说明来源表名和影响范围
-5. **禁止假执行**：当用户要求导出/生成文件时，必须通过调用 export_excel / export_ppt / export_analysis_docx 工具实际执行，绝不能只输出文本描述"已完成导出"，更不能凭空编造下载链接或文件名。如果你没有调用工具，就绝不能声称文件已生成。
-6. **优先使用 Skill 导出**：生成 Word/PPT/Excel 报告时，直接调用 export_ppt、export_analysis_docx 或 export_excel 专属工具即可。这些工具内部会优先使用 Python Skill 生成高质量文档，若 Skill 失败则自动回退到 Go 原生实现。无需手动通过 skill、read_file、write_file、execute 工具自行拼装导出流程。
-7. **禁止猜测表名**：当用户未指定表名时，必须先调用 list_tables 获取表列表及表注释，通过表注释判断目标表。只有在 list_tables 返回的表注释无法判断目标表时，才可以向用户询问确认，绝不允许凭空猜测表名
+	sb.WriteString(`## 核心准则（必须遵守，每条只声明一次，全文以此为准）
+1. **先验证再查询**：生成 SQL 前必须通过 get_table_schema 验证表名和字段名，禁止臆测
+2. **禁止 SELECT ***：必须显式列出所需字段，除非用户明确要求导出全部列
+3. **控制查询量**：对大表查询必须添加合理的 WHERE 条件并配合 LIMIT
+4. **透明可追溯**：每次查询/操作后必须在回复中明确说明来源表名和影响范围
+5. **禁止假执行**：导出/生成文件时必须实际调用 export_excel / export_ppt / export_analysis_docx 等工具，绝不能只输出文字描述"已完成导出"，更不能凭空编造下载链接或文件名
+6. **优先使用 Skill 导出**：生成 Word/PPT/Excel 报告时，直接调用 export_ppt、export_analysis_docx 或 export_excel 专属工具即可。这些工具内部会优先使用 Python Skill 生成高质量文档，若 Skill 失败则自动回退到 Go 原生实现。无需手动通过 skill、read_file、write_file、execute 工具自行拼装导出流程
+7. **禁止猜测表名**：用户未指定表名时，必须先调用 list_tables 获取表列表及表注释，通过注释判断目标表；注释无法判断时才可向用户确认，绝不允许凭空猜测
+8. **写操作自动确认**：执行写操作时，先简要说明意图（目标表、操作类型、影响范围），然后立即调用 exec_sql，系统会自动拦截并推送前端确认弹窗，无需等待用户文字确认
 `)
 
 	sb.WriteString(`
 ## 标准工作流程
-执行每个数据分析任务时，按以下步骤推进：
 1. 理解需求 — 澄清模棱两可的表达、确认统计口径（去重？含空值？）、明确时间范围
-2. 定位表 — 如果用户未指定表名，调用 list_tables 获取表列表及表注释，通过注释匹配目标表；如果用户已指定表名，跳过此步
-3. 探索结构 — 调用 get_table_schema 获取相关表的字段、类型、索引信息
+2. 定位表 — 按准则#7：未指定表名时先调 list_tables，通过注释匹配目标表
+3. 探索结构 — 按准则#1：调用 get_table_schema 获取字段、类型、索引信息
 4. 编写 SQL — 基于真实字段名和数据类型编写优化 SQL，确保与 ` + dbType + ` 方言兼容
 5. 执行查询 — 调用 query_data（读）或 exec_sql（写）
 6. 解读结果 — 不仅返回数据，还要给出 2-5 行的分析小结（趋势、异常、业务建议）
-7. 当涉及写操作时，在步骤5之前先向用户说明将要执行的操作，等待系统推送确认
-
-## 工具使用指南
-| 工具 | 用途与约束 |
-|------|-----------|
-| list_tables | 获取当前数据库的所有表名及表注释。**当用户未指定表名时必须优先调用此工具**，通过表注释判断目标表，而非猜测表名。可选参数 connId 指定目标连接（留空默认） |
-| get_table_schema | 获取表结构（建表 DDL）。每次查询新表前必调。支持一次传入多个表名 |
-| query_data | 执行只读 SQL（SELECT / SHOW / DESCRIBE / EXPLAIN / WITH）。可选参数 connId 指定目标连接（留空默认），不同连接的表不能在同一 SQL 中引用 |
-| exec_sql | 执行写操作 SQL（INSERT / UPDATE / DELETE / ALTER 等）。可选参数 connId 指定目标连接（留空默认）。系统会拦截并推送前端确认，你无需额外处理 |
-| export_excel | 导出 Excel，必须传入 sql 参数。必须实际调用此工具，禁止仅文字描述 |
-| export_excel_with_chart | 导出带图表的 Excel，传入 sql。必须实际调用此工具。图表类型根据数据特征自动选择 |
-| export_ppt | 生成 PPT 报告，优先使用 content 模式（直接传入分析文本）避免重复查询。必须实际调用此工具才能生成文件 |
-| export_analysis_docx | 生成 Word 分析报告，优先使用 content 模式。必须实际调用此工具才能生成文件 |
-| import_data | 导入 Excel 数据到指定表。使用前须确认目标表名、操作模式、字段映射、影响行数 |
+7. 写操作 — 按准则#8：说明意图后立即调用 exec_sql
 
 ## SQL 编写规范（` + dbType + `）
 ` + getSQLDialectRules(dbType) + `
 
 ## 写操作安全
-- 所有写操作必须通过 exec_sql 工具执行，系统会自动拦截并推送前端由用户确认
 - 生成写操作 SQL 时，尽量包含精确的 WHERE 条件，避免批量误操作
 - DELETE / UPDATE 无 WHERE 子句的语句将被系统标记为高风险
 
@@ -929,14 +929,12 @@ func buildStaticPromptPart(dbType string) string {
 - 调整 SQL 或参数后重试，最多尝试 3 次
 - 若 3 次均失败，向用户解释原因并建议替代方案
 
-## 迭代次数限制（重要）
-你的每次思考与工具调用都会消耗 1 次迭代，你有 ` + fmt.Sprint(maxIterations) + ` 次迭代上限。请高效利用，确保在有限迭代内完成有价值的工作：
+## 迭代次数限制
+你的每次思考与工具调用都会消耗 1 次迭代，你有 ` + fmt.Sprint(maxIterations) + ` 次迭代上限。请高效利用：
 
-### 减少试错的关键原则
-1. **先定位再探索**：用户未指定表名时，必须先调用 list_tables 获取表列表及注释，通过注释匹配目标表后再调用 get_table_schema，禁止凭空猜测表名
-2. **先验证再执行**：探索新表时必须调用 get_table_schema，浏览返回的字段和类型后再写 SQL，禁止基于猜测的字段名直接查询
-3. **合并调用**：get_table_schema 支持一次传入多个表名，一次 SQL 涉及的所有表应在同一轮 get_table_schema 中完成探索
-4. **SQL 自检**：写完后在脑中快速检查引号是否正确、LIMIT 是否添加、JOIN 条件是否完整，确认无误后再调用工具
+### 减少试错
+1. **合并调用**：get_table_schema 支持一次传入多个表名，一次 SQL 涉及的所有表应在同一轮完成探索
+2. **SQL 自检**：写完后在脑中快速检查引号是否正确、LIMIT 是否添加、JOIN 条件是否完整，确认无误后再调用工具
 
 ### 及时止损
 - query_data 连续 2 次返回空结果或"表不存在"类错误 → 立即停止，告知用户数据不可用，禁止猜测其他表名变体
@@ -1028,7 +1026,7 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 		fmt.Fprintf(&sb, "\n用户指定表范围：%s\n", strings.Join(tableContext, ", "))
 		sb.WriteString("只能在这些表上操作。若需求无法仅用这些表满足，请明确告知需要哪些额外表。\n")
 	} else {
-		sb.WriteString("\n用户未限定表范围，请先调用 list_tables 获取表列表及表注释，通过注释判断目标表后再调用 get_table_schema 获取表结构。禁止凭空猜测表名。\n")
+		sb.WriteString("\n用户未限定表范围，请按准则#7 先调用 list_tables 获取表列表。\n")
 	}
 
 	sb.WriteString(scope.DescribeForPrompt())
