@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
 	"github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -147,7 +148,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	if err != nil {
 		return nil, fmt.Errorf("创建模型失败：%w", err)
 	}
-	tools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx, scope)
+	coreTools, deferredTools, err := buildTools(ctx, connID, dbType, dbSchema, schemas, auditCtx, scope)
 	if err != nil {
 		return nil, fmt.Errorf("创建工具失败：%w", err)
 	}
@@ -205,14 +206,32 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		}
 	}
 
+	var tsMiddleware adk.ChatModelAgentMiddleware
+	if len(deferredTools) > 0 {
+		tsMiddleware, err = toolsearch.New(ctx, &toolsearch.Config{
+			DynamicTools:       deferredTools,
+			UseModelToolSearch: false,
+		})
+		if err != nil {
+			log.Printf("[Agent] 创建 ToolSearch 中间件失败 - err=%v\n", err)
+			coreTools = append(coreTools, deferredTools...)
+			deferredTools = nil
+		}
+	}
+
 	handlers := []adk.ChatModelAgentMiddleware{
 		&ToolCallLoggingMiddleware{},
+	}
+	if tsMiddleware != nil {
+		handlers = append(handlers, tsMiddleware)
+	}
+	handlers = append(handlers,
 		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
 		&ReductionMiddleware{},
 		&DangerousSQLApprovalMiddleware{},
 		&ToolErrorRecoveryMiddleware{},
 		summarizationMW,
-	}
+	)
 
 	// SessionSyncMiddleware：对接 Eino Memory/Session，
 	// 在 summarization 压缩消息后自动同步到 SessionStore
@@ -232,7 +251,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
+			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: coreTools},
 		},
 		Handlers:      handlers,
 		MaxIterations: maxIterations,
@@ -340,6 +359,21 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 		}
 	}
 
+	log.Printf("[Agent] LLM 输入消息 - total=%d\n", len(messages))
+	for i, msg := range messages {
+		role := msg.Role
+		contentLen := len(msg.Content)
+		tcCount := len(msg.ToolCalls)
+		toolCallID := msg.ToolCallID
+		toolName := msg.ToolName
+		if role == schema.System {
+			log.Printf("[Agent]   msg[%d] - role=%s, contentLen=%d\n", i, role, contentLen)
+		} else {
+			log.Printf("[Agent]   msg[%d] - role=%s, contentLen=%d, toolCalls=%d, toolCallID=%s, toolName=%s\n",
+				i, role, contentLen, tcCount, toolCallID, toolName)
+		}
+	}
+
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
 
 	// 使用 Eino v0.9 Agent Cancel：通过 WithCancel 获取 AgentRunOption 和 CancelFunc，
@@ -382,23 +416,25 @@ func (a *SQLAgent) Cancel() {
 // ResumeStream 恢复被中断的执行（用户确认/取消后）
 // 当再次被中断时（如 LLM 生成了新的危险 SQL），不发送 done，让前端继续等待用户确认
 func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, targets map[string]bool, flush func(StreamChunk), sess *Session) error {
-	log.Printf("[Agent] resume - cpID=%s, targets=%v\n", checkPointID, targets)
+	log.Printf("[Agent] resume 开始 - cpID=%s, targets=%v, sessionMsgs=%d\n", checkPointID, targets, len(sess.messages))
 
-	// 将所有 interruptID 放入 Targets map，一次性恢复
-	// 使用 SQLApprovalResult 传递审批结果，支持拒绝原因
 	targetsAny := make(map[string]any, len(targets))
 	for id, approved := range targets {
 		targetsAny[id] = SQLApprovalResult{Approved: approved}
 	}
 
+	resumeStart := time.Now()
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
 		Targets: targetsAny,
 	})
 	if err != nil {
 		return fmt.Errorf("resume failed: %w", err)
 	}
+	log.Printf("[Agent] resume ResumeWithParams 返回 - elapsed=%v\n", time.Since(resumeStart))
 
 	_, _ = a.processEvents(iter, flush, sess, checkPointID)
+
+	log.Printf("[Agent] resume processEvents 完成 - totalElapsed=%v, sessionMsgs=%d\n", time.Since(resumeStart), len(sess.messages))
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] save assistant msg failed - err=%v\n", err)
@@ -457,12 +493,16 @@ func logUnwrappedError(err error) {
 func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush func(StreamChunk), sess *Session, checkPointID string) (strings.Builder, bool) {
 	var fullResponse strings.Builder
 	interrupted := false
+	eventIdx := 0
 
 	for {
+		eventStart := time.Now()
 		event, ok := iter.Next()
 		if !ok {
+			log.Printf("[Agent] 事件迭代结束 - totalEvents=%d\n", eventIdx)
 			break
 		}
+		eventIdx++
 		if event.Err != nil {
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
 			logUnwrappedError(event.Err)
@@ -559,33 +599,75 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			role = mo.Message.Role
 		}
 
-		log.Printf("[Agent] 事件输出 - role=%s, isStreaming=%v, hasStream=%v, hasMsg=%v, toolCalls=%d, exit=%v\n",
-			role, mo.IsStreaming, mo.MessageStream != nil, mo.Message != nil, func() int {
+		log.Printf("[Agent] 事件输出 [#%d] - role=%s, isStreaming=%v, hasStream=%v, hasMsg=%v, toolCalls=%d, exit=%v, waitTime=%v\n",
+			eventIdx, role, mo.IsStreaming, mo.MessageStream != nil, mo.Message != nil, func() int {
 				if mo.Message != nil {
 					return len(mo.Message.ToolCalls)
 				}
 				return 0
-			}(), hasExit)
+			}(), hasExit, time.Since(eventStart))
 
 		if mo.IsStreaming && mo.MessageStream != nil {
 			var accContent strings.Builder
+			var accToolCalls []schema.ToolCall
+			chunkIdx := 0
+			streamStart := time.Now()
+			repeatCount := 0
+			lastChunkContent := ""
+			const maxRepeats = 10
 			for {
 				chunk, recvErr := mo.MessageStream.Recv()
 				if recvErr != nil {
-					log.Printf("[Agent] MessageStream.Recv 结束 - role=%s, accLen=%d, err=%v\n", role, accContent.Len(), recvErr)
+					elapsed := time.Since(streamStart)
+					log.Printf("[Agent] MessageStream.Recv 结束 - role=%s, accLen=%d, chunks=%d, toolCalls=%d, elapsed=%v, err=%v\n",
+						role, accContent.Len(), chunkIdx, len(accToolCalls), elapsed, recvErr)
+					if accContent.Len() > 0 && accContent.Len() < 10 {
+						log.Printf("[Agent] MessageStream 异常短内容 - accContent=%q\n", accContent.String())
+					}
 					break
+				}
+				chunkIdx++
+				contentLen := len(chunk.Content)
+				reasoningLen := len(chunk.ReasoningContent)
+				tcCount := len(chunk.ToolCalls)
+				if chunkIdx <= 5 || contentLen > 0 || reasoningLen > 0 || tcCount > 0 || chunkIdx%20 == 0 {
+					contentPreview := chunk.Content
+					if len(contentPreview) > 80 {
+						contentPreview = contentPreview[:80] + "..."
+					}
+					log.Printf("[Agent] MessageStream chunk[%d] - contentLen=%d, reasoningLen=%d, toolCalls=%d, content=%q\n",
+						chunkIdx, contentLen, reasoningLen, tcCount, contentPreview)
 				}
 				if chunk.ReasoningContent != "" {
 					flush(StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
 				}
 				if chunk.Content != "" {
+					if chunk.Content == lastChunkContent && len(chunk.Content) > 0 {
+						repeatCount++
+						if repeatCount >= maxRepeats {
+							log.Printf("[Agent] MessageStream 检测到重复输出，中断流 - repeatCount=%d, content=%q, accLen=%d\n",
+								repeatCount, chunk.Content, accContent.Len())
+							flush(StreamChunk{Type: "error", Content: "模型输出异常（重复内容），已自动中断"})
+							break
+						}
+					} else {
+						repeatCount = 0
+					}
+					lastChunkContent = chunk.Content
 					accContent.WriteString(chunk.Content)
 					flush(StreamChunk{Type: "content", Content: chunk.Content})
 				}
+				if len(chunk.ToolCalls) > 0 {
+					accToolCalls = append(accToolCalls, chunk.ToolCalls...)
+				}
 			}
-			if accContent.Len() > 0 {
+			if accContent.Len() > 0 || len(accToolCalls) > 0 {
 				fullResponse.WriteString(accContent.String())
-				sess.AppendMessageNoSave(SessionMessage{Role: string(role), Content: accContent.String()})
+				sm := SessionMessage{Role: string(role), Content: accContent.String()}
+				if len(accToolCalls) > 0 {
+					sm.ToolCalls = sessionToolCallsFromSchema(mergeToolCalls(accToolCalls))
+				}
+				sess.AppendMessageNoSave(sm)
 			}
 		} else if role == schema.Tool {
 			msg := mo.Message
@@ -757,37 +839,44 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 	}
 }
 
-func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) ([]tool.BaseTool, error) {
+func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
 	conn, _ := GetConn(connID, scope.UserID)
-	queryTool, _ := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
-	schemaTool, _ := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
-	listTablesTool, _ := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	queryTool, qErr := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
+	schemaTool, sErr := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	listTablesTool, lErr := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	currentDateInfoTool, dErr := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
+
+	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool} {
+		if t != nil {
+			coreTools = append(coreTools, t)
+		}
+	}
+	if qErr != nil || sErr != nil || lErr != nil || dErr != nil {
+		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v", qErr, sErr, lErr, dErr)
+	}
+
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据，须传入 sql 参数", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel，图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿，优先使用 content 模式（直接传入分析文本）避免重复查询", export.NewExportPPTFunc(conn))
 	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告（Word），优先使用 content 模式（直接传入分析文本）", export.NewExportAnalysisDocxFunc(conn))
-	currentDateInfoTool, _ := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 
-	allTools := []tool.BaseTool{queryTool, schemaTool, listTablesTool, exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, currentDateInfoTool}
+	for _, t := range []tool.BaseTool{exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool} {
+		if t != nil {
+			deferredTools = append(deferredTools, t)
+		}
+	}
 
 	if scope.AllowModify {
 		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
 		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx, scope.UserID))
-		if execTool != nil {
-			allTools = append(allTools, execTool)
-		}
-		if importDataTool != nil {
-			allTools = append(allTools, importDataTool)
-		}
-	}
-	// 过滤掉 nil（InferTool 失败时）
-	var validTools []tool.BaseTool
-	for _, t := range allTools {
-		if t != nil {
-			validTools = append(validTools, t)
+		for _, t := range []tool.BaseTool{execTool, importDataTool} {
+			if t != nil {
+				deferredTools = append(deferredTools, t)
+			}
 		}
 	}
-	return validTools, nil
+
+	return coreTools, deferredTools, nil
 }
 
 // ──────────────────────────────────────────────

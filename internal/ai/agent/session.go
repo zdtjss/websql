@@ -678,3 +678,54 @@ func sessionToolCallsToSchema(toolCalls []SessionToolCall) []schema.ToolCall {
 	}
 	return result
 }
+
+func mergeToolCalls(chunks []schema.ToolCall) []schema.ToolCall {
+	if len(chunks) == 0 {
+		return nil
+	}
+	type tcBuilder struct {
+		id        string
+		typeField string
+		name      strings.Builder
+		args      strings.Builder
+	}
+	builders := make(map[int]*tcBuilder)
+	indices := make([]int, 0, len(chunks))
+	for _, tc := range chunks {
+		idx := 0
+		if tc.Index != nil {
+			idx = *tc.Index
+		}
+		b, ok := builders[idx]
+		if !ok {
+			b = &tcBuilder{}
+			builders[idx] = b
+			indices = append(indices, idx)
+		}
+		if tc.ID != "" {
+			b.id = tc.ID
+		}
+		if tc.Type != "" {
+			b.typeField = tc.Type
+		}
+		if tc.Function.Name != "" {
+			b.name.WriteString(tc.Function.Name)
+		}
+		if tc.Function.Arguments != "" {
+			b.args.WriteString(tc.Function.Arguments)
+		}
+	}
+	result := make([]schema.ToolCall, 0, len(builders))
+	for _, idx := range indices {
+		b := builders[idx]
+		result = append(result, schema.ToolCall{
+			ID:   b.id,
+			Type: b.typeField,
+			Function: schema.FunctionCall{
+				Name:      b.name.String(),
+				Arguments: b.args.String(),
+			},
+		})
+	}
+	return result
+}
