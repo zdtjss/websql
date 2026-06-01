@@ -288,22 +288,29 @@ func (sp *SchemaPermResult) HasRestriction() bool {
 
 func (r *RolePermResult) CanAccessTable(schema, table string) bool {
 	sp := r.BySchema[schema]
-	hasColumnForTable := false
+
+	// 判断当前表是否有更具体的限制（仅针对当前表，而非整个 schema）
+	hasSpecificRestrictionForTable := false
 	if sp != nil {
-		if tp, exists := sp.ByTable[table]; exists && len(tp.Columns) > 0 {
-			hasColumnForTable = true
+		if tp, exists := sp.ByTable[table]; exists {
+			// 该表有 table 级或 column 级配置，说明有针对性限制
+			if tp.HasTableLevel || len(tp.Columns) > 0 {
+				hasSpecificRestrictionForTable = true
+			}
 		}
 	}
-	effectiveRestriction := false
-	if sp != nil {
-		effectiveRestriction = sp.HasTableLevelInSchema || hasColumnForTable
-	}
-	if r.HasConnLevel && !effectiveRestriction {
+
+	// conn 级权限：如果当前表没有更具体的配置，直接放行
+	// 如果当前表有具体配置，则以具体配置为准（下面继续判断）
+	if r.HasConnLevel && !hasSpecificRestrictionForTable {
 		return true
 	}
-	if sp != nil && sp.HasSchemaLevel && !effectiveRestriction {
+	// schema 级权限：同理
+	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
 		return true
 	}
+
+	// 有具体配置时，检查该表是否在 ByTable 中（table 级或 column 级都算有权限）
 	if sp != nil {
 		_, exists := sp.ByTable[table]
 		return exists
@@ -313,20 +320,21 @@ func (r *RolePermResult) CanAccessTable(schema, table string) bool {
 
 func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	sp := r.BySchema[schema]
-	hasColumnForTable := false
+
+	// 判断当前表是否有更具体的限制
+	hasSpecificRestrictionForTable := false
 	if sp != nil {
-		if tp, exists := sp.ByTable[table]; exists && len(tp.Columns) > 0 {
-			hasColumnForTable = true
+		if tp, exists := sp.ByTable[table]; exists {
+			if tp.HasTableLevel || len(tp.Columns) > 0 {
+				hasSpecificRestrictionForTable = true
+			}
 		}
 	}
-	effectiveRestriction := false
-	if sp != nil {
-		effectiveRestriction = sp.HasTableLevelInSchema || hasColumnForTable
-	}
-	if r.HasConnLevel && !effectiveRestriction {
+
+	if r.HasConnLevel && !hasSpecificRestrictionForTable {
 		return true
 	}
-	if sp != nil && sp.HasSchemaLevel && !effectiveRestriction {
+	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
 		return true
 	}
 	if sp == nil {

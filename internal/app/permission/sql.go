@@ -291,21 +291,20 @@ func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableN
 	r := admin.ResolveRolePermissions(roleDetails)
 	sp := r.BySchema[schemaName]
 
-	hasColumnForTable := false
+	// 判断当前表是否有更具体的限制（仅针对当前表）
+	hasSpecificRestrictionForTable := false
 	if sp != nil {
-		if tp, exists := sp.ByTable[tableName]; exists && len(tp.Columns) > 0 {
-			hasColumnForTable = true
+		if tp, exists := sp.ByTable[tableName]; exists {
+			if tp.HasTableLevel || len(tp.Columns) > 0 {
+				hasSpecificRestrictionForTable = true
+			}
 		}
 	}
-	effectiveRestriction := false
-	if sp != nil {
-		effectiveRestriction = sp.HasTableLevelInSchema || hasColumnForTable
-	}
 
-	if r.HasConnLevel && !effectiveRestriction {
+	if r.HasConnLevel && !hasSpecificRestrictionForTable {
 		return &RoleTableAccess{Level: AccessFull}
 	}
-	if sp != nil && sp.HasSchemaLevel && !effectiveRestriction {
+	if sp != nil && sp.HasSchemaLevel && !hasSpecificRestrictionForTable {
 		return &RoleTableAccess{Level: AccessFull}
 	}
 
@@ -314,6 +313,10 @@ func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableN
 	}
 	tp := sp.ByTable[tableName]
 	if tp == nil {
+		// 当前表没有任何配置，但用户有 conn 级或 schema 级权限时应放行
+		if r.HasConnLevel || (sp != nil && sp.HasSchemaLevel) {
+			return &RoleTableAccess{Level: AccessFull}
+		}
 		return &RoleTableAccess{Level: AccessNone}
 	}
 	if tp.HasTableLevel {
@@ -611,6 +614,71 @@ func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPe
 	return CheckAnalysisPermission(analysis, connId, authorization)
 }
 
+// CheckBatchSQLPermission 批量检查多条 SQL 的权限，内部只查询一次用户权限数据
+// 返回第一个不允许的结果，如果全部允许则返回 nil
+func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization string) *SQLPermissionResult {
+	if !config.Cfg.IsRemote {
+		return nil
+	}
+
+	// 一次性查询用户权限信息
+	userPower := admin.GetUserPower(authorization)
+	if userPower == nil {
+		return &SQLPermissionResult{Allowed: false, Message: "无权访问"}
+	}
+	powerDetails := admin.FindUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		return &SQLPermissionResult{Allowed: false, Message: "无权访问"}
+	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+
+	// 检查是否有写权限（只检查一次）
+	hasWritePermission := false
+	writeCheckDone := false
+
+	for _, sqlStr := range sqlList {
+		analysis := AnalyzeSQL(sqlStr, schema)
+
+		// 写操作权限检查（延迟到第一次遇到写操作时）
+		if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
+			if !writeCheckDone {
+				hasWritePermission = CheckUserCanModify(authorization)
+				writeCheckDone = true
+			}
+			if !hasWritePermission {
+				return &SQLPermissionResult{
+					Allowed: false,
+					Message: "当前角色禁止修改数据，无法执行写操作",
+				}
+			}
+		}
+
+		// 检查读表权限
+		for _, t := range analysis.ReadTables {
+			if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
+				return &SQLPermissionResult{
+					Allowed:      false,
+					DeniedTables: []string{t.Name},
+					Message:      fmt.Sprintf("无权访问表: %s", t.Name),
+				}
+			}
+		}
+
+		// 检查写表权限
+		for _, t := range analysis.WriteTables {
+			if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
+				return &SQLPermissionResult{
+					Allowed:      false,
+					DeniedTables: []string{t.Name},
+					Message:      fmt.Sprintf("无权访问表: %s", t.Name),
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
 
@@ -622,17 +690,36 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 		}
 	}
 
+	if !config.Cfg.IsRemote {
+		return result
+	}
+
+	// 一次性查询用户权限详情，避免对每个表重复查询数据库
+	userPower := admin.GetUserPower(authorization)
+	if userPower == nil {
+		result.Allowed = false
+		result.Message = "无权访问"
+		return result
+	}
+	powerDetails := admin.FindUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		result.Allowed = false
+		result.Message = "无权访问"
+		return result
+	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+
+	// 检查读表权限
 	for _, t := range analysis.ReadTables {
-		access := GetTableAccessDowngraded(connId, t.Schema, t.Name, authorization)
-		if access.Level == AccessNone {
+		if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
 			result.Allowed = false
 			result.DeniedTables = append(result.DeniedTables, t.Name)
 		}
 	}
 
+	// 检查写表权限
 	for _, t := range analysis.WriteTables {
-		access := GetTableAccessDowngraded(connId, t.Schema, t.Name, authorization)
-		if access.Level == AccessNone {
+		if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
 			result.Allowed = false
 			result.DeniedTables = append(result.DeniedTables, t.Name)
 		}
@@ -644,6 +731,18 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 	}
 
 	return result
+}
+
+// checkTableAccessWithRoles 使用已解析的角色权限检查表访问权限（避免重复查询数据库）
+func checkTableAccessWithRoles(byRole map[string][]*admin.PowerDetail, schemaName, tableName string) bool {
+	for _, roleDetails := range byRole {
+		roleAccess := resolveRoleTableAccess(roleDetails, schemaName, tableName)
+		// 经典模式下列级降级为表级，只要不是 AccessNone 就算有权限
+		if roleAccess.Level != AccessNone {
+			return true
+		}
+	}
+	return false
 }
 
 type SelectColumn struct {

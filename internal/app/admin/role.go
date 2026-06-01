@@ -90,7 +90,12 @@ func SaveRole(c *gin.Context) {
 	logger.PanicErrf("保存角色失败", err)
 
 	currentUser := GetUser(c.GetHeader("Authorization"))
-	recordPermissionAudit("save_role", fmt.Sprintf("角色 %s (id=%s) 保存，新增权限%d条，删除权限%d条", role.Name, role.Id, len(role.AddPowers), len(role.DelPowers)), currentUser.Id, currentUser.Name)
+	recordPermissionAudit("save_role", fmt.Sprintf("角色 %s (id=%s) 保存，新增权限%d条，删除权限%d条，详情: add=%s, del=%s",
+		role.Name, role.Id, len(role.AddPowers), len(role.DelPowers),
+		summarizePowers(role.AddPowers), summarizePowers(role.DelPowers)), currentUser.Id, currentUser.Name)
+
+	// 权限变更后清除认证缓存，确保新权限立即生效
+	InvalidateAllAuthCache()
 
 	jsonutil.WriteJson(c.Writer, "保存成功")
 }
@@ -189,14 +194,14 @@ func deletePowers(tx *sqlx.Tx, roleId string, powers []*PowerDetail) {
 	for _, p := range powers {
 		if p.Level == "table" && p.TableName != nil {
 			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'table'",
-			roleId, p.ConnId, ptrToString(p.SchemaName), *p.TableName)
+				roleId, p.ConnId, ptrToString(p.SchemaName), *p.TableName)
 		}
 	}
 
 	for _, p := range powers {
 		if p.Level == "column" && p.ColumnName != nil {
 			tx.Exec("delete from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and column_name = ? and power_level = 'column'",
-			roleId, p.ConnId, ptrToString(p.SchemaName), ptrToString(p.TableName), *p.ColumnName)
+				roleId, p.ConnId, ptrToString(p.SchemaName), ptrToString(p.TableName), *p.ColumnName)
 		}
 	}
 }
@@ -232,6 +237,9 @@ func DelRole(c *gin.Context) {
 
 	currentUser := GetUser(c.GetHeader("Authorization"))
 	recordPermissionAudit("del_role", fmt.Sprintf("删除角色 id=%s", id), currentUser.Id, currentUser.Name)
+
+	// 权限变更后清除认证缓存
+	InvalidateAllAuthCache()
 
 	jsonutil.WriteJson(c.Writer, "")
 }
@@ -292,7 +300,12 @@ func SaveRolePermission(c *gin.Context) {
 	logger.PanicErrf("保存权限失败", err)
 
 	currentUser := GetUser(c.GetHeader("Authorization"))
-	recordPermissionAudit("save_role_permission", fmt.Sprintf("角色 id=%s 权限变更，新增权限%d条，删除权限%d条", role.Id, len(role.AddPowers), len(role.DelPowers)), currentUser.Id, currentUser.Name)
+	recordPermissionAudit("save_role_permission", fmt.Sprintf("角色 id=%s 权限变更，新增权限%d条，删除权限%d条，详情: add=%s, del=%s",
+		role.Id, len(role.AddPowers), len(role.DelPowers),
+		summarizePowers(role.AddPowers), summarizePowers(role.DelPowers)), currentUser.Id, currentUser.Name)
+
+	// 权限变更后清除认证缓存
+	InvalidateAllAuthCache()
 
 	jsonutil.WriteJson(c.Writer, "保存成功")
 }
@@ -347,4 +360,31 @@ func findPowerDetails(roleIdList []any) map[string][]*PowerDetail {
 		rolePowerMap[power.RoleId] = v
 	}
 	return rolePowerMap
+}
+
+// summarizePowers 将权限列表序列化为可读的审计摘要
+func summarizePowers(powers []*PowerDetail) string {
+	if len(powers) == 0 {
+		return "[]"
+	}
+	const maxItems = 10
+	var parts []string
+	for i, p := range powers {
+		if i >= maxItems {
+			parts = append(parts, fmt.Sprintf("...(%d more)", len(powers)-maxItems))
+			break
+		}
+		desc := p.Level + ":" + p.ConnId
+		if p.SchemaName != nil {
+			desc += "/" + *p.SchemaName
+		}
+		if p.TableName != nil {
+			desc += "/" + *p.TableName
+		}
+		if p.ColumnName != nil {
+			desc += "/" + *p.ColumnName
+		}
+		parts = append(parts, desc)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }

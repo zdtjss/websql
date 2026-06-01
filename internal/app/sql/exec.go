@@ -37,16 +37,16 @@ type TableDataList struct {
 }
 
 type SQLResultItem struct {
-	SQL        string         `json:"sql"`
-	Status     string         `json:"status"`
-	Type       string         `json:"type"`
-	Error      string         `json:"error,omitempty"`
-	AuditError string         `json:"-"`
-	Columns    []Column       `json:"columns,omitempty"`
+	SQL        string           `json:"sql"`
+	Status     string           `json:"status"`
+	Type       string           `json:"type"`
+	Error      string           `json:"error,omitempty"`
+	AuditError string           `json:"-"`
+	Columns    []Column         `json:"columns,omitempty"`
 	Data       []map[string]any `json:"data,omitempty"`
-	CanEdit    bool           `json:"canEdit,omitempty"`
-	Keys       []string       `json:"keys,omitempty"`
-	Affected   int64          `json:"affected,omitempty"`
+	CanEdit    bool             `json:"canEdit,omitempty"`
+	Keys       []string         `json:"keys,omitempty"`
+	Affected   int64            `json:"affected,omitempty"`
 }
 
 type BatchSQLResult struct {
@@ -95,8 +95,7 @@ func ExecSQL(c *gin.Context) {
 	}
 
 	if strings.Contains(sqlStr, ";") {
-		for _, singleSQL := range strings.Split(sqlStr, ";") {
-			singleSQL = strings.TrimSpace(singleSQL)
+		for _, singleSQL := range splitSQLRespectQuotes(sqlStr) {
 			if singleSQL == "" {
 				continue
 			}
@@ -262,7 +261,7 @@ func page(dbtype string, sql string) string {
 }
 
 func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
-	sqlArr := strings.Split(sql, ";")
+	sqlArr := splitSQLRespectQuotes(sql)
 	tx, err := db.Beginx()
 	if err != nil {
 		return nil, err
@@ -299,19 +298,30 @@ func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) 
 	if strings.HasPrefix(lowerSql, "update ") {
 		operationType = "update"
 		tmp := strings.TrimSpace(strings.TrimPrefix(lowerSql, "update "))
-		spaceIdx := strings.Index(tmp, " ")
-		if spaceIdx == -1 {
+		tableName := extractTableToken(tmp)
+		if tableName == "" {
 			return
 		}
-		backupSql.WriteString(tmp[:spaceIdx])
+		backupSql.WriteString(ddlSql[len("update ") : len("update ")+len(tableName)])
 	} else if strings.HasPrefix(lowerSql, "delete ") {
 		operationType = "delete"
 		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(lowerSql, "delete ")), "from ")
-		spaceIdx := strings.Index(tmp, " ")
-		if spaceIdx == -1 {
+		tableName := extractTableToken(tmp)
+		if tableName == "" {
 			return
 		}
-		backupSql.WriteString(tmp[:spaceIdx])
+		// 找到原始 SQL 中对应的表名位置
+		fromIdx := strings.Index(lowerSql, "from ")
+		if fromIdx == -1 {
+			return
+		}
+		tableStart := fromIdx + 5
+		origTmp := strings.TrimSpace(ddlSql[tableStart:])
+		origTableName := extractTableToken(origTmp)
+		if origTableName == "" {
+			return
+		}
+		backupSql.WriteString(origTableName)
 	}
 
 	whereIdx := strings.Index(lowerSql, " where ")
@@ -341,6 +351,41 @@ func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) 
 		ExecSql:       ddlSql,
 		Data:          string(jsonutil.ToJsonString(data)),
 	})
+}
+
+// extractTableToken 从 SQL 片段中提取表名 token，支持反引号包裹的 schema.table 格式
+func extractTableToken(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '`' {
+			// 读取反引号包裹的标识符
+			result.WriteByte(ch)
+			i++
+			for i < len(s) && s[i] != '`' {
+				result.WriteByte(s[i])
+				i++
+			}
+			if i < len(s) {
+				result.WriteByte(s[i]) // closing backtick
+				i++
+			}
+		} else if ch == '.' {
+			result.WriteByte(ch)
+			i++
+		} else if ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r' {
+			break
+		} else {
+			result.WriteByte(ch)
+			i++
+		}
+	}
+	return result.String()
 }
 
 func asyncRecordHistory(ddlSql string, user *admin.User, connId string) {
@@ -449,15 +494,110 @@ func detectRiskLevelForEditor(sql string) string {
 }
 
 func splitSQL(sql string) []string {
-	sqlArr := strings.Split(sql, ";")
-	result := make([]string, 0, len(sqlArr))
-	for _, s := range sqlArr {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			result = append(result, s)
+	return splitSQLRespectQuotes(sql)
+}
+
+// splitSQLRespectQuotes 感知引号和注释的 SQL 分割器
+// 正确处理字符串常量中的分号、注释中的分号
+func splitSQLRespectQuotes(sql string) []string {
+	var results []string
+	var current strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+
+		// 处理行注释
+		if inLineComment {
+			current.WriteByte(c)
+			if c == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+
+		// 处理块注释
+		if inBlockComment {
+			current.WriteByte(c)
+			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				current.WriteByte('/')
+				i++
+				inBlockComment = false
+			}
+			continue
+		}
+
+		// 处理单引号字符串
+		if inSingleQuote {
+			current.WriteByte(c)
+			if c == '\'' {
+				// 检查转义的引号 ''
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					current.WriteByte('\'')
+					i++
+				} else {
+					inSingleQuote = false
+				}
+			} else if c == '\\' && i+1 < len(sql) {
+				// MySQL 风格的反斜杠转义
+				current.WriteByte(sql[i+1])
+				i++
+			}
+			continue
+		}
+
+		// 处理双引号标识符
+		if inDoubleQuote {
+			current.WriteByte(c)
+			if c == '"' {
+				if i+1 < len(sql) && sql[i+1] == '"' {
+					current.WriteByte('"')
+					i++
+				} else {
+					inDoubleQuote = false
+				}
+			}
+			continue
+		}
+
+		// 正常模式
+		switch {
+		case c == ';':
+			s := strings.TrimSpace(current.String())
+			if s != "" {
+				results = append(results, s)
+			}
+			current.Reset()
+		case c == '\'':
+			inSingleQuote = true
+			current.WriteByte(c)
+		case c == '"':
+			inDoubleQuote = true
+			current.WriteByte(c)
+		case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+			inLineComment = true
+			current.WriteByte(c)
+		case c == '#':
+			inLineComment = true
+			current.WriteByte(c)
+		case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
+			inBlockComment = true
+			current.WriteByte(c)
+			current.WriteByte('*')
+			i++
+		default:
+			current.WriteByte(c)
 		}
 	}
-	return result
+
+	s := strings.TrimSpace(current.String())
+	if s != "" {
+		results = append(results, s)
+	}
+	return results
 }
 
 func extractTableNameFromSQL(sqlStr string) string {
@@ -651,13 +791,11 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 		return
 	}
 
-	for _, singleSQL := range sqlArr {
-		analysis := permission.AnalyzeSQL(singleSQL, schema)
-		permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
-		if !permResult.Allowed {
-			c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
-			return
-		}
+	// 使用批量权限检查，避免重复查询用户权限数据
+	permResult := permission.CheckBatchSQLPermission(sqlArr, connId, schema, authorization)
+	if permResult != nil {
+		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+		return
 	}
 
 	hasWrite := false

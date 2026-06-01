@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,47 @@ func (c *authLocalCache) remove(token string) {
 	c.mu.Lock()
 	delete(c.entries, token)
 	c.mu.Unlock()
+}
+
+// InvalidateByUserId 清除指定用户的所有缓存条目（权限变更时调用）
+func (c *authLocalCache) InvalidateByUserId(userId string) {
+	c.mu.Lock()
+	for k, v := range c.entries {
+		if v.userPower != nil && v.userPower.UserId == userId {
+			delete(c.entries, k)
+		}
+	}
+	c.mu.Unlock()
+}
+
+// InvalidateAll 清除所有缓存条目（角色权限变更时调用，因为无法确定影响哪些用户）
+func InvalidateAllAuthCache() {
+	authCache.mu.Lock()
+	authCache.entries = make(map[string]*authCacheEntry, 64)
+	authCache.mu.Unlock()
+	// 通知外部缓存失效（如 Permission Agent Cache）
+	notifyPermissionChanged()
+}
+
+// permissionChangedCallbacks 权限变更时的回调列表
+var permissionChangedCallbacks []func()
+var permCallbackMu sync.Mutex
+
+// OnPermissionChanged 注册权限变更回调（供外部包如 agent 注册缓存失效逻辑）
+func OnPermissionChanged(fn func()) {
+	permCallbackMu.Lock()
+	permissionChangedCallbacks = append(permissionChangedCallbacks, fn)
+	permCallbackMu.Unlock()
+}
+
+func notifyPermissionChanged() {
+	permCallbackMu.Lock()
+	cbs := make([]func(), len(permissionChangedCallbacks))
+	copy(cbs, permissionChangedCallbacks)
+	permCallbackMu.Unlock()
+	for _, fn := range cbs {
+		fn()
+	}
 }
 
 func GetCachedUserAndPower(authorization string) (*User, *UserPower) {
@@ -158,9 +200,27 @@ func CheckAdminPower(c *gin.Context) {
 	}
 	authorization := c.GetHeader("Authorization")
 	var userPower = GetUserPower(authorization)
-	if userPower.UserId != config.AdminId {
-		logger.PanicErr(errors.New("无权访问"))
+	// 兼容原有的硬编码管理员 ID
+	if userPower.UserId == config.AdminId {
+		return
 	}
+	// 支持多管理员：检查用户角色是否有管理员标记（role name 为 "admin" 或 "管理员"）
+	if isUserAdmin(userPower.UserId) {
+		return
+	}
+	logger.PanicErr(errors.New("无权访问"))
+}
+
+// isUserAdmin 检查用户是否拥有管理员角色
+func isUserAdmin(userId string) bool {
+	roles := FindUserRoles(userId)
+	for _, role := range roles {
+		name := strings.ToLower(role.Name)
+		if name == "admin" || name == "管理员" || name == "administrator" {
+			return true
+		}
+	}
+	return false
 }
 
 func formatStoreKey(key string) string {

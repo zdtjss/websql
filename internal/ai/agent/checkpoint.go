@@ -24,13 +24,15 @@ type checkpointEntry struct {
 }
 
 type InMemoryCheckPointStore struct {
-	mu    sync.RWMutex
-	store map[string]*checkpointEntry
+	mu     sync.RWMutex
+	store  map[string]*checkpointEntry
+	stopCh chan struct{}
 }
 
 func NewInMemoryCheckPointStore() *InMemoryCheckPointStore {
 	s := &InMemoryCheckPointStore{
-		store: make(map[string]*checkpointEntry),
+		store:  make(map[string]*checkpointEntry),
+		stopCh: make(chan struct{}),
 	}
 	go s.cleanLoop()
 	return s
@@ -65,16 +67,22 @@ func (s *InMemoryCheckPointStore) Delete(key string) {
 
 func (s *InMemoryCheckPointStore) cleanLoop() {
 	ticker := time.NewTicker(checkpointCleanSec)
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for k, v := range s.store {
-			if now.Sub(v.CreatedAt) > checkpointMaxAge {
-				delete(s.store, k)
-				log.Printf("[CheckPointStore] 清理过期 - key=%s\n", k)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for k, v := range s.store {
+				if now.Sub(v.CreatedAt) > checkpointMaxAge {
+					delete(s.store, k)
+					log.Printf("[CheckPointStore] 清理过期 - key=%s\n", k)
+				}
 			}
+			s.mu.Unlock()
+		case <-s.stopCh:
+			return
 		}
-		s.mu.Unlock()
 	}
 }
 

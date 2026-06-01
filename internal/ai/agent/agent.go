@@ -129,6 +129,8 @@ type SQLAgent struct {
 	scope            *PermissionScope
 	schemas          []SchemaRef
 	maxContextTokens int
+	cancelFunc       adk.AgentCancelFunc    // Eino v0.9 Agent Cancel 支持
+	sessionSync      *SessionSyncMiddleware // Eino v0.9 会话同步中间件
 }
 
 func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
@@ -192,7 +194,11 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 
 	var permAgentTool tool.BaseTool
 	if scope.IsRemote && !scope.HasFullConnAccess {
-		permAgentTool, err = GetPermissionAgentCache().GetOrCreate(ctx, cfg, connID, dbType, dbSchema, scope.UserID)
+		permSchemaNames := buildSchemaNames(schemas)
+		if len(permSchemaNames) == 0 && dbSchema != "" {
+			permSchemaNames = []string{dbSchema}
+		}
+		permAgentTool, err = GetPermissionAgentCache().GetOrCreate(ctx, cfg, connID, dbType, dbSchema, scope.UserID, permSchemaNames)
 		if err != nil {
 			log.Printf("[Agent] 创建权限审核 Agent 失败，回退到程序化检查 - err=%v\n", err)
 			permAgentTool = nil
@@ -207,6 +213,12 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		&ToolErrorRecoveryMiddleware{},
 		summarizationMW,
 	}
+
+	// SessionSyncMiddleware：对接 Eino Memory/Session，
+	// 在 summarization 压缩消息后自动同步到 SessionStore
+	sessionSyncMW := &SessionSyncMiddleware{}
+	handlers = append(handlers, sessionSyncMW)
+
 	if fsm != nil {
 		handlers = append(handlers, fsm)
 	}
@@ -225,19 +237,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		Handlers:      handlers,
 		MaxIterations: maxIterations,
 		ModelRetryConfig: &adk.ModelRetryConfig{
-			MaxRetries: 3,
-			IsRetryAble: func(ctx context.Context, err error) bool {
-				s := err.Error()
-				return strings.Contains(s, "429") ||
-					strings.Contains(s, "500") ||
-					strings.Contains(s, "502") ||
-					strings.Contains(s, "503") ||
-					strings.Contains(s, "504") ||
-					strings.Contains(s, "timeout") ||
-					strings.Contains(s, "connection") ||
-					strings.Contains(s, "rate limit") ||
-					strings.Contains(s, "too many requests")
-			},
+			MaxRetries:  3,
+			ShouldRetry: buildShouldRetryFunc(),
 		},
 	})
 
@@ -261,7 +262,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		resolvedCtxTokens = defaultContextTokens
 	}
 
-	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens}, nil
+	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW}, nil
 }
 
 // RunStream 流式执行（首次查询）
@@ -340,9 +341,26 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	}
 
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
-	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID))
+
+	// 使用 Eino v0.9 Agent Cancel：通过 WithCancel 获取 AgentRunOption 和 CancelFunc，
+	// 支持安全点取消（等待当前工具调用完成后再取消）
+	cancelOpt, cancelFn := adk.WithCancel()
+	a.cancelFunc = cancelFn
+
+	// 绑定 SessionSyncMiddleware，使 summarization 压缩后的消息能同步到 Session
+	if a.sessionSync != nil {
+		a.sessionSync.SetSession(sess, len(allMsgs))
+	}
+
+	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID), cancelOpt)
 
 	_, _ = a.processEvents(iter, flush, sess, checkPointID)
+
+	// 清理 cancelFunc 和 session 绑定
+	a.cancelFunc = nil
+	if a.sessionSync != nil {
+		a.sessionSync.ClearSession()
+	}
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
@@ -351,6 +369,14 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	log.Printf("[Agent] 执行完毕 - sessionID=%s\n", sessionID)
 
 	return sessionID, nil
+}
+
+// Cancel 主动取消正在运行的 Agent（Eino v0.9 安全点取消）
+func (a *SQLAgent) Cancel() {
+	if a.cancelFunc != nil {
+		log.Printf("[Agent] 触发 Agent Cancel\n")
+		a.cancelFunc()
+	}
 }
 
 // ResumeStream 恢复被中断的执行（用户确认/取消后）
@@ -448,6 +474,17 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				if errors.Is(event.Err, context.DeadlineExceeded) {
 					flush(StreamChunk{Type: "error", Content: "AI 处理超时，部分操作可能未完成。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				}
+				break
+			}
+			// Eino v0.9: 区分主动取消（CancelError）与普通业务失败
+			var cancelErr *adk.CancelError
+			if errors.As(event.Err, &cancelErr) {
+				sess.RemoveTrailingIncompleteToolCalls()
+				if fullResponse.Len() > 0 {
+					_ = sess.SaveToDB()
+				}
+				log.Printf("[Agent] Agent 被主动取消\n")
+				flush(StreamChunk{Type: "cancelled", Content: "已停止生成"})
 				break
 			}
 			if errors.Is(event.Err, adk.ErrExceedMaxIterations) || strings.Contains(event.Err.Error(), "exceeds max iterations") {
@@ -573,7 +610,65 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 // 辅助函数
 // ──────────────────────────────────────────────
 
-// detectPreviousExecution 检查会话历史中是否有过工具调用（查询/写入）
+// buildShouldRetryFunc 构建 v0.9 ShouldRetry 决策函数。
+// 相比旧的 IsRetryAble，ShouldRetry 可以读取模型输出、拒绝不满足条件的输出、
+// 修改下一次输入、追加模型 option，并覆盖 backoff。
+func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
+	return func(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
+		// 有错误时：根据错误类型决定是否重试
+		if retryCtx.Err != nil {
+			s := retryCtx.Err.Error()
+
+			// 不可重试的错误：内容安全过滤、认证失败
+			if strings.Contains(s, "content_filter") ||
+				strings.Contains(s, "content_policy") ||
+				strings.Contains(s, "safety") ||
+				strings.Contains(s, "401") ||
+				strings.Contains(s, "403") ||
+				strings.Contains(s, "invalid_api_key") {
+				log.Printf("[ShouldRetry] 不可重试错误 - err=%s\n", s)
+				return &adk.RetryDecision{Retry: false}
+			}
+
+			// 可重试的错误：速率限制、服务端错误、网络问题
+			isRetryable := strings.Contains(s, "429") ||
+				strings.Contains(s, "500") ||
+				strings.Contains(s, "502") ||
+				strings.Contains(s, "503") ||
+				strings.Contains(s, "504") ||
+				strings.Contains(s, "timeout") ||
+				strings.Contains(s, "connection") ||
+				strings.Contains(s, "rate limit") ||
+				strings.Contains(s, "too many requests") ||
+				strings.Contains(s, "stream") ||
+				strings.Contains(s, "EOF")
+
+			if isRetryable {
+				// 对 429 使用更长的退避时间
+				if strings.Contains(s, "429") || strings.Contains(s, "rate limit") || strings.Contains(s, "too many requests") {
+					backoff := time.Duration(retryCtx.RetryAttempt+1) * 3 * time.Second
+					log.Printf("[ShouldRetry] 速率限制，退避 %v - attempt=%d\n", backoff, retryCtx.RetryAttempt)
+					return &adk.RetryDecision{Retry: true, Backoff: backoff}
+				}
+				backoff := time.Duration(retryCtx.RetryAttempt+1) * time.Second
+				log.Printf("[ShouldRetry] 可重试错误，退避 %v - attempt=%d, err=%s\n", backoff, retryCtx.RetryAttempt, s)
+				return &adk.RetryDecision{Retry: true, Backoff: backoff}
+			}
+
+			log.Printf("[ShouldRetry] 未知错误，不重试 - err=%s\n", s)
+			return &adk.RetryDecision{Retry: false}
+		}
+
+		// 无错误但有输出时：检查模型输出质量
+		if retryCtx.OutputMessage != nil && retryCtx.OutputMessage.Content == "" && len(retryCtx.OutputMessage.ToolCalls) == 0 {
+			// 模型返回了空响应（无内容也无工具调用），重试
+			log.Printf("[ShouldRetry] 模型返回空响应，重试 - attempt=%d\n", retryCtx.RetryAttempt)
+			return &adk.RetryDecision{Retry: true, Backoff: time.Second}
+		}
+
+		return &adk.RetryDecision{Retry: false}
+	}
+}
 func detectPreviousExecution(msgs []SessionMessage) bool {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
@@ -640,8 +735,7 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 			Timeout: 30 * time.Minute,
 		}
 		if cfg.Temperature > 0 {
-			t := cfg.Temperature
-			openaiCfg.Temperature = &t
+			openaiCfg.Temperature = new(cfg.Temperature)
 		}
 		return openai.NewChatModel(ctx, openaiCfg)
 	default:

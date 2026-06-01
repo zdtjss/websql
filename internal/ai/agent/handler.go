@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"websql/internal/database"
-	"websql/internal/pkg/idgen"
 	admin "websql/internal/app/admin"
 	conn "websql/internal/app/conn"
 	system "websql/internal/app/system"
+	"websql/internal/database"
+	"websql/internal/pkg/idgen"
 
 	"github.com/gin-gonic/gin"
 )
@@ -246,6 +246,12 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
+	// 注册 Agent Cancel：当客户端断开连接时，触发 Agent 安全点取消
+	go func() {
+		<-c.Request.Context().Done()
+		agent.Cancel()
+	}()
+
 	sessionID, runErr := agent.RunStream(sse.runnerCtx, req, sse.flush)
 	close(sse.kaStop)
 	sess.ClearCancel()
@@ -339,6 +345,18 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"session": detail})
+}
+
+// HandleCancelAgent 主动取消正在运行的 Agent（Eino v0.9 Agent Cancel）
+func (h *Handler) HandleCancelAgent(c *gin.Context) {
+	sessionID := c.Query("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		return
+	}
+	// 通过 session 的 cancel 机制触发取消
+	h.sessions.Cancel(sessionID)
+	c.JSON(http.StatusOK, gin.H{"message": "已发送取消请求"})
 }
 
 func (h *Handler) HandleDeleteSession(c *gin.Context) {

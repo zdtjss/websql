@@ -23,6 +23,33 @@ type PermissionMiddleware struct {
 	PermAgent tool.BaseTool
 }
 
+// BeforeModelRewriteState 在模型调用前根据权限动态过滤 ToolInfos（Eino v0.9 新增）。
+// 无权限的工具直接从模型可见列表中移除，减少无效的工具调用尝试。
+func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	if m.Scope.SkipChecks() && m.Scope.AllowModify {
+		return ctx, state, nil // 完整权限，无需过滤
+	}
+
+	if state.ToolInfos == nil {
+		return ctx, state, nil
+	}
+
+	// 如果不允许修改数据，从工具列表中移除写操作工具
+	if !m.Scope.AllowModify {
+		filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
+		for _, ti := range state.ToolInfos {
+			if ti.Name == "exec_sql" || ti.Name == "import_data" {
+				log.Printf("%s [ToolInfos] 移除写操作工具 - tool=%s\n", m.logPrefix(), ti.Name)
+				continue
+			}
+			filtered = append(filtered, ti)
+		}
+		state.ToolInfos = filtered
+	}
+
+	return ctx, state, nil
+}
+
 func (m *PermissionMiddleware) logPrefix() string {
 	return fmt.Sprintf("[PermMW] user=%s conn=%s", m.Scope.UserID, m.Scope.ConnID)
 }
@@ -346,6 +373,25 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return m.applyQueryResultFilter(result, tables)
 	}
 
+	// 程序化预检：如果所有涉及的表都是 full 级别，直接放行，无需调用 Permission Agent
+	tables := appperm.ExtractTablesFromSQL(sql)
+	allTablesFullAccess := len(tables) > 0
+	for _, table := range tables {
+		level := m.Scope.GetTableAccessLevel(table)
+		if level != "full" {
+			allTablesFullAccess = false
+			break
+		}
+	}
+	if allTablesFullAccess {
+		m.logAllow("query_data", "precheck(all_tables_full)")
+		result, err := endpoint(ctx, args, opts...)
+		if err != nil {
+			return "", err
+		}
+		return m.applyQueryResultFilter(result, tables)
+	}
+
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "query_data")
 	if err != nil {
 		log.Printf("%s [降级] query_data Agent失败→程序化检查 - err=%v\n", m.logPrefix(), err)
@@ -358,7 +404,6 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 	}
 
 	m.logAllow("query_data", "agent")
-	tables := appperm.ExtractTablesFromSQL(sql)
 	result, err := endpoint(ctx, args, opts...)
 	if err != nil {
 		return "", err
@@ -421,6 +466,21 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 
 	if m.Scope.HasFullSchemaAccess {
 		m.logAllow("exec_sql", "schema_full(fast)")
+		return endpoint(ctx, args, opts...)
+	}
+
+	// 程序化预检：如果所有涉及的表都是 full 级别，直接放行
+	tables := appperm.ExtractTablesFromSQL(sql)
+	allTablesFullAccess := len(tables) > 0
+	for _, table := range tables {
+		level := m.Scope.GetTableAccessLevel(table)
+		if level != "full" {
+			allTablesFullAccess = false
+			break
+		}
+	}
+	if allTablesFullAccess {
+		m.logAllow("exec_sql", "precheck(all_tables_full)")
 		return endpoint(ctx, args, opts...)
 	}
 

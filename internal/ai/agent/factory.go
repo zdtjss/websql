@@ -25,9 +25,11 @@ type agentCacheEntry struct {
 }
 
 type AgentFactory struct {
-	mu      sync.RWMutex
-	cache   map[string]*agentCacheEntry
+	mu       sync.RWMutex
+	cache    map[string]*agentCacheEntry
 	sessions *SessionStore
+	stopCh   chan struct{}
+	stopped  sync.Once
 }
 
 var globalAgentFactory *AgentFactory
@@ -43,10 +45,20 @@ func GetAgentFactory() *AgentFactory {
 		globalAgentFactory = &AgentFactory{
 			cache:    make(map[string]*agentCacheEntry),
 			sessions: sessions,
+			stopCh:   make(chan struct{}),
 		}
 		go globalAgentFactory.cleanLoop()
 	})
 	return globalAgentFactory
+}
+
+// Close 关闭 AgentFactory，停止后台清理 goroutine（防止 goroutine 泄漏）
+func (f *AgentFactory) Close() {
+	f.stopped.Do(func() {
+		close(f.stopCh)
+		f.sessions.Close()
+		log.Printf("[AgentFactory] 已关闭\n")
+	})
 }
 
 func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
@@ -98,16 +110,22 @@ func (f *AgentFactory) GetSessions() *SessionStore {
 
 func (f *AgentFactory) cleanLoop() {
 	ticker := time.NewTicker(agentCacheCleanSec)
-	for range ticker.C {
-		f.mu.Lock()
-		now := time.Now()
-		for k, v := range f.cache {
-			if now.Sub(v.createdAt) > agentCacheTTL {
-				delete(f.cache, k)
-				log.Printf("[AgentFactory] 清理过期 - key=%s\n", k)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			f.mu.Lock()
+			now := time.Now()
+			for k, v := range f.cache {
+				if now.Sub(v.createdAt) > agentCacheTTL {
+					delete(f.cache, k)
+					log.Printf("[AgentFactory] 清理过期 - key=%s\n", k)
+				}
 			}
+			f.mu.Unlock()
+		case <-f.stopCh:
+			return
 		}
-		f.mu.Unlock()
 	}
 }
 

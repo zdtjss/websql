@@ -19,8 +19,10 @@ import (
 
 var Mngtdb *sqlx.DB
 var (
-	DBMap   = make(map[string]*sqlx.DB)
-	dbMapMu sync.RWMutex
+	DBMap       = make(map[string]*sqlx.DB)
+	dbMapMu     sync.RWMutex
+	dbLastUsed  = make(map[string]time.Time)
+	maxPoolSize = 100 // 最大连接池数量
 )
 
 func InitMngtDbConn() {
@@ -69,6 +71,9 @@ func GetConn(param *DBParam) *sqlx.DB {
 
 	dbMapMu.RLock()
 	val, ok := DBMap[key]
+	if ok {
+		dbLastUsed[key] = time.Now()
+	}
 	dbMapMu.RUnlock()
 	if ok {
 		return val
@@ -102,7 +107,14 @@ func GetConn(param *DBParam) *sqlx.DB {
 		db.Close()
 		return existing
 	}
+
+	// LRU 淘汰：当连接池数量超过上限时，关闭最久未使用的连接
+	if len(DBMap) >= maxPoolSize {
+		evictLRULocked()
+	}
+
 	DBMap[key] = db
+	dbLastUsed[key] = time.Now()
 	dbMapMu.Unlock()
 
 	log.Printf("数据库连接成功， env = %s, db = %s", param.Name, param.User)
@@ -116,20 +128,65 @@ func GetConn(param *DBParam) *sqlx.DB {
 				dbMapMu.Lock()
 				if current, ok := DBMap[key]; ok && current == db {
 					delete(DBMap, key)
+					delete(dbLastUsed, key)
 				}
 				dbMapMu.Unlock()
 				return
 			}
+			// 更新最后使用时间（健康检查也算活跃）
+			dbMapMu.Lock()
+			if _, ok := DBMap[key]; ok {
+				dbLastUsed[key] = time.Now()
+			}
+			dbMapMu.Unlock()
 		}
 	}()
 
 	return db
 }
 
+// evictLRULocked 淘汰最久未使用的连接，调用时必须持有 dbMapMu 写锁
+func evictLRULocked() {
+	// 淘汰 10% 的连接，避免频繁淘汰
+	evictCount := maxPoolSize / 10
+	if evictCount < 1 {
+		evictCount = 1
+	}
+
+	for i := 0; i < evictCount; i++ {
+		if len(DBMap) == 0 {
+			break
+		}
+		oldestKey := ""
+		oldestTime := time.Now()
+		for k, t := range dbLastUsed {
+			if t.Before(oldestTime) {
+				oldestTime = t
+				oldestKey = k
+			}
+		}
+		if oldestKey != "" {
+			if db, ok := DBMap[oldestKey]; ok {
+				db.Close()
+			}
+			delete(DBMap, oldestKey)
+			delete(dbLastUsed, oldestKey)
+			log.Printf("连接池 LRU 淘汰: key=%s, lastUsed=%v", oldestKey, oldestTime)
+		}
+	}
+}
+
 func makeDsn(param *DBParam) string {
 	switch param.DbType {
 	case "oracle":
-		return "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
+		dsn := "oracle://" + param.User + ":" + param.Pwd + "@" + param.Url
+		// 强制指定客户端字符集为 AL32UTF8，确保服务器返回 UTF-8 编码数据，避免中文乱码
+		if strings.Contains(dsn, "?") {
+			dsn += "&charset=AL32UTF8"
+		} else {
+			dsn += "?charset=AL32UTF8"
+		}
+		return dsn
 	case "mysql":
 		return fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
 	case "sqlite", "sqlite3":
@@ -146,6 +203,7 @@ func RealseConn(param *DBParam) {
 		db.Close()
 	}
 	delete(DBMap, key)
+	delete(dbLastUsed, key)
 	dbMapMu.Unlock()
 }
 

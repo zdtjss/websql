@@ -59,16 +59,65 @@ def _create_connection(src: dict):
 
     if db_type in ("mysql", "mariadb"):
         import pymysql
-        parts = dsn.split("@")
-        user_pass = parts[0].split(":")
-        host_db = parts[1].split("/")
-        host_port = host_db[0].split(":")
+        # 支持结构化参数（优先）或 DSN 字符串
+        if "host" in src:
+            return pymysql.connect(
+                host=src["host"],
+                port=int(src.get("port", 3306)),
+                user=src.get("user", "root"),
+                password=src.get("password", ""),
+                database=src.get("database", ""),
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+            )
+        # DSN 格式: user:password@host:port/database
+        # 使用更健壮的解析方式
+        try:
+            from urllib.parse import urlparse, unquote
+            # 尝试解析为 URL 格式
+            if dsn.startswith("mysql://") or dsn.startswith("pymysql://"):
+                parsed = urlparse(dsn)
+                return pymysql.connect(
+                    host=parsed.hostname or "localhost",
+                    port=parsed.port or 3306,
+                    user=unquote(parsed.username or "root"),
+                    password=unquote(parsed.password or ""),
+                    database=parsed.path.lstrip("/"),
+                    charset="utf8mb4",
+                    cursorclass=pymysql.cursors.DictCursor,
+                )
+        except Exception:
+            pass
+        # 兼容旧格式: user:pass@host:port/db
+        at_idx = dsn.rfind("@")  # 使用 rfind 处理密码中包含 @ 的情况
+        if at_idx == -1:
+            raise ValueError(f"Invalid MySQL DSN format: {dsn[:20]}...")
+        user_pass = dsn[:at_idx]
+        host_db = dsn[at_idx + 1:]
+        colon_idx = user_pass.find(":")  # 第一个冒号分隔 user 和 password
+        if colon_idx == -1:
+            user, password = user_pass, ""
+        else:
+            user = user_pass[:colon_idx]
+            password = user_pass[colon_idx + 1:]
+        slash_idx = host_db.find("/")
+        if slash_idx == -1:
+            host_port, database = host_db, ""
+        else:
+            host_port = host_db[:slash_idx]
+            database = host_db[slash_idx + 1:]
+        port_idx = host_port.rfind(":")
+        if port_idx == -1:
+            host, port = host_port, 3306
+        else:
+            host = host_port[:port_idx]
+            port = int(host_port[port_idx + 1:])
         return pymysql.connect(
-            host=host_port[0],
-            port=int(host_port[1]) if len(host_port) > 1 else 3306,
-            user=user_pass[0],
-            password=user_pass[1] if len(user_pass) > 1 else "",
-            database=host_db[1],
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
             charset="utf8mb4",
             cursorclass=pymysql.cursors.DictCursor,
         )
@@ -472,11 +521,15 @@ def _run_cross_conn_join(
             rconn, f"SELECT * FROM {rtbl} LIMIT {fetch_limit}", right_src["dbType"], timeout,
         )
 
+    # 构建右表 Hash 索引
     right_index: dict[Any, list[dict]] = defaultdict(list)
     for r in right_rows:
         key_val = r.get(right_key)
         if key_val is not None:
             right_index[key_val].append(r)
+
+    # 构建左表 Hash 索引（用于 right/full join 检测右表独有行）
+    left_keys_matched: set = set()
 
     matched = []
     left_only = []
@@ -484,6 +537,7 @@ def _run_cross_conn_join(
         key_val = l_row.get(left_key)
         r_matches = right_index.get(key_val, [])
         if r_matches:
+            left_keys_matched.add(key_val)
             for r_row in r_matches:
                 merged = {}
                 for k, v in l_row.items():
@@ -497,11 +551,32 @@ def _run_cross_conn_join(
             merged = {}
             for k, v in l_row.items():
                 merged[f"left_{k}"] = v
+            # 右表列填充 None
+            if right_rows:
+                for k in right_rows[0].keys():
+                    merged[f"right_{k}"] = None
             if select_columns:
                 merged = {k: merged.get(k) for k in select_columns if k in merged}
             left_only.append(merged)
 
-    result_rows = matched + left_only
+    # 处理 right join 和 full join 中右表独有行
+    right_only = []
+    if join_type in ("right", "full"):
+        for r_row in right_rows:
+            key_val = r_row.get(right_key)
+            if key_val not in left_keys_matched:
+                merged = {}
+                # 左表列填充 None
+                if left_rows:
+                    for k in left_rows[0].keys():
+                        merged[f"left_{k}"] = None
+                for k, v in r_row.items():
+                    merged[f"right_{k}"] = v
+                if select_columns:
+                    merged = {k: merged.get(k) for k in select_columns if k in merged}
+                right_only.append(merged)
+
+    result_rows = matched + left_only + right_only
     result_rows, truncated = truncate_result(result_rows)
 
     return {
@@ -511,6 +586,8 @@ def _run_cross_conn_join(
         "leftRowsFetched": len(left_rows),
         "rightRowsFetched": len(right_rows),
         "matchedRows": len(matched),
+        "leftOnlyRows": len(left_only),
+        "rightOnlyRows": len(right_only),
         "truncated": truncated,
         "data": result_rows,
     }

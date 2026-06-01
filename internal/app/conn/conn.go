@@ -178,7 +178,8 @@ func ListConn2(c *gin.Context) {
 	sql := bytes.Buffer{}
 	sql.WriteString("select c.*,t.label parent_name from t_conn c left join t_tree t on c.parent_id = t.id where 1 = 1 ")
 	if name != "" {
-		sql.WriteString(" and c.name like '%" + name + "%'")
+		sql.WriteString(" and c.name like ?")
+		param = append(param, "%"+name+"%")
 	}
 	if parentId != "" {
 		if parentId == "none" {

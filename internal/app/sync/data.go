@@ -6,8 +6,12 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
+	"websql/internal/app/admin"
 	"websql/internal/app/conn"
+	"websql/internal/app/permission"
+	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -65,7 +69,28 @@ func CompareData(c *gin.Context) {
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
 
-	dbType := conn1.DriverName()
+	if conn1 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"error": "源数据库连接不可用，请检查连接配置或权限",
+		})
+		return
+	}
+	if conn2 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"error": "目标数据库连接不可用，请检查连接配置或权限",
+		})
+		return
+	}
+
+	dbType1 := conn1.DriverName()
+	dbType2 := conn2.DriverName()
+	if dbType1 != dbType2 {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"error": fmt.Sprintf("不允许跨数据库类型比较数据: 源=%s, 目标=%s", dbType1, dbType2),
+		})
+		return
+	}
+	dbType := dbType1
 
 	if table == "" {
 		jsonutil.WriteJson(c.Writer, map[string]any{
@@ -79,6 +104,12 @@ func CompareData(c *gin.Context) {
 			"error": "表名包含非法字符",
 		})
 		return
+	}
+
+	// 权限校验：检查用户对源表和目标表的读权限
+	if config.Cfg.IsRemote {
+		permission.CheckTablePermission(connId1, schema1, table, authorization)
+		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
 
 	sourceCount := getRowCount(conn1, dbType, schema1, table)
@@ -402,9 +433,23 @@ func findCommonColumns(data1, data2 []map[string]any) []string {
 }
 
 func escapeSQLValue(v any) string {
+	if v == nil {
+		return "NULL"
+	}
 	s := fmt.Sprintf("%v", v)
+	if s == "<nil>" {
+		return "NULL"
+	}
+	// 转义单引号（SQL 标准）
 	s = strings.ReplaceAll(s, "'", "''")
+	// 转义反斜杠（MySQL 兼容）
 	s = strings.ReplaceAll(s, "\\", "\\\\")
+	// 转义换行和制表符
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	// 转义 NULL 字节
+	s = strings.ReplaceAll(s, "\x00", "")
 	return s
 }
 
@@ -414,12 +459,21 @@ func ApplyDataSync(c *gin.Context) {
 	sqlStr := c.PostForm("sql")
 
 	authorization := c.GetHeader("Authorization")
-	conn := conn.GetConn(connId, authorization)
+	dbConn := conn.GetConn(connId, authorization)
+
+	if dbConn == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
 
 	if strings.TrimSpace(sqlStr) == "" {
 		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "SQL不能为空"})
 		return
 	}
+
+	// 获取当前用户信息用于审计
+	userVal, _ := c.Get("currentUser")
+	user, _ := userVal.(*admin.User)
 
 	sqlList := strings.Split(sqlStr, ";")
 	validatedSQLs := make([]string, 0, len(sqlList))
@@ -435,7 +489,26 @@ func ApplyDataSync(c *gin.Context) {
 		validatedSQLs = append(validatedSQLs, s)
 	}
 
-	tx, err := conn.Beginx()
+	// 权限校验：对每条 SQL 做表级/列级权限检查
+	if config.Cfg.IsRemote {
+		// 检查用户是否有写权限
+		if !permission.CheckUserCanModify(authorization) {
+			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行同步操作"})
+			return
+		}
+		for _, s := range validatedSQLs {
+			analysis := permission.AnalyzeSQL(s, schema)
+			permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
+			if !permResult.Allowed {
+				jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": permResult.Message})
+				return
+			}
+		}
+	}
+
+	startTime := time.Now()
+
+	tx, err := dbConn.Beginx()
 	if err != nil {
 		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
 		return
@@ -467,6 +540,37 @@ func ApplyDataSync(c *gin.Context) {
 		tx.Rollback()
 	} else {
 		tx.Commit()
+	}
+
+	totalAffected := insertCount + updateCount + deleteCount
+	execTimeMs := int(time.Since(startTime).Milliseconds())
+
+	// 审计日志
+	auditStatus := "success"
+	auditError := ""
+	if len(errors) > 0 {
+		auditStatus = "failed"
+		auditError = strings.Join(errors, "; ")
+		if len(auditError) > 500 {
+			auditError = auditError[:500] + "..."
+		}
+	}
+	if user != nil {
+		audit.GetAuditService().Record(&audit.AuditEntry{
+			Source:       "datasync",
+			SQLText:      fmt.Sprintf("[DataSync] %d statements (INSERT:%d UPDATE:%d DELETE:%d)", len(validatedSQLs), insertCount, updateCount, deleteCount),
+			SQLType:      "SYNC",
+			RiskLevel:    "medium",
+			Status:       auditStatus,
+			ConnID:       connId,
+			SchemaName:   schema,
+			UserID:       user.Id,
+			UserName:     user.Name,
+			ClientIP:     c.ClientIP(),
+			AffectedRows: totalAffected,
+			ExecTimeMs:   execTimeMs,
+			ErrorMsg:     auditError,
+		})
 	}
 
 	log.Printf("[SyncAudit] ApplyDataSync connId=%s schema=%s sqlCount=%d insert=%d update=%d delete=%d success=%v user=%s",
@@ -526,6 +630,16 @@ func GenerateSyncSQL(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
+
+	if conn1 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
+	if conn2 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
+
 	dbType := conn1.DriverName()
 
 	if !isValidIdentifier(table) {
@@ -533,6 +647,12 @@ func GenerateSyncSQL(c *gin.Context) {
 			"error": "表名包含非法字符",
 		})
 		return
+	}
+
+	// 权限校验
+	if config.Cfg.IsRemote {
+		permission.CheckTablePermission(connId1, schema1, table, authorization)
+		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
 
 	sourceCount := getRowCount(conn1, dbType, schema1, table)
@@ -706,6 +826,16 @@ func CompareDataChunked(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
+
+	if conn1 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
+	if conn2 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
+
 	dbType := conn1.DriverName()
 
 	if table == "" {

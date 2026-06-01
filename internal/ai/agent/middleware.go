@@ -292,6 +292,24 @@ func recoveryHint(toolName, args string, err error) string {
 
 type ToolCallLoggingMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
+	startTime time.Time
+}
+
+// AfterAgent 在 Agent 成功结束后记录总耗时和统计信息（Eino v0.9 新增）
+func (m *ToolCallLoggingMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
+	if !m.startTime.IsZero() {
+		elapsed := time.Since(m.startTime)
+		log.Printf("[ToolCallLogging] Agent 执行完毕 - 总耗时=%v, 消息数=%d\n", elapsed, len(state.Messages))
+	}
+	return ctx, nil
+}
+
+// BeforeModelRewriteState 记录 Agent 开始时间
+func (m *ToolCallLoggingMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	if m.startTime.IsZero() {
+		m.startTime = time.Now()
+	}
+	return ctx, state, nil
 }
 
 func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(

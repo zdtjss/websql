@@ -21,13 +21,13 @@ func init() {
 	schema.RegisterName[*PermDecisionOutput]("permission.PermDecisionOutput")
 }
 
-func NewPermissionAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, userID string) (*adk.ChatModelAgent, error) {
+func NewPermissionAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, userID string, schemaNames []string) (*adk.ChatModelAgent, error) {
 	cm, err := BuildChatModel(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create permission agent model failed: %w", err)
 	}
 
-	tools, err := buildPermissionAgentTools(ctx, connID, userID, dbSchema)
+	tools, err := buildPermissionAgentTools(ctx, connID, userID, dbSchema, schemaNames)
 	if err != nil {
 		return nil, fmt.Errorf("create permission agent tools failed: %w", err)
 	}
@@ -51,14 +51,14 @@ func NewPermissionAgent(ctx context.Context, cfg *system.AIConfig, connID, dbTyp
 	return agent, nil
 }
 
-func buildPermissionAgentTools(_ context.Context, connID, userID, dbSchema string) ([]tool.BaseTool, error) {
+func buildPermissionAgentTools(_ context.Context, connID, userID, dbSchema string, schemaNames []string) ([]tool.BaseTool, error) {
 	tableStructureTool, _ := utils.InferTool("get_table_structure",
 		"获取指定表的结构信息（列名、类型、是否可空等）。用于了解SQL中涉及的表有哪些",
 		newGetTableStructureFunc(connID, dbSchema, userID))
 
 	userPermsTool, _ := utils.InferTool("get_user_permissions",
 		"获取当前用户在此数据库连接上的数据权限配置。返回连接级、表级、字段级的授权范围",
-		newGetUserPermissionsFunc(userID, connID, dbSchema))
+		newGetUserPermissionsFunc(userID, connID, schemaNames))
 
 	allTools := []tool.BaseTool{tableStructureTool, userPermsTool}
 	var validTools []tool.BaseTool

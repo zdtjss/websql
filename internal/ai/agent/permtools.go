@@ -167,13 +167,13 @@ func getTableColumnsFromConn(conn *sqlx.DB, dbSchema, tableName string) ([]rawCo
 	return columns, nil
 }
 
-func newGetUserPermissionsFunc(userID, connID, schemaName string) func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
+func newGetUserPermissionsFunc(userID, connID string, schemaNames []string) func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
 	return func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
-		log.Printf("[PermAgent:get_user_permissions] userID=%s, connID=%s, schema=%s\n", userID, connID, schemaName)
-		scope := BuildPermissionScope(userID, connID, []string{schemaName})
+		log.Printf("[PermAgent:get_user_permissions] userID=%s, connID=%s, schemas=%v\n", userID, connID, schemaNames)
+		scope := BuildPermissionScope(userID, connID, schemaNames)
 		output := &PermUserPermissionsOutput{
 			ConnID:              connID,
-			SchemaName:          schemaName,
+			SchemaName:          firstNonEmpty(schemaNames),
 			HasFullConnAccess:   scope.HasFullConnAccess,
 			HasFullSchemaAccess: scope.HasFullSchemaAccess,
 		}

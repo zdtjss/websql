@@ -31,8 +31,8 @@ type SessionDB struct {
 
 // SessionToolCall mirrors the tool call structure stored in session messages
 type SessionToolCall struct {
-	ID       string             `json:"id"`
-	Type     string             `json:"type"`
+	ID       string              `json:"id"`
+	Type     string              `json:"type"`
 	Function SessionFunctionCall `json:"function"`
 }
 
@@ -97,6 +97,14 @@ func (s *Session) AppendMessageNoSave(msg SessionMessage) {
 	defer s.mu.Unlock()
 
 	s.messages = append(s.messages, msg)
+}
+
+// ReplaceMessages 替换整个消息列表（用于 summarization 压缩后同步）
+func (s *Session) ReplaceMessages(msgs []SessionMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = msgs
+	s.scheduleSave()
 }
 
 // GetMessages 获取所有消息的副本
@@ -322,9 +330,9 @@ func (s *Session) doSave() error {
 // ──────────────────────────────────────────────
 
 const (
-	sessionMaxIdleTime = 30 * time.Minute
+	sessionMaxIdleTime   = 30 * time.Minute
 	sessionCleanInterval = 5 * time.Minute
-	sessionMaxCacheSize = 500
+	sessionMaxCacheSize  = 500
 )
 
 type SessionStore struct {
@@ -332,6 +340,7 @@ type SessionStore struct {
 	cache   map[string]*Session
 	cancels map[string]context.CancelFunc
 	stopCh  chan struct{}
+	stopped sync.Once
 }
 
 func NewSessionStore() (*SessionStore, error) {
@@ -378,7 +387,17 @@ func (s *SessionStore) evictIdleSessions() {
 }
 
 func (s *SessionStore) Close() {
-	close(s.stopCh)
+	s.stopped.Do(func() {
+		close(s.stopCh)
+		// 清理所有缓存的会话，防止 goroutine 泄漏
+		s.mu.Lock()
+		for _, sess := range s.cache {
+			sess.Cancel()
+		}
+		s.cache = make(map[string]*Session)
+		s.mu.Unlock()
+		log.Printf("[SessionStore] 已关闭，所有会话已清理\n")
+	})
 }
 
 // GetOrCreate 获取或创建会话

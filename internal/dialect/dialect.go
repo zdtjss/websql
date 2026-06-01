@@ -6,9 +6,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 	"websql/internal/logger"
 
 	"slices"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 var SQL_DIALECT = map[string]map[string]string{
@@ -133,7 +136,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 	"oracle": func(colType *string, val *any, overSign bool) *any {
 		var v any
 		if b, ok := (*val).([]byte); ok {
-			strVal := string(b)
+			strVal := fixOracleEncoding(string(b))
 			switch *colType {
 			case "NUMBER":
 				i, err := strconv.ParseInt(strVal, 10, 64)
@@ -169,10 +172,12 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 					}
 				}
 			default:
-				v = string(b)
+				v = strVal
 			}
 		} else if t, ok := (*val).(time.Time); ok {
 			v = time.Time(t).Format(time.DateTime)
+		} else if s, ok := (*val).(string); ok {
+			v = fixOracleEncoding(s)
 		} else {
 			v = *val
 		}
@@ -281,4 +286,29 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 		}
 		return &retVal
 	},
+}
+
+// fixOracleEncoding 修复 Oracle 返回的可能存在编码问题的字符串。
+// 当 go-ora 驱动未能正确转换字符集时（如服务器使用 ZHS16GBK 等中文字符集），
+// 返回的 string 可能包含非法 UTF-8 序列。此函数检测并尝试用 GBK 解码修复。
+func fixOracleEncoding(s string) string {
+	if s == "" {
+		return s
+	}
+	// 如果已经是合法的 UTF-8，直接返回
+	if utf8.ValidString(s) {
+		return s
+	}
+	// 尝试用 GBK 解码（中国 Oracle 数据库最常见的字符集）
+	decoded, err := simplifiedchinese.GBK.NewDecoder().String(s)
+	if err == nil && utf8.ValidString(decoded) {
+		return decoded
+	}
+	// GBK 失败，尝试 GB18030（GBK 的超集，覆盖更多字符）
+	decoded, err = simplifiedchinese.GB18030.NewDecoder().String(s)
+	if err == nil && utf8.ValidString(decoded) {
+		return decoded
+	}
+	// 都失败了，返回原始字符串
+	return s
 }

@@ -5,8 +5,12 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
+	"websql/internal/app/admin"
 	"websql/internal/app/conn"
+	"websql/internal/app/permission"
+	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/pkg/jsonutil"
@@ -78,6 +82,21 @@ func CompareSchema(c *gin.Context) {
 	authorization := c.GetHeader("Authorization")
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
+
+	if conn1 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"diffs": []SchemaDiffItem{},
+			"error": "源数据库连接不可用，请检查连接配置或权限",
+		})
+		return
+	}
+	if conn2 == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"diffs": []SchemaDiffItem{},
+			"error": "目标数据库连接不可用，请检查连接配置或权限",
+		})
+		return
+	}
 
 	dbType1 := conn1.DriverName()
 	dbType2 := conn2.DriverName()
@@ -733,11 +752,28 @@ func ApplySchemaDiff(c *gin.Context) {
 	sqlStr := c.PostForm("sql")
 
 	authorization := c.GetHeader("Authorization")
-	conn := conn.GetConn(connId, authorization)
+	dbConn := conn.GetConn(connId, authorization)
+
+	if dbConn == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
+		return
+	}
 
 	if strings.TrimSpace(sqlStr) == "" {
 		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "SQL不能为空"})
 		return
+	}
+
+	// 获取当前用户信息用于审计
+	userVal, _ := c.Get("currentUser")
+	user, _ := userVal.(*admin.User)
+
+	// 权限校验：检查用户是否有写权限
+	if config.Cfg.IsRemote {
+		if !permission.CheckUserCanModify(authorization) {
+			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行 Schema 变更"})
+			return
+		}
 	}
 
 	sqlList := strings.Split(sqlStr, ";")
@@ -754,7 +790,9 @@ func ApplySchemaDiff(c *gin.Context) {
 		validatedSQLs = append(validatedSQLs, s)
 	}
 
-	tx, err := conn.Beginx()
+	startTime := time.Now()
+
+	tx, err := dbConn.Beginx()
 	if err != nil {
 		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
 		return
@@ -779,6 +817,36 @@ func ApplySchemaDiff(c *gin.Context) {
 		tx.Rollback()
 	} else {
 		tx.Commit()
+	}
+
+	execTimeMs := int(time.Since(startTime).Milliseconds())
+
+	// 审计日志
+	auditStatus := "success"
+	auditError := ""
+	if len(errors) > 0 {
+		auditStatus = "failed"
+		auditError = strings.Join(errors, "; ")
+		if len(auditError) > 500 {
+			auditError = auditError[:500] + "..."
+		}
+	}
+	if user != nil {
+		audit.GetAuditService().Record(&audit.AuditEntry{
+			Source:       "schemasync",
+			SQLText:      fmt.Sprintf("[SchemaDiff] %d statements, executed=%d", len(validatedSQLs), executedCount),
+			SQLType:      "DDL",
+			RiskLevel:    "high",
+			Status:       auditStatus,
+			ConnID:       connId,
+			SchemaName:   schema,
+			UserID:       user.Id,
+			UserName:     user.Name,
+			ClientIP:     c.ClientIP(),
+			AffectedRows: executedCount,
+			ExecTimeMs:   execTimeMs,
+			ErrorMsg:     auditError,
+		})
 	}
 
 	log.Printf("[SyncAudit] ApplySchemaDiff connId=%s schema=%s sqlCount=%d success=%v user=%s",
@@ -832,22 +900,30 @@ func GetSyncTargets(c *gin.Context) {
 	connId := c.Query("connId")
 	schema := c.Query("schema")
 
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	dbConn := conn.GetConn(connId, authorization)
+	if dbConn == nil {
+		jsonutil.WriteJson(c.Writer, map[string]any{
+			"tables":  []string{},
+			"schemas": []string{},
+			"error":   "数据库连接不可用，请检查连接配置或权限",
+		})
+		return
+	}
+	dbType := dbConn.DriverName()
 
 	if schema == "" {
 		switch dbType {
 		case "mysql", "mariadb":
-			conn.Get(&schema, "SELECT DATABASE()")
+			dbConn.Get(&schema, "SELECT DATABASE()")
 		case "oracle":
-			conn.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+			dbConn.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
 		case "sqlite":
 			schema = "main"
 		}
 	}
 
-	tables, _ := getTableList(conn, dbType, schema)
-	schemas := getSchemaList(conn, dbType)
+	tables, _ := getTableList(dbConn, dbType, schema)
+	schemas := getSchemaList(dbConn, dbType)
 
 	jsonutil.WriteJson(c.Writer, map[string]any{
 		"tables":  tables,

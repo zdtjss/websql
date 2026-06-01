@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	admin "websql/internal/app/admin"
 	system "websql/internal/app/system"
 
 	"github.com/cloudwego/eino/adk"
@@ -26,23 +27,38 @@ type permAgentEntry struct {
 }
 
 type PermissionAgentCache struct {
-	mu    sync.RWMutex
-	cache map[string]*permAgentEntry
+	mu      sync.RWMutex
+	cache   map[string]*permAgentEntry
+	stopCh  chan struct{}
+	stopped sync.Once
 }
 
 var globalPermAgentCache = &PermissionAgentCache{
-	cache: make(map[string]*permAgentEntry),
+	cache:  make(map[string]*permAgentEntry),
+	stopCh: make(chan struct{}),
 }
 
 func init() {
 	go globalPermAgentCache.cleanLoop()
+	// 注册权限变更回调，当角色权限变更时清除 Permission Agent 缓存
+	admin.OnPermissionChanged(func() {
+		globalPermAgentCache.InvalidateAll()
+	})
 }
 
 func GetPermissionAgentCache() *PermissionAgentCache {
 	return globalPermAgentCache
 }
 
-func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, userID string) (tool.BaseTool, error) {
+// Close 关闭 PermissionAgentCache，停止后台清理 goroutine
+func (c *PermissionAgentCache) Close() {
+	c.stopped.Do(func() {
+		close(c.stopCh)
+		log.Printf("[PermAgentCache] 已关闭\n")
+	})
+}
+
+func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, userID string, schemaNames []string) (tool.BaseTool, error) {
 	key := fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
 	cfgHash := aiConfigHash(cfg)
 
@@ -54,7 +70,7 @@ func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AICo
 		return entry.agentTool, nil
 	}
 
-	agent, err := NewPermissionAgent(ctx, cfg, connID, dbType, dbSchema, userID)
+	agent, err := NewPermissionAgent(ctx, cfg, connID, dbType, dbSchema, userID, schemaNames)
 	if err != nil {
 		return nil, err
 	}
@@ -76,15 +92,32 @@ func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AICo
 
 func (c *PermissionAgentCache) cleanLoop() {
 	ticker := time.NewTicker(permAgentCleanSec)
-	for range ticker.C {
-		c.mu.Lock()
-		now := time.Now()
-		for k, v := range c.cache {
-			if now.Sub(v.createdAt) > permAgentCacheTTL {
-				delete(c.cache, k)
-				log.Printf("[PermAgentCache] 清理过期 - key=%s\n", k)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			c.mu.Lock()
+			now := time.Now()
+			for k, v := range c.cache {
+				if now.Sub(v.createdAt) > permAgentCacheTTL {
+					delete(c.cache, k)
+					log.Printf("[PermAgentCache] 清理过期 - key=%s\n", k)
+				}
 			}
+			c.mu.Unlock()
+		case <-c.stopCh:
+			return
 		}
-		c.mu.Unlock()
+	}
+}
+
+// InvalidateAll 清除所有 Permission Agent 缓存（权限变更时调用）
+func (c *PermissionAgentCache) InvalidateAll() {
+	c.mu.Lock()
+	count := len(c.cache)
+	c.cache = make(map[string]*permAgentEntry)
+	c.mu.Unlock()
+	if count > 0 {
+		log.Printf("[PermAgentCache] 权限变更，清除全部缓存 - count=%d\n", count)
 	}
 }
