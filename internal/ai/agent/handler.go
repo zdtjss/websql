@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -320,16 +321,49 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
 		return
 	}
-	metas, err := h.sessions.ListByUserID(user.Id)
+
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "0"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+
+	total, err := countSessionsByUserID(user.Id, keyword)
+	if err != nil {
+		log.Printf("[Handler] 统计会话数量失败 - userId=%s, err=%v\n", user.Id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
+		return
+	}
+
+	sessions, err := listSessionsByUserIDPaged(user.Id, keyword, pageSize, offset)
 	if err != nil {
 		log.Printf("[Handler] 获取会话列表失败 - userId=%s, err=%v\n", user.Id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
 		return
 	}
-	if metas == nil {
-		metas = []SessionMeta{}
+
+	metas := make([]SessionMeta, 0, len(sessions))
+	for _, sess := range sessions {
+		title := sess.Title
+		if title == "" {
+			title = "未命名会话"
+		}
+		metas = append(metas, SessionMeta{ID: sess.ID, Title: title, CreatedAt: sess.CreatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{"sessions": metas})
+	c.JSON(http.StatusOK, gin.H{
+		"sessions": metas,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 
 func (h *Handler) HandleGetSession(c *gin.Context) {

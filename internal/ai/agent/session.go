@@ -769,6 +769,56 @@ func listSessionsByUserID(userID string) ([]SessionDB, error) {
 	return sessions, nil
 }
 
+func listSessionsByUserIDPaged(userID, keyword string, limit, offset int) ([]SessionDB, error) {
+	var sessions []SessionDB
+	var (
+		sqlStr string
+		args   []any
+	)
+	if keyword == "" {
+		sqlStr = `
+			SELECT id, user_id, COALESCE(title,'') as title, created_at, updated_at
+			FROM t_ai_session WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?
+		`
+		args = []any{userID, limit, offset}
+	} else {
+		sqlStr = `
+			SELECT id, user_id, COALESCE(title,'') as title, created_at, updated_at
+			FROM t_ai_session WHERE user_id = ? AND title LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?
+		`
+		args = []any{userID, "%" + keyword + "%", limit, offset}
+	}
+	if err := database.Mngtdb.Select(&sessions, sqlStr, args...); err != nil {
+		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
+			return []SessionDB{}, nil
+		}
+		return nil, err
+	}
+	return sessions, nil
+}
+
+func countSessionsByUserID(userID, keyword string) (int, error) {
+	var (
+		sqlStr string
+		args   []any
+	)
+	if keyword == "" {
+		sqlStr = `SELECT COUNT(*) FROM t_ai_session WHERE user_id = ?`
+		args = []any{userID}
+	} else {
+		sqlStr = `SELECT COUNT(*) FROM t_ai_session WHERE user_id = ? AND title LIKE ?`
+		args = []any{userID, "%" + keyword + "%"}
+	}
+	var count int
+	if err := database.Mngtdb.Get(&count, sqlStr, args...); err != nil {
+		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return count, nil
+}
+
 func deleteSessionInDB(id string) error {
 	_, err := database.Mngtdb.Exec(`DELETE FROM t_ai_session WHERE id = ?`, id)
 	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {

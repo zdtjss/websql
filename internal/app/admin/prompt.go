@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,47 +151,112 @@ func getCurrentUserId(c *gin.Context) string {
 func PromptList(c *gin.Context) {
 	userId := getCurrentUserId(c)
 
+	tab := strings.TrimSpace(c.Query("tab"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "0"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+
 	userRoleIds := []string{}
 	database.Mngtdb.Select(&userRoleIds, "select role_id from t_user_role where user_id = ?", userId)
 
-	prompts := []*Prompt{}
+	keywordCond := ""
+	if keyword != "" {
+		keywordCond = " and p.title like ?"
+	}
+
+	tabCond := ""
+	switch tab {
+	case "mine":
+		tabCond = " and (t.role_id is null or t.role_id = '')"
+	case "system":
+		tabCond = " and (t.role_id is not null and t.role_id <> '')"
+	}
+
+	var innerSql string
+	var countSql string
+	var args []any
+	var countArgs []any
 
 	if len(userRoleIds) > 0 {
-		placeholders := strings.Repeat("?,", len(userRoleIds))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := []any{userId, userId}
+		rolePlaceholders := strings.Repeat("?,", len(userRoleIds))
+		rolePlaceholders = rolePlaceholders[:len(rolePlaceholders)-1]
+		innerSql = `
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
+			from t_prompt p
+			where p.created_by = ?` + keywordCond + `
+			union
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
+			from t_prompt p
+			inner join t_prompt_share ps on p.id = ps.prompt_id
+			where ps.shared_to = ?` + keywordCond + `
+			union
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
+			from t_prompt p
+			where p.role_id in (` + rolePlaceholders + `)` + keywordCond
+		args = []any{userId}
+		countArgs = []any{userId}
+		if keyword != "" {
+			args = append(args, "%"+keyword+"%")
+			countArgs = append(countArgs, "%"+keyword+"%")
+		}
+		args = append(args, userId)
+		countArgs = append(countArgs, userId)
+		if keyword != "" {
+			args = append(args, "%"+keyword+"%")
+			countArgs = append(countArgs, "%"+keyword+"%")
+		}
 		for _, rid := range userRoleIds {
 			args = append(args, rid)
+			countArgs = append(countArgs, rid)
 		}
-
-		err := database.Mngtdb.Select(&prompts,
-			`select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
-			from t_prompt p
-			where p.created_by = ?
-			union
-			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
-			from t_prompt p
-			inner join t_prompt_share ps on p.id = ps.prompt_id
-			where ps.shared_to = ?
-			union
-			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
-			from t_prompt p
-			where p.role_id in (`+placeholders+`)
-			order by updated_at desc`,
-			args...)
-		logger.PanicErr(err)
+		if keyword != "" {
+			args = append(args, "%"+keyword+"%")
+			countArgs = append(countArgs, "%"+keyword+"%")
+		}
 	} else {
-		err := database.Mngtdb.Select(&prompts,
-			`select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
+		innerSql = `
+			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
-			where p.created_by = ?
+			where p.created_by = ?` + keywordCond + `
 			union
 			select p.id, p.title, p.content, p.created_by, p.role_id, p.schemas, p.tables, p.created_at, p.updated_at
 			from t_prompt p
 			inner join t_prompt_share ps on p.id = ps.prompt_id
-			where ps.shared_to = ?
-			order by updated_at desc`,
-			userId, userId)
+			where ps.shared_to = ?` + keywordCond
+		args = []any{userId}
+		countArgs = []any{userId}
+		if keyword != "" {
+			args = append(args, "%"+keyword+"%")
+			countArgs = append(countArgs, "%"+keyword+"%")
+		}
+		args = append(args, userId)
+		countArgs = append(countArgs, userId)
+		if keyword != "" {
+			args = append(args, "%"+keyword+"%")
+			countArgs = append(countArgs, "%"+keyword+"%")
+		}
+	}
+
+	var countResult int
+	countSql = "select count(*) from (" + innerSql + ") t where 1=1" + tabCond
+	logger.PanicErr(database.Mngtdb.Get(&countResult, countSql, countArgs...))
+
+	pagedSql := "select * from (" + innerSql + ") t where 1=1" + tabCond +
+		" order by updated_at desc limit ? offset ?"
+	args = append(args, pageSize, offset)
+
+	prompts := []*Prompt{}
+	if err := database.Mngtdb.Select(&prompts, pagedSql, args...); err != nil {
 		logger.PanicErr(err)
 	}
 
@@ -220,7 +286,12 @@ func PromptList(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, prompts)
+	jsonutil.WriteJson(c.Writer, gin.H{
+		"items":    prompts,
+		"total":    countResult,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 
 func PromptListByRole(c *gin.Context) {

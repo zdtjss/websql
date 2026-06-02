@@ -127,12 +127,31 @@
                       <template #label>
                         <span style="display: inline-flex; align-items: center; gap: 6px; width: 100%;">
                           我的
-                          <el-icon v-if="promptLoading" class="is-loading" size="14"><Loading /></el-icon>
+                          <el-icon v-if="myPromptLoading" class="is-loading" size="14"><Loading /></el-icon>
                           <el-icon :size="10" style="top: -10px;" @click="handlePromptAdd"><Plus /></el-icon>
                         </span>
                       </template>
+                      <div class="prompt-search-box">
+                        <el-input
+                          v-model="promptSearchKeyword"
+                          size="small"
+                          placeholder="按标题搜索"
+                          clearable
+                          v-if="myPromptsTotal > promptPageSize"
+                          @input="handlePromptSearchInput"
+                        >
+                          <template #prefix>
+                            <el-icon><Search /></el-icon>
+                          </template>
+                        </el-input>
+                      </div>
                       <div class="prompt-list">
-                        <div v-if="myPrompts.length === 0" class="prompt-empty">暂无提示词</div>
+                        <div v-if="myPromptLoading && myPrompts.length === 0" style="text-align: center; padding: 10px;">
+                          <el-icon class="is-loading"><Loading /></el-icon>
+                        </div>
+                        <div v-else-if="myPrompts.length === 0" class="prompt-empty">
+                          {{ promptSearchKeyword ? '没有匹配的提示词' : '暂无提示词' }}
+                        </div>
                         <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
@@ -163,13 +182,39 @@
                           </div>
                         </div>
                       </div>
+                      <div v-if="myPromptsTotal > promptPageSize" class="prompt-pagination">
+                        <el-pagination
+                          v-model:current-page="myPromptCurrentPage"
+                          :page-size="promptPageSize"
+                          :total="myPromptsTotal"
+                          layout="prev, pager, next"
+                          small
+                          @current-change="handleMyPromptPageChange"
+                        />
+                      </div>
                     </el-tab-pane>
                     <el-tab-pane label="系统" name="system">
+                      <div class="prompt-search-box">
+                        <el-input
+                          v-model="promptSearchKeyword"
+                          size="small"
+                          placeholder="按标题搜索"
+                          clearable
+                          v-if="systemPromptsTotal > promptPageSize"
+                          @input="handlePromptSearchInput"
+                        >
+                          <template #prefix>
+                            <el-icon><Search /></el-icon>
+                          </template>
+                        </el-input>
+                      </div>
                       <div class="prompt-list">
-                        <div v-if="promptLoading" style="text-align: center; padding: 10px;">
+                        <div v-if="systemPromptLoading && systemPrompts.length === 0" style="text-align: center; padding: 10px;">
                           <el-icon class="is-loading"><Loading /></el-icon>
                         </div>
-                        <div v-else-if="systemPrompts.length === 0" class="prompt-empty">暂无系统提示词</div>
+                        <div v-else-if="systemPrompts.length === 0" class="prompt-empty">
+                          {{ promptSearchKeyword ? '没有匹配的系统提示词' : '暂无系统提示词' }}
+                        </div>
                         <div v-for="prompt in systemPrompts" title="点击发送给大模型" :key="prompt.id" class="prompt-item" @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
                           <div class="prompt-item-info">
                             <div class="prompt-item-title">{{ prompt.title }}</div>
@@ -188,6 +233,16 @@
                             </el-button>
                           </div>
                         </div>
+                      </div>
+                      <div v-if="systemPromptsTotal > promptPageSize" class="prompt-pagination">
+                        <el-pagination
+                          v-model:current-page="systemPromptCurrentPage"
+                          :page-size="promptPageSize"
+                          :total="systemPromptsTotal"
+                          layout="prev, pager, next"
+                          small
+                          @current-change="handleSystemPromptPageChange"
+                        />
                       </div>
                     </el-tab-pane>
                   </el-tabs>
@@ -230,32 +285,61 @@
               </el-popover>
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="sessionHistoryVisible" 
                 @show="loadSessionList()">
-                <div style="max-height: 400px; overflow-y: auto;">
-                  <el-empty v-if="sessionList.length === 0 && !loadingSessions" description="暂无历史会话" />
-                  <el-skeleton v-if="loadingSessions" :rows="4" animated />
-                  <div v-else style="display: flex; flex-direction: column; gap: 8px;">
-                    <div v-for="sess in sessionList" :key="sess.id" class="session-item">
-                      <div class="session-content" @click="handleClickSession(sess.id)">
-                        <div class="session-title">{{ sess.title || '未命名会话' }}</div>
-                        <div class="session-time">
-                          <el-icon>
-                            <Clock />
-                          </el-icon>
-                          {{ formatDate(sess.createdAt) }}
+                <div class="session-history-body">
+                  <div class="session-search-box">
+                    <el-input
+                      v-model="sessionSearchKeyword"
+                      size="small"
+                      placeholder="搜索会话标题"
+                      clearable
+                      @input="handleSessionSearchInput"
+                    >
+                      <template #prefix>
+                        <el-icon><Search /></el-icon>
+                      </template>
+                    </el-input>
+                  </div>
+                  <div class="session-list-scroll">
+                    <el-empty v-if="loadingSessions && sessionList.length === 0" :description="'加载中...'" />
+                    <el-empty v-else-if="sessionList.length === 0 && sessionSearchKeyword" description="没有匹配的会话" />
+                    <el-empty v-else-if="sessionList.length === 0" description="暂无历史会话" />
+                    <el-skeleton v-else-if="loadingSessions" :rows="4" animated />
+                    <div v-else style="display: flex; flex-direction: column; gap: 8px;">
+                      <div v-for="sess in sessionList" :key="sess.id" class="session-item">
+                        <div class="session-content" @click="handleClickSession(sess.id)">
+                          <div class="session-title">{{ sess.title || '未命名会话' }}</div>
+                          <div class="session-time">
+                            <el-icon>
+                              <Clock />
+                            </el-icon>
+                            {{ formatDate(sess.createdAt) }}
+                          </div>
+                        </div>
+                        <div class="session-actions">
+                          <el-popconfirm title="确定要删除这个会话吗？" @confirm="deleteSession(sess.id)">
+                            <template #reference>
+                              <el-button type="danger" size="small" text @click.stop>
+                                <el-icon>
+                                  <Delete />
+                                </el-icon>
+                              </el-button>
+                            </template>
+                          </el-popconfirm>
                         </div>
                       </div>
-                      <div class="session-actions">
-                        <el-popconfirm title="确定要删除这个会话吗？" @confirm="deleteSession(sess.id)">
-                          <template #reference>
-                            <el-button type="danger" size="small" text @click.stop>
-                              <el-icon>
-                                <Delete />
-                              </el-icon>  
-                            </el-button>
-                          </template>
-                        </el-popconfirm>
-                      </div>
                     </div>
+                  </div>
+                  <div v-if="sessionListTotal > sessionPageSize" class="session-pagination">
+                    <el-pagination
+                      v-model:current-page="sessionCurrentPage"
+                      v-model:page-size="sessionPageSize"
+                      :page-sizes="[5, 10, 20, 50]"
+                      :total="sessionListTotal"
+                      layout="prev, pager, next"
+                      small
+                      @current-change="handleSessionPageChange"
+                      @size-change="handleSessionSizeChange"
+                    />
                   </div>
                 </div>
                 <template #reference>
@@ -451,7 +535,7 @@ import http from '@/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
-import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Moon, Plus, Promotion, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -560,19 +644,94 @@ const { visible: promptEditDialogVisible, promptId: editingPromptId, roleId: edi
 
 const promptPopoverVisible = ref(false)
 
-const prompts = ref([])
-const promptLoading = ref(false)
+const myPrompts = ref([])
+const systemPrompts = ref([])
+const myPromptsTotal = ref(0)
+const systemPromptsTotal = ref(0)
+const myPromptLoading = ref(false)
+const systemPromptLoading = ref(false)
 const activeTab = ref('mine')
 const promptDetailVisible = ref(false)
 const promptDetail = ref(null)
 
-const myPrompts = computed(() =>
-  prompts.value.filter(p => !p.isRolePrompt)
-)
+const promptSearchKeyword = ref('')
+const myPromptCurrentPage = ref(1)
+const systemPromptCurrentPage = ref(1)
+const promptPageSize = ref(10)
+let promptSearchDebounceTimer = null
 
-const systemPrompts = computed(() =>
-  prompts.value.filter(p => p.isRolePrompt)
-)
+async function fetchPrompts(tab) {
+  const params = {
+    tab,
+    page: tab === 'mine' ? myPromptCurrentPage.value : systemPromptCurrentPage.value,
+    pageSize: promptPageSize.value,
+  }
+  const keyword = promptSearchKeyword.value.trim()
+  if (keyword) {
+    params.keyword = keyword
+  }
+  const targetLoading = tab === 'mine' ? myPromptLoading : systemPromptLoading
+  targetLoading.value = true
+  try {
+    const resp = await http.get('/promptList', { params })
+    const data = resp.data.data || {}
+    const items = (data.items || []).map(p => ({
+      ...p,
+      isShared: p.createdBy !== p.currentUserId && !p.isRolePrompt,
+    }))
+    if (tab === 'mine') {
+      myPrompts.value = items
+      myPromptsTotal.value = data.total || 0
+    } else {
+      systemPrompts.value = items
+      systemPromptsTotal.value = data.total || 0
+    }
+  } catch (e) {
+    console.error(`加载${tab === 'mine' ? '我的' : '系统'}提示词失败:`, e)
+    if (tab === 'mine') {
+      myPrompts.value = []
+      myPromptsTotal.value = 0
+    } else {
+      systemPrompts.value = []
+      systemPromptsTotal.value = 0
+    }
+  } finally {
+    targetLoading.value = false
+  }
+}
+
+function loadPrompts() {
+  promptSearchKeyword.value = ''
+  myPromptCurrentPage.value = 1
+  systemPromptCurrentPage.value = 1
+  return Promise.all([fetchPrompts('mine'), fetchPrompts('system')])
+}
+
+function refetchPrompts() {
+  return Promise.all([fetchPrompts('mine'), fetchPrompts('system')])
+}
+
+function handlePromptSearchInput() {
+  myPromptCurrentPage.value = 1
+  systemPromptCurrentPage.value = 1
+  if (promptSearchDebounceTimer) {
+    clearTimeout(promptSearchDebounceTimer)
+  }
+  promptSearchDebounceTimer = setTimeout(() => {
+    promptSearchDebounceTimer = null
+    refetchPrompts()
+  }, 300)
+}
+
+function handleMyPromptPageChange(page) {
+  myPromptCurrentPage.value = page
+  fetchPrompts('mine')
+}
+
+function handleSystemPromptPageChange(page) {
+  systemPromptCurrentPage.value = page
+  fetchPrompts('system')
+}
 
 const showLoginBtn = ref(true)
 const loginDialogVisible = ref(false)
@@ -977,7 +1136,11 @@ function validateExtractedSchemas() {
 // 历史会话相关
 const sessionHistoryVisible = ref(false)
 const sessionList = ref([])
+const sessionListTotal = ref(0)
 const loadingSessions = ref(false)
+const sessionSearchKeyword = ref('')
+const sessionCurrentPage = ref(1)
+const sessionPageSize = ref(10)
 
 // 用于记录已经渲染过的链接，避免重复处理
 const processedLinks = new Set()
@@ -2848,21 +3011,6 @@ function handlePromptSaved() {
   triggerPromptSaved()
 }
 
-async function loadPrompts() {
-  promptLoading.value = true
-  try {
-    const resp = await http.get('/promptList')
-    prompts.value = (resp.data.data || []).map(p => ({
-      ...p,
-      isShared: p.createdBy !== p.currentUserId && !p.isRolePrompt,
-    }))
-  } catch (e) {
-    console.error('加载提示词列表失败:', e)
-  } finally {
-    promptLoading.value = false
-  }
-}
-
 async function handleDeletePrompt(prompt) {
   try {
     await http.get('/delPrompt', { params: { id: prompt.id } })
@@ -3076,9 +3224,23 @@ function formatDate(isoString) {
 async function loadSessionList() {
   loadingSessions.value = true
   sessionList.value = []
+  sessionCurrentPage.value = 1
+  sessionSearchKeyword.value = ''
 
+  await fetchSessionList()
+}
+
+async function fetchSessionList() {
+  loadingSessions.value = true
   const apiBase = import.meta.env.VITE_API_URL || ''
-  const url = apiBase + '/ai/agent/sessions'
+  const params = new URLSearchParams()
+  params.set('page', String(sessionCurrentPage.value))
+  params.set('pageSize', String(sessionPageSize.value))
+  const keyword = sessionSearchKeyword.value.trim()
+  if (keyword) {
+    params.set('keyword', keyword)
+  }
+  const url = apiBase + '/ai/agent/sessions?' + params.toString()
   const auth = sessionStorage.getItem('authentication') || ''
 
   try {
@@ -3101,16 +3263,40 @@ async function loadSessionList() {
     }
 
     const data = await resp.json()
-    const sessions = data.sessions || []
-    // 按时间倒序排列（最新的在最上面）
-    sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    sessionList.value = sessions
+    sessionList.value = data.sessions || []
+    sessionListTotal.value = data.total || 0
   } catch (e) {
     console.error('[App] 加载历史会话失败:', e)
     ElMessage({ message: '加载历史会话失败', type: 'error' })
+    sessionList.value = []
+    sessionListTotal.value = 0
   } finally {
     loadingSessions.value = false
   }
+}
+
+let sessionSearchDebounceTimer = null
+
+function handleSessionSearchInput() {
+  sessionCurrentPage.value = 1
+  if (sessionSearchDebounceTimer) {
+    clearTimeout(sessionSearchDebounceTimer)
+  }
+  sessionSearchDebounceTimer = setTimeout(() => {
+    sessionSearchDebounceTimer = null
+    fetchSessionList()
+  }, 300)
+}
+
+function handleSessionPageChange(page) {
+  sessionCurrentPage.value = page
+  fetchSessionList()
+}
+
+function handleSessionSizeChange(size) {
+  sessionPageSize.value = size
+  sessionCurrentPage.value = 1
+  fetchSessionList()
 }
 
 async function deleteSession(id) {
@@ -3138,7 +3324,10 @@ async function deleteSession(id) {
     }
 
     ElMessage({ message: '会话已删除', type: 'success' })
-    await loadSessionList() // 刷新列表
+    if (sessionList.value.length <= 1 && sessionCurrentPage.value > 1) {
+      sessionCurrentPage.value -= 1
+    }
+    await fetchSessionList()
   } catch (e) {
     console.error('[App] 删除会话失败:', e)
     ElMessage({ message: '删除会话失败', type: 'error' })
@@ -3676,6 +3865,36 @@ onUnmounted(() => {
 }
 
 /* ========== 历史会话项样式 ========== */
+.session-history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+}
+
+.session-search-box {
+  flex-shrink: 0;
+}
+
+.session-list-scroll {
+  max-height: 400px;
+  overflow-y: auto;
+  min-height: 60px;
+}
+
+.session-pagination {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.session-pagination :deep(.el-pager li),
+.session-pagination :deep(.btn-prev),
+.session-pagination :deep(.btn-next) {
+  background: transparent !important;
+}
+
 .session-item {
   display: flex;
   align-items: center;
@@ -4300,6 +4519,25 @@ onUnmounted(() => {
 
 .prompt-popover-body .prompt-toolbar {
   flex-shrink: 0;
+}
+
+.prompt-popover-body .prompt-search-box {
+  flex-shrink: 0;
+  padding: 4px 8px 8px;
+}
+
+.prompt-popover-body .prompt-pagination {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.prompt-popover-body .prompt-pagination :deep(.el-pager li),
+.prompt-popover-body .prompt-pagination :deep(.btn-prev),
+.prompt-popover-body .prompt-pagination :deep(.btn-next) {
+  background: transparent !important;
 }
 
 .prompt-popover-body .prompt-list {
