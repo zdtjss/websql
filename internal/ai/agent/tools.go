@@ -201,7 +201,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			return nil, err
 		}
 		sql := strings.TrimSpace(input.SQL)
-		stripped := stripSQLComments(sql)
+		stripped := StripSQLComments(sql)
 		upper := strings.ToUpper(stripped)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
@@ -230,6 +230,22 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			if input.ConnID == "" && targetConnID == connId {
 				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId, userId); altConn != nil {
 					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, altSchema)
+					// 安全审计：自动路由事件必须可追溯（EINO_DEEP_ANALYSIS §13）
+					if auditCtx != nil {
+						audit.GetAuditService().Record(&audit.AuditEntry{
+							Source:    "agent",
+							ToolName:  "query_data.auto_route",
+							SQLText:   input.SQL,
+							SQLType:   "SELECT",
+							RiskLevel: "low",
+							Status:    "auto_routed",
+							ConnID:    altConnID,
+							SessionID: auditCtx.SessionID,
+							UserID:    auditCtx.UserID,
+							UserName:  auditCtx.UserName,
+							ErrorMsg:  fmt.Sprintf("from=%s to=%s schema=%s reason=%v", connId, altConnID, altSchema, err),
+						})
+					}
 					altRawSQL := strings.TrimSpace(input.SQL)
 					altSQL := qualifyBareTableNames(altRawSQL, altConn.DriverName(), altSchema)
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -288,46 +304,76 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 	})
 }
 
+// tryAlternativeConn 在用户没有显式传 connId 时，尝试把 SQL 自动路由到其他连接。
+//
+// EINO_DEEP_ANALYSIS §13 安全加固：
+//  1. **必须**是用户 SQL 显式带了 schema（`select * from x.users` 中的 x），
+//     才允许跨连接自动路由。**否则**直接放弃路由——让 LLM 知道"当前连接没这个表"。
+//     这避免了"用户在 connA 想查 users，系统静默切到 connB 的 users"这种隐式
+//     横向移动（违反 least-privilege）。
+//  2. 自动路由**只能**发生在 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 这类只读
+//     操作上（由调用方在调用本函数前保证）。
+//  3. 任何一次自动路由都会**强制**记一条 audit，便于事后追溯。
+//
+// 返回：目标 connID、连接的 *sqlx.DB、匹配的 schema；都不满足时返回 "", nil, ""。
 func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string, userId string) (string, *sqlx.DB, string) {
-	schema := extractSchemaFromSQL(sql)
-	if schema != "" {
-		altConnID, ok := connLookup[strings.ToUpper(schema)]
-		if ok && altConnID != defaultConnID {
-			altConn, _ := GetConn(altConnID, userId)
-			if altConn != nil {
-				return altConnID, altConn, schema
-			}
-		}
-	}
-
-	tableNames := extractTableNamesFromSQL(sql)
-	if len(tableNames) == 0 {
+	// 安全：只承认"显式 schema.表名"形式。模糊 FROM users 不会触发跨连接路由。
+	schema := extractExplicitSchemaFromSQL(sql)
+	if schema == "" {
+		log.Printf("[Tool:query_data] tryAlternativeConn 拒绝：用户 SQL 未指定显式 schema，按 least-privilege 不跨连接路由 - connId=%s\n", defaultConnID)
 		return "", nil, ""
 	}
-	seen := make(map[string]bool)
-	for altSchema, altConnID := range connLookup {
-		if altConnID == defaultConnID || seen[altConnID] {
-			continue
-		}
-		seen[altConnID] = true
-		altConn, _ := GetConn(altConnID, userId)
-		if altConn == nil {
-			continue
-		}
-		if connContainsAnyTable(altConn, altSchema, tableNames) {
-			return altConnID, altConn, altSchema
-		}
+	altConnID, ok := connLookup[strings.ToUpper(schema)]
+	if !ok || altConnID == defaultConnID {
+		return "", nil, ""
+	}
+	altConn, _ := GetConn(altConnID, userId)
+	if altConn != nil {
+		log.Printf("[Tool:query_data] 命中显式 schema=%s 跨连接路由 - from=%s to=%s\n", schema, defaultConnID, altConnID)
+		return altConnID, altConn, schema
 	}
 	return "", nil, ""
 }
 
+// extractExplicitSchemaFromSQL 只识别"schema 显式出现"的情况：
+//   - SELECT * FROM mySchema.myTable
+//   - SELECT * FROM mySchema.myTable t1 JOIN mySchema.myTable t2 ON ...
+//
+// **不**识别：
+//   - SELECT * FROM myTable（无 schema 前缀）
+//
+// 区别于 extractSchemaFromSQL（后者可能从配置/会话中推断 schema），
+// 本函数是**纯静态**文本分析，避免误判。
+func extractExplicitSchemaFromSQL(sql string) string {
+	cleaned := StripSQLComments(sql)
+	// 三段式：schema.table
+	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO)\s+(?:` +
+		"`" + `([A-Za-z_][A-Za-z0-9_]*)` + "`" + `\s*\.\s*` + "`" + `[A-Za-z_][A-Za-z0-9_]*` + "`" + `|` +
+		`"([A-Za-z_][A-Za-z0-9_]*)"\s*\.\s*"([A-Za-z_][A-Za-z0-9_]*)"` + `|` +
+		`([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*))`)
+	matches := re.FindAllStringSubmatch(cleaned, -1)
+	for _, m := range matches {
+		// 第一个非空 capture group 就是 schema（capture 1/2/4 都是 schema 部分）
+		for i := 1; i < len(m); i++ {
+			if m[i] != "" {
+				// 双引号场景的 schema 在 group 2（双引号左半边）；反引号在 group 1
+				// 无引号场景的 schema 在 group 4（左半边）
+				return strings.ToUpper(m[i])
+			}
+		}
+	}
+	return ""
+}
+
 func extractTableNamesFromSQL(sql string) []string {
+	// 先剥离注释，避免注释里的 from/join/select 等被误识别为表名或关键字
+	cleaned := StripSQLComments(sql)
 	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:` +
 		"`" + `([^` + "`" + `]+)` + "`" + `|` +
 		`"([^"]+)"|` +
 		`\[([^\]]+)\]|` +
 		`([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*))`)
-	matches := re.FindAllStringSubmatch(sql, -1)
+	matches := re.FindAllStringSubmatch(cleaned, -1)
 	var tables []string
 	seen := make(map[string]bool)
 	for _, m := range matches {
@@ -357,75 +403,34 @@ func extractTableNamesFromSQL(sql string) []string {
 	return tables
 }
 
-func connContainsAnyTable(conn *sqlx.DB, schemaName string, tableNames []string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var query string
-	var args []any
-	switch conn.DriverName() {
-	case "mysql", "mariadb":
-		placeholders := make([]string, len(tableNames))
-		args = make([]any, 0, len(tableNames)+1)
-		args = append(args, schemaName)
-		for i, t := range tableNames {
-			placeholders[i] = "?"
-			args = append(args, t)
-		}
-		query = fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_NAME IN (%s) LIMIT 1", strings.Join(placeholders, ","))
-	case "oracle":
-		placeholders := make([]string, len(tableNames))
-		args = make([]any, 0, len(tableNames)+1)
-		args = append(args, strings.ToUpper(schemaName))
-		for i, t := range tableNames {
-			placeholders[i] = ":" + fmt.Sprintf("%d", i+2)
-			args = append(args, t)
-		}
-		query = fmt.Sprintf("SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = :1 AND TABLE_NAME IN (%s) AND ROWNUM = 1", strings.Join(placeholders, ","))
-	default:
-		return false
-	}
-	rows, err := conn.QueryxContext(ctx, query, args...)
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	return rows.Next()
-}
-
-func extractSchemaFromSQL(sql string) string {
-	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:` + "`" + `([^` + "`" + `]+)` + "`" + `|\"([^\"]+)\"|\[([^\]]+)\]|(\w+))\s*\.\s*(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\"[^\"]+\"|\[[^\]]+\]|\w+)`)
-	matches := re.FindStringSubmatch(sql)
-	if len(matches) > 1 {
-		for i := 1; i < len(matches); i++ {
-			if matches[i] != "" {
-				return matches[i]
-			}
-		}
-	}
-	return ""
-}
-
 func qualifyBareTableNames(sql, dbType, schema string) string {
 	if schema == "" {
 		return sql
 	}
+	// 先剥离注释，避免注释中的"FROM xxx"被误加前缀
+	cleaned := StripSQLComments(sql)
 	re := regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	var result strings.Builder
 	lastEnd := 0
-	for _, loc := range re.FindAllStringSubmatchIndex(sql, -1) {
-		result.WriteString(sql[lastEnd:loc[0]])
-		keyword := sql[loc[2]:loc[3]]
-		tableName := sql[loc[4]:loc[5]]
-		afterMatch := sql[loc[1]:]
+	for _, loc := range re.FindAllStringSubmatchIndex(cleaned, -1) {
+		// 注意：以下索引均指向 cleaned，但写回到 result，意味着返回值
+		// 不包含原始注释（这通常是期望的：避免 SQL 含 "/* schema-1 */ SELECT 1"
+		// 然后被错误地加上 schema-2 前缀）。
+		// 重新拼装 cleaned[loc[2]:loc[5]] 部分以保留原 case。
+		keyword := cleaned[loc[2]:loc[3]]
+		tableName := cleaned[loc[4]:loc[5]]
+		afterMatch := cleaned[loc[1]:]
 		trimmed := strings.TrimLeft(afterMatch, " \t")
+		result.WriteString(cleaned[lastEnd:loc[0]])
 		if len(trimmed) > 0 && trimmed[0] == '.' {
-			result.WriteString(sql[loc[0]:loc[1]])
+			// 已有 schema 前缀，原样保留
+			result.WriteString(cleaned[loc[0]:loc[1]])
 		} else {
 			result.WriteString(keyword + " " + quoteTableRef(dbType, schema, tableName))
 		}
 		lastEnd = loc[1]
 	}
-	result.WriteString(sql[lastEnd:])
+	result.WriteString(cleaned[lastEnd:])
 	return result.String()
 }
 
@@ -1238,29 +1243,33 @@ func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string
 	}
 	var setParts, whereParts []string
 	var setArgs, whereArgs []any
-	argIdx := 0
 	for i, col := range columns {
 		qCol := quoteIdent(dbType, col)
 		if pkSet[strings.ToUpper(col)] {
+			// PK 列：进 WHERE 子句
 			if dbType == "oracle" {
-				argIdx++
-				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", qCol, argIdx+len(columns)))
+				// Oracle 的 :N 占位符编号是相对于最终合并 args 切片的位置
+				// 最终 args = setArgs + whereArgs，所以 PK 位置 = len(setArgs) + 1（1-based）
+				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", qCol, len(setArgs)+len(whereArgs)+1))
 			} else {
 				whereParts = append(whereParts, fmt.Sprintf("%s = ?", qCol))
 			}
 			whereArgs = append(whereArgs, row[i])
 		} else {
+			// 普通列：进 SET 子句
 			if dbType == "oracle" {
-				argIdx++
-				setParts = append(setParts, fmt.Sprintf("%s = :%d", qCol, argIdx))
+				setParts = append(setParts, fmt.Sprintf("%s = :%d", qCol, len(setArgs)+1))
 			} else {
 				setParts = append(setParts, fmt.Sprintf("%s = ?", qCol))
 			}
 			setArgs = append(setArgs, row[i])
 		}
 	}
-	if len(setParts) == 0 || len(whereParts) == 0 {
-		return errors.New("cannot build update: missing SET or WHERE")
+	if len(setParts) == 0 {
+		return errors.New("cannot build update: no SET columns (all columns are PKs?)")
+	}
+	if len(whereParts) == 0 {
+		return errors.New("cannot build update: missing WHERE (PK column missing in data row?)")
 	}
 	args := append(setArgs, whereArgs...)
 	tableRef := quoteTableRef(dbType, dbSchema, tableName)
@@ -1302,17 +1311,31 @@ func quoteTableRef(dbType, dbSchema, tableName string) string {
 	return quoteIdent(dbType, tableName)
 }
 
+// applyRowLimit 给 SELECT 加 LIMIT，未带 LIMIT 时附加。
+//
+// 支持检测：
+//   - LIMIT n
+//   - LIMIT n, m  (MySQL offset, count)
+//   - LIMIT n OFFSET m
+//   - FETCH NEXT/FIRST n ROWS ONLY (Oracle 12c+)
+//   - ROWNUM 谓词 (Oracle 老版本)
+//
+// Oracle 12c+ 优先使用 OFFSET 0 ROWS FETCH NEXT N ROWS ONLY（保留 ORDER BY 语义）；
+// 老版本回退到 SELECT * FROM (...) WHERE ROWNUM <= N（注意：此方法会破坏 ORDER BY）。
 func applyRowLimit(sql, driverName string, maxRows int) string {
-	trimmed := strings.TrimRight(sql, "; \t\r\n")
+	// **必须**先剥注释——否则 SELECT * FROM users -- LIMIT 999 中的 LIMIT 999
+	// 会被正则误识别为"已有 LIMIT"，导致永远不追加真实 LIMIT。
+	// （EINO_DEEP_ANALYSIS §5.3 双重 LIMIT 反向 case）
+	stripped := StripSQLComments(sql)
+	trimmed := strings.TrimRight(stripped, "; \t\r\n")
 	upper := strings.ToUpper(trimmed)
 	switch driverName {
 	case "oracle":
-		if strings.Contains(upper, "ROWNUM") ||
-			strings.Contains(upper, "FETCH NEXT") ||
-			strings.Contains(upper, "FETCH FIRST") {
+		if reLimitOracle.MatchString(upper) {
 			return sql
 		}
-		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", trimmed, maxRows)
+		// Oracle 12c+ 使用标准 OFFSET/FETCH 语法，避免 ROWNUM 破坏 ORDER BY
+		return fmt.Sprintf("%s OFFSET 0 ROWS FETCH NEXT %d ROWS ONLY", trimmed, maxRows)
 	default:
 		if reLimit.MatchString(upper) {
 			return sql
@@ -1321,4 +1344,8 @@ func applyRowLimit(sql, driverName string, maxRows int) string {
 	}
 }
 
-var reLimit = regexp.MustCompile(`(?i)\bLIMIT\s+\d+`)
+// reLimit 匹配 MySQL/PostgreSQL/SQLite 的 LIMIT 形式
+var reLimit = regexp.MustCompile(`(?i)\bLIMIT\s+(?:\d+\s+OFFSET\s+\d+|\d+(?:\s*,\s*\d+)?)\b`)
+
+// reLimitOracle 匹配 Oracle 的 LIMIT 等价形式
+var reLimitOracle = regexp.MustCompile(`(?i)\b(?:ROWNUM\b|FETCH\s+(?:NEXT|FIRST)\s+\d+\s+ROWS?\s+ONLY)`)

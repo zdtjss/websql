@@ -1,48 +1,59 @@
 <template>
-  <el-dialog v-model="visible" title="备份与恢复" width="1000px" :close-on-click-modal="false" @opened="loadBackups">
+  <el-dialog v-model="visible" title="备份与恢复" width="900px" :close-on-click-modal="false" @opened="loadBackups">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="创建备份" name="create">
-        <el-form label-position="top">
-          <el-row :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="备份名称">
-                <el-input v-model="backupName" placeholder="默认自动生成" />
+        <el-form label-position="top" :inline="false" class="backup-form">
+          <el-row :gutter="12">
+            <el-col :span="14">
+              <el-form-item label="备份名称" prop="name">
+                <el-input v-model="backupName" placeholder="默认自动生成" clearable size="default" />
               </el-form-item>
             </el-col>
-            <el-col :span="12">
-              <el-form-item label="描述">
-                <el-input v-model="backupDesc" placeholder="备份描述（可选）" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="16">
-            <el-col :span="8">
-              <el-form-item label="包含数据">
-                <el-switch v-model="withData" active-text="是" inactive-text="仅结构" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="8">
-              <el-form-item label="加密备份">
-                <el-switch v-model="encrypt" />
+            <el-col :span="10">
+              <el-form-item label="描述" prop="desc">
+                <el-input v-model="backupDesc" placeholder="备份描述（可选）" clearable size="default" />
               </el-form-item>
             </el-col>
           </el-row>
-          <el-form-item label="选择表（留空则全部）">
-            <div style="max-height:200px;overflow:auto;border:1px solid #dcdfe6;border-radius:4px;padding:10px">
-              <el-checkbox v-model="selectAll" @change="toggleAll" style="margin-bottom:8px">全选/取消全选</el-checkbox>
-              <div v-for="t in backupTables" :key="t.table" style="display:inline-block;margin-right:15px;margin-bottom:4px">
-                <el-checkbox v-model="t.checked">{{ t.table }}</el-checkbox>
-                <span style="font-size:12px;color:#909399">({{ t.count || 0 }}行)</span>
-              </div>
+
+          <div class="options-bar">
+            <div class="opt-item">
+              <span class="opt-label">包含数据</span>
+              <el-switch v-model="withData" inline-prompt active-text="是" inactive-text="否" />
             </div>
-          </el-form-item>
-          <el-button type="primary" @click="createBackup" :loading="creating">
-            开始备份
-          </el-button>
+            <div class="opt-item">
+              <span class="opt-label">加密备份</span>
+              <el-switch v-model="encrypt" inline-prompt active-text="开" inactive-text="关" />
+            </div>
+          </div>
+
+          <el-card shadow="never" class="section-card" :body-style="{ padding: '10px' }">
+            <div class="table-filter">
+              <el-icon class="filter-icon"><Grid /></el-icon>
+              <span class="filter-title">选择表</span>
+              <el-input v-model="tableFilter" placeholder="搜索表名..." clearable size="small" style="flex:1;margin:0 12px">
+                <template #prefix><el-icon><Search /></el-icon></template>
+              </el-input>
+              <el-button size="small" :disabled="!filteredBackupTables.length" @click="toggleAll(true)">全选</el-button>
+              <el-button size="small" :disabled="!filteredBackupTables.length" @click="toggleAll(false)">清空</el-button>
+              <el-tag size="small" type="info" effect="plain">已选 {{ selectedCount }} / {{ backupTables.length }}</el-tag>
+            </div>
+            <div class="table-grid">
+              <div v-for="t in filteredBackupTables" :key="t.table" class="table-item" :class="{ active: t.checked }" @click="toggleTable(t)">
+                <el-checkbox :model-value="t.checked" @change="(v) => onCheckChange(t, v)" @click.stop />
+                <el-tooltip :content="t.table" placement="top" :show-after="300" :disabled="!needsTooltip(t.table)">
+                  <span class="table-name">{{ t.table }}</span>
+                </el-tooltip>
+                <span class="table-count">{{ t.count || 0 }} 行</span>
+              </div>
+              <el-empty v-if="!filteredBackupTables.length" description="未找到匹配的表" :image-size="50" />
+            </div>
+          </el-card>
+
+          <div v-if="backupResult" class="backup-result">
+            <el-result :icon="backupResult.success ? 'success' : 'error'" :sub-title="`备份完成: ${backupResult.tables} 张表, 大小 ${formatSize(backupResult.size)}`" />
+          </div>
         </el-form>
-        <div v-if="backupResult" style="margin-top:15px">
-          <el-result :icon="backupResult.success ? 'success' : 'error'" :sub-title="`备份完成: ${backupResult.tables} 张表, 大小 ${formatSize(backupResult.size)}`" />
-        </div>
       </el-tab-pane>
 
       <el-tab-pane label="备份列表" name="list">
@@ -81,13 +92,18 @@
 
     <template #footer>
       <el-button @click="visible=false">关闭</el-button>
+      <el-button v-if="activeTab === 'create'" type="primary" @click="createBackup" :loading="creating">
+        <el-icon><VideoPlay /></el-icon>
+        <span>开始备份</span>
+      </el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Grid, Search, VideoPlay } from '@element-plus/icons-vue'
 import http from '@/utils/httpProxy.js'
 
 const visible = defineModel({ default: false })
@@ -103,15 +119,36 @@ const backupDesc = ref('')
 const withData = ref(true)
 const encrypt = ref(false)
 const backupTables = ref([])
-const selectAll = ref(true)
+const tableFilter = ref('')
 const creating = ref(false)
 const backupResult = ref(null)
 const backupList = ref([])
 const selectedBackup = ref(null)
 const restoringId = ref('')
 
+const filteredBackupTables = computed(() => {
+  if (!tableFilter.value) return backupTables.value
+  const kw = tableFilter.value.toLowerCase().trim()
+  if (!kw) return backupTables.value
+  return backupTables.value.filter(t => t.table.toLowerCase().includes(kw))
+})
+
+const selectedCount = computed(() => backupTables.value.filter(t => t.checked).length)
+
+function needsTooltip(name) {
+  return name && name.length > 18
+}
+
+function toggleTable(t) {
+  t.checked = !t.checked
+}
+
+function onCheckChange(t, val) {
+  t.checked = val
+}
+
 function toggleAll(val) {
-  backupTables.value.forEach(t => t.checked = val)
+  filteredBackupTables.value.forEach(t => { t.checked = val })
 }
 
 function formatSize(bytes) {
@@ -128,7 +165,14 @@ async function loadBackups() {
   } catch (e) {}
   try {
     const res = await http.get('/backup/tables', { params: { connId, schema } })
-    backupTables.value = (res.data.data?.tables || []).map(t => ({ ...t, checked: true }))
+    const tables = res.data.data?.tables || []
+    const tableCounts = res.data.data?.tableCounts || []
+    const countMap = new Map(tableCounts.map(c => [c.table, c.rows ?? c.count ?? 0]))
+    backupTables.value = tables.map(t => ({
+      table: t.table,
+      checked: t.checked !== false,
+      count: countMap.get(t.table) || 0
+    }))
   } catch (e) {}
 }
 
@@ -213,3 +257,116 @@ async function deleteBackup(row) {
   } catch (e) {}
 }
 </script>
+
+<style scoped>
+.backup-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.options-bar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 6px 0 10px;
+  margin-bottom: 4px;
+}
+
+.opt-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.opt-label {
+  color: #606266;
+  font-size: 13px;
+}
+
+.section-card {
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+}
+
+.table-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #ebeef5;
+  margin-bottom: 8px;
+}
+
+.filter-icon {
+  color: #409eff;
+  font-size: 14px;
+}
+
+.filter-title {
+  font-weight: 600;
+  color: #303133;
+  font-size: 13px;
+}
+
+.table-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0px 3px;
+  background: #fafbfc;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.table-item:hover {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.table-item.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.table-item :deep(.el-checkbox) {
+  margin-right: 0;
+  flex-shrink: 0;
+}
+
+.table-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-count {
+  font-size: 11px;
+  color: #909399;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-left: 4px;
+}
+
+.backup-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+</style>

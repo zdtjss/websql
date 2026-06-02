@@ -277,7 +277,7 @@
 <script setup>
 import { ref, computed, watch, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Right, FullScreen, Close } from '@element-plus/icons-vue'
+import { Right, FullScreen, Close, Loading } from '@element-plus/icons-vue'
 import http from '@/utils/httpProxy.js'
 
 const visible = defineModel({ default: false })

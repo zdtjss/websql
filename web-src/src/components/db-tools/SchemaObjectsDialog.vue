@@ -13,7 +13,7 @@
           <el-table-column prop="name" label="名称" width="240" show-overflow-tooltip resizable />
           <el-table-column prop="type" label="类型" width="100" resizable>
             <template #default="scope">
-              <el-tag size="small" :type="scope.row.type === 'PROCEDURE' ? '' : 'success'">
+              <el-tag size="small" :type="scope.row.type === 'PROCEDURE' ? 'primary' : 'success'">
                 {{ scope.row.type === 'PROCEDURE' ? '过程' : '函数' }}
               </el-tag>
             </template>

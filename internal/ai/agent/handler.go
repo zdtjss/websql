@@ -100,22 +100,25 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 		})
 	}
 
-	go func() {
-		select {
-		case <-parentCtx.Done():
-			wg.markDead()
-			runnerCancel()
-		case <-runnerCtx.Done():
-		}
-	}()
-
-	return &sseContext{
+	sse := &sseContext{
 		wg:           wg,
 		kaStop:       kaStop,
 		flush:        flush,
 		runnerCtx:    runnerCtx,
 		runnerCancel: runnerCancel,
 	}
+
+	// 监听客户端断开 → 触发 runnerCancel
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			wg.markDead()
+			sse.runnerCancel()
+		case <-runnerCtx.Done():
+		}
+	}()
+
+	return sse
 }
 
 type requestParams struct {
@@ -247,12 +250,14 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	// 注册 Agent Cancel：当客户端断开连接时，触发 Agent 安全点取消
+	// 用 runID 精确指定要取消的 run，避免多 SSE / 多 tab 并发时错位
+	runID := fmt.Sprintf("%s_%d", req.SessionID, time.Now().UnixNano())
 	go func() {
 		<-c.Request.Context().Done()
-		agent.Cancel()
+		agent.Cancel(runID)
 	}()
 
-	sessionID, runErr := agent.RunStream(sse.runnerCtx, req, sse.flush)
+	sessionID, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush)
 	close(sse.kaStop)
 	sess.ClearCancel()
 

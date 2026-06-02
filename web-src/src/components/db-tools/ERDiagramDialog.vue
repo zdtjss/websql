@@ -178,7 +178,7 @@ async function loadData() {
   } finally {
     loading.value = false
     await nextTick()
-    rebuildGraph()
+    await rebuildGraph()
   }
 }
 
@@ -300,7 +300,7 @@ function destroyGraph() {
   }
 }
 
-function rebuildGraph() {
+async function rebuildGraph() {
   destroyGraph()
   if (!containerRef.value) return
 
@@ -410,27 +410,31 @@ function rebuildGraph() {
       rankdir: layoutType.value,
       nodesep: 80,
       ranksep: 120,
+      nodeSize: (n) => [NODE_WIDTH, getNodeHeight(n)],
     })
-    const model = dagreLayout.layout({
-      nodes: nodes.map(n => ({ id: n.id, width: NODE_WIDTH, height: getNodeHeight(n) })),
+    await dagreLayout.execute({
+      nodes: nodes.map(n => ({ id: n.id })),
       edges: edges.map(e => ({ source: e.source, target: e.target })),
     })
-    if (model.nodes) {
-      model.nodes.forEach(n => {
-        const node = graph.getCellById(n.id)
-        if (node) {
-          node.setPosition({ x: n.x, y: n.y }, { silent: true })
-        }
-      })
-    }
-  } catch {
+    dagreLayout.forEachNode((layoutNode) => {
+      const node = graph.getCellById(layoutNode.id)
+      if (node) {
+        const size = Array.isArray(layoutNode.size) ? layoutNode.size : [NODE_WIDTH, 100]
+        const x = layoutNode.x - size[0] / 2
+        const y = layoutNode.y - size[1] / 2
+        node.setPosition(x, y, { silent: true })
+      }
+    })
+  } catch (err) {
+    console.error('[ERDiagram] dagre layout error, fallback to grid:', err)
     const cols = Math.ceil(Math.sqrt(nodes.length))
     nodes.forEach((n, idx) => {
       const row = Math.floor(idx / cols)
       const col = idx % cols
       const node = graph.getCellById(n.id)
       if (node) {
-        node.setPosition({ x: col * (NODE_WIDTH + 60) + 40, y: row * 300 + 40 }, { silent: true })
+        const nodeHeight = getNodeHeight(n)
+        node.setPosition({ x: col * (NODE_WIDTH + 60) + 40, y: row * (nodeHeight + 60) + 40 }, { silent: true })
       }
     })
   }

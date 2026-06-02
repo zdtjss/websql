@@ -20,9 +20,23 @@ type SkillEnv struct {
 	backend     skill.Backend
 	osfsBackend *OSFilesystemBackend
 	rootDir     string
-	depsChecked map[string]bool
-	depsCheckMu sync.Mutex
+	depsMu      sync.Mutex
+	depsState   map[string]depsState // skillName -> 检查状态（带 TTL）
 }
+
+type depsState struct {
+	checkedAt time.Time
+	lastError error
+	lastErrAt time.Time
+}
+
+// depsCheckTTL 控制 deps 状态缓存时长。
+// 防止"网络抖一次 → 永久失活"，超过 TTL 后允许重试。
+const depsCheckTTL = 5 * time.Minute
+
+// depsErrorTTL 控制错误后多久才允许重试。
+// 防止"30s 内 pip 重复失败 → 主进程被卡住"。
+const depsErrorTTL = 30 * time.Second
 
 type SkillStatus struct {
 	PythonAvailable bool            `json:"pythonAvailable"`
@@ -66,7 +80,7 @@ func InitSkillEnv(ctx context.Context, skillsRootDir string) error {
 			backend:     backend,
 			osfsBackend: osfsBackend,
 			rootDir:     skillsRootDir,
-			depsChecked: make(map[string]bool),
+			depsState:   make(map[string]depsState),
 		}
 
 		logSkillStatus(ctx)
@@ -137,45 +151,104 @@ func (e *SkillEnv) FilesystemBackend() *OSFilesystemBackend {
 	return e.osfsBackend
 }
 
+// CheckAndInstallDeps 检查并按需安装 Skill 的 Python 依赖。
+//
+// 状态机：
+//  1. 无记录 → 走完整检查+安装流程
+//  2. 有记录且未过期（< depsCheckTTL）→ 视为已就绪，skip
+//  3. 有记录但最近刚失败（< depsErrorTTL）→ 立即 fail-fast 返回 lastError，
+//     防止 30s 内多次调 pip 把主进程卡住
+//  4. 超过 TTL → 重新走完整流程
+//
+// 并发安全：本函数在持有 depsMu 之前先把决策结果算出来，再**执行**检查+安装
+// （耗时段不持锁，避免饿死其他 skill 的并发检查）。完成后用专门的写函数
+// 单独持锁写回状态。这样既避免 TOCTOU 竞态，又不会因 pip install 阻塞整张表。
+//
+// 这取代了 v1 实现 "depsChecked[skill]=true 永不重试" 的反模式
+// （EINO_DEEP_ANALYSIS §7.3）。
 func (e *SkillEnv) CheckAndInstallDeps(ctx context.Context, skillName string) error {
 	if !IsPythonAvailable() {
 		return errors.New("Python 不可用")
 	}
 
-	e.depsCheckMu.Lock()
-	if e.depsChecked[skillName] {
-		e.depsCheckMu.Unlock()
+	// === 决策阶段（持锁）===
+	now := time.Now()
+	e.depsMu.Lock()
+	state, exists := e.depsState[skillName]
+	skipReason := ""
+	if exists {
+		switch {
+		case state.lastError == nil && now.Sub(state.checkedAt) < depsCheckTTL:
+			skipReason = "fresh_success"
+		case state.lastError != nil && now.Sub(state.lastErrAt) < depsErrorTTL:
+			skipReason = "fresh_error"
+		}
+	}
+	e.depsMu.Unlock()
+
+	if skipReason == "fresh_success" {
 		return nil
 	}
-	e.depsChecked[skillName] = true
-	e.depsCheckMu.Unlock()
+	if skipReason == "fresh_error" {
+		return fmt.Errorf("Skill [%s] 依赖最近检查失败, 距上次失败 %v, 跳过重试: %w",
+			skillName, now.Sub(state.lastErrAt), state.lastError)
+	}
 
+	// === 执行阶段（不持锁）===
 	reqFilePath, err := e.ResolveFilePath(ctx, skillName, "scripts/requirements.txt")
 	if err != nil {
+		e.recordDepsError(skillName, err)
 		return err
 	}
 
 	if _, statErr := os.Stat(reqFilePath); os.IsNotExist(statErr) {
 		log.Printf("[SkillDep] Skill [%s] 无 requirements.txt, 跳过", skillName)
+		e.recordDepsSuccess(skillName)
 		return nil
 	}
 
 	missing, checkErr := checkMissingDeps(ctx, reqFilePath)
 	if checkErr != nil {
-		return fmt.Errorf("检查依赖失败: %w", checkErr)
+		wrapped := fmt.Errorf("检查依赖失败: %w", checkErr)
+		e.recordDepsError(skillName, wrapped)
+		return wrapped
 	}
 
 	if len(missing) > 0 {
 		log.Printf("[SkillDep] [%s] 缺失: %v, 正在安装...", skillName, missing)
 		if installErr := installDeps(ctx, reqFilePath); installErr != nil {
-			return fmt.Errorf("安装依赖失败: %w", installErr)
+			wrapped := fmt.Errorf("安装依赖失败: %w", installErr)
+			e.recordDepsError(skillName, wrapped)
+			return wrapped
 		}
 		log.Printf("[SkillDep] [%s] 依赖安装完成", skillName)
 	} else {
 		log.Printf("[SkillDep] [%s] 依赖已就绪", skillName)
 	}
 
+	e.recordDepsSuccess(skillName)
 	return nil
+}
+
+// recordDepsSuccess 记录成功状态（带 TTL）
+func (e *SkillEnv) recordDepsSuccess(skillName string) {
+	e.depsMu.Lock()
+	e.depsState[skillName] = depsState{
+		checkedAt: time.Now(),
+		lastError: nil,
+	}
+	e.depsMu.Unlock()
+}
+
+// recordDepsError 记录失败状态（带 errorTTL）
+func (e *SkillEnv) recordDepsError(skillName string, err error) {
+	e.depsMu.Lock()
+	now := time.Now()
+	prev := e.depsState[skillName]
+	prev.lastError = err
+	prev.lastErrAt = now
+	e.depsState[skillName] = prev
+	e.depsMu.Unlock()
 }
 
 func (e *SkillEnv) GetStatus(ctx context.Context) *SkillStatus {
@@ -191,11 +264,11 @@ func (e *SkillEnv) GetStatus(ctx context.Context) *SkillStatus {
 		status.Skills = skills
 	}
 
-	e.depsCheckMu.Lock()
-	for name, checked := range e.depsChecked {
-		status.Dependencies[name] = checked
+	e.depsMu.Lock()
+	for name, st := range e.depsState {
+		status.Dependencies[name] = st.lastError == nil
 	}
-	e.depsCheckMu.Unlock()
+	e.depsMu.Unlock()
 
 	return status
 }

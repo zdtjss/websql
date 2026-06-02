@@ -4476,7 +4476,7 @@ onUnmounted(() => {
   display: block;
   padding: 5px;
   margin: 0;
-  overflow: visible;
+  overflow: auto;
   line-height: inherit;
   word-wrap: normal;
   background-color: transparent;

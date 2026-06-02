@@ -6,17 +6,59 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"websql/internal/ai/agent/sqlutil"
+
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/filesystem"
+	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
+	"github.com/cloudwego/eino/adk/middlewares/reduction"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
+// StripSQLComments 是 sqlutil.StripSQLComments 的本地别名。
+//
+// 项目内任何 SQL 注释剥离都应通过本别名调用，确保在 agent 与 export
+// 子包中行为一致（EINO_DEEP_ANALYSIS §10.1）。新代码请直接用 sqlutil.StripSQLComments。
+func StripSQLComments(sql string) string { return sqlutil.StripSQLComments(sql) }
+
+// buildPatchToolCallsMiddleware 构造 eino 0.9 官方的 patchtoolcalls 中间件。
+//
+// 解决的问题：
+//  1. 进程崩溃 / kill -9 / OOM 后，会话中存在 assistant(tool_calls=[X])
+//     但缺少对应的 tool(X) 消息，LLM 收到后会拒绝继续生成或乱答。
+//  2. 用户主动取消（Cancel）后，sess.RemoveTrailingIncompleteToolCalls 只清内存，
+//     如果在 300ms debounce 窗口内崩溃，DB 中可能残留脏数据。
+//  3. loadSessionFromDB 从 DB 加载到历史脏数据时，没有清理入口。
+//
+// patchtoolcalls 在 BeforeModelRewriteState 钩子里**自动**扫描历史消息，给
+// dangling tool_calls 补占位 tool 消息。配合自定义 PatchedContentGenerator，
+// 让 LLM 看到 "工具被取消 / 未执行完成" 的明确提示。
+func buildPatchToolCallsMiddleware() adk.ChatModelAgentMiddleware {
+	mw, err := patchtoolcalls.New(context.Background(), &patchtoolcalls.Config{
+		PatchedContentGenerator: func(ctx context.Context, toolName, toolCallID string) (string, error) {
+			return fmt.Sprintf(
+				`{"status":"patched","message":"工具 %s (call_id=%s) 的结果未生成（可能是上一轮对话被取消、进程崩溃或工具执行失败）。请基于此状态继续回答，必要时重新调用该工具。"}`,
+				toolName, toolCallID,
+			), nil
+		},
+	})
+	if err != nil {
+		log.Printf("[PatchToolCalls] 创建失败，使用 noop - err=%v\n", err)
+		return nil
+	}
+	return mw
+}
+
 func isDangerousSQL(sql string) bool {
-	stripped := stripSQLComments(strings.TrimSpace(sql))
+	stripped := StripSQLComments(strings.TrimSpace(sql))
 	upper := strings.ToUpper(stripped)
 	for _, p := range []string{
 		"DROP ", "TRUNCATE ", "DELETE ",
@@ -30,6 +72,84 @@ func isDangerousSQL(sql string) bool {
 	return false
 }
 
+// buildEinoReductionMiddleware 构造 eino 0.9 官方的 reduction 中间件
+//
+// 优势：
+//  1. 保留流式语义（不破坏 StreamableTool 的 Recv 链路）
+//  2. 大结果自动 Offload 到文件，LLM 看到的不再是巨大 JSON
+//  3. ReadFile 工具与 LLM 协同工作
+//
+// 替换了项目自实现的 ReductionMiddleware（middleware.go:407-431），后者
+// 的"Recv 全部再切片"会破坏流式 UX。
+func buildEinoReductionMiddleware() adk.ChatModelAgentMiddleware {
+	dir := os.Getenv("REDUCTION_OFFLOAD_DIR")
+	if dir == "" {
+		dir = filepath.Join("data", "reduction")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[Reduction] 创建 offload 目录失败，使用 tmp - err=%v\n", err)
+		dir = os.TempDir()
+	}
+
+	backend := &osfsReductionBackend{rootDir: dir}
+
+	mw, err := reduction.New(context.Background(), &reduction.Config{
+		Backend:                   backend,
+		MaxLengthForTrunc:         50_000, // 单条 tool result 超过 50k 字符触发 truncate
+		TokenCounter:              reductionTokenCounter,
+		MaxTokensForClear:         160_000, // 总 token 超 160k 触发 clear
+		ClearRetentionSuffixLimit: 4,       // 保留最近 4 条不 clear
+		ClearExcludeTools: []string{ // 永不 clear 这些工具的结果
+			"dangerous_sql_approval",
+			"interrupt",
+		},
+		TruncExcludeTools: nil,
+	})
+	if err != nil {
+		log.Printf("[Reduction] 创建 eino reduction 中间件失败 - err=%v，使用 noop\n", err)
+		return nil
+	}
+	return mw
+}
+
+// osfsReductionBackend 是一个最小化的本地文件 reduction.Backend 实现。
+// 满足 reduction.Backend 唯一方法：Write(ctx, *filesystem.WriteRequest) error。
+type osfsReductionBackend struct {
+	rootDir string
+	mu      sync.Mutex
+}
+
+func (b *osfsReductionBackend) Write(ctx context.Context, req *filesystem.WriteRequest) error {
+	if req == nil || req.FilePath == "" {
+		return errors.New("WriteRequest 必须包含 FilePath")
+	}
+	full := filepath.Join(b.rootDir, req.FilePath)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(full, []byte(req.Content), 0o644)
+}
+
+// reductionTokenCounter 适配 reduction 中间件期望的签名。
+// 复用项目自实现的 estimateTokenCount，但输入输出签名不同：
+//
+//	reduction.TokenCounter:     func(ctx, []*schema.Message, []*schema.ToolInfo) (int64, error)
+//	summarization.TokenCounter: func(ctx, *summarization.TokenCounterInput) (int, error)
+//
+// 这里按字符/4 估算每条消息，与项目自实现的启发式一致。
+func reductionTokenCounter(_ context.Context, msgs []*schema.Message, _ []*schema.ToolInfo) (int64, error) {
+	var total int64
+	for _, m := range msgs {
+		if m == nil {
+			continue
+		}
+		total += int64(len(m.Content)+3) / 4
+	}
+	return total, nil
+}
+
 func containsDangerousSQL(sql string) bool {
 	for _, line := range strings.Split(sql, ";") {
 		line = strings.TrimSpace(line)
@@ -38,33 +158,6 @@ func containsDangerousSQL(sql string) bool {
 		}
 	}
 	return false
-}
-
-func stripSQLComments(sql string) string {
-	for {
-		sql = strings.TrimSpace(sql)
-		if sql == "" {
-			return sql
-		}
-		if strings.HasPrefix(sql, "--") {
-			idx := strings.Index(sql, "\n")
-			if idx == -1 {
-				return ""
-			}
-			sql = sql[idx+1:]
-			continue
-		}
-		if strings.HasPrefix(sql, "/*") {
-			idx := strings.Index(sql, "*/")
-			if idx == -1 {
-				return ""
-			}
-			sql = sql[idx+2:]
-			continue
-		}
-		break
-	}
-	return strings.TrimSpace(sql)
 }
 
 type DangerousSQLInfo struct {
@@ -226,8 +319,9 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 			if isInterruptErr(err) {
 				return "", err
 			}
-			log.Printf("[ToolErrorRecovery] tool %s error → result - err=%v\n", tCtx.Name, err)
-			return fmt.Sprintf("[tool call failed] %s\n%s", err.Error(), recoveryHint(tCtx.Name, argumentsInJSON, err)), nil
+			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
+			log.Printf("[ToolErrorRecovery] tool %s error - err=%v\n", tCtx.Name, err)
+			return "", fmt.Errorf("[%s] %w\n%s", tCtx.Name, err, hint)
 		}
 		return result, nil
 	}, nil
@@ -244,9 +338,9 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 			if isInterruptErr(err) {
 				return nil, err
 			}
-			log.Printf("[ToolErrorRecovery:Stream] tool %s error → result - err=%v\n", tCtx.Name, err)
-			errMsg := fmt.Sprintf("[tool call failed] %s\n%s", err.Error(), recoveryHint(tCtx.Name, argumentsInJSON, err))
-			return schema.StreamReaderFromArray([]string{errMsg}), nil
+			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
+			log.Printf("[ToolErrorRecovery:Stream] tool %s error - err=%v\n", tCtx.Name, err)
+			return nil, fmt.Errorf("[%s] %w\n%s", tCtx.Name, err, hint)
 		}
 		return result, nil
 	}, nil
@@ -350,99 +444,46 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 			return nil, err
 		}
 
-		var contentBuf strings.Builder
-		wrapped := schema.StreamReaderWithConvert(reader, func(s string) (string, error) {
-			contentBuf.WriteString(s)
-			return s, nil
-		})
+		// Copy(2) 把流扇出为两个独立的 StreamReader：
+		//   1) consumer — 返回给下游消费者，保证原流被完整消费
+		//   2) logger   — 在后台 goroutine 里消费，用于日志
+		//
+		// 解决 v1 实现的"双消费者从同一底层 channel 抢数据"问题：
+		// 之前代码 wrapped.Recv() 与下游 reader.Recv() 共享同一底层，
+		// 导致数据被瓜分、前端拿到的数据不完整。
+		copies := reader.Copy(2)
+		if len(copies) < 2 {
+			// Copy 失败兜底：原样返回，仅打日志
+			return reader, nil
+		}
+		consumer := copies[0]
+		logger := copies[1]
 
 		go func() {
-			for {
-				_, err := wrapped.Recv()
-				if err != nil {
-					elapsed := time.Since(startTime)
-					content := contentBuf.String()
-					log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v, resultLen=%d, result=%s\n",
-						tCtx.Name, elapsed, len(content), content)
-					return
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[ToolCall:Stream] logger panic recovered - name=%s, panic=%v\n", tCtx.Name, r)
 				}
+			}()
+			var contentBuf strings.Builder
+			for {
+				chunk, err := logger.Recv()
+				if err != nil {
+					break
+				}
+				contentBuf.WriteString(chunk)
 			}
+			elapsed := time.Since(startTime)
+			content := contentBuf.String()
+			// 截断过长日志，避免日志爆炸
+			const maxLog = 4000
+			if len(content) > maxLog {
+				content = content[:maxLog] + "...(truncated)"
+			}
+			log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v, resultLen=%d, result=%s\n",
+				tCtx.Name, elapsed, len(content), content)
 		}()
 
-		return reader, nil
+		return consumer, nil
 	}, nil
-}
-
-const defaultReductionMaxRows = 100
-
-type ReductionMiddleware struct {
-	*adk.BaseChatModelAgentMiddleware
-	MaxRows int
-}
-
-func (m *ReductionMiddleware) maxRows() int {
-	if m.MaxRows > 0 {
-		return m.MaxRows
-	}
-	return defaultReductionMaxRows
-}
-
-func (m *ReductionMiddleware) WrapInvokableToolCall(
-	_ context.Context,
-	endpoint adk.InvokableToolCallEndpoint,
-	tCtx *adk.ToolContext,
-) (adk.InvokableToolCallEndpoint, error) {
-	if tCtx.Name != "query_data" {
-		return endpoint, nil
-	}
-	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-		result, err := endpoint(ctx, argumentsInJSON, opts...)
-		if err != nil {
-			return result, err
-		}
-		return m.reduceQueryResult(result), nil
-	}, nil
-}
-
-func (m *ReductionMiddleware) WrapStreamableToolCall(
-	_ context.Context,
-	endpoint adk.StreamableToolCallEndpoint,
-	tCtx *adk.ToolContext,
-) (adk.StreamableToolCallEndpoint, error) {
-	if tCtx.Name != "query_data" {
-		return endpoint, nil
-	}
-	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		reader, err := endpoint(ctx, argumentsInJSON, opts...)
-		if err != nil {
-			return nil, err
-		}
-		var sb strings.Builder
-		for {
-			chunk, recvErr := reader.Recv()
-			if recvErr != nil {
-				break
-			}
-			sb.WriteString(chunk)
-		}
-		reduced := m.reduceQueryResult(sb.String())
-		return schema.StreamReaderFromArray([]string{reduced}), nil
-	}, nil
-}
-
-func (m *ReductionMiddleware) reduceQueryResult(result string) string {
-	var output QueryOutput
-	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		return result
-	}
-	maxRows := m.maxRows()
-	if len(output.Data) <= maxRows {
-		return result
-	}
-	totalRows := len(output.Data)
-	output.Data = output.Data[:maxRows]
-	output.Count = totalRows
-	reducedJSON, _ := json.Marshal(output)
-	log.Printf("[Reduction] query_data 结果精简 - 原始行数=%d, 保留行数=%d\n", totalRows, maxRows)
-	return string(reducedJSON)
 }

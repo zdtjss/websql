@@ -253,6 +253,11 @@ func (s *Session) scheduleSave() {
 }
 
 // SaveToDB 立即同步持久化（不等待 debounce）。
+//
+// 与 RemoveTrailingIncompleteToolCalls 的关系：
+// 推荐使用 CleanAndSave()，它在一个原子操作中完成"清理+保存"，避免
+// 清理与 debounce 触发 doSave 之间的 10ms 窗口内出现"已清理但被 debounce
+// 写脏数据"的问题（详见 EINO_DEEP_ANALYSIS §1.2）。
 func (s *Session) SaveToDB() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,14 +268,37 @@ func (s *Session) SaveToDB() error {
 	return s.doSave()
 }
 
-// RemoveTrailingIncompleteToolCalls 移除末尾不完整的 tool_calls 消息链。
-// 当 context 被取消时，session 中可能包含 assistant(tool_calls) 但没有对应的 tool 响应，
-// 或包含 tool 消息但前面的 assistant(tool_calls) 不完整。
-// 必须在 SaveToDB 之前调用，否则不完整的消息会被持久化到数据库。
-func (s *Session) RemoveTrailingIncompleteToolCalls() {
+// CleanAndSave 在一个原子操作中：
+//  1. 移除末尾不完整的 tool_calls 消息链
+//  2. 停止 debounce timer
+//  3. 同步持久化到 DB
+//
+// 这是 cancel / deadline 路径推荐的清理方式：避免 debounce goroutine
+// 在清理与保存之间抢先写脏数据。
+func (s *Session) CleanAndSave() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 在持锁状态下清理消息
+	s.removeTrailingIncompleteToolCallsLocked()
+
+	if s.debounceTimer != nil {
+		s.debounceTimer.Stop()
+		s.pendingSave = false
+	}
+	return s.doSave()
+}
+
+// RemoveTrailingIncompleteToolCalls 仅清理内存，不保证落库一致性。
+// 如需落库，请使用 CleanAndSave()。
+func (s *Session) RemoveTrailingIncompleteToolCalls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeTrailingIncompleteToolCallsLocked()
+}
+
+// removeTrailingIncompleteToolCallsLocked 调用方必须持有 s.mu
+func (s *Session) removeTrailingIncompleteToolCallsLocked() {
 	for len(s.messages) > 0 {
 		last := s.messages[len(s.messages)-1]
 		switch last.Role {
@@ -290,6 +318,57 @@ func (s *Session) RemoveTrailingIncompleteToolCalls() {
 			return
 		}
 	}
+}
+
+// patchDanglingToolCallsOnLoad 在会话从 DB 加载时修复合并/重复的 tool_calls。
+//
+// 背景（EINO_DEEP_ANALYSIS §3）：
+// 历史会话可能因进程崩溃、5min runnerCtx 超时、debounce 窗口内故障，导致：
+//   - assistant(tool_calls=[X]) 后缺失对应的 tool(X) 消息
+//   - 同样的 tool_call_id 出现多次（debounce + 显式 Save 双重写入）
+//
+// 本函数与 patchtoolcalls 中间件分工：
+//   - 本函数：作用于持久化层（SessionMessage JSON），负责加载时一次性修复
+//   - patchtoolcalls：作用于 LLM 上下文层（*schema.Message），每次 BeforeModel 兜底
+//
+// 行为：扫描所有 assistant 消息，对每个 ToolCall 检查是否在**后续**消息中存在
+// 匹配的 tool 消息（按 ToolCallID 匹配）。缺失的则补一个占位 tool 消息，
+// 避免 LLM 看到 dangling tool_calls 拒绝继续生成。
+func patchDanglingToolCallsOnLoad(messages []SessionMessage) []SessionMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	// 先收集已存在的 tool 消息 id 集合
+	haveTool := make(map[string]bool)
+	for _, m := range messages {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			haveTool[m.ToolCallID] = true
+		}
+	}
+	// 扫描 assistant 消息，为缺失 tool 的 tool_call 补占位
+	result := make([]SessionMessage, 0, len(messages))
+	for _, m := range messages {
+		result = append(result, m)
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "" {
+					continue
+				}
+				if haveTool[tc.ID] {
+					continue
+				}
+				// 缺失对应 tool 消息 → 补占位，紧跟在本条 assistant 之后
+				result = append(result, SessionMessage{
+					Role:       "tool",
+					Content:    `{"status":"patched_on_load","message":"工具 ` + tc.Function.Name + ` (call_id=` + tc.ID + `) 的结果在持久化层缺失（可能是上次对话被取消或进程异常退出）。请基于此状态继续回答，必要时重新调用该工具。"}`,
+					ToolCallID: tc.ID,
+					ToolName:   tc.Function.Name,
+				})
+				haveTool[tc.ID] = true // 防止同 batch 重复补
+			}
+		}
+	}
+	return result
 }
 
 func (s *Session) doSave() error {
@@ -526,20 +605,77 @@ func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 		_ = json.Unmarshal([]byte(sessDB.Context), &sessionCtx)
 	}
 
-	detail := SessionDetail{
+	displayMsgs := buildDisplayMessages(messages)
+
+	detail := &SessionDetail{
 		ID:        sessDB.ID,
 		Title:     sessDB.Title,
 		CreatedAt: sessDB.CreatedAt,
-		Messages:  make([]SessionDetailMessage, 0, len(messages)),
+		Messages:  make([]SessionDetailMessage, 0, len(displayMsgs)),
 		Context:   sessionCtx,
 	}
-	for _, msg := range messages {
+	for _, msg := range displayMsgs {
 		detail.Messages = append(detail.Messages, SessionDetailMessage{Role: msg.Role, Content: msg.Content})
 	}
 	if detail.Title == "" {
 		detail.Title = "未命名会话"
 	}
-	return &detail, nil
+	return detail, nil
+}
+
+// buildDisplayMessages 把 summarization 压缩块中的原始 user 消息还原为独立条目。
+//
+// 背景（EINO_DEEP_ANALYSIS §9.2）：eino 的 summarization 中间件在压缩历史时，
+// 会把所有 user 消息嵌入到一个新的 user summary 消息的 <all_user_messages> 块里。
+// 用户回看历史时看到的就不再是自己当初的提问。
+//
+// 本函数在展示层（GetDetail）解析 <all_user_messages> 块，提取其中的原始 user 消息
+// 并还原为独立条目。无需额外的持久化机制——summarization 块本身已包含原始消息。
+//
+// 返回的列表仅供展示，**不能**再喂给 LLM（缺 assistant 响应会导致 LLM 困惑）。
+func buildDisplayMessages(messages []SessionMessage) []SessionMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]SessionMessage, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "user" && strings.Contains(m.Content, "<all_user_messages>") {
+			extracted := extractUserMessagesFromSummary(m.Content)
+			for _, content := range extracted {
+				out = append(out, SessionMessage{Role: "user", Content: content})
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// extractUserMessagesFromSummary 从 summarization 压缩块中提取原始 user 消息。
+//
+// eino summarization 的 <all_user_messages> 格式：
+//
+//	<all_user_messages>
+//	    - 第一条用户消息
+//	    - 第二条用户消息
+//	</all_user_messages>
+//
+// 每条消息以 "    - " 开头（4空格+短横线+空格）。
+func extractUserMessagesFromSummary(content string) []string {
+	startIdx := strings.Index(content, "<all_user_messages>")
+	endIdx := strings.Index(content, "</all_user_messages>")
+	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+		return nil
+	}
+	block := content[startIdx+len("<all_user_messages>") : endIdx]
+	var result []string
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			result = append(result, strings.TrimPrefix(trimmed, "- "))
+		}
+	}
+	return result
 }
 
 // ──────────────────────────────────────────────
@@ -563,10 +699,12 @@ func loadSessionFromDB(id string) (*Session, error) {
 		return nil, err
 	}
 
-	var messages []SessionMessage
+	var rawMessages []SessionMessage
 	if sessDB.Messages != "" {
-		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
+		_ = json.Unmarshal([]byte(sessDB.Messages), &rawMessages)
 	}
+
+	rawMessages = patchDanglingToolCallsOnLoad(rawMessages)
 
 	ctx := sessDB.Context
 	if ctx == "" {
@@ -578,7 +716,7 @@ func loadSessionFromDB(id string) (*Session, error) {
 		UserID:    sessDB.UserID,
 		CreatedAt: sessDB.CreatedAt,
 		Context:   ctx,
-		messages:  messages,
+		messages:  rawMessages,
 	}, nil
 }
 

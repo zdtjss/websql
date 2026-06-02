@@ -9,9 +9,17 @@ import (
 	"time"
 
 	database "websql/internal/database"
+	"websql/internal/ai/agent/sqlutil"
 
 	"github.com/jmoiron/sqlx"
 )
+
+// StripSQLComments 是 sqlutil.StripSQLComments 的本地别名（EINO_DEEP_ANALYSIS §10.1）。
+//
+// 历史上 export 包有自己的一份 StripSQLComments（按行过滤实现），
+// 无法处理 /* ... */ 块注释和字符串内的 --。已统一到 sqlutil 包。
+// 保留本别名仅为兼容 export 包内部历史调用点；新代码请直接用 sqlutil.StripSQLComments。
+func StripSQLComments(sql string) string { return sqlutil.StripSQLComments(sql) }
 
 type QueryResult struct {
 	Columns []string
@@ -210,19 +218,6 @@ func NumberFormatter(v any) string {
 		return fmt.Sprintf("%.0f", f)
 	}
 	return fmt.Sprintf("%v", v)
-}
-
-func StripSQLComments(sql string) string {
-	lines := strings.Split(sql, "\n")
-	var result []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		result = append(result, line)
-	}
-	return strings.Join(result, "\n")
 }
 
 type ExcelChartSeriesDef struct {

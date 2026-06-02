@@ -74,7 +74,7 @@
         </el-table-column>
         <el-table-column prop="source" label="来源" width="80" resizable>
           <template #default="{ row }">
-            <el-tag :type="row.source === 'agent' ? '' : 'info'" size="small">
+            <el-tag :type="row.source === 'agent' ? 'primary' : 'info'" size="small">
               {{ row.source === 'agent' ? 'Agent' : '编辑器' }}
             </el-tag>
           </template>
@@ -237,8 +237,8 @@ function formatDate(isoString) {
 }
 
 function getTypeTag(type_) {
-  const map = { DROP: 'danger', TRUNCATE: 'danger', DELETE: 'warning', ALTER: 'warning', UPDATE: 'info', INSERT: 'success', SELECT: '', CREATE: '', IMPORT: 'warning', SHOW: '', DESCRIBE: '', EXPLAIN: '' }
-  return map[type_] || ''
+  const map = { DROP: 'danger', TRUNCATE: 'danger', DELETE: 'warning', ALTER: 'warning', UPDATE: 'info', INSERT: 'success', SELECT: 'info', CREATE: 'info', IMPORT: 'warning', SHOW: 'info', DESCRIBE: 'info', EXPLAIN: 'info' }
+  return map[type_] || 'info'
 }
 
 function getRiskTag(level) {

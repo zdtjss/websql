@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/ai/agent/export"
@@ -121,6 +122,12 @@ func computeSummarizationTrigger(cfg *system.AIConfig) int {
 // 全局 CheckPointStore（单实例共享）
 var globalCheckPointStore = newAutoCheckPointStore()
 
+// SQLAgent 是工厂缓存中**共享**的实例，可能同时被多个 RunStream 调用。
+//
+// 关键设计：cancelFuncs 是 map[runID]CancelFunc，因为同一 (connID, dbSchema, userID, schemas)
+// 在 factory cache 中只对应一个 SQLAgent，多 tab / 多 SSE 长连接并发时，
+// 必须按 runID 区分 cancelFunc，否则后启动的 RunStream 会覆盖前一个的，
+// 造成 Cancel() 错位（参见 EINO_DEEP_ANALYSIS §6.2）。
 type SQLAgent struct {
 	runner           *adk.Runner
 	agent            *adk.ChatModelAgent
@@ -130,8 +137,52 @@ type SQLAgent struct {
 	scope            *PermissionScope
 	schemas          []SchemaRef
 	maxContextTokens int
-	cancelFunc       adk.AgentCancelFunc    // Eino v0.9 Agent Cancel 支持
-	sessionSync      *SessionSyncMiddleware // Eino v0.9 会话同步中间件
+	cancelMu         sync.Mutex
+	cancelFuncs      map[string]adk.AgentCancelFunc // runID -> cancel
+	sessionSync      *SessionSyncMiddleware         // Eino v0.9 会话同步中间件
+}
+
+// registerCancel 注册当前 run 的 cancelFunc。
+// runID 必须全局唯一（建议用 sessionID + 时间戳）。
+func (a *SQLAgent) registerCancel(runID string, fn adk.AgentCancelFunc) {
+	if fn == nil {
+		return
+	}
+	a.cancelMu.Lock()
+	defer a.cancelMu.Unlock()
+	if a.cancelFuncs == nil {
+		a.cancelFuncs = make(map[string]adk.AgentCancelFunc)
+	}
+	a.cancelFuncs[runID] = fn
+}
+
+// unregisterCancel 注销 cancelFunc（runStream 退出时调用）
+func (a *SQLAgent) unregisterCancel(runID string) {
+	a.cancelMu.Lock()
+	defer a.cancelMu.Unlock()
+	if a.cancelFuncs != nil {
+		delete(a.cancelFuncs, runID)
+	}
+}
+
+// Cancel 按 runID 取消单个 run。
+// 不带 runID 时取消所有 run（向后兼容）。
+func (a *SQLAgent) Cancel(runID ...string) {
+	a.cancelMu.Lock()
+	defer a.cancelMu.Unlock()
+	if len(runID) == 0 {
+		for id, fn := range a.cancelFuncs {
+			fn()
+			delete(a.cancelFuncs, id)
+		}
+		return
+	}
+	for _, id := range runID {
+		if fn, ok := a.cancelFuncs[id]; ok {
+			fn()
+			delete(a.cancelFuncs, id)
+		}
+	}
 }
 
 func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, sessions *SessionStore, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
@@ -220,6 +271,11 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	}
 
 	handlers := []adk.ChatModelAgentMiddleware{
+		// patchtoolcalls 必须在最外层，确保每次 LLM 调用前 dangling tool_calls 被补占位
+		// 防止历史会话（崩溃/cancel 后）发送 dangling tool_calls 给 LLM
+		// 使用自定义 PatchedContentGenerator，把"工具未完成"信息以更友好的
+		// 形式呈现给 LLM，便于下一轮模型理解上下文
+		buildPatchToolCallsMiddleware(),
 		&ToolCallLoggingMiddleware{},
 	}
 	if tsMiddleware != nil {
@@ -227,11 +283,17 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	}
 	handlers = append(handlers,
 		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
-		&ReductionMiddleware{},
 		&DangerousSQLApprovalMiddleware{},
 		&ToolErrorRecoveryMiddleware{},
-		summarizationMW,
 	)
+	// 替换自定义 ReductionMiddleware 为 eino 官方的 reduction 中间件
+	// 官方实现支持 Offload to File + 完整的 clear 策略，既能裁剪大结果，
+	// 又能保留流式语义（解决自实现 ReductionMiddleware "Recv 全部再切片"
+	// 破坏流式 UX 的问题）。
+	if reductionMW := buildEinoReductionMiddleware(); reductionMW != nil {
+		handlers = append(handlers, reductionMW)
+	}
+	handlers = append(handlers, summarizationMW)
 
 	// SessionSyncMiddleware：对接 Eino Memory/Session，
 	// 在 summarization 压缩消息后自动同步到 SessionStore
@@ -285,7 +347,12 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 }
 
 // RunStream 流式执行（首次查询）
-func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(StreamChunk)) (string, error) {
+// RunStream 执行一次对话
+//
+// runID: 用于 Cancel 精确指定要取消的运行（多 SSE / 多 tab 并发时使用）。
+//
+// 返回 sessionID 与 nil error（兼容旧签名）。实际错误已通过 flush 推给前端。
+func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest, flush func(StreamChunk)) (string, error) {
 	log.Printf("[Agent] 开始执行 - sessionID=%s, userID=%s, connID=%s\n", req.SessionID, req.UserID, req.ConnID)
 
 	sessionID := req.SessionID
@@ -375,11 +442,17 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	}
 
 	checkPointID := fmt.Sprintf("cp_%s_%d", sessionID, time.Now().UnixMilli())
+	// 优先使用外部传入的 runID（用于 Cancel 精确指定），未传时回退到 sessionID+ts
+	if runID == "" {
+		runID = fmt.Sprintf("%s_%d", sessionID, time.Now().UnixNano())
+	}
 
 	// 使用 Eino v0.9 Agent Cancel：通过 WithCancel 获取 AgentRunOption 和 CancelFunc，
-	// 支持安全点取消（等待当前工具调用完成后再取消）
+	// 支持安全点取消（等待当前工具调用完成后再取消）。
+	// 按 runID 注册，多 SSE / 多 tab 并发时不会互相覆盖。
 	cancelOpt, cancelFn := adk.WithCancel()
-	a.cancelFunc = cancelFn
+	a.registerCancel(runID, cancelFn)
+	defer a.unregisterCancel(runID)
 
 	// 绑定 SessionSyncMiddleware，使 summarization 压缩后的消息能同步到 Session
 	if a.sessionSync != nil {
@@ -390,8 +463,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 
 	_, _ = a.processEvents(iter, flush, sess, checkPointID)
 
-	// 清理 cancelFunc 和 session 绑定
-	a.cancelFunc = nil
+	// 清理 session 绑定（cancelFunc 已经在 defer unregisterCancel 中清理）
 	if a.sessionSync != nil {
 		a.sessionSync.ClearSession()
 	}
@@ -403,14 +475,6 @@ func (a *SQLAgent) RunStream(ctx context.Context, req ChatRequest, flush func(St
 	log.Printf("[Agent] 执行完毕 - sessionID=%s\n", sessionID)
 
 	return sessionID, nil
-}
-
-// Cancel 主动取消正在运行的 Agent（Eino v0.9 安全点取消）
-func (a *SQLAgent) Cancel() {
-	if a.cancelFunc != nil {
-		log.Printf("[Agent] 触发 Agent Cancel\n")
-		a.cancelFunc()
-	}
 }
 
 // ResumeStream 恢复被中断的执行（用户确认/取消后）
@@ -507,10 +571,8 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
 			logUnwrappedError(event.Err)
 			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
-				sess.RemoveTrailingIncompleteToolCalls()
-				if fullResponse.Len() > 0 {
-					_ = sess.SaveToDB()
-				}
+				// 原子地"清理+落库"，避免 debounce 在清理与保存之间写脏数据
+				_ = sess.CleanAndSave()
 				if errors.Is(event.Err, context.DeadlineExceeded) {
 					flush(StreamChunk{Type: "error", Content: "AI 处理超时，部分操作可能未完成。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				}
@@ -519,27 +581,18 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			// Eino v0.9: 区分主动取消（CancelError）与普通业务失败
 			var cancelErr *adk.CancelError
 			if errors.As(event.Err, &cancelErr) {
-				sess.RemoveTrailingIncompleteToolCalls()
-				if fullResponse.Len() > 0 {
-					_ = sess.SaveToDB()
-				}
+				_ = sess.CleanAndSave()
 				log.Printf("[Agent] Agent 被主动取消\n")
 				flush(StreamChunk{Type: "cancelled", Content: "已停止生成"})
 				break
 			}
 			if errors.Is(event.Err, adk.ErrExceedMaxIterations) || strings.Contains(event.Err.Error(), "exceeds max iterations") {
-				sess.RemoveTrailingIncompleteToolCalls()
-				if fullResponse.Len() > 0 {
-					_ = sess.SaveToDB()
-				}
+				_ = sess.CleanAndSave()
 				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				break
 			}
 			if strings.Contains(event.Err.Error(), "stream reader is empty") || strings.Contains(event.Err.Error(), "concat stream reader fail") {
-				sess.RemoveTrailingIncompleteToolCalls()
-				if fullResponse.Len() > 0 {
-					_ = sess.SaveToDB()
-				}
+				_ = sess.CleanAndSave()
 				flush(StreamChunk{Type: "error", Content: "AI 处理遇到内部错误，前置工具调用可能未成功。你可以重新提问或提供更具体的指令，AI 会重新尝试处理。"})
 				break
 			}

@@ -2,10 +2,10 @@ package strutil
 
 import (
 	"encoding/json"
-	"websql/internal/logger"
-	"strconv"
 	"strings"
+	"strconv"
 	"unicode"
+	"websql/internal/logger"
 )
 
 func ExtractSql(s string) string {

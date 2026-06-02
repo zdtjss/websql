@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	agent "websql/internal/ai/agent"
 	system "websql/internal/app/system"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,14 @@ var httpClient = &http.Client{Timeout: 30 * time.Minute}
 
 func SaveAIConfig(cfg system.AIConfig) error {
 	system.SaveAIConfigToDB(cfg)
+	// 配置变更后立即失效 Agent 与 Permission 缓存，避免 admin 改了 AI 配置
+	// 但前端还是用旧的 ChatModel / Agent / Permission Agent 跑业务（EINO_DEEP_ANALYSIS §11.1）。
+	// 失效是异步的：当前正在跑的 Run 不受影响（它们持有自己的 ChatModel 引用），
+	// 但下一次 GetOrCreate 会用新配置重建。
+	if factory := agent.GetAgentFactory(); factory != nil {
+		factory.InvalidateAll()
+	}
+	agent.InvalidatePermissionAgentCache()
 	return nil
 }
 

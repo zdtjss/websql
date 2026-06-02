@@ -74,7 +74,7 @@
 
             <div v-if="table.indexes && table.indexes.length" style="margin-top:5px">
               <strong style="font-size:12px;color:#909399">索引:</strong>
-              <el-tag v-for="idx in table.indexes" :key="idx.name" size="small" :type="idx.unique ? 'success' : ''" style="margin:2px 4px">
+              <el-tag v-for="idx in table.indexes" :key="idx.name" size="small" :type="idx.unique ? 'success' : 'info'" style="margin:2px 4px">
                 {{ idx.name }}({{ idx.columns.join(',') }})
               </el-tag>
             </div>

@@ -205,7 +205,7 @@ function onKeywordClear() {
 
 function getTypeColor(type) {
   const map = { table: 'primary', view: 'success', column: 'warning', index: 'info' }
-  return map[type] || ''
+  return map[type] || 'info'
 }
 
 async function doSearch() {

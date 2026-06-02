@@ -111,13 +111,21 @@ func (c *PermissionAgentCache) cleanLoop() {
 	}
 }
 
-// InvalidateAll 清除所有 Permission Agent 缓存（权限变更时调用）
+// InvalidateAll 清除所有 Permission Agent 缓存（权限变更 / AI 配置变更时调用）
 func (c *PermissionAgentCache) InvalidateAll() {
 	c.mu.Lock()
 	count := len(c.cache)
 	c.cache = make(map[string]*permAgentEntry)
 	c.mu.Unlock()
 	if count > 0 {
-		log.Printf("[PermAgentCache] 权限变更，清除全部缓存 - count=%d\n", count)
+		log.Printf("[PermAgentCache] 缓存已清空 - count=%d\n", count)
 	}
+}
+
+// InvalidatePermissionAgentCache 是包级别的便捷函数：清除全局 Permission Agent 缓存。
+//
+// 用途：AI 配置变更时（EINO_DEEP_ANALYSIS §11.1）从外部触发失效，
+// 避免 admin 改了 ai.apiKey / ai.model 后还跑在旧 ChatModel 上。
+func InvalidatePermissionAgentCache() {
+	globalPermAgentCache.InvalidateAll()
 }
