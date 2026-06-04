@@ -384,24 +384,25 @@ func recoveryHint(toolName, args string, err error) string {
 	return "Please adjust parameters and retry."
 }
 
+type contextKeyStartTime struct{}
+
 type ToolCallLoggingMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
-	startTime time.Time
 }
 
 // AfterAgent 在 Agent 成功结束后记录总耗时和统计信息（Eino v0.9 新增）
 func (m *ToolCallLoggingMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
-	if !m.startTime.IsZero() {
-		elapsed := time.Since(m.startTime)
+	if startTime, ok := ctx.Value(contextKeyStartTime{}).(time.Time); ok && !startTime.IsZero() {
+		elapsed := time.Since(startTime)
 		log.Printf("[ToolCallLogging] Agent 执行完毕 - 总耗时=%v, 消息数=%d\n", elapsed, len(state.Messages))
 	}
 	return ctx, nil
 }
 
-// BeforeModelRewriteState 记录 Agent 开始时间
+// BeforeModelRewriteState 记录 Agent 开始时间到 context 中（线程安全）
 func (m *ToolCallLoggingMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
-	if m.startTime.IsZero() {
-		m.startTime = time.Now()
+	if _, ok := ctx.Value(contextKeyStartTime{}).(time.Time); !ok {
+		ctx = context.WithValue(ctx, contextKeyStartTime{}, time.Now())
 	}
 	return ctx, state, nil
 }

@@ -234,7 +234,7 @@ func MainRegister(router *gin.Engine) {
 
 // proxy 对外代理的接口
 func proxy(c *gin.Context) {
-	req, err := http.NewRequest(c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "创建代理请求失败"})
 		return

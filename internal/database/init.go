@@ -12,8 +12,15 @@ func InitDB(scriptFile string) {
 	sql := config.ReadSql(scriptFile)
 	sqlArr := strings.Split(sql, ";")
 	tx, err := Mngtdb.DB.Begin()
-	defer tx.Rollback()
 	logutils.PanicErrf("事务开启失败", err)
+
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
 	for _, s := range sqlArr {
 		relSql := strutil.ExtractSql(s)
 		if relSql == "" {
@@ -24,5 +31,6 @@ func InitDB(scriptFile string) {
 	}
 	err = tx.Commit()
 	logutils.PanicErr(err)
+	committed = true
 	log.Println("数据库初始化完毕")
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"websql/internal/database"
+	"websql/internal/pkg/dberr"
 )
 
 // ──────────────────────────────────────────────
@@ -393,12 +394,12 @@ func (s *Session) doSave() error {
 	_, err = database.Mngtdb.Exec(`
 		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ? WHERE id = ?
 	`, string(data), title, ctx, time.Now(), s.ID)
-	if err != nil && strings.Contains(err.Error(), "no such column: context") {
+	if err != nil && dberr.IsColumnNotExist(err) {
 		_, err = database.Mngtdb.Exec(`
 			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
 		`, string(data), title, time.Now(), s.ID)
 	}
-	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+	if err != nil && dberr.IsTableNotExist(err) {
 		return nil
 	}
 	return err
@@ -687,7 +688,7 @@ func createSessionInDB(id, userID string) error {
 		INSERT INTO t_ai_session (id, user_id, title, messages, created_at, updated_at)
 		VALUES (?, ?, '', '[]', ?, ?)
 	`, id, userID, time.Now(), time.Now())
-	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+	if err != nil && dberr.IsTableNotExist(err) {
 		return nil
 	}
 	return err
@@ -727,10 +728,10 @@ func getSessionByID(id string) (*SessionDB, error) {
 		FROM t_ai_session WHERE id = ?
 	`, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") || strings.Contains(err.Error(), "not found") {
+		if dberr.IsNoRows(err) {
 			return nil, nil
 		}
-		if strings.Contains(err.Error(), "no such column: context") {
+		if dberr.IsColumnNotExist(err) {
 			return getSessionByIDWithoutContext(id)
 		}
 		log.Printf("[SessionDB] 查询会话失败 - id=%s, err=%v\n", id, err)
@@ -746,7 +747,7 @@ func getSessionByIDWithoutContext(id string) (*SessionDB, error) {
 		FROM t_ai_session WHERE id = ?
 	`, id)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") || strings.Contains(err.Error(), "not found") {
+		if dberr.IsNoRows(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -761,7 +762,7 @@ func listSessionsByUserID(userID string) ([]SessionDB, error) {
 		FROM t_ai_session WHERE user_id = ? ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
+		if dberr.IsTableNotExist(err) {
 			return []SessionDB{}, nil
 		}
 		return nil, err
@@ -789,7 +790,7 @@ func listSessionsByUserIDPaged(userID, keyword string, limit, offset int) ([]Ses
 		args = []any{userID, "%" + keyword + "%", limit, offset}
 	}
 	if err := database.Mngtdb.Select(&sessions, sqlStr, args...); err != nil {
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
+		if dberr.IsTableNotExist(err) {
 			return []SessionDB{}, nil
 		}
 		return nil, err
@@ -811,7 +812,7 @@ func countSessionsByUserID(userID, keyword string) (int, error) {
 	}
 	var count int
 	if err := database.Mngtdb.Get(&count, sqlStr, args...); err != nil {
-		if strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table") {
+		if dberr.IsTableNotExist(err) {
 			return 0, nil
 		}
 		return 0, err
@@ -821,7 +822,7 @@ func countSessionsByUserID(userID, keyword string) (int, error) {
 
 func deleteSessionInDB(id string) error {
 	_, err := database.Mngtdb.Exec(`DELETE FROM t_ai_session WHERE id = ?`, id)
-	if err != nil && (strings.Contains(err.Error(), "doesn't exist") || strings.Contains(err.Error(), "no such table")) {
+	if err != nil && dberr.IsTableNotExist(err) {
 		return nil
 	}
 	return err

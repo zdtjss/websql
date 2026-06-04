@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log"
 	"sync"
@@ -18,18 +17,9 @@ const (
 	agentCacheCleanSec = 2 * time.Minute
 )
 
-type agentCacheEntry struct {
-	agent     *SQLAgent
-	createdAt time.Time
-	cfgHash   string
-}
-
 type AgentFactory struct {
-	mu       sync.RWMutex
-	cache    map[string]*agentCacheEntry
+	cache    *TTLCache[*SQLAgent]
 	sessions *SessionStore
-	stopCh   chan struct{}
-	stopped  sync.Once
 }
 
 var globalAgentFactory *AgentFactory
@@ -43,90 +33,49 @@ func GetAgentFactory() *AgentFactory {
 			sessions, _ = NewSessionStore()
 		}
 		globalAgentFactory = &AgentFactory{
-			cache:    make(map[string]*agentCacheEntry),
+			cache:    NewTTLCache[*SQLAgent](agentCacheTTL, agentCacheCleanSec),
 			sessions: sessions,
-			stopCh:   make(chan struct{}),
 		}
-		go globalAgentFactory.cleanLoop()
 	})
 	return globalAgentFactory
 }
 
 // Close 关闭 AgentFactory，停止后台清理 goroutine（防止 goroutine 泄漏）
 func (f *AgentFactory) Close() {
-	f.stopped.Do(func() {
-		close(f.stopCh)
-		f.sessions.Close()
-		log.Printf("[AgentFactory] 已关闭\n")
-	})
+	f.cache.Close()
+	f.sessions.Close()
+	log.Printf("[AgentFactory] 已关闭\n")
 }
 
 func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
 	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas)
-	cfgHash := aiConfigHash(cfg)
 
-	f.mu.RLock()
-	entry, ok := f.cache[key]
-	f.mu.RUnlock()
-
-	if ok && entry.cfgHash == cfgHash && time.Since(entry.createdAt) < agentCacheTTL {
-		return entry.agent, nil
+	if agent, ok := f.cache.Get(key); ok {
+		return agent, nil
 	}
 
-	agent, err := NewSQLAgent(ctx, cfg, connID, dbType, dbSchema, dbVersion, schemas, f.sessions, scope, auditCtx)
+	newAgent, err := NewSQLAgent(ctx, cfg, connID, dbType, dbSchema, dbVersion, schemas, f.sessions, scope, auditCtx)
 	if err != nil {
 		return nil, err
 	}
 
-	f.mu.Lock()
-	f.cache[key] = &agentCacheEntry{
-		agent:     agent,
-		createdAt: time.Now(),
-		cfgHash:   cfgHash,
-	}
-	f.mu.Unlock()
-
-	log.Printf("[AgentFactory] 创建新 Agent - key=%s, cfgHash=%s\n", key, cfgHash[:8])
-	return agent, nil
+	f.cache.Set(key, newAgent)
+	log.Printf("[AgentFactory] 创建新 Agent - key=%s\n", key)
+	return newAgent, nil
 }
 
 func (f *AgentFactory) InvalidateAll() {
-	f.mu.Lock()
-	f.cache = make(map[string]*agentCacheEntry)
-	f.mu.Unlock()
+	f.cache.InvalidateAll()
 	log.Printf("[AgentFactory] 缓存已全部清空\n")
 }
 
 func (f *AgentFactory) Invalidate(connID, dbSchema, userID string, schemas []SchemaRef) {
 	key := agentCacheKey(connID, dbSchema, userID, schemas)
-	f.mu.Lock()
-	delete(f.cache, key)
-	f.mu.Unlock()
+	f.cache.Delete(key)
 }
 
 func (f *AgentFactory) GetSessions() *SessionStore {
 	return f.sessions
-}
-
-func (f *AgentFactory) cleanLoop() {
-	ticker := time.NewTicker(agentCacheCleanSec)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			f.mu.Lock()
-			now := time.Now()
-			for k, v := range f.cache {
-				if now.Sub(v.createdAt) > agentCacheTTL {
-					delete(f.cache, k)
-					log.Printf("[AgentFactory] 清理过期 - key=%s\n", k)
-				}
-			}
-			f.mu.Unlock()
-		case <-f.stopCh:
-			return
-		}
-	}
 }
 
 func agentCacheKey(connID, dbSchema, userID string, schemas []SchemaRef) string {
@@ -135,12 +84,6 @@ func agentCacheKey(connID, dbSchema, userID string, schemas []SchemaRef) string 
 		key += fmt.Sprintf("::%s/%s", s.ConnID, s.Schema)
 	}
 	return key
-}
-
-func aiConfigHash(cfg *system.AIConfig) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%s|%.2f|%d|%t", cfg.Provider, cfg.BaseURL, cfg.Model, cfg.ApiKey, cfg.Temperature, cfg.MaxContextTokens, cfg.EnableThinking)
-	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func init() {

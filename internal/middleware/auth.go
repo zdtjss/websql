@@ -78,6 +78,8 @@ func AuthMiddleware() gin.HandlerFunc {
 
 func HostCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 本地模式（IsRemote=false）时检查 IP 白名单：
+		// 本系统基于浏览器访问，局域网内任何人可通过网络访问，需要 IP 校验防止未授权使用
 		if !config.Cfg.IsRemote {
 			clientIP := c.ClientIP()
 			if len(config.Cfg.AllowedIP) > 0 && !slices.Contains(config.Cfg.AllowedIP, clientIP) {

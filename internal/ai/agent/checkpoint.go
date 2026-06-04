@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"websql/internal/store"
@@ -18,72 +17,32 @@ const (
 	checkpointRedisPrefix = "websql:cp:"
 )
 
-type checkpointEntry struct {
-	Data      []byte
-	CreatedAt time.Time
-}
-
 type InMemoryCheckPointStore struct {
-	mu     sync.RWMutex
-	store  map[string]*checkpointEntry
-	stopCh chan struct{}
+	cache *TTLCache[[]byte]
 }
 
 func NewInMemoryCheckPointStore() *InMemoryCheckPointStore {
-	s := &InMemoryCheckPointStore{
-		store:  make(map[string]*checkpointEntry),
-		stopCh: make(chan struct{}),
+	return &InMemoryCheckPointStore{
+		cache: NewTTLCache[[]byte](checkpointMaxAge, checkpointCleanSec),
 	}
-	go s.cleanLoop()
-	return s
 }
 
 func (s *InMemoryCheckPointStore) Set(_ context.Context, key string, value []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.store[key] = &checkpointEntry{Data: value, CreatedAt: time.Now()}
+	s.cache.Set(key, value)
 	log.Printf("[CheckPointStore] Set - key=%s, size=%d bytes\n", key, len(value))
 	return nil
 }
 
 func (s *InMemoryCheckPointStore) Get(_ context.Context, key string) ([]byte, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	entry, ok := s.store[key]
+	val, ok := s.cache.Get(key)
 	if !ok {
 		return nil, false, nil
 	}
-	if time.Since(entry.CreatedAt) > checkpointMaxAge {
-		return nil, false, fmt.Errorf("checkpoint 已过期（key=%s）", key)
-	}
-	return entry.Data, true, nil
+	return val, true, nil
 }
 
 func (s *InMemoryCheckPointStore) Delete(key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.store, key)
-}
-
-func (s *InMemoryCheckPointStore) cleanLoop() {
-	ticker := time.NewTicker(checkpointCleanSec)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			s.mu.Lock()
-			now := time.Now()
-			for k, v := range s.store {
-				if now.Sub(v.CreatedAt) > checkpointMaxAge {
-					delete(s.store, k)
-					log.Printf("[CheckPointStore] 清理过期 - key=%s\n", k)
-				}
-			}
-			s.mu.Unlock()
-		case <-s.stopCh:
-			return
-		}
-	}
+	s.cache.Delete(key)
 }
 
 type RedisCheckPointStore struct {

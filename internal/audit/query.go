@@ -1,10 +1,9 @@
 package audit
 
 import (
-	"strings"
-
 	"websql/internal/database"
 	"websql/internal/logger"
+	"websql/internal/pkg/dberr"
 )
 
 func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, startTime, endTime, keyword string, page, pageSize int) ([]AuditLog, int, error) {
@@ -52,7 +51,7 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 	countSQL := "SELECT COUNT(*) FROM t_audit_log" + whereClause
 	err := database.Mngtdb.Get(&total, countSQL, args...)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "doesn't exist") {
+		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil
 		}
 		logger.PrintErrf("审计日志 count 查询失败", err)
@@ -74,7 +73,7 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 	var logs []AuditLog
 	err = database.Mngtdb.Select(&logs, dataSQL, dataArgs...)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "doesn't exist") {
+		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil
 		}
 		logger.PrintErrf("审计日志查询失败", err)

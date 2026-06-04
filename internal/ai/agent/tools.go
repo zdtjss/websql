@@ -757,11 +757,11 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 			return sb.String()
 		}
 		if dbSchema != "" {
-			query = fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM ALL_TAB_COLUMNS WHERE OWNER = '%s' AND TABLE_NAME = '%s' ORDER BY COLUMN_ID",
-				strings.ToUpper(dbSchema), strings.ToUpper(table))
+			query = "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(dbSchema), strings.ToUpper(table)}
 		} else {
-			query = fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = '%s' ORDER BY COLUMN_ID",
-				strings.ToUpper(table))
+			query = "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :1 ORDER BY COLUMN_ID"
+			args = []any{strings.ToUpper(table)}
 		}
 	default:
 		return sb.String()

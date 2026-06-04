@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,11 +19,13 @@ import (
 )
 
 var Mngtdb *sqlx.DB
+
 var (
 	DBMap       = make(map[string]*sqlx.DB)
 	dbMapMu     sync.RWMutex
 	dbLastUsed  = make(map[string]time.Time)
-	maxPoolSize = 100 // 最大连接池数量
+	dbCancels   = make(map[string]context.CancelFunc) // 每个 DB 连接的健康检查 cancel
+	maxPoolSize = 100                                 // 最大连接池数量
 )
 
 func InitMngtDbConn() {
@@ -113,22 +116,42 @@ func GetConn(param *DBParam) *sqlx.DB {
 		evictLRULocked()
 	}
 
+	// 创建 context 控制健康检查 goroutine 生命周期
+	ctx, cancel := context.WithCancel(context.Background())
+	dbCancels[key] = cancel
+
 	DBMap[key] = db
 	dbLastUsed[key] = time.Now()
 	dbMapMu.Unlock()
 
 	log.Printf("数据库连接成功， env = %s, db = %s", param.Name, param.User)
 
-	go func() {
-		t := time.NewTicker(1 * time.Hour)
-		defer t.Stop()
-		for range t.C {
+	go startHealthCheck(ctx, key, db)
+
+	return db
+}
+
+// startHealthCheck 定期检查数据库连接健康状态
+// 通过 context 控制生命周期，连接被淘汰或服务关闭时取消 context 即可停止 goroutine
+func startHealthCheck(ctx context.Context, key string, db *sqlx.DB) {
+	t := time.NewTicker(1 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 			err := db.Ping()
 			if err != nil {
 				dbMapMu.Lock()
 				if current, ok := DBMap[key]; ok && current == db {
 					delete(DBMap, key)
 					delete(dbLastUsed, key)
+					if c, ok := dbCancels[key]; ok {
+						delete(dbCancels, key)
+						// 不需要调用 c()，因为当前 goroutine 即将退出
+						_ = c
+					}
 				}
 				dbMapMu.Unlock()
 				return
@@ -140,9 +163,7 @@ func GetConn(param *DBParam) *sqlx.DB {
 			}
 			dbMapMu.Unlock()
 		}
-	}()
-
-	return db
+	}
 }
 
 // evictLRULocked 淘汰最久未使用的连接，调用时必须持有 dbMapMu 写锁
@@ -166,14 +187,24 @@ func evictLRULocked() {
 			}
 		}
 		if oldestKey != "" {
-			if db, ok := DBMap[oldestKey]; ok {
-				db.Close()
-			}
-			delete(DBMap, oldestKey)
-			delete(dbLastUsed, oldestKey)
+			closeConnLocked(oldestKey)
 			log.Printf("连接池 LRU 淘汰: key=%s, lastUsed=%v", oldestKey, oldestTime)
 		}
 	}
+}
+
+// closeConnLocked 关闭指定 key 的连接并取消其健康检查 goroutine
+// 调用时必须持有 dbMapMu 写锁
+func closeConnLocked(key string) {
+	if db, ok := DBMap[key]; ok {
+		db.Close()
+	}
+	if cancel, ok := dbCancels[key]; ok {
+		cancel()
+		delete(dbCancels, key)
+	}
+	delete(DBMap, key)
+	delete(dbLastUsed, key)
 }
 
 func makeDsn(param *DBParam) string {
@@ -196,15 +227,21 @@ func makeDsn(param *DBParam) string {
 	}
 }
 
-func RealseConn(param *DBParam) {
+func ReleaseConn(param *DBParam) {
 	key := createKey(param)
 	dbMapMu.Lock()
-	if db, ok := DBMap[key]; ok {
-		db.Close()
-	}
-	delete(DBMap, key)
-	delete(dbLastUsed, key)
+	closeConnLocked(key)
 	dbMapMu.Unlock()
+}
+
+// CloseAllConns 关闭所有数据库连接池（服务关闭时调用）
+func CloseAllConns() {
+	dbMapMu.Lock()
+	defer dbMapMu.Unlock()
+	for key := range DBMap {
+		closeConnLocked(key)
+	}
+	log.Printf("[DBPool] 所有连接已关闭\n")
 }
 
 func createKey(param *DBParam) string {

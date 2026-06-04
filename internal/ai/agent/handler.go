@@ -73,7 +73,8 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 
 	wg := &writeGuard{}
 	kaStop := make(chan struct{})
-	runnerCtx, runnerCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// 使用请求级 context 作为父级，确保服务关闭时请求被优雅取消
+	runnerCtx, runnerCancel := context.WithTimeout(parentCtx, 5*time.Minute)
 
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)

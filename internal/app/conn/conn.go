@@ -51,7 +51,7 @@ func SaveConn(c *gin.Context) {
 			pwdEncoded := crypto.AESEncode(*cfg.Pwd)
 			stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
 		}
-		database.RealseConn(dbParam)
+		database.ReleaseConn(dbParam)
 	}
 
 	saved := []ConnCfg{}

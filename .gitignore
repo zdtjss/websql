@@ -28,6 +28,9 @@ data/
 docs/
 release/
 
+.idea/
+
 nway.sqlite3**.db**
 
 node_modules/
+.idea/modules.xml

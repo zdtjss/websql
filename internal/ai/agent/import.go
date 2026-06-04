@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	admin "websql/internal/app/admin"
@@ -21,6 +20,7 @@ import (
 
 const uploadDir = "./data/uploads"
 const uploadMaxAge = 30 * time.Minute
+const uploadCleanSec = 5 * time.Minute
 
 type uploadMeta struct {
 	ID        string
@@ -28,36 +28,17 @@ type uploadMeta struct {
 	DiskPath  string
 	Columns   []string
 	TotalRows int
-	CreatedAt time.Time
 }
 
-var (
-	uploadIndex   = make(map[string]*uploadMeta)
-	uploadIndexMu sync.RWMutex
-)
+var uploadCache = NewTTLCache[*uploadMeta](uploadMaxAge, uploadCleanSec, func(key string, meta *uploadMeta) {
+	if meta != nil {
+		os.Remove(meta.DiskPath)
+		log.Printf("[UploadStore] 清理过期文件 - id=%s, name=%s\n", key, meta.FileName)
+	}
+})
 
 func init() {
 	os.MkdirAll(uploadDir, 0o755)
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		for range ticker.C {
-			cleanExpiredUploads()
-		}
-	}()
-}
-
-func cleanExpiredUploads() {
-	uploadIndexMu.Lock()
-	defer uploadIndexMu.Unlock()
-	now := time.Now()
-	for id, m := range uploadIndex {
-		if now.Sub(m.CreatedAt) > uploadMaxAge {
-			os.Remove(m.DiskPath)
-			delete(uploadIndex, id)
-			log.Printf("[UploadStore] 清理过期文件 - id=%s, name=%s\n", id, m.FileName)
-		}
-	}
 }
 
 type UploadedFile struct {
@@ -66,9 +47,7 @@ type UploadedFile struct {
 }
 
 func GetUploadedFile(id string) (*UploadedFile, error) {
-	uploadIndexMu.RLock()
-	meta, ok := uploadIndex[id]
-	uploadIndexMu.RUnlock()
+	meta, ok := uploadCache.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("上传文件不存在或已过期（id=%s），请重新上传", id)
 	}
@@ -109,12 +88,7 @@ func GetUploadedFile(id string) (*UploadedFile, error) {
 }
 
 func RemoveUploadedFile(id string) {
-	uploadIndexMu.Lock()
-	defer uploadIndexMu.Unlock()
-	if m, ok := uploadIndex[id]; ok {
-		os.Remove(m.DiskPath)
-		delete(uploadIndex, id)
-	}
+	uploadCache.Delete(id)
 }
 
 func HandleUploadExcel(c *gin.Context) {
@@ -209,16 +183,13 @@ func HandleUploadExcel(c *gin.Context) {
 		}
 	}
 
-	uploadIndexMu.Lock()
-	uploadIndex[fileID] = &uploadMeta{
+	uploadCache.Set(fileID, &uploadMeta{
 		ID:        fileID,
 		FileName:  fileHeader.Filename,
 		DiskPath:  diskPath,
 		Columns:   columns,
 		TotalRows: totalRows,
-		CreatedAt: time.Now(),
-	}
-	uploadIndexMu.Unlock()
+	})
 
 	log.Printf("[UploadExcel] 文件已暂存 - id=%s, name=%s, columns=%v, rows=%d\n",
 		fileID, fileHeader.Filename, columns, totalRows)
@@ -247,9 +218,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 		return
 	}
 
-	uploadIndexMu.RLock()
-	meta, ok := uploadIndex[req.FileID]
-	uploadIndexMu.RUnlock()
+	meta, ok := uploadCache.Get(req.FileID)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "上传文件不存在或已过期，请重新上传"})
 		return

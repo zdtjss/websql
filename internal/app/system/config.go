@@ -1,19 +1,18 @@
 package system
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/logger"
+	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
 
@@ -85,7 +84,7 @@ func GetSystemConfigByKey(key string) *SystemConfig {
 	cfg := &SystemConfig{}
 	err := database.Mngtdb.Get(cfg, "select * from t_system_config where config_key = ?", key)
 	if err != nil {
-		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows") {
+		if dberr.IsNoRows(err) {
 			return nil
 		}
 		logger.PrintErr(fmt.Errorf("查询系统配置失败: %s, %v", key, err))
@@ -110,7 +109,7 @@ func SaveSystemConfig(cfg *SystemConfigSave) {
 		_, err := database.Mngtdb.Exec("insert into t_system_config (id, config_key, config_value, config_type, remark) values (?, ?, ?, ?, ?)",
 			cfg.Id, cfg.ConfigKey, cfg.ConfigValue, cfg.ConfigType, cfg.Remark)
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if dberr.IsUniqueConstraint(err) {
 				existCfg = GetSystemConfigByKey(cfg.ConfigKey)
 				if existCfg != nil {
 					_, err := database.Mngtdb.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",

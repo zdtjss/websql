@@ -2,12 +2,12 @@ package audit
 
 import (
 	"log"
-	"strings"
 	"sync"
 	"time"
 
 	"websql/internal/database"
 	"websql/internal/logger"
+	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
 )
 
@@ -198,7 +198,7 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 		stmt, err := tx.Preparex(insertSQL)
 		if err != nil {
 			tx.Rollback()
-			if !strings.Contains(err.Error(), "no such table") && !strings.Contains(err.Error(), "doesn't exist") {
+			if !dberr.IsTableNotExist(err) {
 				logger.PrintErrf("审计日志 Prepare 失败", err)
 			}
 			return err
