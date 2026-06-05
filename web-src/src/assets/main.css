@@ -802,7 +802,6 @@
 }
 
 .el-dialog__header {
-    padding: 16px 20px 12px !important;
     border-bottom: 1px solid var(--dialog-header-border);
     margin-right: 0 !important;
 }

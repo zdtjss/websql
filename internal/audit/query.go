@@ -80,5 +80,11 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 		return nil, 0, err
 	}
 
+	for i := range logs {
+		if logs[i].ExecTime != nil {
+			logs[i].ExecTimeStr = logs[i].ExecTime.Format("2006-01-02 15:04:05")
+		}
+	}
+
 	return logs, total, nil
 }

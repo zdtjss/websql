@@ -23,7 +23,8 @@ type AuditLog struct {
 	ToolName     string     `json:"toolName" db:"tool_name"`
 	AffectedRows int        `json:"affectedRows" db:"affected_rows"`
 	ExecTimeMs   int        `json:"execTimeMs" db:"exec_time_ms"`
-	ExecTime     *time.Time `json:"execTime" db:"exec_time"`
+	ExecTime    *time.Time `json:"-" db:"exec_time"`
+	ExecTimeStr string     `json:"execTime" db:"-"`
 	ErrorMsg     string     `json:"errorMsg" db:"error_msg"`
 	ClientIP     string     `json:"clientIp" db:"client_ip"`
 }

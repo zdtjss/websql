@@ -67,11 +67,7 @@
 
     <div class="table-wrapper">
       <el-table :data="logs" stripe border style="width: 100%" height="100%" v-loading="loading">
-        <el-table-column prop="execTime" label="执行时间" width="160" sortable resizable>
-          <template #default="{ row }">
-            {{ formatDate(row.execTime) }}
-          </template>
-        </el-table-column>
+        <el-table-column prop="execTime" label="执行时间" width="160" sortable resizable />
         <el-table-column prop="source" label="来源" width="80" resizable>
           <template #default="{ row }">
             <el-tag :type="row.source === 'agent' ? 'primary' : 'info'" size="small">
@@ -132,13 +128,11 @@
       />
     </div>
 
-    <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close>
+    <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close class="sql-detail-dialog">
       <div style="margin-bottom: 8px; color: var(--text-tertiary); font-size: 13px;">
-        执行时间：{{ sqlDetail.execTime ? formatDate(sqlDetail.execTime) : '' }} | 
-        用户：{{ sqlDetail.userName }} | 
-        来源：{{ sqlDetail.source === 'agent' ? 'Agent' : 'SQL编辑器' }}
+        {{ sqlDetail.userName }} | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
       </div>
-      <pre class="sql-full-text">{{ sqlDetail.sqlText }}</pre>
+      <pre class="sql-full-text" v-html="highlightedSql"></pre>
     </el-dialog>
 
     <el-dialog v-model="errorDialogVisible" title="错误详情" width="700px" destroy-on-close>
@@ -149,8 +143,9 @@
 
 <script setup>
 import http from '@/utils/httpProxy.js'
+import { highlightSql } from '@/utils/lazyDeps.js'
 import { ElMessage } from 'element-plus'
-import { onMounted, ref, reactive } from 'vue'
+import { onMounted, ref, reactive, computed, watch } from 'vue'
 
 const logs = ref([])
 const loading = ref(false)
@@ -164,6 +159,15 @@ const total = ref(0)
 
 const sqlDialogVisible = ref(false)
 const sqlDetail = ref({})
+const highlightedSql = ref('')
+
+watch(sqlDialogVisible, async (visible) => {
+  if (visible && sqlDetail.value.sqlText) {
+    highlightedSql.value = await highlightSql(sqlDetail.value.sqlText)
+  } else {
+    highlightedSql.value = ''
+  }
+})
 
 const errorDialogVisible = ref(false)
 const errorDetail = ref('')
@@ -227,13 +231,6 @@ function handleReset() {
 function onSizeChange() {
   currentPage.value = 1
   loadLogs()
-}
-
-function formatDate(isoString) {
-  if (!isoString) return ''
-  const d = new Date(isoString)
-  if (isNaN(d.getTime())) return ''
-  return d.toLocaleString('zh-CN')
 }
 
 function getTypeTag(type_) {
@@ -317,7 +314,7 @@ onMounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 400px;
+  max-height: 520px;
   overflow-y: auto;
   color: var(--text-primary);
 }
@@ -355,5 +352,12 @@ onMounted(() => {
   max-height: 500px;
   overflow-y: auto;
   color: var(--el-color-danger);
+}
+</style>
+
+<style>
+.sql-detail-dialog .el-dialog__body {
+  max-height: 70vh;
+  overflow-y: auto;
 }
 </style>

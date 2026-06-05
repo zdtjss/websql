@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"websql/internal/app/conn"
-	admin "websql/internal/app/admin"
-	"websql/internal/app/system"
 	agentv2 "websql/internal/ai/agent"
+	admin "websql/internal/app/admin"
+	"websql/internal/app/conn"
+	"websql/internal/app/system"
 	"websql/internal/config"
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
@@ -376,33 +376,70 @@ func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef,
 func buildOptSystemPrompt(dbType, dbVersion string, explainResult *ExplainResult) string {
 	var sb strings.Builder
 
-	sb.WriteString("你是专业的 SQL 优化专家。先获取表结构，必要时 EXPLAIN，基于事实给出最优方案。\n\n")
+	sb.WriteString("你是一名资深 SQL 优化专家，专注于通过改写 SQL 提升查询性能。\n")
+	sb.WriteString("你必须基于工具返回的实际数据进行分析，禁止凭猜测给出结论。\n")
+	sb.WriteString("请逐步推理，每一步都需要有数据支撑，避免跳步结论。\n\n")
 
-	sb.WriteString("## 工具\n")
-	sb.WriteString("- `get_table_schema(table)` 获取字段、类型、索引\n")
-	sb.WriteString("- `query_data(sql)` 执行 EXPLAIN 或查询\n\n")
-
-	sb.WriteString("## 要求\n")
-	sb.WriteString("1. 先调工具收集信息，再输出结论\n")
-	sb.WriteString("2. 输出为 Markdown：表结构分析 → 问题定位 → 优化方案 → 优化后 SQL\n")
-	sb.WriteString("3. 优化后 SQL 用 ```sql 代码块，每条可独立执行\n")
-	sb.WriteString("4. 不做索引建议（除非与 SQL 直接相关），不调整表结构\n")
-	sb.WriteString("5. 给出性能预期改善（如：减少全表扫描、索引利用）\n\n")
-
-	fmt.Fprintf(&sb, "## 环境\n- 数据库：%s\n", dbType)
+	fmt.Fprintf(&sb, "## 环境信息\n- 数据库类型：%s\n", dbType)
 	if dbVersion != "" {
-		fmt.Fprintf(&sb, "- 版本：%s\n", dbVersion)
+		fmt.Fprintf(&sb, "- 数据库版本：%s\n", dbVersion)
 	}
+	sb.WriteString("\n")
+
+	sb.WriteString("## 可用工具\n")
+	sb.WriteString("- `get_table_schema(table)` — 获取指定表的建表语句，包含字段名、类型、索引定义\n")
+	sb.WriteString("  - 对 SQL 中涉及的所有表，应一次性并行调用此工具获取结构\n")
+	sb.WriteString("- `query_data(sql)` — 执行 SELECT / SHOW / DESCRIBE / EXPLAIN / WITH 语句并返回结果\n")
+	sb.WriteString("  - 仅当已提供的 EXPLAIN 结果不足以定位问题时才使用\n\n")
+
+	sb.WriteString("## 工作流程\n")
+	sb.WriteString("1. **审查 EXPLAIN 结果**：优先分析已预执行的 EXPLAIN 输出，识别关键指标（type、rows、Extra、key 等）\n")
+	sb.WriteString("2. **获取表结构**：调用 `get_table_schema` 获取 SQL 涉及的所有表的完整结构（可并行调用）\n")
+	sb.WriteString("3. **定位问题**：综合表结构与 EXPLAIN 结果，识别全表扫描、索引未命中、子查询低效、排序/过滤冗余、类型隐式转换等问题\n")
+	sb.WriteString("4. **提出方案**：针对每个问题给出具体优化手段，说明优化原理\n")
+	sb.WriteString("5. **输出优化 SQL**：给出改写后的完整 SQL，多个优化点合并为一条最终 SQL\n\n")
+
+	sb.WriteString("## 输出格式（Markdown）\n")
+	sb.WriteString("### 表结构分析\n")
+	sb.WriteString("列出与性能相关的字段、索引信息，标注当前 SQL 是否有效利用\n\n")
+	sb.WriteString("### 问题定位\n")
+	sb.WriteString("逐条列出性能瓶颈，引用 EXPLAIN 中的具体字段值作为依据\n")
+	sb.WriteString("格式：`表名.字段` - 问题描述（EXPLAIN: type=ALL, rows=10000）\n\n")
+	sb.WriteString("### 优化方案\n")
+	sb.WriteString("每个问题对应的优化手段及原理\n\n")
+	sb.WriteString("### 优化后 SQL（若无需优化则省略）\n")
+	sb.WriteString("```sql\n-- 优化后的完整 SQL，与原 SQL 语义等价\n```\n\n")
+	sb.WriteString("### 性能预期（若无需优化则省略）\n")
+	sb.WriteString("对比优化前后的执行计划变化（如：全表扫描 → 索引范围扫描，扫描行数从 N 降至 M）\n\n")
+
+	sb.WriteString("## 约束\n")
+	sb.WriteString("- 不做索引建议，除非索引缺失直接导致当前 SQL 无法高效执行\n")
+	sb.WriteString("- 不输出与性能优化无关的建议（如代码风格、命名规范）\n")
+	sb.WriteString("- 优化后 SQL 必须语义等价，返回结果集与原 SQL 一致\n")
+	sb.WriteString("- 如果原 SQL 已经足够高效，直接说明无需优化，不要强行改写\n")
+	sb.WriteString("- 输出内容应简洁专业，避免冗余铺垫\n\n")
 
 	if explainResult != nil && len(explainResult.Rows) > 0 {
-		sb.WriteString("\n## EXPLAIN（已预执行）\n```\n")
+		sb.WriteString("## EXPLAIN 结果（已预执行）\n")
+		sb.WriteString("```\n")
+		// Format as aligned columns for readability
+		colNames := make([]string, 0)
+		for _, col := range explainResult.Columns {
+			colNames = append(colNames, col.Name)
+		}
+		sb.WriteString(strings.Join(colNames, "\t"))
+		sb.WriteString("\n")
 		for _, row := range explainResult.Rows {
+			vals := make([]string, 0)
 			for _, col := range explainResult.Columns {
 				if v, ok := row[col.Name]; ok {
-					fmt.Fprintf(&sb, "%-30s %v\n", col.Name, v)
+					vals = append(vals, fmt.Sprintf("%v", v))
+				} else {
+					vals = append(vals, "NULL")
 				}
 			}
-			sb.WriteString("---\n")
+			sb.WriteString(strings.Join(vals, "\t"))
+			sb.WriteString("\n")
 		}
 		sb.WriteString("```\n")
 	}

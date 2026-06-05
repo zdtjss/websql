@@ -1,11 +1,15 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import App from '@/App.vue'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
-    name: 'App',
-    component: App
+    name: 'AIChat',
+    component: () => import('@/views/ai/ChatView.vue')
+  },
+  {
+    path: '/ai',
+    name: 'ChatExplicit',
+    component: () => import('@/views/ai/ChatView.vue')
   },
   {
     path: '/system-management',
@@ -26,28 +30,64 @@ const router = createRouter({
   routes
 })
 
+let cachedDefaultHomepage: string | null = null
+
+async function getDefaultHomepage(): Promise<string> {
+  if (cachedDefaultHomepage !== null) return cachedDefaultHomepage
+  const stored = localStorage.getItem('defaultHomepage')
+  if (stored) {
+    cachedDefaultHomepage = stored
+    return stored
+  }
+  try {
+    const auth = sessionStorage.getItem('authentication') || ''
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    const resp = await fetch(apiBase + '/system/config/all/get', {
+      headers: { 'Authorization': auth }
+    })
+    if (resp.ok) {
+      const data = await resp.json()
+      const homepage = data.data?.defaultHomepage || 'ai'
+      cachedDefaultHomepage = homepage
+      localStorage.setItem('defaultHomepage', homepage)
+      return homepage
+    }
+  } catch { /* ignore */ }
+  cachedDefaultHomepage = 'ai'
+  localStorage.setItem('defaultHomepage', 'ai')
+  return 'ai'
+}
+
+async function checkClassicViewPermission(): Promise<boolean> {
+  try {
+    const auth = sessionStorage.getItem('authentication') || ''
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    const resp = await fetch(apiBase + '/canUseClassicView', {
+      headers: { 'Authorization': auth }
+    })
+    if (resp.ok) {
+      const data = await resp.json()
+      return !!(data.data && data.data.allowed)
+    }
+  } catch { /* ignore */ }
+  return false
+}
+
 router.beforeEach(async (to, _from) => {
   if (to.meta.requiresClassicView) {
-    try {
-      const auth = sessionStorage.getItem('authentication') || ''
-      const apiBase = import.meta.env.VITE_API_URL || ''
-      const resp = await fetch(apiBase + '/canUseClassicView', {
-        headers: { 'Authorization': auth }
-      })
-      if (resp.ok) {
-        const data = await resp.json()
-        if (data.data && data.data.allowed) {
-          return true
-        } else {
-          return '/'
-        }
-      } else {
-        return '/'
-      }
-    } catch {
-      return '/'
+    const allowed = await checkClassicViewPermission()
+    if (allowed) return true
+    return '/'
+  }
+
+  if (to.path === '/') {
+    const homepage = await getDefaultHomepage()
+    if (homepage === 'classical') {
+      const allowed = await checkClassicViewPermission()
+      if (allowed) return '/classical'
     }
   }
+
   return true
 })
 

@@ -1017,7 +1017,7 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 func buildStaticPromptPart(dbType string) string {
 	var sb strings.Builder
 
-	sb.WriteString("你是企业的首席数据架构师兼资深数据分析师。")
+	sb.WriteString("你是数据库专家兼资深数据分析师。")
 	sb.WriteString("你精通标准 SQL（SQL-92/99/2003），以及 ")
 	fmt.Fprintf(&sb, "%s 的方言特性、索引策略和查询优化技巧。", dbType)
 	sb.WriteString("你不仅写出极致优化、安全高效的 SQL，还擅长将查询结果转化为富有洞察且具有中国特色的分析结论。")

@@ -8,6 +8,11 @@
         <el-form-item label="登录名">
           <el-input v-model="userQuery.loginName" placeholder="请输入登录名" clearable />
         </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="userQuery.roleId" placeholder="请选择角色" style="width: 180px" filterable clearable>
+            <el-option v-for="item in roleList" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="findUser">查询</el-button>
           <el-button type="primary" @click="addUser">添加用户</el-button>
@@ -89,7 +94,7 @@ const emit = defineEmits(['user-saved', 'user-deleted'])
 
 const userList = ref([])
 const roleList = ref([])
-const userQuery = ref({ name: "", loginName: "" })
+const userQuery = ref({ name: "", loginName: "", roleId: "" })
 
 const loadRoles = () => {
   http.get("/roleList").then((resp) => {
@@ -98,7 +103,7 @@ const loadRoles = () => {
 }
 
 const findUser = () => {
-  if (!userQuery.value.name && !userQuery.value.loginName) {
+  if (!userQuery.value.name && !userQuery.value.loginName && !userQuery.value.roleId) {
     ElMessage.warning("请指定查询条件")
     return
   }

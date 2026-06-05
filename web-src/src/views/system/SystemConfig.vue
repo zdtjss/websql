@@ -2,6 +2,24 @@
   <div class="system-config">
     <el-divider content-position="left">
       <el-icon>
+        <HomeFilled />
+      </el-icon>
+      默认首页
+    </el-divider>
+    <el-form label-width="120px" :model="systemConfig">
+      <el-form-item >
+        <el-radio-group v-model="systemConfig.defaultHomepage">
+          <el-radio value="ai">AI 对话</el-radio>
+          <el-radio value="classical">经典视图</el-radio>
+        </el-radio-group>
+        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
+          💡 设置用户登录后默认进入的页面，用户仍可通过导航按钮切换视图
+        </div>
+      </el-form-item>
+    </el-form>
+
+    <el-divider content-position="left">
+      <el-icon>
         <Monitor />
       </el-icon>
       AI 模型管理
@@ -186,7 +204,7 @@
 <script setup>
 import http from '@/utils/httpProxy'
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { Check, Coin, Connection, Delete, Edit, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
+import { Check, Coin, Connection, Delete, Edit, HomeFilled, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -208,7 +226,8 @@ const systemConfig = ref({
   selectedModelId: '',
   redisAddr: '',
   redisPassword: '',
-  redisDB: 0
+  redisDB: 0,
+  defaultHomepage: 'ai'
 })
 
 const aiModelList = ref([])
@@ -262,6 +281,7 @@ const loadSystemConfig = () => {
       systemConfig.value.redisAddr = data.redisAddr || ''
       systemConfig.value.redisPassword = data.redisPassword || ''
       systemConfig.value.redisDB = data.redisDB !== undefined ? data.redisDB : 0
+      systemConfig.value.defaultHomepage = data.defaultHomepage || 'ai'
 
       if (data.allowedIP && Array.isArray(data.allowedIP)) {
         systemConfig.value.allowedIP = data.allowedIP.join('\n')
@@ -289,9 +309,11 @@ const saveAllConfig = () => {
     allowedIP: ips,
     redisAddr: systemConfig.value.redisAddr,
     redisPassword: systemConfig.value.redisPassword,
-    redisDB: systemConfig.value.redisDB
+    redisDB: systemConfig.value.redisDB,
+    defaultHomepage: systemConfig.value.defaultHomepage
   }).then(() => {
     ElMessage.success("保存成功")
+    localStorage.setItem('defaultHomepage', systemConfig.value.defaultHomepage)
     emit('config-saved', systemConfig.value)
   }).finally(() => {
     savingAll.value = false

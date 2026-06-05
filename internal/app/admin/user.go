@@ -76,27 +76,33 @@ func FindUser(c *gin.Context) {
 	key := c.Query("key")
 	name := c.Query("name")
 	loginName := c.Query("loginName")
+	roleId := c.Query("roleId")
 	userIdList, _ := c.GetPostFormArray("userIdList")
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select * from t_user where 1 = 1")
+	sql.WriteString("select u.* from t_user u where 1 = 1")
+	if roleId != "" {
+		sql.WriteString(" and u.id in (select ur.user_id from t_user_role ur where ur.role_id = ?)")
+		param = append(param, roleId)
+	}
 	if name != "" {
-		sql.WriteString(" and name like ?")
+		sql.WriteString(" and u.name like ?")
 		param = append(param, "%"+name+"%")
 	} else if loginName != "" {
-		sql.WriteString(" and login_name like ?")
+		sql.WriteString(" and u.login_name like ?")
 		param = append(param, "%"+loginName+"%")
 	} else if key != "" {
-		sql.WriteString(" and (login_name like ? or name like ?)")
+		sql.WriteString(" and (u.login_name like ? or u.name like ?)")
 		param = append(param, "%"+key+"%", "%"+key+"%")
 	} else if len(userIdList) > 0 {
 		for _, userId := range userIdList {
 			param = append(param, userId)
 		}
-		sql.WriteString(" and id in ( ")
+		sql.WriteString(" and u.id in ( ")
 		sql.WriteString(strings.Repeat("?,", len(userIdList))[0 : len(userIdList)*2-1])
 		sql.WriteString(") ")
-	} else {
+	}
+	if len(param) == 0 {
 		sql.WriteString(" and 1 = 2")
 	}
 	userList := []*User{}

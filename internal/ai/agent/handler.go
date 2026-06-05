@@ -186,6 +186,7 @@ func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFu
 	if sessionID == "" {
 		sessionID = idgen.RandomStr()
 	}
+	req.SessionID = sessionID // 回写，避免 RunStream 重复生成新 ID
 	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
 	sess.SetCancel(runnerCancel)
 

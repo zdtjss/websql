@@ -339,7 +339,7 @@ const changePwdRules = reactive({
 })
 
 function openAiChat() {
-  router.push('/')
+  router.push('/ai')
 }
 
 function submitChangePassword() {
