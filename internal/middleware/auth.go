@@ -29,20 +29,23 @@ func getTokenFromRequest(c *gin.Context) string {
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+
+		// 非 API 路径直接放行（静态资源、SPA 前端路由等由 NoRoute 处理）
+		if !strings.HasPrefix(path, "/api/") {
+			c.Next()
+			return
+		}
+
 		skipPaths := []string{
 			"/api/login",
 			"/api/logout",
 			"/api/healthCheck",
 			"/api/sysMode",
-			"/assets",
 		}
 
-		path := c.Request.URL.Path
 		for _, skipPath := range skipPaths {
 			if strings.HasPrefix(path, skipPath) {
-				c.Next()
-				return
-			} else if strings.EqualFold(path, "/") || strings.EqualFold(path, "/index.html") {
 				c.Next()
 				return
 			}
