@@ -133,6 +133,7 @@ insert ignore into t_system_config (id, config_key, config_value, config_type, r
 ('825683877400000002', 'ai.selectedModelId', 'model_default_001', 'ai', '当前选中的模型ID'),
 ('825683877400000003', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
 ('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）'),
+('825683877400000007', 'system.defaultHomepage', 'ai', 'system', '默认首页'),
 ('825683877400000010', 'audit.enabled', 'true', 'audit', '审计日志全局开关'),
 ('825683877400000011', 'audit.recordQuery', 'false', 'audit', '是否审计只读查询（SELECT/SHOW/DESCRIBE）'),
 ('825683877400000012', 'audit.recordWrite', 'true', 'audit', '是否审计写操作（INSERT/UPDATE/DELETE）'),

@@ -22,6 +22,10 @@ import http from '@/utils/httpProxy.js'
 import { ElMessage } from 'element-plus'
 import { client, server } from '@passwordless-id/webauthn'
 import { reactive, ref, useTemplateRef, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { resetDefaultHomepageCache } from '@/router'
+
+const router = useRouter()
 
 const dialogVisible = defineModel({ default: false })
 
@@ -54,6 +58,22 @@ function handleClose() {
   emit('login-cancel')
 }
 
+function navigateAfterLogin() {
+  resetDefaultHomepageCache()
+  http.get('/system/config/all/get').then(resp => {
+    if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
+      const homepage = resp.data.data.defaultHomepage
+      localStorage.setItem('defaultHomepage', homepage)
+      const currentPath = router.currentRoute.value.path
+      if (homepage === 'classical' && currentPath !== '/classical') {
+        router.push('/classical')
+      } else if (homepage === 'ai' && currentPath !== '/ai' && currentPath !== '/') {
+        router.push('/ai')
+      }
+    }
+  }).catch(() => {})
+}
+
 function login() {
   loginFormRef.value.validate(isValid => {
     if (isValid) {
@@ -77,6 +97,7 @@ function login() {
         dialogVisible.value = false
         emit('login-success', resp.data.data)
         ElMessage('登陆成功')
+        navigateAfterLogin()
       }).catch(() => {
       }).finally(() => {
         logining.value = false
@@ -98,6 +119,7 @@ function loginByToken(token) {
       dialogVisible.value = false
       emit('login-success', resp.data.data)
       ElMessage('登陆成功')
+      navigateAfterLogin()
     } else {
       console.error('[LoginDialog] 登录失败 - code:', resp.data.code)
       ElMessage.error(resp.data.msg || '登录失败')
@@ -129,6 +151,7 @@ async function loginBio() {
       dialogVisible.value = false
       emit('login-success', resp.data.data)
       ElMessage('登陆成功')
+      navigateAfterLogin()
     } else {
       console.error('[LoginDialog] bio登录失败 - code:', resp.data.code)
       ElMessage.error(resp.data.msg || '登录失败')

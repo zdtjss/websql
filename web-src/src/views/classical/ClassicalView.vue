@@ -23,6 +23,9 @@
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
+              <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置">
+                <el-icon :size="14"><Setting /></el-icon>
+              </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
@@ -221,10 +224,11 @@ import http from '@/utils/httpProxy.js'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
+import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { MagicStick, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
+import { resetDefaultHomepageCache } from '@/router'
 import TableEditor from '@/components/data/TableEditor.vue'
 import ViewDialog from '@/components/data/ViewDialog.vue'
 import DataBrowser from '@/views/data/DataBrowser.vue'
@@ -258,11 +262,15 @@ const treeData = ref([])
 
 const loginForm = ref({ name: "", password: "" })
 const loginDialogVisible = ref(false)
-const currentUser = ref({
-  id: "",
-  name: "",
-  isAdmin: false
-})
+function parseCurrentUser() {
+  try {
+    const stored = sessionStorage.getItem("currentUser")
+    return stored ? JSON.parse(stored) : { id: "", name: "", isAdmin: false }
+  } catch {
+    return { id: "", name: "", isAdmin: false }
+  }
+}
+const currentUser = ref(parseCurrentUser())
 const loginName = ref()
 const loginFormRef = useTemplateRef('loginFormRef')
 const loginSucc = ref(!!sessionStorage.getItem("authentication"))
@@ -342,6 +350,27 @@ function openAiChat() {
   router.push('/ai')
 }
 
+function navigateAfterLogin() {
+  resetDefaultHomepageCache()
+  http.get('/system/config/all/get').then(resp => {
+    if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
+      const homepage = resp.data.data.defaultHomepage
+      localStorage.setItem('defaultHomepage', homepage)
+      const currentPath = router.currentRoute.value.path
+      if (homepage === 'classical' && currentPath !== '/classical') {
+        router.push('/classical')
+      } else if (homepage === 'ai' && currentPath !== '/ai' && currentPath !== '/') {
+        router.push('/ai')
+      }
+    }
+  }).catch(() => {})
+}
+
+function openSystemManagement() {
+  sessionStorage.setItem('systemManagement_user', JSON.stringify(currentUser.value))
+  router.push('/system-management')
+}
+
 function submitChangePassword() {
   changePwdFormRef.value.validate(isValid => {
     if (isValid) {
@@ -397,6 +426,7 @@ onMounted(() => {
     }
     loginSucc.value = false
     currentUser.value = {}
+    sessionStorage.removeItem("currentUser")
     if (isRemote.value) {
       toLogin()
     }
@@ -552,6 +582,7 @@ function loginByToken(token) {
   http.post("/login", params).then((resp) => {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
+      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
       sessionStorage.setItem("authentication", resp.data.data["authentication"])
       refreshTree()
       loginForm.value = {}
@@ -559,6 +590,7 @@ function loginByToken(token) {
       loginSucc.value = true
       loginDialogVisible.value = false
       ElMessage("登陆成功")
+      navigateAfterLogin()
     } else {
       console.error('[ClassicalView] token登录失败 - code:', resp.data.code)
       ElMessage("登录失败")
@@ -583,6 +615,7 @@ function login() {
         }
       }).then((resp) => {
         currentUser.value = resp.data.data
+        sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
         sessionStorage.setItem("authentication", resp.headers.get("authentication"))
         refreshTree()
         loginForm.value = {}
@@ -590,6 +623,7 @@ function login() {
         loginSucc.value = true
         loginDialogVisible.value = false
         ElMessage("登陆成功")
+        navigateAfterLogin()
       }).finally(() => logining.value = false)
     }
   })
@@ -612,6 +646,7 @@ async function loginBio() {
   http.post("/login", params).then((resp) => {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
+      sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
       sessionStorage.setItem("authentication", resp.headers.get("authentication"))
       refreshTree()
       loginForm.value = {}
@@ -619,6 +654,7 @@ async function loginBio() {
       loginSucc.value = true
       loginDialogVisible.value = false
       ElMessage("登陆成功")
+      navigateAfterLogin()
     } else {
       console.error('[ClassicalView] bio登录失败 - code:', resp.data.code)
       ElMessage("登录失败")
@@ -637,6 +673,7 @@ function logout() {
       currentUser.value = {}
       loginSucc.value = false
       ElMessage(resp.data.data)
+      sessionStorage.removeItem("currentUser")
       sessionStorage.removeItem("authentication")
     })
 }

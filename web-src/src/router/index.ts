@@ -32,6 +32,10 @@ const router = createRouter({
 
 let cachedDefaultHomepage: string | null = null
 
+export function resetDefaultHomepageCache() {
+  cachedDefaultHomepage = null
+}
+
 async function getDefaultHomepage(): Promise<string> {
   if (cachedDefaultHomepage !== null) return cachedDefaultHomepage
   const stored = localStorage.getItem('defaultHomepage')

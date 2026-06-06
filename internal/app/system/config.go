@@ -38,13 +38,14 @@ type SystemConfigSave struct {
 }
 
 type SystemConfigAll struct {
-	AIModelList     []AIModelItem `json:"aiModelList"`
-	SelectedModelId string        `json:"selectedModelId"`
-	OutterUser      string        `json:"outterUser"`
-	AllowedIP       []string      `json:"allowedIP"`
-	RedisAddr       string        `json:"redisAddr"`
-	RedisPassword   string        `json:"redisPassword"`
-	RedisDB         int           `json:"redisDB"`
+	AIModelList      []AIModelItem `json:"aiModelList"`
+	SelectedModelId  string        `json:"selectedModelId"`
+	OutterUser       string        `json:"outterUser"`
+	AllowedIP        []string      `json:"allowedIP"`
+	RedisAddr        string        `json:"redisAddr"`
+	RedisPassword    string        `json:"redisPassword"`
+	RedisDB          int           `json:"redisDB"`
+	DefaultHomepage  string        `json:"defaultHomepage"`
 }
 
 type AIModelItem struct {
@@ -340,6 +341,7 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 		SelectedModelId: GetSystemConfigValue("ai.selectedModelId"),
 		RedisAddr:       GetSystemConfigValue("system.redisAddr"),
 		RedisPassword:   GetSystemConfigValue("system.redisPassword"),
+		DefaultHomepage: GetSystemConfigValue("system.defaultHomepage"),
 	}
 	redisDBStr := GetSystemConfigValue("system.redisDB")
 	if redisDBStr != "" {
@@ -449,6 +451,10 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 	})
 	SaveSystemConfig(&SystemConfigSave{
 		ConfigKey: "system.redisDB", ConfigValue: fmt.Sprintf("%d", cfg.RedisDB), ConfigType: "system", Remark: "Redis 数据库编号",
+	})
+
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "system.defaultHomepage", ConfigValue: cfg.DefaultHomepage, ConfigType: "system", Remark: "默认首页",
 	})
 
 	jsonutil.WriteJson(c.Writer, "")
