@@ -140,14 +140,15 @@ func MainRegister(router *gin.Engine) {
 	// Eino 智能体路由（v2）
 	agentHandler, err := agent.NewHandler()
 	if err != nil {
-		log.Fatalf("创建 AI Agent Handler 失败: %v", err)
+		log.Printf("创建 AI Agent Handler 失败: %v，AI 功能将不可用", err)
+	} else {
+		routerGroup.POST("/ai/agent/chatStream", agentHandler.ChatStream)
+		routerGroup.POST("/ai/agent/uploadExcel", agent.HandleUploadExcel)
+		routerGroup.POST("/ai/agent/preMatchColumns", agent.HandlePreMatchColumns)
+		routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
+		routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
+		routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	}
-	routerGroup.POST("/ai/agent/chatStream", agentHandler.ChatStream)
-	routerGroup.POST("/ai/agent/uploadExcel", agent.HandleUploadExcel)
-	routerGroup.POST("/ai/agent/preMatchColumns", agent.HandlePreMatchColumns)
-	routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
-	routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
-	routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	routerGroup.GET("/exports/:filename", handleExportDownload)
 
 	// 审计日志 API

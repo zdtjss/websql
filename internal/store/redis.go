@@ -21,6 +21,6 @@ func InitRedis() {
 	if err == nil {
 		log.Println("Redis 连接成功")
 	} else {
-		log.Fatalf("Redis 连接失败,err:%s\n", err.Error())
+		log.Printf("Redis 连接失败,err:%s，Redis 功能将不可用\n", err.Error())
 	}
 }

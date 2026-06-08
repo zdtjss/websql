@@ -9,6 +9,7 @@ import (
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/https"
+	"websql/internal/pkg/safego"
 	"websql/internal/store"
 	sqlhand "websql/internal/app/sql"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +33,13 @@ var (
 )
 
 func main() {
+	// 兜底：捕获 main goroutine 中的未预期 panic，防止进程崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[MainRecovery] main goroutine panic 已恢复 - panic=%v\n%s", r, debug.Stack())
+		}
+	}()
+
 	gin.SetMode(gin.ReleaseMode)
 
 	port = flag.String("port", "80", "")
@@ -72,8 +81,8 @@ func main() {
 	// 启动服务
 	go startServer(server, isHttps, port)
 
-	// 检测是否启动成功
-	go listenStartStatus()
+	// 检测是否启动成功（使用 safego 防止 goroutine panic 导致进程退出）
+	safego.GoWithName("startup-check", listenStartStatus)
 
 	// 启动导出文件定时清理
 	app.StartCleanupScheduler()

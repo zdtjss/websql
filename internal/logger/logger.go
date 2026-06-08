@@ -8,7 +8,8 @@ import (
 func init() {
 	logFile, err := os.OpenFile("./websql.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 	if err != nil {
-		log.Fatalf("create log file err %+v", err)
+		log.Printf("创建日志文件失败，将使用标准输出: %+v", err)
+		return
 	}
 	log.SetOutput(logFile)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
