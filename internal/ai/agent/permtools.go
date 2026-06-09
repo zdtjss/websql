@@ -34,11 +34,11 @@ type PermColumnInfo struct {
 type PermUserPermissionsInput struct{}
 
 type PermUserPermissionsOutput struct {
-	ConnID              string            `json:"connId"`
-	SchemaName          string            `json:"schemaName"`
-	HasFullConnAccess   bool              `json:"hasFullConnAccess"`
-	HasFullSchemaAccess bool              `json:"hasFullSchemaAccess"`
-	TablePermissions    []PermTableAccess `json:"tablePermissions"`
+	ConnID            string            `json:"connId"`
+	SchemaName        string            `json:"schemaName"`
+	HasFullConnAccess bool              `json:"hasFullConnAccess"`
+	FullAccessSchemas []string          `json:"fullAccessSchemas"`
+	TablePermissions  []PermTableAccess `json:"tablePermissions"`
 }
 
 type PermTableAccess struct {
@@ -171,11 +171,15 @@ func newGetUserPermissionsFunc(userID, connID string, schemaNames []string) func
 	return func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
 		log.Printf("[PermAgent:get_user_permissions] userID=%s, connID=%s, schemas=%v\n", userID, connID, schemaNames)
 		scope := BuildPermissionScope(userID, connID, schemaNames)
+		fullSchemas := make([]string, 0, len(scope.FullAccessSchemas))
+		for name := range scope.FullAccessSchemas {
+			fullSchemas = append(fullSchemas, name)
+		}
 		output := &PermUserPermissionsOutput{
-			ConnID:              connID,
-			SchemaName:          firstNonEmpty(schemaNames),
-			HasFullConnAccess:   scope.HasFullConnAccess,
-			HasFullSchemaAccess: scope.HasFullSchemaAccess,
+			ConnID:            connID,
+			SchemaName:        firstNonEmpty(schemaNames),
+			HasFullConnAccess: scope.HasFullConnAccess,
+			FullAccessSchemas: fullSchemas,
 		}
 
 		tableSet := make(map[string]*PermTableAccess)

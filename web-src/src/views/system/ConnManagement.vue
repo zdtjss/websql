@@ -78,7 +78,7 @@
       <el-table-column label="操作" width="120" fixed="right" resizable>
         <template #default="scope">
           <el-tooltip v-if="isRowEditing(scope.row)" content="保存" placement="top">
-            <el-icon class="action-icon" @click="saveConnCfg(scope.row)"><CircleCheck /></el-icon>
+            <span class="action-icon" @mousedown.prevent @click.stop="saveConnCfg(scope.row)"><el-icon><CircleCheck /></el-icon></span>
           </el-tooltip>
           <el-tooltip content="测试连接" placement="top">
             <el-icon class="action-icon" :class="{ 'is-loading': scope.row.testing }" @click="testDbConn(scope.row)"><Connection /></el-icon>

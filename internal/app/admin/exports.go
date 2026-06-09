@@ -160,23 +160,6 @@ func CheckTableAccess(connId, schemaName, tableName, authorization string) {
 	logger.PanicErr(errors.New("无权访问此表"))
 }
 
-func CheckColumnAccess(connId, schemaName, tableName, columnName, authorization string) {
-	if !config.Cfg.IsRemote {
-		return
-	}
-
-	userPower := GetUserPower(authorization)
-	param := &PowerCheckParam{
-		ConnId:     connId,
-		SchemaName: schemaName,
-		TableName:  tableName,
-		ColumnName: columnName,
-	}
-	if !CheckPower(userPower, param) {
-		logger.PanicErr(errors.New("无权访问此字段"))
-	}
-}
-
 type RolePermResult struct {
 	HasConnLevel bool
 	BySchema     map[string]*SchemaPermResult
@@ -330,7 +313,7 @@ func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	}
 	// 最具体优先：如果有 column 级配置，即使同时有 table 级也以 column 级为准
 	if len(tp.Columns) > 0 {
-		return tp.Columns[column]
+		return tp.Columns[strings.ToLower(column)]
 	}
 	if tp.HasTableLevel {
 		return true
@@ -338,9 +321,11 @@ func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	return false
 }
 
+// ParseColumnName 解析列名：截取双空格前的部分，去除首尾空格，并统一转为小写。
+// 列名大小写归一化确保权限匹配不受数据库列名大小写差异影响。
 func ParseColumnName(raw string) string {
 	if idx := strings.Index(raw, "  "); idx > 0 {
-		return strings.TrimSpace(raw[:idx])
+		return strings.ToLower(strings.TrimSpace(raw[:idx]))
 	}
-	return strings.TrimSpace(raw)
+	return strings.ToLower(strings.TrimSpace(raw))
 }

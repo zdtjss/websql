@@ -260,28 +260,6 @@ func extractDDLTarget(sql string, defaultSchema string) *TableRef {
 	return nil
 }
 
-func CheckSQLPermission(analysis *SQLAnalysis, connId, authorization string) {
-	if !config.Cfg.IsRemote {
-		return
-	}
-
-	for _, t := range analysis.ReadTables {
-		admin.CheckSchemaAccess(connId, t.Schema, authorization)
-		admin.CheckTableAccess(connId, t.Schema, t.Name, authorization)
-	}
-
-	for _, t := range analysis.WriteTables {
-		admin.CheckSchemaAccess(connId, t.Schema, authorization)
-		admin.CheckTableAccess(connId, t.Schema, t.Name, authorization)
-	}
-
-	if len(analysis.WriteColumns) > 0 {
-		for _, c := range analysis.WriteColumns {
-			admin.CheckColumnAccess(connId, analysis.WriteTables[0].Schema, c.TableName, c.ColumnName, authorization)
-		}
-	}
-}
-
 type RoleTableAccess struct {
 	Level          ColumnAccessLevel
 	AllowedColumns map[string]bool
@@ -364,73 +342,6 @@ func GetTableAccessDowngraded(connId, schemaName, tableName, authorization strin
 		access.Level = AccessFull
 	}
 	return access
-}
-
-func FilterColumnsByPermission(columnNames []string, access *TableColumnAccess) []string {
-	if access.Level == AccessFull {
-		return columnNames
-	}
-	if access.Level == AccessNone {
-		return []string{}
-	}
-
-	filtered := make([]string, 0, len(columnNames))
-	for _, col := range columnNames {
-		if access.AllowedColumns[col] {
-			filtered = append(filtered, col)
-		}
-	}
-	return filtered
-}
-
-func FilterColumnsForTables(columnNames []string, connId string, tableRefs []TableRef, authorization string) []string {
-	if !config.Cfg.IsRemote {
-		return columnNames
-	}
-
-	userPower := admin.GetUserPower(authorization)
-	if userPower == nil {
-		return []string{}
-	}
-
-	anyColumnLevel := false
-	for _, t := range tableRefs {
-		access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-		if access.Level == AccessNone {
-			return []string{}
-		}
-		if access.Level == AccessColumn {
-			anyColumnLevel = true
-		}
-	}
-
-	if !anyColumnLevel {
-		return columnNames
-	}
-
-	allowedSet := make(map[string]bool)
-	for _, t := range tableRefs {
-		access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-		if access.Level == AccessFull {
-			for _, col := range columnNames {
-				allowedSet[col] = true
-			}
-		} else if access.Level == AccessColumn {
-			for _, col := range columnNames {
-				if access.AllowedColumns[col] {
-					allowedSet[col] = true
-				}
-			}
-		}
-	}
-
-	filtered := make([]string, 0, len(columnNames))
-	for _, col := range columnNames {
-		if allowedSet[col] {
-			filtered = append(filtered, col)
-		}
-	}
-	return filtered
 }
 
 func CheckTablePermission(connId, schemaName, tableName, authorization string) {
@@ -676,6 +587,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
 
+	// 写操作的角色级修改权限检查（allow_modify 开关）
 	if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
 		if !CheckUserCanModify(authorization) {
 			result.Allowed = false
@@ -683,6 +595,13 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 			return result
 		}
 	}
+
+	// 【设计说明】经典模式下不检查 WriteColumns 的列级权限。
+	// 原因：用户在 SQL 编辑器中编写的 SQL 可能非常复杂（子查询、CTE、多表 JOIN、
+	// 别名、表达式等），基于正则的 SQL 解析器无法可靠地判断每个字段的归属表。
+	// 列级权限检查仅在大模型 Agent 模式下生效（通过 PermissionScope.IsColumnAllowed
+	// 和 FilterResultColumns 实现），因为 Agent 模式有 AI 辅助的语义理解和双重防线。
+	// 因此，经典模式下列级权限统一降级为表级权限（参见 GetTableAccessDowngraded）。
 
 	if !config.Cfg.IsRemote {
 		return result
@@ -1005,82 +924,4 @@ func splitDottedIdentifier(s string) []string {
 		parts = append(parts, current.String())
 	}
 	return parts
-}
-
-func resolveAliasToTable(alias string, tables []TableRef) string {
-	alias = stripBackticks(alias)
-	for _, t := range tables {
-		if strings.EqualFold(t.Name, alias) {
-			return t.Name
-		}
-	}
-	return alias
-}
-
-func getAccessForTable(connId, tableName string, tables []TableRef, authorization string) *TableColumnAccess {
-	for _, t := range tables {
-		if strings.EqualFold(t.Name, tableName) {
-			return GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-		}
-	}
-	return nil
-}
-
-func checkColumnInAnyTable(connId, columnName string, tables []TableRef, authorization string) bool {
-	for _, t := range tables {
-		access := GetTableColumnAccess(connId, t.Schema, t.Name, authorization)
-		if access.Level == AccessColumn {
-			if !access.AllowedColumns[columnName] {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func FilterSchemaByColumnPermission(ddl string, tableName, connId, schema, authorization string) string {
-	access := GetTableColumnAccess(connId, schema, tableName, authorization)
-	if access.Level == AccessFull || access.Level == AccessNone {
-		if access.Level == AccessNone {
-			return ""
-		}
-		return ddl
-	}
-
-	lines := strings.Split(ddl, "\n")
-	var filtered []string
-	columnDefRegex := regexp.MustCompile("(?i)^\\s+[`\"']?(\\w+)[`\"']?\\s+")
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		upperTrimmed := strings.ToUpper(trimmed)
-
-		if strings.HasPrefix(upperTrimmed, "CREATE ") ||
-			strings.HasPrefix(upperTrimmed, ")") ||
-			strings.HasPrefix(upperTrimmed, "PRIMARY KEY") ||
-			strings.HasPrefix(upperTrimmed, "KEY ") ||
-			strings.HasPrefix(upperTrimmed, "INDEX ") ||
-			strings.HasPrefix(upperTrimmed, "UNIQUE ") ||
-			strings.HasPrefix(upperTrimmed, "CONSTRAINT ") ||
-			strings.HasPrefix(upperTrimmed, "ENGINE") ||
-			strings.HasPrefix(upperTrimmed, "DEFAULT CHARSET") ||
-			strings.HasPrefix(upperTrimmed, "COMMENT") ||
-			strings.HasPrefix(upperTrimmed, "AUTO_INCREMENT") ||
-			trimmed == "" || trimmed == ";" {
-			filtered = append(filtered, line)
-			continue
-		}
-
-		match := columnDefRegex.FindStringSubmatch(line)
-		if len(match) >= 2 {
-			colName := match[1]
-			if access.AllowedColumns[colName] {
-				filtered = append(filtered, line)
-			}
-		} else {
-			filtered = append(filtered, line)
-		}
-	}
-
-	return strings.Join(filtered, "\n")
 }

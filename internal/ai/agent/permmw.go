@@ -296,7 +296,7 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 }
 
 func (m *PermissionMiddleware) postFilterSync(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (string, error) {
-	if m.Scope.HasFullSchemaAccess || m.Scope.SkipChecks() {
+	if m.Scope.AllSchemasFull || m.Scope.SkipChecks() {
 		m.logAllow(toolName, "full_access")
 		return endpoint(ctx, args, opts...)
 	}
@@ -309,7 +309,7 @@ func (m *PermissionMiddleware) postFilterSync(ctx context.Context, args string, 
 }
 
 func (m *PermissionMiddleware) postFilterStream(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-	if m.Scope.HasFullSchemaAccess || m.Scope.SkipChecks() {
+	if m.Scope.AllSchemasFull || m.Scope.SkipChecks() {
 		m.logAllow(toolName+"(stream)", "full_access")
 		return endpoint(ctx, args, opts...)
 	}
@@ -363,7 +363,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 
 	m.logInfo("query_data", "sql=%s", truncateForLog(sql))
 
-	if m.Scope.HasFullSchemaAccess {
+	if m.Scope.AllSchemasFull {
 		m.logAllow("query_data", "schema_full(fast)")
 		tables := appperm.ExtractTablesFromSQL(sql)
 		result, err := endpoint(ctx, args, opts...)
@@ -464,7 +464,7 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 
 	m.logInfo("exec_sql", "sql=%s", truncateForLog(sql))
 
-	if m.Scope.HasFullSchemaAccess {
+	if m.Scope.AllSchemasFull {
 		m.logAllow("exec_sql", "schema_full(fast)")
 		return endpoint(ctx, args, opts...)
 	}
@@ -541,7 +541,7 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 
 	m.logInfo("export", "sql=%s", truncateForLog(sql))
 
-	if m.Scope.HasFullSchemaAccess {
+	if m.Scope.AllSchemasFull {
 		m.logAllow("export", "schema_full(fast)")
 		return endpoint(ctx, args, opts...)
 	}
@@ -811,7 +811,7 @@ type permCheckResult struct {
 
 func (m *PermissionMiddleware) getPermCheckFunc(toolName string) func(ctx context.Context, sql string) (*permCheckResult, error) {
 	return func(ctx context.Context, sql string) (*permCheckResult, error) {
-		if m.Scope.HasFullSchemaAccess {
+		if m.Scope.AllSchemasFull {
 			tables := appperm.ExtractTablesFromSQL(sql)
 			needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
 			return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil

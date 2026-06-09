@@ -10,15 +10,16 @@ import (
 )
 
 type PermissionScope struct {
-	UserID              string
-	ConnID              string
-	SchemaName          string
-	IsRemote            bool
-	HasFullConnAccess   bool
-	HasFullSchemaAccess bool
-	AllowedTables       map[string]bool
-	AllowedColumns      map[string]map[string]bool
-	AllowModify         bool
+	UserID            string
+	ConnID            string
+	SchemaName        string
+	IsRemote          bool
+	HasFullConnAccess bool
+	FullAccessSchemas map[string]bool // per-schema 完整访问标记
+	AllSchemasFull    bool            // 所有选中的 schema 均有完整访问权限（快速路径）
+	AllowedTables     map[string]bool
+	AllowedColumns    map[string]map[string]bool
+	AllowModify       bool
 }
 
 type PermissionError struct {
@@ -32,13 +33,14 @@ func (e *PermissionError) Error() string {
 
 func BuildPermissionScope(userId, connId string, schemaNames []string) *PermissionScope {
 	scope := &PermissionScope{
-		UserID:         userId,
-		ConnID:         connId,
-		SchemaName:     firstNonEmpty(schemaNames),
-		IsRemote:       config.Cfg.IsRemote,
-		AllowedTables:  make(map[string]bool),
-		AllowedColumns: make(map[string]map[string]bool),
-		AllowModify:    true,
+		UserID:            userId,
+		ConnID:            connId,
+		SchemaName:        firstNonEmpty(schemaNames),
+		IsRemote:          config.Cfg.IsRemote,
+		FullAccessSchemas: make(map[string]bool),
+		AllowedTables:     make(map[string]bool),
+		AllowedColumns:    make(map[string]map[string]bool),
+		AllowModify:       true,
 	}
 
 	if !scope.IsRemote {
@@ -67,34 +69,37 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		}
 	}
 
+	// 逐角色解析权限，按 schema 维度收集完整访问和表/列级权限
 	for _, roleDetails := range byRole {
 		r := admin.ResolveRolePermissions(roleDetails)
 
+		// conn 级权限：对所有没有限制的 schema 授予完整访问
 		if r.HasConnLevel {
-			hasRestriction := false
 			for s := range schemaSet {
-				if sp := r.BySchema[s]; sp != nil && sp.HasRestriction() {
-					hasRestriction = true
-					break
+				if !scope.FullAccessSchemas[s] {
+					sp := r.BySchema[s]
+					if sp == nil || !sp.HasRestriction() {
+						scope.FullAccessSchemas[s] = true
+					}
 				}
 			}
-			if !hasRestriction {
-				scope.HasFullConnAccess = true
-				log.Printf("[PermScope] 连接级完整权限 - user=%s, conn=%s\n", userId, connId)
-				return scope
+		}
+
+		// schema 级权限：对没有限制的 schema 授予完整访问
+		for s := range schemaSet {
+			if !scope.FullAccessSchemas[s] {
+				sp := r.BySchema[s]
+				if sp != nil && sp.HasSchemaLevel && !sp.HasRestriction() {
+					scope.FullAccessSchemas[s] = true
+				}
 			}
 		}
 
+		// table/column 级权限：仅处理没有完整访问的 schema
 		for s := range schemaSet {
-			sp := r.BySchema[s]
-			if sp != nil && sp.HasSchemaLevel && !sp.HasRestriction() {
-				scope.HasFullSchemaAccess = true
-				log.Printf("[PermScope] Schema级完整权限 - user=%s, conn=%s\n", userId, connId)
-				return scope
+			if scope.FullAccessSchemas[s] {
+				continue
 			}
-		}
-
-		for s := range schemaSet {
 			sp := r.BySchema[s]
 			if sp == nil {
 				continue
@@ -106,7 +111,7 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 						if scope.AllowedColumns[tableName] == nil {
 							scope.AllowedColumns[tableName] = make(map[string]bool)
 						}
-						scope.AllowedColumns[tableName][strings.ToLower(col)] = true
+						scope.AllowedColumns[tableName][col] = true // col 已由 ParseColumnName 转为小写
 					}
 				} else if tp.HasTableLevel {
 					scope.AllowedTables[tableName] = true
@@ -115,8 +120,19 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		}
 	}
 
-	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, tables=%d, columnTables=%d\n",
-		userId, connId, schemaNames, len(scope.AllowedTables), len(scope.AllowedColumns))
+	// 检查是否所有选中的 schema 均有完整访问权限（快速路径）
+	if len(schemaSet) > 0 {
+		scope.AllSchemasFull = true
+		for s := range schemaSet {
+			if !scope.FullAccessSchemas[s] {
+				scope.AllSchemasFull = false
+				break
+			}
+		}
+	}
+
+	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, fullSchemas=%d, allFull=%v, tables=%d, columnTables=%d\n",
+		userId, connId, schemaNames, len(scope.FullAccessSchemas), scope.AllSchemasFull, len(scope.AllowedTables), len(scope.AllowedColumns))
 
 	return scope
 }
@@ -135,11 +151,11 @@ func (s *PermissionScope) SkipChecks() bool {
 }
 
 func (s *PermissionScope) HasAnyAccess() bool {
-	return s.HasFullConnAccess || s.HasFullSchemaAccess || len(s.AllowedTables) > 0 || len(s.AllowedColumns) > 0
+	return s.HasFullConnAccess || len(s.FullAccessSchemas) > 0 || len(s.AllowedTables) > 0 || len(s.AllowedColumns) > 0
 }
 
 func (s *PermissionScope) IsTableAllowed(table string) bool {
-	if s.SkipChecks() || s.HasFullSchemaAccess {
+	if s.SkipChecks() || s.AllSchemasFull {
 		return true
 	}
 	return s.AllowedTables[table] || len(s.AllowedColumns[table]) > 0
@@ -164,7 +180,7 @@ func (s *PermissionScope) IsTableAllowedIgnoreCase(table string) bool {
 }
 
 func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
-	if s.SkipChecks() || s.HasFullSchemaAccess || s.AllowedTables[table] {
+	if s.SkipChecks() || s.AllSchemasFull || s.AllowedTables[table] {
 		return true
 	}
 	if cols, ok := s.AllowedColumns[table]; ok {
@@ -174,7 +190,7 @@ func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
 }
 
 func (s *PermissionScope) GetTableAccessLevel(table string) string {
-	if s.SkipChecks() || s.HasFullSchemaAccess || s.AllowedTables[table] {
+	if s.SkipChecks() || s.AllSchemasFull || s.AllowedTables[table] {
 		return "full"
 	}
 	if len(s.AllowedColumns[table]) > 0 {
@@ -247,11 +263,16 @@ func (s *PermissionScope) DescribeForPrompt() string {
 		return ""
 	}
 
-	if s.HasFullSchemaAccess {
-		if !s.AllowModify {
-			return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema %s 的完整访问权限，但**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。", s.SchemaName)
+	if s.AllSchemasFull {
+		schemaNames := make([]string, 0, len(s.FullAccessSchemas))
+		for name := range s.FullAccessSchemas {
+			schemaNames = append(schemaNames, name)
 		}
-		return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema %s 的完整访问权限。禁止访问其他 Schema。", s.SchemaName)
+		schemaDesc := strings.Join(schemaNames, ", ")
+		if !s.AllowModify {
+			return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema [%s] 的完整访问权限，但**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。", schemaDesc)
+		}
+		return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema [%s] 的完整访问权限。禁止访问未授权的 Schema。", schemaDesc)
 	}
 
 	var sb strings.Builder

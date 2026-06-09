@@ -440,7 +440,7 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 
 		checked := false
 		if roleId != "" {
-			checked = roleTableMap[tableName]
+			checked = roleTableMap["__all__"] || roleTableMap[tableName]
 		}
 
 		nodes = append(nodes, &PermissionNode{
@@ -466,8 +466,31 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 
 func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool {
 	tables := make(map[string]bool)
+
+	// 向下传播：conn级权限意味着该连接下所有schema的所有表均可访问
+	var connCount int
+	err := database.Mngtdb.Get(&connCount,
+		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND power_level = 'conn'", roleId, connId)
+	logger.PrintErr(err)
+	if connCount > 0 {
+		tables["__all__"] = true
+		return tables
+	}
+
+	// 向下传播：schema级权限意味着该schema下所有表均可访问
+	var schemaCount int
+	err = database.Mngtdb.Get(&schemaCount,
+		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND schema_name = ? AND power_level = 'schema'",
+		roleId, connId, schemaName)
+	logger.PrintErr(err)
+	if schemaCount > 0 {
+		tables["__all__"] = true
+		return tables
+	}
+
+	// table级权限：仅标记有权限的表
 	powerList := []*PowerDetail{}
-	err := database.Mngtdb.Select(&powerList,
+	err = database.Mngtdb.Select(&powerList,
 		"select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'table'", roleId, connId, schemaName)
 	logger.PrintErr(err)
 	for _, power := range powerList {
@@ -475,6 +498,8 @@ func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool 
 			tables[*power.TableName] = true
 		}
 	}
+
+	// column级权限也意味着对应表可访问（向上推断表可见性）
 	subPowers := []*PowerDetail{}
 	err2 := database.Mngtdb.Select(&subPowers,
 		"select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'column'", roleId, connId, schemaName)
@@ -526,8 +551,8 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 	for row.Next() {
 		row.Scan(&columnName, &columnComment)
 		checked := false
-		if roleId != "" && roleColumnMap != nil && roleColumnMap[tableName][columnName] {
-			checked = true
+		if roleId != "" && roleColumnMap != nil {
+			checked = roleColumnMap[tableName]["__all__"] || roleColumnMap[tableName][columnName]
 		}
 
 		nodes = append(nodes, &PermissionNode{
@@ -556,8 +581,32 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[string]map[string]bool {
 	columns := make(map[string]map[string]bool)
 	columns[tableName] = make(map[string]bool)
+
+	// 向下传播：conn级或schema级权限意味着该表所有列均可访问
+	var parentCount int
+	err := database.Mngtdb.Get(&parentCount,
+		`SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND power_level IN ('conn', 'schema')
+			AND (power_level = 'conn' OR schema_name = ?)`, roleId, connId, schemaName)
+	logger.PrintErr(err)
+	if parentCount > 0 {
+		columns[tableName]["__all__"] = true
+		return columns
+	}
+
+	// 向下传播：table级权限意味着该表所有列均可访问
+	var tableCount int
+	err = database.Mngtdb.Get(&tableCount,
+		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND schema_name = ? AND table_name = ? AND power_level = 'table'",
+		roleId, connId, schemaName, tableName)
+	logger.PrintErr(err)
+	if tableCount > 0 {
+		columns[tableName]["__all__"] = true
+		return columns
+	}
+
+	// column级权限：仅标记有权限的列
 	powerList := []*PowerDetail{}
-	err := database.Mngtdb.Select(&powerList, "select column_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'column'", roleId, connId, schemaName, tableName)
+	err = database.Mngtdb.Select(&powerList, "select column_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'column'", roleId, connId, schemaName, tableName)
 	logger.PrintErr(err)
 	for _, power := range powerList {
 		if power.ColumnName != nil {

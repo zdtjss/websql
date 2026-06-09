@@ -522,30 +522,57 @@ function savePermissions() {
   if (!currentRole.value) return
   saving.value = true
 
-  // 直接从 el-tree 获取当前勾选状态，避免依赖 handleCheck 的异步时序问题
+  // 直接从 el-tree 获取当前勾选状态
+  // 关键修复：用 uncheckedKeys 过滤，防止 el-tree 脏状态（check-strictly 模式下 setCheckedKeys 后
+  // getCheckedKeys 可能返回旧数据）将 handleCheck 级联删除的子级重新加入 explicitKeys
   const treeChecked = treeRef.value
-    ? new Set(treeRef.value.getCheckedKeys().filter(k => !k.startsWith('dir::')))
+    ? new Set(treeRef.value.getCheckedKeys().filter(k => !k.startsWith('dir::') && !uncheckedKeys.has(k)))
     : new Set()
 
-  // 只同步当前层级的树状态到 explicitKeys/uncheckedKeys，确保 cascade 逻辑正确
+  // 保存修改前的 explicitKeys/baseline 快照，用于判断隐式父级和检测变更
+  const originalExplicitKeys = new Set(explicitKeys)
+  const originalBaselineKeys = new Set(baselineCheckedKeys)
+
+  // 只同步当前层级的树状态到 explicitKeys/uncheckedKeys
   for (const key of currentTreeNodeKeys) {
     if (key.startsWith('dir::')) continue
     if (getKeyLevel(key) !== currentLevel.value) continue
+
+    // 核心判断：该节点是否为隐式父级（因 descendants 有权限而视觉选中，本身不是真实权限）
+    // 隐式父级不应参与保存逻辑：不加入 explicitKeys、不加入 uncheckedKeys、不触发级联删除
+    if (implicitKeys.has(key)) continue
+
     if (treeChecked.has(key)) {
+      // 节点已勾选且非隐式 → 真实权限
       explicitKeys.add(key)
       uncheckedKeys.delete(key)
     } else {
-      explicitKeys.delete(key)
-      uncheckedKeys.add(key)
-      const descendantsToUncheck = []
-      for (const childKey of explicitKeys) {
-        if (isDescendantOf(childKey, key)) {
-          descendantsToUncheck.push(childKey)
+      // 节点未勾选
+      const wasExplicit = originalExplicitKeys.has(key) || originalBaselineKeys.has(key)
+      if (wasExplicit) {
+        // 原本就是显式权限，现在被取消 → 删除并级联
+        explicitKeys.delete(key)
+        uncheckedKeys.add(key)
+        const descendantsToUncheck = []
+        for (const childKey of explicitKeys) {
+          if (isDescendantOf(childKey, key)) {
+            descendantsToUncheck.push(childKey)
+          }
         }
-      }
-      for (const childKey of descendantsToUncheck) {
-        explicitKeys.delete(childKey)
-        uncheckedKeys.add(childKey)
+        for (const childKey of descendantsToUncheck) {
+          explicitKeys.delete(childKey)
+          uncheckedKeys.add(childKey)
+        }
+      } else {
+        // 原本不是显式权限，检查是否为被用户取消勾选的隐式父级
+        // （handleCheck 已级联删除了 descendants，此处需记录到 uncheckedKeys）
+        let hadExplicitDescendant = false
+        for (const ek of originalExplicitKeys) {
+          if (isDescendantOf(ek, key)) { hadExplicitDescendant = true; break }
+        }
+        if (hadExplicitDescendant) {
+          uncheckedKeys.add(key)
+        }
       }
     }
   }
@@ -784,10 +811,9 @@ function savePermissions() {
         uncheckedKeys.delete(key)
       }
     }
-    // 清理 uncheckedKeys 中当前层级的已处理 key
-    for (const key of deletedCurrentLevelKeys) {
-      uncheckedKeys.delete(key)
-    }
+    // 清理 uncheckedKeys：保存成功后，新状态已体现在 explicitKeys 和 baselineCheckedKeys 中
+    // 编辑期间的 uncheckedKeys 已完成其使命，清空以避免跨层级/跨 schema 的残留干扰
+    uncheckedKeys.clear()
     // 更新 baselineCheckedKeys：同步全量状态
     baselineCheckedKeys.clear()
     for (const key of explicitKeys) {

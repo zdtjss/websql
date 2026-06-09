@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,6 +23,50 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+// anyToString 将数据库驱动返回的各种类型安全转为字符串
+// MySQL 驱动可能返回 []byte 或 sql.RawBytes，直接 fmt.Sprintf("%v") 会输出字节数组
+func anyToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch b := v.(type) {
+	case []byte:
+		return string(b)
+	case sql.RawBytes:
+		return string(b)
+	case string:
+		return b
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// strScanner 实现 sql.Scanner，强制将任何数据库值转为 string
+type strScanner struct {
+	Val    string
+	HasVal bool
+}
+
+func (s *strScanner) Scan(src any) error {
+	if src == nil {
+		s.Val = ""
+		s.HasVal = false
+		return nil
+	}
+	s.HasVal = true
+	switch v := src.(type) {
+	case []byte:
+		s.Val = string(v)
+	case sql.RawBytes:
+		s.Val = string(v)
+	case string:
+		s.Val = v
+	default:
+		s.Val = fmt.Sprintf("%v", v)
+	}
+	return nil
+}
 
 type BackupRecord struct {
 	Id          string `json:"id" db:"id"`
@@ -134,7 +179,7 @@ func CreateBackup(c *gin.Context) {
 	}
 	defer file.Close()
 
-	file.WriteString(fmt.Sprintf("-- WebSQL Backup\n"))
+	file.WriteString(fmt.Sprintf("-- WebSQL Backup v2\n"))
 	file.WriteString(fmt.Sprintf("-- Database: %s\n", schema))
 	file.WriteString(fmt.Sprintf("-- Created: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	file.WriteString(fmt.Sprintf("-- Tables: %d\n\n", len(tables)))
@@ -149,7 +194,7 @@ func CreateBackup(c *gin.Context) {
 			continue
 		}
 
-		ddl := getCreateDDL(conn, dbType, table)
+		ddl := getCreateDDL(conn, dbType, schema, table)
 		chunk := fmt.Sprintf("\n-- ----------------------------\n")
 		chunk += fmt.Sprintf("-- Table structure for `%s`\n", table)
 		chunk += fmt.Sprintf("-- ----------------------------\n")
@@ -416,18 +461,65 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []string {
 	return result
 }
 
-func getCreateDDL(conn *sqlx.DB, dbType, table string) string {
-	var result []string
-	sql := fmt.Sprintf("SHOW CREATE TABLE `%s`", table)
-	err := conn.Select(&result, sql)
-	if err != nil || len(result) < 2 {
-		cols := describeTable(conn, table)
-		return generateDDLStmt(table, cols)
+func getCreateDDL(conn *sqlx.DB, dbType, schema, table string) string {
+	// 尝试 SHOW CREATE TABLE，MySQL 返回两列: Table, Create Table
+	var tableName, createDDL string
+	row := conn.QueryRow(fmt.Sprintf("SHOW CREATE TABLE `%s`", table))
+	if err := row.Scan(&tableName, &createDDL); err == nil && createDDL != "" {
+		logger.PrintErrf("[backup] SHOW CREATE TABLE 成功: %s", nil, table)
+		return createDDL
+	} else {
+		logger.PrintErrf("[backup] SHOW CREATE TABLE 失败: %s, err=%v, 回退到 describeTable", nil, table, err)
 	}
-	return result[1]
+	// 回退到 information_schema / DESCRIBE
+	cols := describeTable(conn, dbType, schema, table)
+	logger.PrintErrf("[backup] describeTable 返回 %d 列, table=%s", nil, len(cols), table)
+	return generateDDLStmt(table, cols)
 }
 
-func describeTable(conn *sqlx.DB, table string) []map[string]string {
+// describeTable 获取表列信息，优先用 information_schema（强类型 string 扫描），避免 []byte 输出
+func describeTable(conn *sqlx.DB, dbType, schema, table string) []map[string]string {
+	if dbType == "mysql" {
+		cols := describeTableFromInfoSchema(conn, schema, table)
+		if len(cols) > 0 {
+			return cols
+		}
+	}
+	return describeTableFallback(conn, table)
+}
+
+// describeTableFromInfoSchema 通过 information_schema 获取列信息，用 strScanner 确保转为 string
+func describeTableFromInfoSchema(conn *sqlx.DB, schema, table string) []map[string]string {
+	sql := `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, 
+			COALESCE(COLUMN_DEFAULT,''), COALESCE(EXTRA,''), COLUMN_KEY
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
+	rows, err := conn.Queryx(sql, schema, table)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	cols := make([]map[string]string, 0)
+	for rows.Next() {
+		var field, typ, nullable, defVal, extra, key strScanner
+		if err := rows.Scan(&field, &typ, &nullable, &defVal, &extra, &key); err != nil {
+			continue
+		}
+		cols = append(cols, map[string]string{
+			"Field":   field.Val,
+			"Type":    typ.Val,
+			"Null":    nullable.Val,
+			"Default": defVal.Val,
+			"Extra":   extra.Val,
+			"Key":     key.Val,
+		})
+	}
+	return cols
+}
+
+// describeTableFallback DESCRIBE 回退方案，使用 sql.NullString 强制驱动转为 string
+func describeTableFallback(conn *sqlx.DB, table string) []map[string]string {
 	sql := fmt.Sprintf("DESCRIBE `%s`", table)
 	rows, err := conn.Queryx(sql)
 	if err != nil {
@@ -435,22 +527,21 @@ func describeTable(conn *sqlx.DB, table string) []map[string]string {
 	}
 	defer rows.Close()
 
-	columns, _ := rows.Columns()
+	// DESCRIBE 固定返回 6 列: Field, Type, Null, Key, Default, Extra
 	cols := make([]map[string]string, 0)
 	for rows.Next() {
-		vals := make([]any, len(columns))
-		valPtrs := make([]any, len(columns))
-		for i := range vals {
-			valPtrs[i] = &vals[i]
+		var f, t, n, k, d, e strScanner
+		if err := rows.Scan(&f, &t, &n, &k, &d, &e); err != nil {
+			continue
 		}
-		rows.Scan(valPtrs...)
-		row := make(map[string]string)
-		for i, col := range columns {
-			if vals[i] != nil {
-				row[col] = fmt.Sprintf("%v", vals[i])
-			}
-		}
-		cols = append(cols, row)
+		cols = append(cols, map[string]string{
+			"Field":   f.Val,
+			"Type":    t.Val,
+			"Null":    n.Val,
+			"Key":     k.Val,
+			"Default": d.Val,
+			"Extra":   e.Val,
+		})
 	}
 	return cols
 }
@@ -511,28 +602,31 @@ func exportTableData(conn *sqlx.DB, dbType, schema, table string) (string, []str
 		return "", nil, 0, err
 	}
 
+	colCount := len(columns)
 	var buf strings.Builder
 	rowCount := 0
 	for rows.Next() {
-		vals := make([]any, len(columns))
-		valPtrs := make([]any, len(columns))
-		for i := range vals {
-			valPtrs[i] = &vals[i]
+		// 用 strScanner 确保所有值都转为 string，避免 []byte 输出
+		scanners := make([]strScanner, colCount)
+		scanPtrs := make([]any, colCount)
+		for i := range scanners {
+			scanPtrs[i] = &scanners[i]
 		}
-		rows.Scan(valPtrs...)
+		if err := rows.Scan(scanPtrs...); err != nil {
+			continue
+		}
 
-		colNames := make([]string, 0)
-		colValues := make([]string, 0)
+		colNames := make([]string, colCount)
+		colValues := make([]string, colCount)
 		for i, col := range columns {
-			val := "NULL"
-			if vals[i] != nil {
-				valStr := fmt.Sprintf("%v", vals[i])
-				valStr = strings.ReplaceAll(valStr, "\\", "\\\\")
+			colNames[i] = fmt.Sprintf("`%s`", col)
+			if scanners[i].Val == "" && !scanners[i].HasVal {
+				colValues[i] = "NULL"
+			} else {
+				valStr := strings.ReplaceAll(scanners[i].Val, "\\", "\\\\")
 				valStr = strings.ReplaceAll(valStr, "'", "\\'")
-				val = fmt.Sprintf("'%s'", valStr)
+				colValues[i] = fmt.Sprintf("'%s'", valStr)
 			}
-			colNames = append(colNames, fmt.Sprintf("`%s`", col))
-			colValues = append(colValues, val)
 		}
 		buf.WriteString(fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);\n",
 			table, strings.Join(colNames, ", "), strings.Join(colValues, ", ")))
