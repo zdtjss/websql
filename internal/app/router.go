@@ -132,6 +132,9 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/system/config/allowedIP/get", system.GetAllowedIPHandler)
 	routerGroup.POST("/system/config/allowedIP/save", system.SaveAllowedIPHandler)
 	routerGroup.GET("/system/config/ai/models", system.GetAIModelListHandler)
+	routerGroup.POST("/system/config/ai/model/save", system.SaveAIModelHandler)
+	routerGroup.POST("/system/config/ai/model/delete", system.DeleteAIModelHandler)
+	routerGroup.POST("/system/config/ai/model/select", system.SelectAIModelHandler)
 
 	routerGroup.POST("/ai/config/save", ai.HandleSaveConfig)
 	routerGroup.GET("/ai/config/get", ai.HandleGetConfig)

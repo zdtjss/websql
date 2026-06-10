@@ -2,18 +2,18 @@ package store
 
 import (
 	"bytes"
-	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
 	"hash/fnv"
 	"sync"
 	"time"
+	"websql/internal/logger"
+	"websql/internal/pkg/jsonutil"
 
 	"github.com/duke-git/lancet/v2/convertor"
 )
 
 const (
 	numShards  = 64
-	defaultTTL = 30 * time.Minute
+	defaultTTL = 3 * time.Hour
 )
 
 type storeItem struct {

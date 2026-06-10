@@ -38,14 +38,14 @@ type SystemConfigSave struct {
 }
 
 type SystemConfigAll struct {
-	AIModelList      []AIModelItem `json:"aiModelList"`
-	SelectedModelId  string        `json:"selectedModelId"`
-	OutterUser       string        `json:"outterUser"`
-	AllowedIP        []string      `json:"allowedIP"`
-	RedisAddr        string        `json:"redisAddr"`
-	RedisPassword    string        `json:"redisPassword"`
-	RedisDB          int           `json:"redisDB"`
-	DefaultHomepage  string        `json:"defaultHomepage"`
+	AIModelList     []AIModelItem `json:"aiModelList"`
+	SelectedModelId string        `json:"selectedModelId"`
+	OutterUser      string        `json:"outterUser"`
+	AllowedIP       []string      `json:"allowedIP"`
+	RedisAddr       string        `json:"redisAddr"`
+	RedisPassword   string        `json:"redisPassword"`
+	RedisDB         int           `json:"redisDB"`
+	DefaultHomepage string        `json:"defaultHomepage"`
 }
 
 type AIModelItem struct {
@@ -540,6 +540,108 @@ func TestOutterUserHandler(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, gin.H{"code": resp.StatusCode, "msg": "接口返回异常状态码"})
 	}
+}
+
+func getModelListFromDB() []AIModelItem {
+	modelListJSON := GetSystemConfigValue("ai.modelList")
+	if modelListJSON == "" || modelListJSON == "[]" {
+		return []AIModelItem{}
+	}
+	var modelList []AIModelItem
+	err := json.Unmarshal([]byte(modelListJSON), &modelList)
+	if err != nil {
+		return []AIModelItem{}
+	}
+	return modelList
+}
+
+func saveModelListToDB(modelList []AIModelItem) {
+	modelListJSON, _ := json.Marshal(modelList)
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "ai.modelList", ConfigValue: string(modelListJSON), ConfigType: "ai", Remark: "AI 模型配置列表",
+	})
+}
+
+func SaveAIModelHandler(c *gin.Context) {
+	admin.CheckAdminPower(c)
+	var model AIModelItem
+	jsonutil.UnmarshalJson(c.Request.Body, &model)
+
+	modelList := getModelListFromDB()
+
+	if model.Id == "" {
+		model.Id = "model_" + idgen.RandomStr()
+		modelList = append(modelList, model)
+	} else {
+		found := false
+		for i, m := range modelList {
+			if m.Id == model.Id {
+				modelList[i] = model
+				found = true
+				break
+			}
+		}
+		if !found {
+			modelList = append(modelList, model)
+		}
+	}
+
+	saveModelListToDB(modelList)
+	jsonutil.WriteJson(c.Writer, model)
+}
+
+func DeleteAIModelHandler(c *gin.Context) {
+	admin.CheckAdminPower(c)
+	var req struct {
+		Id string `json:"id"`
+	}
+	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if req.Id == "" {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "模型 ID 不能为空"})
+		return
+	}
+
+	modelList := getModelListFromDB()
+	newList := make([]AIModelItem, 0, len(modelList))
+	for _, m := range modelList {
+		if m.Id != req.Id {
+			newList = append(newList, m)
+		}
+	}
+	saveModelListToDB(newList)
+
+	// 如果删除的是当前选中的模型，自动选中第一个
+	selectedId := GetSystemConfigValue("ai.selectedModelId")
+	if selectedId == req.Id && len(newList) > 0 {
+		SaveSystemConfig(&SystemConfigSave{
+			ConfigKey: "ai.selectedModelId", ConfigValue: newList[0].Id, ConfigType: "ai", Remark: "当前选中的模型ID",
+		})
+		LoadSystemConfigToMemory()
+	} else if selectedId == req.Id {
+		SaveSystemConfig(&SystemConfigSave{
+			ConfigKey: "ai.selectedModelId", ConfigValue: "", ConfigType: "ai", Remark: "当前选中的模型ID",
+		})
+	}
+
+	jsonutil.WriteJson(c.Writer, "")
+}
+
+func SelectAIModelHandler(c *gin.Context) {
+	admin.CheckAdminPower(c)
+	var req struct {
+		Id string `json:"id"`
+	}
+	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if req.Id == "" {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "模型 ID 不能为空"})
+		return
+	}
+
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "ai.selectedModelId", ConfigValue: req.Id, ConfigType: "ai", Remark: "当前选中的模型ID",
+	})
+	LoadSystemConfigToMemory()
+	jsonutil.WriteJson(c.Writer, "")
 }
 
 func GetAIModelListHandler(c *gin.Context) {

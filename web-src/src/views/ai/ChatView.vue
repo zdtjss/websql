@@ -438,7 +438,6 @@
                   :value="model.id">
                   <div class="model-option-content">
                     <span class="model-option-name">{{ model.model }}</span>
-                    <span v-if="model.provider" class="model-option-provider">{{ model.provider }}</span>
                   </div>
                 </el-option>
               </el-select>
@@ -529,7 +528,7 @@ import http from '@/utils/httpProxy.js'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
-import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -4259,11 +4258,11 @@ onUnmounted(() => {
 }
 
 .table-selector-row .table-selector-container:nth-child(2) {
-  flex: 0 0 calc(50% - 8px);
+  flex: 0 0 calc(60% - 8px);
 }
 
 .table-selector-row .model-selector-container {
-  flex: 0 0 calc(30% - 8px);
+  flex: 0 0 calc(20% - 8px);
 }
 
 .table-selector-row .table-selector-container.full-width {
@@ -4706,19 +4705,22 @@ onUnmounted(() => {
   max-width: 100%;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(0, 0, 0, 0.2);
+  background: linear-gradient(180deg, #1e1e1e 0%, #252526 100%);
+  padding: 14px 16px;
 }
 .markdown-body pre code {
   display: block;
-  padding: 5px;
+  padding: 0;
   margin: 0;
-  overflow: auto;
+  overflow: visible;
   line-height: inherit;
   word-wrap: normal;
-  background-color: transparent;
+  background: none;
   border-radius: 0;
-  /* color: #cfd8dc; */
+  color: #d4d4d4;
   white-space: pre;
   border: none;
+  font-size: inherit;
 }
 .markdown-body blockquote {
   padding: 12px 16px;

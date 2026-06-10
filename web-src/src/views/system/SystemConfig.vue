@@ -360,20 +360,27 @@ const saveModel = () => {
     return
   }
 
-  if (editingModel.value) {
-    const idx = aiModelList.value.findIndex(m => m.id === editingModel.value.id)
-    if (idx !== -1) {
-      aiModelList.value[idx] = { ...modelForm.value }
-    }
-  } else {
-    const newModel = {
-      ...modelForm.value,
-      id: 'model_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8)
-    }
-    aiModelList.value.push(newModel)
+  const payload = { ...modelForm.value }
+  // 编辑模式保留原 id，新增模式清空由后端生成
+  if (!editingModel.value) {
+    payload.id = ''
   }
-  modelDialogVisible.value = false
-  ElMessage.success(editingModel.value ? '模型已更新' : '模型已添加')
+
+  http.post('/system/config/ai/model/save', payload).then((resp) => {
+    const saved = resp.data?.data
+    if (editingModel.value) {
+      const idx = aiModelList.value.findIndex(m => m.id === editingModel.value.id)
+      if (idx !== -1 && saved) {
+        aiModelList.value[idx] = saved
+      }
+    } else if (saved) {
+      aiModelList.value.push(saved)
+    }
+    modelDialogVisible.value = false
+    ElMessage.success(editingModel.value ? '模型已更新' : '模型已添加')
+  }).catch(() => {
+    ElMessage.error('保存失败')
+  })
 }
 
 const removeModel = (model) => {
@@ -382,17 +389,25 @@ const removeModel = (model) => {
     '确认删除',
     { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
   ).then(() => {
-    aiModelList.value = aiModelList.value.filter(m => m.id !== model.id)
-    if (systemConfig.value.selectedModelId === model.id) {
-      systemConfig.value.selectedModelId = aiModelList.value.length > 0 ? aiModelList.value[0].id : ''
-    }
-    ElMessage.success('模型已删除')
+    http.post('/system/config/ai/model/delete', { id: model.id }).then(() => {
+      aiModelList.value = aiModelList.value.filter(m => m.id !== model.id)
+      if (systemConfig.value.selectedModelId === model.id) {
+        systemConfig.value.selectedModelId = aiModelList.value.length > 0 ? aiModelList.value[0].id : ''
+      }
+      ElMessage.success('模型已删除')
+    }).catch(() => {
+      ElMessage.error('删除失败')
+    })
   }).catch(() => {})
 }
 
 const selectModel = (model) => {
-  systemConfig.value.selectedModelId = model.id
-  ElMessage.success(`已选择模型：${model.model}`)
+  http.post('/system/config/ai/model/select', { id: model.id }).then(() => {
+    systemConfig.value.selectedModelId = model.id
+    ElMessage.success(`已选择模型：${model.model}`)
+  }).catch(() => {
+    ElMessage.error('选择失败')
+  })
 }
 
 const testModelConfig = () => {

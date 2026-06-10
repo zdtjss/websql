@@ -116,7 +116,11 @@
                   {{ item.title }}
                 </span>
               </template>
-              <component :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" @viewTableInfo="viewTableInfoFromChild" />
+              <div v-if="item.loading" class="tab-loading">
+                <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+                <span>正在加载表和字段数据...</span>
+              </div>
+              <component v-else :is="item.component" :tabId="item.tabId" :connId="item.connId" :schema="item.schema" :tableName="item.tableName" :dbType="item.dbType" :schemaPath="item.connName ? item.connName + '/' + item.title : item.title" @openDataBrowser="openDataBrowser" @openTableManager="openTableManagerFromChild" @viewTableInfo="viewTableInfoFromChild" />
             </el-tab-pane>
           </el-tabs>
           <div v-else class="empty-workspace">
@@ -224,7 +228,7 @@ import http from '@/utils/httpProxy.js'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
+import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { MagicStick, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
@@ -433,22 +437,47 @@ onMounted(() => {
   })
 })
 
-const addTab = (node) => {
+const addTab = async (node) => {
   if (node.data.type !== "schema") {
     return
   }
   const tabId = Date.now().toString(36)
   const conn = findConn(node)
-  editableTabs.value.push({
+  const schemaName = node.data.label
+  const dbType = node.data.data?.dbType || ''
+
+  // 检查 schema 数据是否已缓存，未缓存则先加载
+  const alreadyLoaded = dbSchemaProxy.getTable(schemaName).length > 0
+
+  const tab = {
     tabId: tabId,
-    title: node.data.label,
+    title: schemaName,
     connId: conn.id,
     connName: conn.label,
-    schema: node.data.label,
+    schema: schemaName,
+    dbType: dbType,
     component: sqlEditor,
-  })
+    loading: !alreadyLoaded,
+  }
+  editableTabs.value.push(tab)
   editableTabsValue.value = tabId
   restoreTab()
+
+  if (!alreadyLoaded) {
+    try {
+      const resp = await http.get("/showTree", {
+        params: { connId: conn.id, key: schemaName, type: 'schema', level: 2, schema: schemaName }
+      })
+      if (resp.data.data) {
+        dbSchemaProxy.addTable(schemaName, dbType, resp.data.data, conn.id)
+      }
+    } catch (e) {
+      console.error('[ClassicalView] 预加载schema数据失败:', e)
+    } finally {
+      const t = editableTabs.value.find(t => t.tabId === tabId)
+      if (t) t.loading = false
+    }
+  }
 }
 const removeTab = (targetName) => {
   const tabs = editableTabs.value
@@ -470,7 +499,7 @@ const removeTab = (targetName) => {
 
 function restoreTab() {
   const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
-  waitStoredTabs.forEach(tab => tab.component = null)
+  waitStoredTabs.forEach(tab => { tab.component = null; delete tab.loading })
   localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
   localStorage.setItem("editableTabsValue", editableTabsValue.value)
   if (editableTabs.value.length == 0) {
@@ -1134,6 +1163,22 @@ function onSearchSelect(obj) {
 
 .empty-text {
   font-size: 14px;
+}
+
+/* ── Tab Loading ── */
+.tab-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.tab-loading .el-icon {
+  color: var(--accent-color);
 }
 
 /* ── Login Dialog ── */

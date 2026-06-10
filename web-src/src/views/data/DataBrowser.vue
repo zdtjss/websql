@@ -433,6 +433,27 @@ const originalRows = ref({})  // { [rowKey]: { [colName]: value, ... } }
 const savingInline = ref(false)
 let editInputRef = null
 
+// Capture-phase paste handler for inline editing input
+// Bypasses el-input's internal event handling by intercepting at capture phase
+let _inputPasteHandler = null
+function _createInputPasteHandler(nativeInput) {
+  return function(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    e.stopImmediatePropagation()
+    const text = e.clipboardData?.getData('text/plain')
+    if (!text) return
+    const start = nativeInput.selectionStart ?? editingValue.value.length
+    const end = nativeInput.selectionEnd ?? start
+    const val = editingValue.value
+    const newVal = val.substring(0, start) + text + val.substring(end)
+    nativeInput.value = newVal
+    editingValue.value = newVal
+    const newPos = start + text.length
+    nativeInput.setSelectionRange(newPos, newPos)
+  }
+}
+
 // Paste tracking
 const activeCellIndex = ref(-1)
 const activeColName = ref('')
@@ -829,6 +850,13 @@ function setEditInputRef(el) {
     editInputRef = el
     el.focus?.()
     el.select?.()
+    // Attach capture-phase paste handler directly on the native input
+    // This fires BEFORE el-input's internal handlers and prevents default replace behavior
+    const nativeInput = el.$el?.querySelector('input')
+    if (nativeInput) {
+      _inputPasteHandler = _createInputPasteHandler(nativeInput)
+      nativeInput.addEventListener('paste', _inputPasteHandler, true)
+    }
   }
 }
 
@@ -862,6 +890,12 @@ function startInlineEdit(row, colName, event) {
 
 function commitInlineEdit() {
   if (!editingCell.value) return
+  // Clean up native input paste handler
+  if (_inputPasteHandler && editInputRef) {
+    const nativeInput = editInputRef.$el?.querySelector('input')
+    if (nativeInput) nativeInput.removeEventListener('paste', _inputPasteHandler, true)
+    _inputPasteHandler = null
+  }
   const { rowKey, colName } = editingCell.value
   const newVal = editingValue.value
   const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
@@ -887,6 +921,12 @@ function commitInlineEdit() {
 }
 
 function cancelInlineEdit() {
+  // Clean up native input paste handler
+  if (_inputPasteHandler && editInputRef) {
+    const nativeInput = editInputRef.$el?.querySelector('input')
+    if (nativeInput) nativeInput.removeEventListener('paste', _inputPasteHandler, true)
+    _inputPasteHandler = null
+  }
   editingCell.value = null
   editingValue.value = ''
 }
@@ -962,8 +1002,6 @@ function parsePasteGrid(text) {
 }
 
 function handlePaste(event) {
-  if (editingCell.value) return
-
   event.preventDefault()
 
   const text = event.clipboardData?.getData('text/plain')
@@ -1012,14 +1050,6 @@ function onTableKeydown(event) {
       return
     }
   }
-  // Ctrl+V during inline edit: paste into the editing cell
-  if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
-    if (editingCell.value) {
-      event.preventDefault()
-      handleEditPaste()
-      return
-    }
-  }
   // Range selection keyboard shortcuts
   if (editingCell.value) return
   const bounds = selectionBounds.value
@@ -1028,9 +1058,6 @@ function onTableKeydown(event) {
   if (event.ctrlKey && event.key === 'c') {
     event.preventDefault()
     copySelectedRange()
-  } else if (event.ctrlKey && event.key === 'v') {
-    event.preventDefault()
-    pasteToSelectedRange(event)
   }
 }
 

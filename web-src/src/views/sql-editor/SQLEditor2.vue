@@ -810,6 +810,23 @@ function buildColumnDef(col: any): any {
                             if (e.key === 'Enter') commitInlineEdit()
                             if (e.key === 'Escape') cancelInlineEdit()
                         },
+                        onPaste: (e: ClipboardEvent) => {
+                            const text = e.clipboardData?.getData('text/plain')
+                            if (!text) return
+                            e.preventDefault()
+                            e.stopPropagation()
+                            const input = e.target as HTMLInputElement
+                            const start = input.selectionStart ?? editingCellValue.value.length
+                            const end = input.selectionEnd ?? start
+                            const val = editingCellValue.value
+                            const newVal = val.substring(0, start) + text + val.substring(end)
+                            // Directly set DOM value (bypasses Vue reactivity timing)
+                            input.value = newVal
+                            // Sync reactive state
+                            editingCellValue.value = newVal
+                            const newPos = start + text.length
+                            input.setSelectionRange(newPos, newPos)
+                        },
                         onBlur: () => commitInlineEdit()
                     })
                 }
@@ -828,6 +845,23 @@ function buildColumnDef(col: any): any {
                     onKeyup: (e: KeyboardEvent) => {
                         if (e.key === 'Enter') commitInlineEdit()
                         if (e.key === 'Escape') cancelInlineEdit()
+                    },
+                    onPaste: (e: ClipboardEvent) => {
+                        const text = e.clipboardData?.getData('text/plain')
+                        if (!text) return
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const input = e.target as HTMLInputElement
+                        const start = input.selectionStart ?? editingCellValue.value.length
+                        const end = input.selectionEnd ?? start
+                        const val = editingCellValue.value
+                        const newVal = val.substring(0, start) + text + val.substring(end)
+                        // Directly set DOM value (bypasses Vue reactivity timing)
+                        input.value = newVal
+                        // Sync reactive state
+                        editingCellValue.value = newVal
+                        const newPos = start + text.length
+                        input.setSelectionRange(newPos, newPos)
                     },
                     onBlur: () => commitInlineEdit()
                 })
