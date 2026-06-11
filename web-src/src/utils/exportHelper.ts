@@ -19,7 +19,7 @@ export function exportToJson(data: any[], filename: string) {
 
 export function exportToCsv(columns: string[], rows: any[], filename: string) {
   const escapeCsvField = (val: any): string => {
-    if (val === null || val === undefined) return ''
+    if (val === null || val === undefined) return '\\N'
     const str = String(val)
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
       return '"' + str.replace(/"/g, '""') + '"'

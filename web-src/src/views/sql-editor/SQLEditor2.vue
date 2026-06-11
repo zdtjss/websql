@@ -93,7 +93,7 @@
                         <el-auto-resizer>
                             <template #default="{ height: autoHeight, width: autoWidth }">
                                 <div ref="resultScrollRef" :style="{ height: autoHeight + 'px', overflowX: 'auto', overflowY: 'hidden' }"
-                                    @paste="handlePaste2" @keydown="onTableKeydown2" @scroll="onResultScroll">
+                                    @paste="handlePaste2" @keydown="onTableKeydown2" @scroll="onResultScroll" @mouseup="onTableMouseUp2" @mouseleave="onTableMouseUp2">
                                     <el-table-v2 :columns="columns" :data="result" :width="Math.max(totalColumnWidth, autoWidth)"
                                         :height="autoHeight" scrollbar-always-on />
                                 </div>
@@ -171,13 +171,24 @@
         <div class="dialog-scroll-body">
             <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
                 <el-form-item v-for="col in columns.slice(1)" :label="col.dataKey" :title="col.comment">
-                    <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"
-                        value-format="YYYY-MM-DD HH:mm:ss" />
-                    <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'"
-                        inactive-value="b'0'" />
-                    <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
-                        v-model="rowData[col.dataKey]" type="textarea" autosize
-                        :disabled="tableKeys.includes(col.dataKey)" />
+                    <div style="display: flex; align-items: flex-start; gap: 6px; width: 100%;">
+                        <el-date-picker v-if="col.dataType === 'DATETIME'" v-model="rowData[col.dataKey]" type="datetime"
+                            value-format="YYYY-MM-DD HH:mm:ss" :placeholder="rowData[col.dataKey] === null ? 'NULL' : ''" style="flex: 1;" />
+                        <el-switch v-if="col.dataType === 'BIT'" v-model="rowData[col.dataKey]" active-value="b'1'"
+                            inactive-value="b'0'" />
+                        <el-input v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT'"
+                            v-model="rowData[col.dataKey]" type="textarea" autosize
+                            :disabled="tableKeys.includes(col.dataKey)"
+                            :placeholder="rowData[col.dataKey] === null ? 'NULL' : ''" style="flex: 1;" />
+                        <el-button
+                            v-if="col.dataKey !== 'col-idx' && col.dataType !== 'DATETIME' && col.dataType !== 'BIT' && !tableKeys.includes(col.dataKey)"
+                            size="small"
+                            :type="rowData[col.dataKey] === null ? 'warning' : 'default'"
+                            link
+                            @click="rowData[col.dataKey] = rowData[col.dataKey] === null ? '' : null"
+                            :title="rowData[col.dataKey] === null ? '当前为 NULL，点击设为空字符串' : '点击设为 NULL'"
+                        >∅</el-button>
+                    </div>
                 </el-form-item>
             </el-form>
         </div>
@@ -223,7 +234,7 @@ import axios from 'axios'
 import http from '@/utils/httpProxy.js'
 import excel from '@/utils/excel.js'
 import copyToClipboard from '@/utils/copy-to-clipboard.js'
-import { fmtVal, getSqlDialect } from '@/utils/sqlHelper.ts'
+import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson } from '@/utils/exportHelper.ts'
 import { useTheme } from '@/utils/useTheme.ts'
 
@@ -312,6 +323,7 @@ const roleForbidModify = ref(false)
 const editingCellRow = ref(-1)
 const editingCellCol = ref('')
 const editingCellValue = ref('')
+const editingCellOriginalValue = ref<any>(null)  // original value before inline edit (preserves null vs '')
 const inlineChanges = ref(new Map<string, any>())
 const savingInline = ref(false)
 
@@ -355,6 +367,96 @@ const batchDisplayTabs = computed(() => {
 const activeCellRow2 = ref(-1)
 const activeCellCol2 = ref('')
 const pasteSnapshot2 = ref<any>(null)
+
+// Range selection state for result table
+const selStart2 = ref({ row: -1, col: -1 })
+const selEnd2 = ref({ row: -1, col: -1 })
+const selAnchor2 = ref({ row: -1, col: -1 })
+const isSelDragging2 = ref(false)
+
+const selectionBounds2 = computed(() => {
+    if (selStart2.value.row < 0 || selEnd2.value.row < 0) return null
+    return {
+        rowMin: Math.min(selStart2.value.row, selEnd2.value.row),
+        rowMax: Math.max(selStart2.value.row, selEnd2.value.row),
+        colMin: Math.min(selStart2.value.col, selEnd2.value.col),
+        colMax: Math.max(selStart2.value.col, selEnd2.value.col),
+    }
+})
+
+function dataColKeys(): string[] {
+    return columns.value.slice(1).map((c: any) => c.dataKey)
+}
+
+function dataColIndex(colKey: string): number {
+    return dataColKeys().indexOf(colKey)
+}
+
+function isCellInSelection2(rowIndex: number, colKey: string): boolean {
+    const bounds = selectionBounds2.value
+    if (!bounds) return false
+    const colIdx = dataColIndex(colKey)
+    return rowIndex >= bounds.rowMin && rowIndex <= bounds.rowMax &&
+           colIdx >= bounds.colMin && colIdx <= bounds.colMax
+}
+
+function onCellMouseDown2(rowIndex: number, colKey: string, e: MouseEvent) {
+    if (editingCellRow.value >= 0) return
+    const colIdx = dataColIndex(colKey)
+    if (colIdx < 0) return
+
+    if (e.shiftKey && selAnchor2.value.row >= 0) {
+        selEnd2.value = { row: rowIndex, col: colIdx }
+    } else {
+        selStart2.value = { row: rowIndex, col: colIdx }
+        selEnd2.value = { row: rowIndex, col: colIdx }
+    }
+    selAnchor2.value = { row: selStart2.value.row, col: selStart2.value.col }
+    isSelDragging2.value = true
+    activeCellRow2.value = rowIndex
+    activeCellCol2.value = colKey
+    e.preventDefault()
+}
+
+function onCellMouseEnter2(rowIndex: number, colKey: string) {
+    if (!isSelDragging2.value) return
+    const colIdx = dataColIndex(colKey)
+    if (colIdx < 0) return
+    selEnd2.value = { row: rowIndex, col: colIdx }
+}
+
+function onTableMouseUp2() {
+    isSelDragging2.value = false
+}
+
+function clearRangeSelection2() {
+    selStart2.value = { row: -1, col: -1 }
+    selEnd2.value = { row: -1, col: -1 }
+    selAnchor2.value = { row: -1, col: -1 }
+    isSelDragging2.value = false
+}
+
+function copySelectedRange2() {
+    const bounds = selectionBounds2.value
+    if (!bounds) return
+
+    const colKeys = dataColKeys()
+    const lines: string[] = []
+    const cols = colKeys.slice(bounds.colMin, bounds.colMax + 1)
+    for (let r = bounds.rowMin; r <= bounds.rowMax; r++) {
+        const row = result.value[r]
+        if (!row) continue
+        const line = cols.map(k => {
+            const val = row[k]
+            return val != null ? String(val) : '\\N'
+        }).join('\t')
+        lines.push(line)
+    }
+    if (lines.length > 0) {
+        navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
+        ElMessage({ message: `已复制 ${lines.length} 行`, type: 'success' })
+    }
+}
 
 const resultScrollRef = ref<HTMLElement | null>(null)
 let cachedVScrollbar: HTMLElement | null = null
@@ -867,17 +969,23 @@ function buildColumnDef(col: any): any {
                 })
             }
 
-            const displayVal = cellData != null ? String(cellData) : ''
+            const isNull = cellData === null || cellData === undefined
+            const displayVal = isNull ? 'NULL' : String(cellData)
+            const nullStyle = isNull ? { color: 'var(--text-tertiary, #bbb)', fontStyle: 'italic', fontSize: '0.85em' } : {}
             const changedStyle = isChanged ? {
                 backgroundColor: 'var(--bg-row-changed, #fff7e6)', padding: '2px 4px',
                 borderRadius: '3px', borderBottom: '1px dashed var(--warning-color, #faad14)',
                 cursor: 'pointer'
             } : { cursor: 'pointer' }
+            const isSelected = isCellInSelection2(rowIndex, colKey)
+            const selectedStyle = isSelected ? { backgroundColor: '#68a6eb', outline: 'none' } : {}
 
             return h('span', {
                 title: displayVal,
-                style: changedStyle,
-                onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e)
+                style: { ...changedStyle, ...nullStyle, ...selectedStyle },
+                onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e),
+                onMousedown: (e: MouseEvent) => onCellMouseDown2(rowIndex, colKey, e),
+                onMouseenter: () => onCellMouseEnter2(rowIndex, colKey),
             }, displayVal)
         }
     }
@@ -905,6 +1013,7 @@ function applyResultToUI(data: any) {
     result.value.forEach((row: any, idx: number) => {
         row["col-idx"] = idx + 1
     })
+    clearRangeSelection2()
 }
 
 function displayBatchResult(idx: number) {
@@ -1115,9 +1224,11 @@ function startInlineEdit(rowIndex: number, colKey: string, event: MouseEvent) {
     if (tableKeys.value.length === 0) return
     const target = event.target as HTMLElement
     if (target.tagName === 'INPUT') return
+    clearRangeSelection2()
     editingCellRow.value = rowIndex
     editingCellCol.value = colKey
     const rawVal = result.value[rowIndex]?.[colKey]
+    editingCellOriginalValue.value = rawVal
     editingCellValue.value = rawVal != null ? String(rawVal) : ''
 }
 
@@ -1129,8 +1240,13 @@ function commitInlineEdit() {
     const rowIdx = editingCellRow.value
     const colKey = editingCellCol.value
     const newVal = editingCellValue.value
-    const oldVal = result.value[rowIdx]?.[colKey]
-    if (String(oldVal ?? '') !== newVal) {
+    const origVal = editingCellOriginalValue.value
+    // Preserve NULL: if original was NULL and user didn't type anything, keep NULL
+    if (origVal === null && newVal === '') {
+        cancelInlineEdit()
+        return
+    }
+    if (String(origVal ?? '') !== newVal) {
         const changeKey = rowIdx + '::' + colKey
         const newMap = new Map(inlineChanges.value)
         newMap.set(changeKey, newVal)
@@ -1152,10 +1268,18 @@ function handlePaste2(event: ClipboardEvent) {
 
     let startRowIdx = -1
     let startColIdx = -1
+    let targetRowCount = -1
+    let targetColCount = -1
 
     const colKeys = columns.value.map((c: any) => c.dataKey)
 
-    if (editingCellRow.value >= 0 && editingCellCol.value) {
+    const bounds = selectionBounds2.value
+    if (bounds) {
+        startRowIdx = bounds.rowMin
+        startColIdx = bounds.colMin + 1  // +1 to account for col-idx column in colKeys
+        targetRowCount = bounds.rowMax - bounds.rowMin + 1
+        targetColCount = bounds.colMax - bounds.colMin + 1
+    } else if (editingCellRow.value >= 0 && editingCellCol.value) {
         startRowIdx = editingCellRow.value
         startColIdx = colKeys.indexOf(editingCellCol.value)
     } else if (activeCellRow2.value >= 0 && activeCellCol2.value) {
@@ -1166,7 +1290,7 @@ function handlePaste2(event: ClipboardEvent) {
     if (startRowIdx < 0 || startColIdx < 0) return
 
     const lines = text.split('\n')
-    const grid: string[][] = []
+    let grid: string[][] = []
     for (const line of lines) {
         const trimmed = line.trim()
         if (trimmed) {
@@ -1176,6 +1300,25 @@ function handlePaste2(event: ClipboardEvent) {
     if (grid.length === 0) return
 
     event.preventDefault()
+
+    // 当有范围选区（大于1x1）且粘贴板内容与选区不完全匹配时，以粘贴板内容重复贴入
+    if (targetRowCount > 1 || targetColCount > 1) {
+        const pasteRows = grid.length
+        const pasteCols = Math.max(...grid.map(r => r.length))
+
+        if (pasteRows !== targetRowCount || pasteCols !== targetColCount) {
+            const tiledGrid: string[][] = []
+            for (let r = 0; r < targetRowCount; r++) {
+                const row: string[] = []
+                const srcRow = grid[r % pasteRows]
+                for (let c = 0; c < targetColCount; c++) {
+                    row.push(srcRow[c % pasteCols] ?? '')
+                }
+                tiledGrid.push(row)
+            }
+            grid = tiledGrid
+        }
+    }
 
     // Save snapshot for Ctrl+Z undo
     const snapshot: any = {
@@ -1194,7 +1337,7 @@ function handlePaste2(event: ClipboardEvent) {
             const targetColIdx = startColIdx + ci
             if (targetColIdx >= colKeys.length) break
             const colKey = colKeys[targetColIdx]
-            if (tableKeys.value.includes(colKey)) continue
+            if (colKey === 'col-idx' || tableKeys.value.includes(colKey)) continue
 
             const newVal = grid[ri][ci].trim()
 
@@ -1204,7 +1347,7 @@ function handlePaste2(event: ClipboardEvent) {
             const oldVal = oldChanged !== undefined ? oldChanged : targetRow[colKey]
             snapshot.restoredCells.push({ rowIdx: targetRowIdx, colKey, oldVal })
 
-            if (String(targetRow[colKey] ?? '') !== newVal) {
+            if (String(targetRow[colKey] ?? '') !== newVal && !(targetRow[colKey] === null && newVal === '') && !(targetRow[colKey] === '' && newVal === '\\N')) {
                 const newMap = new Map(inlineChanges.value)
                 newMap.set(changeKey, newVal)
                 inlineChanges.value = newMap
@@ -1223,6 +1366,13 @@ function onTableKeydown2(event: KeyboardEvent) {
         if (pasteSnapshot2.value) {
             event.preventDefault()
             undoPaste2()
+        }
+    }
+    if (editingCellRow.value >= 0) return
+    if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+        if (selectionBounds2.value) {
+            event.preventDefault()
+            copySelectedRange2()
         }
     }
 }
@@ -1286,11 +1436,11 @@ function saveInlineChanges() {
 
         const pkConditions = tableKeys.value
             .filter(k => k in row)
-            .map(k => k + ' = ' + fmtVal(row[k]))
+            .map(k => buildWhereCondition(k, row[k]))
 
         const setClauses: string[] = []
         colMap.forEach((newVal, colKey) => {
-            setClauses.push(colKey + ' = ' + fmtVal(newVal))
+            setClauses.push(quoteId(colKey) + ' = ' + fmtVal(newVal))
         })
 
         if (setClauses.length === 0) return
@@ -1301,7 +1451,7 @@ function saveInlineChanges() {
         } else {
             const allWhereCols = Object.keys(row)
                 .filter((k: string) => k !== 'col-idx' && colMap.has(k))
-            const whereConditions = allWhereCols.map((k: string) => k + ' = ' + fmtVal(row[k]))
+            const whereConditions = allWhereCols.map((k: string) => buildWhereCondition(k, row[k]))
             sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
         }
 
@@ -1346,13 +1496,13 @@ function saveData(rowData: any) {
         return
     }
 
-    const updateColumnSets = changedKeys.map((key) => key + " = " + fmtVal(rowData[key]))
+    const updateColumnSets = changedKeys.map((key) => quoteId(key) + " = " + fmtVal(rowData[key]))
 
     const allWhereCols = [
         ...tableKeys.value,
         ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))
     ]
-    const whereColumns = allWhereCols.map((key: string) => key + " = " + fmtVal(originRowData[key]))
+    const whereColumns = allWhereCols.map((key: string) => buildWhereCondition(key, originRowData[key]))
 
     let effiectiveSql = "update " + currentSelectTable.value + " set "
     effiectiveSql += updateColumnSets.join(", ") + " where "
@@ -1560,12 +1710,12 @@ function exportCurrentToSqlUpdate() {
         for (let i = 2; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
-            rowVal.push(column + " = " + fmtVal(val))
+            rowVal.push(quoteId(column) + " = " + fmtVal(val))
         }
 
         let conditionVal = []
         for (let i = 0; i < tableKeys.value.length; i++) {
-            conditionVal.push(tableKeys.value[i] + " = " + fmtVal(result.value[j][tableKeys.value[i]]))
+            conditionVal.push(buildWhereCondition(tableKeys.value[i], result.value[j][tableKeys.value[i]]))
         }
 
         sqlArr.push(sql + rowVal.join(", ") + " where " + conditionVal.join(" and "))

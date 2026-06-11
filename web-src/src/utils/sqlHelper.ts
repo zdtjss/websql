@@ -80,18 +80,25 @@ export function fmtVal(val: any): string {
   return String(val)
 }
 
+export function buildWhereCondition(col: string, val: any, dbType?: string): string {
+  if (val === null || val === undefined) {
+    return quoteId(col, dbType) + ' IS NULL'
+  }
+  return quoteId(col, dbType) + ' = ' + fmtVal(val)
+}
+
 export function buildUpdateSQL(tableName: string, changedCols: Record<string, any>, pkCols: Record<string, any>, dbType?: string): string {
   const setClauses = Object.keys(changedCols)
     .map(key => quoteId(key, dbType) + ' = ' + fmtVal(changedCols[key]))
     .join(', ')
   const whereClauses = Object.keys(pkCols)
-    .map(key => quoteId(key, dbType) + ' = ' + fmtVal(pkCols[key]))
+    .map(key => buildWhereCondition(key, pkCols[key], dbType))
     .join(' AND ')
   return 'UPDATE ' + quoteId(tableName, dbType) + ' SET ' + setClauses + ' WHERE ' + whereClauses
 }
 
 export function buildInsertSQL(tableName: string, row: Record<string, any>, dbType?: string): string {
-  const cols = Object.keys(row).filter(k => row[k] !== '' && row[k] !== null && row[k] !== undefined)
+  const cols = Object.keys(row).filter(k => row[k] !== null && row[k] !== undefined)
   const colList = cols.map(k => quoteId(k, dbType)).join(', ')
   const valList = cols.map(k => fmtVal(row[k])).join(', ')
   return 'INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + valList + ')'
@@ -99,7 +106,7 @@ export function buildInsertSQL(tableName: string, row: Record<string, any>, dbTy
 
 export function buildDeleteSQL(tableName: string, pkCols: Record<string, any>, dbType?: string): string {
   const whereClauses = Object.keys(pkCols)
-    .map(key => quoteId(key, dbType) + ' = ' + fmtVal(pkCols[key]))
+    .map(key => buildWhereCondition(key, pkCols[key], dbType))
     .join(' AND ')
   return 'DELETE FROM ' + quoteId(tableName, dbType) + ' WHERE ' + whereClauses
 }

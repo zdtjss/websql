@@ -231,7 +231,7 @@ function previewData() {
   previewDataList.value = slicedData.map((row) => {
     const rowData = {}
     excelHeaders.value.forEach((header, idx) => {
-      rowData[header] = row[idx] !== undefined ? row[idx] : ''
+      rowData[header] = row[idx] !== undefined ? row[idx] : null
     })
     return rowData
   })

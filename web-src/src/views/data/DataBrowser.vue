@@ -159,9 +159,10 @@
                   @blur="commitInlineEdit()"
                 />
               </template>
-              <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="String(getRowValue(scope.row, col.name) ?? '')">
+              <span v-else :class="{ 'cell-changed': isCellChanged(scope.row, col.name) }" :title="formatCellTitle(getRowValue(scope.row, col.name))">
                 <template v-if="getRowValue(scope.row, col.name) !== null && getRowValue(scope.row, col.name) !== undefined && getRowValue(scope.row, col.name) !== ''">{{ getRowValue(scope.row, col.name) }}</template>
-                <span v-else class="null-placeholder">-</span>
+                <span v-else-if="getRowValue(scope.row, col.name) === null || getRowValue(scope.row, col.name) === undefined" class="null-placeholder">NULL</span>
+                <span v-else class="empty-placeholder"></span>
               </span>
             </div>
           </template>
@@ -281,20 +282,34 @@
           :label="col.name"
           :title="col.comment"
         >
-          <el-date-picker
-            v-if="isDateColumn(col.name)"
-            v-model="editRowData[col.name]"
-            type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-            :disabled="pkColumns.includes(col.name)"
-          />
-          <el-input
-            v-else
-            v-model="editRowData[col.name]"
-            type="textarea"
-            autosize
-            :disabled="pkColumns.includes(col.name)"
-          />
+          <div style="display: flex; align-items: flex-start; gap: 6px; width: 100%;">
+            <el-date-picker
+              v-if="isDateColumn(col.name)"
+              v-model="editRowData[col.name]"
+              type="datetime"
+              value-format="YYYY-MM-DDTHH:mm:ss"
+              :disabled="pkColumns.includes(col.name)"
+              :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
+              style="flex: 1;"
+            />
+            <el-input
+              v-else
+              v-model="editRowData[col.name]"
+              type="textarea"
+              autosize
+              :disabled="pkColumns.includes(col.name)"
+              :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
+              style="flex: 1;"
+            />
+            <el-button
+              v-if="!pkColumns.includes(col.name)"
+              size="small"
+              :type="editRowData[col.name] === null ? 'warning' : 'default'"
+              link
+              @click="editRowData[col.name] = editRowData[col.name] === null ? '' : null"
+              :title="editRowData[col.name] === null ? '当前为 NULL，点击设为空字符串' : '点击设为 NULL'"
+            >∅</el-button>
+          </div>
         </el-form-item>
       </el-form>
     </div>
@@ -364,7 +379,7 @@ import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '@/components/data/ImportPreviewDialog.vue'
 import http from '@/utils/httpProxy.js'
-import { buildCountSQL, buildPagedSQL, buildSelectSQL, fmtVal, quoteId } from '@/utils/sqlHelper.ts'
+import { buildCountSQL, buildPagedSQL, buildSelectSQL, buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson, exportToSql, downloadBlob } from '@/utils/exportHelper.ts'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 
@@ -428,6 +443,7 @@ const saving = ref(false)
 // Inline editing state
 const editingCell = ref(null)  // { rowKey: string, colName: string } | null
 const editingValue = ref('')
+const editingOriginalValue = ref(null)  // original value before inline edit (preserves null vs '')
 const changedRows = ref({})  // { [rowKey]: { [colName]: newValue, ... } }
 const originalRows = ref({})  // { [rowKey]: { [colName]: value, ... } }
 const savingInline = ref(false)
@@ -557,7 +573,7 @@ function copySelectedRange() {
     if (!row) continue
     const line = cols.map(c => {
       const val = row[c.name]
-      return val != null ? String(val) : ''
+      return val != null ? String(val) : '\\N'
     }).join('\t')
     lines.push(line)
   }
@@ -606,12 +622,16 @@ async function pasteToSelectedRange(e) {
     for (let c = 0; c < Math.min(pasteCols, availableCols); c++) {
       const colName = dataColumns.value[bounds.colMin + c]?.name
       if (!colName) continue
-      const val = rows_data[r][c] !== undefined ? rows_data[r][c] : ''
+      // \N from clipboard represents NULL
+      const rawVal = rows_data[r][c] !== undefined ? rows_data[r][c] : ''
+      const val = rawVal === '\\N' ? null : rawVal
 
       if (isNewRow(targetRow) && pkColumns.value.includes(colName)) {
         targetRow[colName] = val
       }
-      if (String(targetRow[colName] ?? '') !== val) {
+      // Type-aware comparison: null !== ''
+      const currentVal = targetRow[colName]
+      if (currentVal !== val && !(currentVal === null && val === '') && !(currentVal === '' && val === null)) {
         changedRows.value[key][colName] = val
       } else {
         delete changedRows.value[key][colName]
@@ -882,10 +902,11 @@ function isCellChanged(row, colName) {
 function startInlineEdit(row, colName, event) {
   if (!isNewRow(row) && pkColumns.value.includes(colName)) return
   const key = getRowKey(row)
-  editingCell.value = { rowKey: key, colName }
   const changed = changedRows.value[key]
   const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
+  editingOriginalValue.value = currentVal
   editingValue.value = currentVal ?? ''
+  editingCell.value = { rowKey: key, colName }
 }
 
 function commitInlineEdit() {
@@ -898,26 +919,39 @@ function commitInlineEdit() {
   }
   const { rowKey, colName } = editingCell.value
   const newVal = editingValue.value
-  const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
-  const strNew = String(newVal ?? '')
-  const strOrig = String(origVal ?? '')
+  const origVal = editingOriginalValue.value
 
-  if (strNew !== strOrig) {
-    if (!changedRows.value[rowKey]) {
-      changedRows.value[rowKey] = {}
-    }
-    changedRows.value[rowKey][colName] = newVal
-  } else {
+  // Strict comparison: null !== '' so NULL->'' is a real change
+  // Only treat as "no change" when values are strictly equal
+  if (newVal === origVal || (newVal === '' && origVal === null) || (newVal === null && origVal === '')) {
+    // No actual change (null and '' both represent "empty" in inline edit context)
     if (changedRows.value[rowKey]) {
       delete changedRows.value[rowKey][colName]
       if (Object.keys(changedRows.value[rowKey]).length === 0) {
         delete changedRows.value[rowKey]
       }
     }
+  } else {
+    // Value changed
+    if (!changedRows.value[rowKey]) {
+      changedRows.value[rowKey] = {}
+    }
+    // If original was null and user typed something, store the new value
+    // If original was null and user cleared to '', preserve null (no change)
+    if (origVal === null && newVal === '') {
+      // User cleared a NULL field - treat as no change
+      delete changedRows.value[rowKey][colName]
+      if (Object.keys(changedRows.value[rowKey]).length === 0) {
+        delete changedRows.value[rowKey]
+      }
+    } else {
+      changedRows.value[rowKey][colName] = newVal
+    }
   }
 
   editingCell.value = null
   editingValue.value = ''
+  editingOriginalValue.value = null
 }
 
 function cancelInlineEdit() {
@@ -969,10 +1003,12 @@ function applyPasteGrid(grid, startRowIdx, startColIdx) {
         oldVal: oldChanged !== undefined ? oldChanged : origVal
       })
 
-      const strNew = String(newVal ?? '')
-      const strOrig = String(origVal ?? '')
+      // Type-aware comparison: null !== '', treat null and '' as equivalent only for "no change"
+      const newIsNull = newVal === null || newVal === undefined
+      const origIsNull = origVal === null || origVal === undefined
+      const isChanged = !(newVal === origVal || (newIsNull && origIsNull) || (newIsNull && origVal === '') || (newVal === '' && origIsNull))
 
-      if (strNew !== strOrig) {
+      if (isChanged) {
         if (!changedRows.value[rowKey]) {
           changedRows.value[rowKey] = {}
         }
@@ -1009,14 +1045,42 @@ function handlePaste(event) {
 
   let startRowIdx = -1
   let startColIdx = -1
+  let targetRowCount = -1
+  let targetColCount = -1
 
-  if (activeCellIndex.value >= 0 && activeColName.value) {
+  const bounds = selectionBounds.value
+  if (bounds) {
+    startRowIdx = bounds.rowMin
+    startColIdx = bounds.colMin
+    targetRowCount = bounds.rowMax - bounds.rowMin + 1
+    targetColCount = bounds.colMax - bounds.colMin + 1
+  } else if (activeCellIndex.value >= 0 && activeColName.value) {
     startRowIdx = activeCellIndex.value
     startColIdx = dataColumns.value.findIndex(c => c.name === activeColName.value)
   }
 
   const grid = parsePasteGrid(text)
   if (grid.length === 0) return
+
+  // 当有范围选区（大于1x1）且粘贴板内容与选区不完全匹配时，以粘贴板内容重复贴入
+  if (targetRowCount > 1 || targetColCount > 1) {
+    const pasteRows = grid.length
+    const pasteCols = Math.max(...grid.map(r => r.length))
+
+    if (pasteRows !== targetRowCount || pasteCols !== targetColCount) {
+      const tiledGrid = []
+      for (let r = 0; r < targetRowCount; r++) {
+        const row = []
+        const srcRow = grid[r % pasteRows]
+        for (let c = 0; c < targetColCount; c++) {
+          row.push(srcRow[c % pasteCols] ?? '')
+        }
+        tiledGrid.push(row)
+      }
+      applyPasteGrid(tiledGrid, startRowIdx, startColIdx)
+      return
+    }
+  }
 
   applyPasteGrid(grid, startRowIdx, startColIdx)
 }
@@ -1106,7 +1170,7 @@ async function saveInlineChanges() {
       const insertCols = dataColumns.value
         .filter(col => {
           const val = merged[col.name]
-          return val !== '' && val !== null && val !== undefined
+          return val !== null && val !== undefined
         })
       if (insertCols.length === 0) continue
 
@@ -1131,7 +1195,7 @@ async function saveInlineChanges() {
         ...Object.keys(changed).filter(k => !pkCols.includes(k))
       ]
       const whereClauses = allWhereCols
-        .map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(orig[k]))
+        .map(k => buildWhereCondition(k, orig[k], effectiveDbType.value))
         .join(' AND ')
 
       sqlStatements.push('UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
@@ -1198,7 +1262,7 @@ function copyRow(row) {
     if (pkColumns.value.includes(col.name)) {
       copied[col.name] = ''
     } else {
-      copied[col.name] = row[col.name] != null ? row[col.name] : ''
+      copied[col.name] = row[col.name] !== undefined ? row[col.name] : ''
     }
   })
   rows.value.push(copied)
@@ -1241,6 +1305,11 @@ function getRowValue(row, colName) {
     return changed[colName]
   }
   return row[colName]
+}
+
+function formatCellTitle(val) {
+  if (val === null || val === undefined) return 'NULL'
+  return String(val)
 }
 
 function openColumnFilter(col, event) {
@@ -1483,7 +1552,7 @@ async function saveData() {
     ...pkCols,
     ...changedCols.filter(k => !pkCols.includes(k))
   ]
-  const whereClauses = allWhereCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(origin[key])).join(' AND ')
+  const whereClauses = allWhereCols.map(key => buildWhereCondition(key, origin[key], effectiveDbType.value)).join(' AND ')
 
   const sql = 'UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses
 
@@ -1522,8 +1591,8 @@ function openInsertDialog() {
 
 async function insertData() {
   const row = insertRowData.value
-  // Only include columns with non-empty values
-  const cols = Object.keys(row).filter(k => row[k] !== '' && row[k] !== null && row[k] !== undefined)
+  // Only exclude null/undefined, keep empty string as valid value
+  const cols = Object.keys(row).filter(k => row[k] !== null && row[k] !== undefined)
 
   if (cols.length === 0) {
     ElMessage({ message: '请至少填写一个字段', type: 'warning' })
@@ -1565,7 +1634,7 @@ async function deleteRow(row) {
     return
   }
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(row).slice(0, 1)
-  const whereClauses = pkCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(row[key])).join(' AND ')
+  const whereClauses = pkCols.map(key => buildWhereCondition(key, row[key], effectiveDbType.value)).join(' AND ')
   const sql = 'DELETE FROM ' + quoteId(tableName, effectiveDbType.value) + ' WHERE ' + whereClauses
 
   try {
@@ -1703,8 +1772,10 @@ function handleCsvFile(file) {
 
 function parseCsvLine(line) {
   const result = []
+  const wasQuoted = []
   let current = ''
   let inQuotes = false
+  let fieldQuoted = false
   for (let i = 0; i < line.length; i++) {
     const ch = line[i]
     if (inQuotes) {
@@ -1721,16 +1792,21 @@ function parseCsvLine(line) {
     } else {
       if (ch === '"') {
         inQuotes = true
+        fieldQuoted = true
       } else if (ch === ',') {
+        wasQuoted.push(fieldQuoted)
         result.push(current)
         current = ''
+        fieldQuoted = false
       } else {
         current += ch
       }
     }
   }
+  wasQuoted.push(fieldQuoted)
   result.push(current)
-  return result
+  // Convert unquoted \N to null (MySQL convention), quoted \N stays as literal string
+  return result.map((val, idx) => !wasQuoted[idx] && val === '\\N' ? null : val)
 }
 
 function handleJsonFile(file) {
@@ -1743,7 +1819,7 @@ function handleJsonFile(file) {
         return
       }
       const headers = Object.keys(json[0])
-      const dataRows = json.map(obj => headers.map(h => obj[h] ?? ''))
+      const dataRows = json.map(obj => headers.map(h => obj[h] ?? null))
       
       if (dataColumns.value && dataColumns.value.length > 0) {
         dbColumns.value = dataColumns.value.map(col => col.name)
@@ -1782,17 +1858,19 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
       const sqlStatements = []
 
       for (const row of batch) {
-        const cols = Object.keys(row).filter(k => row[k] !== null && row[k] !== undefined)
+        const cols = Object.keys(row).filter(k => row[k] !== undefined)
         if (cols.length === 0) continue
 
         if (mode === 'insert') {
-          const colList = cols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
-          const valList = cols.map(k => fmtVal(row[k])).join(', ')
+          const nonNullCols = cols.filter(k => row[k] !== null)
+          if (nonNullCols.length === 0) continue
+          const colList = nonNullCols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
+          const valList = nonNullCols.map(k => fmtVal(row[k])).join(', ')
           sqlStatements.push('INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')')
         } else {
           const setClauses = cols.map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k])).join(', ')
           const pkCols = pkColumns.value.length > 0 ? pkColumns.value : cols.slice(0, 1)
-          const whereClauses = pkCols.filter(k => row[k] !== null).map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k])).join(' AND ')
+          const whereClauses = pkCols.map(k => buildWhereCondition(k, row[k], effectiveDbType.value)).join(' AND ')
           if (!whereClauses) continue
           sqlStatements.push('UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
         }
@@ -1948,6 +2026,11 @@ watch(
 .null-placeholder {
   color: var(--text-tertiary, #bbb);
   font-style: italic;
+  font-size: 0.85em;
+  user-select: none;
+}
+
+.empty-placeholder {
   user-select: none;
 }
 
