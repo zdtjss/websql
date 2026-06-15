@@ -551,52 +551,58 @@ watch(currentTheme, async (theme) => {
 const apiBase = import.meta.env.VITE_API_URL || ''
 
 let md = null
+let mdInitPromise = null
 
 async function ensureMd() {
   if (md) return md
-  md = await getMarkdownRenderer(apiBase)
+  if (mdInitPromise) return mdInitPromise
 
-  const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
-    return self.renderToken(tokens, idx, options)
-  }
-  md.renderer.rules.fence = function (tokens, idx, options, env, self) {
-    const token = tokens[idx]
-    const info = token.info ? token.info.trim().toLowerCase() : ''
-    if (info === 'mermaid') {
-      const source = token.content.trim()
-      const svgCache = getMermaidSvgCache()
-      const id = getNextMermaidId()
-      if (svgCache.has(source)) {
-        // 缓存命中：用缓存的内部 HTML，但始终生成带 data-mermaid-id 的外层容器
-        return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
+  mdInitPromise = (async () => {
+    md = await getMarkdownRenderer(apiBase)
+
+    const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
+      return self.renderToken(tokens, idx, options)
+    }
+    md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+      const token = tokens[idx]
+      const info = token.info ? token.info.trim().toLowerCase() : ''
+      if (info === 'mermaid') {
+        const source = token.content.trim()
+        const svgCache = getMermaidSvgCache()
+        const id = getNextMermaidId()
+        if (svgCache.has(source)) {
+          return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
+        }
+        const escaped = token.content
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+        return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
       }
-      const escaped = token.content
+      const lang = info || ''
+      const rawCode = token.content
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-      return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
+      let encodedContent = ''
+      try {
+        encodedContent = btoa(encodeURIComponent(rawCode))
+      } catch (_) {}
+      const defaultHtml = defaultFenceRender(tokens, idx, options, env, self)
+      return `<div class="code-block-wrapper">` +
+        `<div class="code-block-header">` +
+          `<span class="code-block-lang">${lang}</span>` +
+          `<button class="code-copy-btn" data-code="${encodedContent}" title="复制代码">复制</button>` +
+        `</div>` +
+        defaultHtml +
+      `</div>`
     }
-    const lang = info || ''
-    const rawCode = token.content
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-    let encodedContent = ''
-    try {
-      encodedContent = btoa(encodeURIComponent(rawCode))
-    } catch (_) {}
-    const defaultHtml = defaultFenceRender(tokens, idx, options, env, self)
-    return `<div class="code-block-wrapper">` +
-      `<div class="code-block-header">` +
-        `<span class="code-block-lang">${lang}</span>` +
-        `<button class="code-copy-btn" data-code="${encodedContent}" title="复制代码">复制</button>` +
-      `</div>` +
-      defaultHtml +
-    `</div>`
-  }
 
-  return md
+    return md
+  })()
+
+  return mdInitPromise
 }
 
 const props = defineProps({})
@@ -1682,7 +1688,7 @@ function handleMermaidWheel(e) {
 
   const oldScale = parseFloat(wrap.dataset.scale || 1)
   const delta = e.deltaY > 0 ? -0.1 : 0.1
-  const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
+  const newScale = Math.min(15, Math.max(0.25, +(oldScale + delta).toFixed(2)))
   if (newScale === oldScale) return
 
   const cw = container.querySelector('.mermaid-content-wrapper')
@@ -1746,7 +1752,7 @@ function handleMermaidToolbarClick(e) {
       if (!wrap) break
       wrap.classList.add('smooth-transition')
       const oldScale = parseFloat(wrap.dataset.scale || 1)
-      const s = Math.min(5, +(oldScale + 0.25).toFixed(2))
+      const s = Math.min(15, +(oldScale + 0.25).toFixed(2))
       if (s !== oldScale) {
         const cw = container.querySelector('.mermaid-content-wrapper')
         const rect = cw ? cw.getBoundingClientRect() : container.getBoundingClientRect()
@@ -1839,7 +1845,7 @@ function handleMermaidFullscreen(container) {
   overlay.innerHTML = `
     <div class="mermaid-fullscreen-container" data-mermaid-fullscreen="true">
       <div class="mermaid-fullscreen-content">
-        <div class="mermaid-svg-wrap" data-scale="2" data-translate-x="0" data-translate-y="0">${svgHtml}</div>
+        <div class="mermaid-svg-wrap" data-scale="3" data-translate-x="0" data-translate-y="0">${svgHtml}</div>
       </div>
       <div class="mermaid-fullscreen-toolbar">
         <button class="mermaid-tb-btn" data-action="zoom-out" title="缩小">
@@ -1984,7 +1990,7 @@ function handleMermaidFullscreen(container) {
     fsWrap.classList.add('smooth-transition')
     const oldScale = parseFloat(fsWrap.dataset.scale || 1)
     const delta = e.deltaY > 0 ? -0.1 : 0.1
-    const newScale = Math.min(5, Math.max(0.25, +(oldScale + delta).toFixed(2)))
+    const newScale = Math.min(15, Math.max(0.25, +(oldScale + delta).toFixed(2)))
     if (newScale === oldScale) return
 
     fsWrap.dataset.scale = newScale
@@ -4717,10 +4723,15 @@ onUnmounted(() => {
   word-wrap: normal;
   background: none;
   border-radius: 0;
-  color: #d4d4d4;
   white-space: pre;
   border: none;
   font-size: inherit;
+}
+.markdown-body pre code:not(.hljs) {
+  color: #d4d4d4;
+}
+.markdown-body pre code.hljs {
+  background: transparent;
 }
 .markdown-body blockquote {
   padding: 12px 16px;
@@ -5154,6 +5165,13 @@ body.mermaid-resizing * {
 
 [data-theme="dark"] .thinking-content.markdown-body code {
   background: rgba(0, 0, 0, 0.3);
+  color: #f44747;
+}
+[data-theme="dark"] .thinking-content.markdown-body pre code.hljs {
+  background: transparent;
+  color: inherit;
+}
+[data-theme="dark"] .thinking-content.markdown-body pre code:not(.hljs) {
   color: #f44747;
 }
 

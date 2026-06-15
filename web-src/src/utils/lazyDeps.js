@@ -6,10 +6,11 @@ async function initMarkdownRenderer(apiBase = '') {
   if (mdInitPromise) return mdInitPromise
 
   mdInitPromise = (async () => {
-    const [{ default: MarkdownIt }, { default: texmath }, { default: katex }] = await Promise.all([
+    const [{ default: MarkdownIt }, { default: texmath }, { default: katex }, hljs] = await Promise.all([
       import('markdown-it'),
       import('markdown-it-texmath'),
       import('katex'),
+      initHljs(),
       import('katex/dist/katex.min.css'),
     ])
 
@@ -18,6 +19,14 @@ async function initMarkdownRenderer(apiBase = '') {
       breaks: true,
       linkify: true,
       typographer: false,
+      highlight: function (str, lang) {
+        if (lang && hljs && hljs.getLanguage && hljs.getLanguage(lang)) {
+          try {
+            return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value
+          } catch (_) {}
+        }
+        return ''
+      },
     })
 
     md.use(texmath, {
@@ -146,14 +155,36 @@ async function initHljs() {
   if (hljsInitPromise) return hljsInitPromise
 
   hljsInitPromise = (async () => {
-    const [{ default: hljs }, { default: hljsSql }] = await Promise.all([
+    const [
+      { default: hljs },
+      { default: hljsSql },
+      { default: hljsJs },
+      { default: hljsJson },
+      { default: hljsBash },
+      { default: hljsPython },
+      { default: hljsTs },
+    ] = await Promise.all([
       import('highlight.js/lib/core'),
       import('highlight.js/lib/languages/sql'),
-      import('highlight.js/styles/stackoverflow-light.css'),
+      import('highlight.js/lib/languages/javascript'),
+      import('highlight.js/lib/languages/json'),
+      import('highlight.js/lib/languages/bash'),
+      import('highlight.js/lib/languages/python'),
+      import('highlight.js/lib/languages/typescript'),
+      import('highlight.js/styles/github-dark.css'),
     ])
     hljs.registerLanguage('sql', hljsSql)
     hljs.registerLanguage('mysql', hljsSql)
     hljs.registerLanguage('mariadb', hljsSql)
+    hljs.registerLanguage('javascript', hljsJs)
+    hljs.registerLanguage('js', hljsJs)
+    hljs.registerLanguage('json', hljsJson)
+    hljs.registerLanguage('bash', hljsBash)
+    hljs.registerLanguage('shell', hljsBash)
+    hljs.registerLanguage('python', hljsPython)
+    hljs.registerLanguage('py', hljsPython)
+    hljs.registerLanguage('typescript', hljsTs)
+    hljs.registerLanguage('ts', hljsTs)
     hljsInstance = hljs
     return hljsInstance
   })()

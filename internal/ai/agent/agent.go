@@ -865,6 +865,9 @@ func isOllamaURL(baseURL string) bool {
 func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallingChatModel, error) {
 	log.Printf("[ChatModel] 初始化 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
+	var cm model.ToolCallingChatModel
+	var err error
+
 	switch cfg.Provider {
 	case "ollama":
 		ollamaCfg := &ollama.ChatModelConfig{
@@ -877,7 +880,7 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 			ollamaCfg.Options = &ollama.Options{Temperature: cfg.Temperature}
 		}
 		ollamaCfg.HTTPClient = NewAuthClient(cfg.ApiKey)
-		return ollama.NewChatModel(ctx, ollamaCfg)
+		cm, err = ollama.NewChatModel(ctx, ollamaCfg)
 	case "openai":
 		openaiCfg := &openai.ChatModelConfig{
 			BaseURL: cfg.BaseURL, Model: cfg.Model, APIKey: cfg.ApiKey,
@@ -886,10 +889,17 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 		if cfg.Temperature > 0 {
 			openaiCfg.Temperature = new(cfg.Temperature)
 		}
-		return openai.NewChatModel(ctx, openaiCfg)
+		cm, err = openai.NewChatModel(ctx, openaiCfg)
 	default:
 		return nil, fmt.Errorf("不支持的 AI 提供商：%s", cfg.Provider)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// 用 ToolCall Index 修复包装器包裹，在流输出层面修复 Index 冲突
+	return &toolCallIndexFixerModel{ToolCallingChatModel: cm}, nil
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
