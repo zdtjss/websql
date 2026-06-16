@@ -123,7 +123,7 @@ func APIRateLimitMiddleware() gin.HandlerFunc {
 		ip := c.ClientIP()
 		var limiter *rate.Limiter
 		if strings.HasPrefix(path, "/api/ai/") {
-			limiter = apiLimiters.getLimiter(ip, 2, 5)
+			limiter = apiLimiters.getLimiter(ip, 10, 50)
 		} else {
 			limiter = apiLimiters.getLimiter(ip, 50, 100)
 		}

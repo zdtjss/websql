@@ -233,13 +233,15 @@ func ListTableNames(c *gin.Context) {
 
 	if schema == "" {
 		dc := conn.GetConn(connId, authorization)
-		switch dc.DriverName() {
-		case "mysql", "mariadb":
-			dc.Get(&schema, "SELECT DATABASE()")
-		case "oracle":
-			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
-		case "sqlite":
-			schema = "main"
+		if dc != nil {
+			switch dc.DriverName() {
+			case "mysql", "mariadb":
+				dc.Get(&schema, "SELECT DATABASE()")
+			case "oracle":
+				dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+			case "sqlite":
+				schema = "main"
+			}
 		}
 	}
 

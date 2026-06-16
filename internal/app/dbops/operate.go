@@ -100,6 +100,9 @@ func (c *metaCache) set(key string, columnMap map[string]string, primaryKeys []s
 func ListSchema(key string, authorization string) []*conn.Tree {
 	schemaName := ""
 	dc := conn.GetConn(key, authorization)
+	if dc == nil {
+		return []*conn.Tree{}
+	}
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listSchema"])
 	logger.PanicErr(err)
 	allSchemas := make([]*conn.Tree, 0)
@@ -143,6 +146,9 @@ func filterSchemasByPermission(schemas []*conn.Tree, connId, authorization strin
 func ListTable(key string, schema, authorization string) []*conn.Tree {
 	tableName, tableType, tableComment := "", "", ""
 	dc := conn.GetConn(key, authorization)
+	if dc == nil {
+		return []*conn.Tree{}
+	}
 
 	admin.CheckSchemaAccess(key, schema, authorization)
 
@@ -229,6 +235,9 @@ func filterTreeTablesByPermission(tables []*conn.Tree, connId, schema, authoriza
 func ListColumns(connId string, table, schema, authorization string) []*conn.Tree {
 	columnName, columnComment := "", ""
 	dc := conn.GetConn(connId, authorization)
+	if dc == nil {
+		return []*conn.Tree{}
+	}
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listColumns"], table)
 	logger.PrintErr(err)
 	tree := make([]*conn.Tree, 0)
@@ -271,6 +280,9 @@ func getCurrentSchema(dc *sqlx.DB) string {
 func ListAllColumns(key string, schema, authorization string) []*conn.Tree {
 	columnName, columnComment := "", ""
 	dc := conn.GetConn(key, authorization)
+	if dc == nil {
+		return []*conn.Tree{}
+	}
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
 	logger.PanicErr(err)
 	tree := make([]*conn.Tree, 0)
@@ -284,6 +296,9 @@ func ListAllColumns(key string, schema, authorization string) []*conn.Tree {
 
 func ListTableColumns(connIdParam string, tableName, schema, authorization string) []map[string]any {
 	dc := conn.GetConn(connIdParam, authorization)
+	if dc == nil {
+		return []map[string]any{}
+	}
 	rows, err := dc.Queryx(dialect.SQL_DIALECT[dc.DriverName()]["listTableColumns"], schema, tableName)
 	logger.PanicErr(err)
 	result, err := database.GetResultRows(dc.DriverName(), rows)
@@ -309,13 +324,15 @@ func ListTableFat(c *gin.Context) {
 
 	if schema == "" && connIdVal != "" {
 		dc := conn.GetConn(connIdVal, authorization)
-		switch dc.DriverName() {
-		case "mysql", "mariadb":
-			dc.Get(&schema, "SELECT DATABASE()")
-		case "oracle":
-			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
-		case "sqlite":
-			schema = "main"
+		if dc != nil {
+			switch dc.DriverName() {
+			case "mysql", "mariadb":
+				dc.Get(&schema, "SELECT DATABASE()")
+			case "oracle":
+				dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+			case "sqlite":
+				schema = "main"
+			}
 		}
 	}
 
@@ -330,7 +347,7 @@ func QueryTableInfo(key string, schema, authorization string) []*conn.Table {
 	dc := conn.GetConn(key, authorization)
 
 	if dc == nil {
-		panic(errors.New("数据库连接失败"))
+		return tables
 	}
 
 	var querySQL string
@@ -482,6 +499,10 @@ func TableOptions(c *gin.Context) {
 	c.ShouldBindJSON(&param)
 	permission.CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := conn.GetConn(param.ConnId, authorization)
+	if dc == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "数据库连接失败"})
+		return
+	}
 	d := dialect.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := d["tableOptions"]
 	if !ok {
@@ -515,6 +536,10 @@ func TableStatistics(c *gin.Context) {
 	c.ShouldBindJSON(&param)
 	permission.CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := conn.GetConn(param.ConnId, authorization)
+	if dc == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "数据库连接失败"})
+		return
+	}
 	d := dialect.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := d["tableStatistics"]
 	if !ok {
@@ -548,6 +573,10 @@ func ListIndexes(c *gin.Context) {
 	c.ShouldBindJSON(&param)
 	permission.CheckTablePermission(param.ConnId, param.Schema, param.TableName, authorization)
 	dc := conn.GetConn(param.ConnId, authorization)
+	if dc == nil {
+		c.JSON(200, gin.H{"code": 500, "msg": "数据库连接失败"})
+		return
+	}
 	d := dialect.SQL_DIALECT[dc.DriverName()]
 	sqlStr, ok := d["listIndexes"]
 	if !ok {

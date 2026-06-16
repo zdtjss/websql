@@ -446,17 +446,7 @@
 
           <div class="input-action-row">
             <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
-              <div v-if="extractedSchemaHints.length > 0" class="schema-hints">
-                <span class="schema-hints-label">检测到跨库引用：</span>
-                <template v-for="hint in extractedSchemaHints" :key="hint.schema">
-                  <el-tag :type="hint.validated ? 'success' : 'danger'" size="small" effect="plain">
-                    {{ hint.schema }}.{{ hint.tables.join(', ') }}
-                  </el-tag>
-                </template>
-                <span v-if="extractedSchemaHints.some(h => !h.validated)" class="schema-hints-warn">
-                  {{ extractedSchemaHints.filter(h => !h.validated).map(h => h.schema).join(', ') }} 不在授权中
-                </span>
-              </div>
+
               <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
                 :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
             </div>
@@ -1087,48 +1077,7 @@ const selectedModelName = computed(() => {
   return model ? model.model : ''
 })
 
-// 从用户输入中自动提取 schema.表名 引用（数据权限验证辅助）
-const extractedSchemaHints = computed(() => {
-  const text = question.value || ''
-  const hints = []
-  // 匹配 schema.table 模式，排除 URL（http/https）、文件路径、版本号
-  const regex = /(?:^|[^/\w])([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)(?=[^a-zA-Z0-9_]|$)/g
-  let match
-  while ((match = regex.exec(text)) !== null) {
-    const schemaName = match[1]
-    const tableName = match[2]
-    // 排除常见非数据关键词
-    const excluded = ['www', 'http', 'https', 'ftp', 'com', 'org', 'net', 'io', 'cn', 'js', 'ts', 'vue', 'py', 'go', 'java']
-    if (excluded.includes(schemaName.toLowerCase()) || excluded.includes(tableName.toLowerCase())) {
-      continue
-    }
-    const existing = hints.find(h => h.schema === schemaName)
-    if (existing) {
-      if (!existing.tables.includes(tableName)) {
-        existing.tables.push(tableName)
-      }
-    } else {
-      // 验证 schema 是否在已授权连接中存在
-      const schemaExists = connSchemaList.value.some(c =>
-        (c.schemas || []).some(s => s.name === schemaName) ||
-        (c.dbSchema === schemaName)
-      )
-      hints.push({ schema: schemaName, tables: [tableName], validated: schemaExists })
-    }
-  }
-  return hints
-})
 
-function validateExtractedSchemas() {
-  const hints = extractedSchemaHints.value
-  const unvalidated = hints.filter(h => !h.validated)
-  if (unvalidated.length > 0) {
-    const names = unvalidated.map(h => h.schema).join(', ')
-    ElMessage.warning(`Schema [${names}] 不在您授权的连接中，将无法访问相关表`)
-    return false
-  }
-  return true
-}
 
 // 历史会话相关
 const sessionHistoryVisible = ref(false)
@@ -2192,9 +2141,7 @@ async function sendMessage() {
     return
   }
 
-  if (!validateExtractedSchemas()) {
-    // 不阻止发送，但已给出警告
-  }
+
 
   try {
     const primaryConnId = getPrimaryConnId()
@@ -4117,23 +4064,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.schema-hints {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0;
-}
 
-.schema-hints-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.schema-hints-warn {
-  font-size: 12px;
-  color: var(--danger-color);
-}
 
 .question-input {
   flex: 1;
@@ -5414,14 +5345,7 @@ body.mermaid-resizing * {
   background: var(--bg-active);
 }
 
-/* ── Schema Hints ── */
-[data-theme="dark"] .schema-hints-label {
-  color: var(--text-tertiary);
-}
 
-[data-theme="dark"] .schema-hints-warn {
-  color: var(--danger-color);
-}
 
 /* ── Buttons ── */
 [data-theme="dark"] .toolbar-btn.el-button--primary {
