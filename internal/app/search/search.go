@@ -9,6 +9,7 @@ import (
 	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -238,25 +239,25 @@ func SearchData(c *gin.Context) {
 		searchCount++
 
 		wg.Add(1)
-		go func(t string) {
+		safego.GoWithName("search-table", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			colResults := searchTableData(conn, schema, t, likeKeyword, keyword)
+			colResults := searchTableData(conn, schema, table, likeKeyword, keyword)
 			if len(colResults) > 0 {
 				mu.Lock()
 				results = append(results, colResults...)
 				mu.Unlock()
 			}
-		}(table)
+		})
 	}
 
 	done := make(chan struct{})
-	go func() {
+	safego.GoWithName("search-wait", func() {
 		wg.Wait()
 		close(done)
-	}()
+	})
 
 	_ = timeout
 	<-done

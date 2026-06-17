@@ -16,6 +16,7 @@ import (
 	"websql/internal/dialect"
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -39,7 +40,7 @@ var tableMetaCache = &metaCache{
 const metaCacheTTL = 5 * time.Minute
 
 func init() {
-	go func() {
+	safego.GoWithName("dbops-metacache-cleanup", func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -52,7 +53,7 @@ func init() {
 			}
 			tableMetaCache.mu.Unlock()
 		}
-	}()
+	})
 }
 
 func metaCacheKey(connId, schema, table string) string {
@@ -103,7 +104,17 @@ func ListSchema(key string, authorization string) []*conn.Tree {
 	if dc == nil {
 		return []*conn.Tree{}
 	}
-	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listSchema"])
+	dialectMap, ok := dialect.SQL_DIALECT[dc.DriverName()]
+	if !ok {
+		log.Printf("[ListSchema] 不支持的数据库驱动: %s", dc.DriverName())
+		return []*conn.Tree{}
+	}
+	listSchemaSQL, ok := dialectMap["listSchema"]
+	if !ok {
+		log.Printf("[ListSchema] 缺少 listSchema SQL: %s", dc.DriverName())
+		return []*conn.Tree{}
+	}
+	row, err := dc.Query(listSchemaSQL)
 	logger.PanicErr(err)
 	allSchemas := make([]*conn.Tree, 0)
 	for row.Next() {

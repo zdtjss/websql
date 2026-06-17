@@ -3,6 +3,8 @@ package agent
 import (
 	"sync"
 	"time"
+
+	"websql/internal/pkg/safego"
 )
 
 // ttlEntry 是 TTLCache 中的缓存条目
@@ -36,7 +38,7 @@ func NewTTLCache[V any](ttl, cleanSec time.Duration, onEvict ...OnEvict[V]) *TTL
 	if len(onEvict) > 0 {
 		c.onEvict = onEvict[0]
 	}
-	go c.cleanLoop()
+	safego.GoWithName("ttlcache-clean", c.cleanLoop)
 	return c
 }
 

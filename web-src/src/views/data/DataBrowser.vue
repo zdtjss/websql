@@ -133,6 +133,7 @@
             <div class="inline-cell"
               :class="{ 'cell-selected-sel': isCellInSelection(scope.$index, col.name) }"
               @mousedown="onCellMouseDown(scope.$index, col.name, $event)"
+              @mousemove="onCellMouseMove(scope.$index, col.name)"
               @mouseenter="onCellMouseEnter(scope.$index, col.name)"
               @dblclick.stop="startInlineEdit(scope.row, col.name, $event)"
               @click="activeCellIndex = scope.$index; activeColName = col.name">
@@ -491,7 +492,9 @@ const newRowUids = ref(new Set())  // track _rowUid values of unsaved new rows
 const selStart = ref({ row: -1, col: -1 })
 const selEnd = ref({ row: -1, col: -1 })
 const selAnchor = ref({ row: -1, col: -1 })
-const isSelDragging = ref(false)
+// Pending mousedown state: distinguishes click vs drag for range selection
+const pendingStart = ref(null)  // { row, col } | null
+const pendingMoved = ref(false)
 
 const selectionBounds = computed(() => {
   if (selStart.value.row < 0 || selEnd.value.row < 0) return null
@@ -531,35 +534,75 @@ function clearRangeSelection() {
   selStart.value = { row: -1, col: -1 }
   selEnd.value = { row: -1, col: -1 }
   selAnchor.value = { row: -1, col: -1 }
-  isSelDragging.value = false
+  pendingStart.value = null
+  pendingMoved.value = false
 }
 
 function onCellMouseDown(rowIdx, colName, e) {
   if (editingCell.value) return
+  // Only respond to primary button
+  if (e.button !== 0) return
   const colIdx = colNameToIndex(colName)
   if (colIdx < 0) return
 
+  // Alt+drag: native text selection within a cell
+  if (e.altKey) {
+    clearRangeSelection()
+    return
+  }
+
+  // Shift+click: extend range from anchor (no drag needed)
   if (e.shiftKey && selAnchor.value.row >= 0) {
     selEnd.value = { row: rowIdx, col: colIdx }
-  } else {
-    selStart.value = { row: rowIdx, col: colIdx }
-    selEnd.value = { row: rowIdx, col: colIdx }
+    return
   }
-  selAnchor.value = { row: selStart.value.row, col: selStart.value.col }
-  isSelDragging.value = true
-  // Prevent triggering click/dblclick on the inline edit
-  e.preventDefault()
+
+  // Plain mousedown: record pending start; do NOT preventDefault so native
+  // text selection can begin. Range selection activates on first mousemove.
+  pendingStart.value = { row: rowIdx, col: colIdx }
+  pendingMoved.value = false
+  selAnchor.value = { row: rowIdx, col: colIdx }
 }
 
-function onCellMouseEnter(rowIdx, colName) {
-  if (!isSelDragging.value) return
+function onCellMouseMove(rowIdx, colName) {
+  if (!pendingStart.value) return
   const colIdx = colNameToIndex(colName)
   if (colIdx < 0) return
+  // Only activate range selection when moving to a DIFFERENT cell.
+  // Same-cell movement = native text selection (don't clear it).
+  if (rowIdx === pendingStart.value.row && colIdx === pendingStart.value.col) {
+    return
+  }
+  // First move to another cell: activate range selection and clear native text selection
+  if (!pendingMoved.value) {
+    pendingMoved.value = true
+    selStart.value = { ...pendingStart.value }
+    selEnd.value = { row: rowIdx, col: colIdx }
+    // Clear native text selection so it doesn't conflict with range highlight
+    const sel = window.getSelection()
+    if (sel) sel.removeAllRanges()
+    return
+  }
   selEnd.value = { row: rowIdx, col: colIdx }
 }
 
+function onCellMouseEnter(rowIdx, colName) {
+  // During drag-range selection, update end on enter
+  if (pendingStart.value && pendingMoved.value) {
+    const colIdx = colNameToIndex(colName)
+    if (colIdx < 0) return
+    selEnd.value = { row: rowIdx, col: colIdx }
+  }
+}
+
 function onTableMouseUp() {
-  isSelDragging.value = false
+  // If user clicked without moving, treat as single-cell selection for Ctrl+C
+  if (pendingStart.value && !pendingMoved.value) {
+    selStart.value = { ...pendingStart.value }
+    selEnd.value = { ...pendingStart.value }
+  }
+  pendingStart.value = null
+  pendingMoved.value = false
 }
 
 function copySelectedRange() {
@@ -1120,6 +1163,9 @@ function onTableKeydown(event) {
   if (!bounds) return
 
   if (event.ctrlKey && event.key === 'c') {
+    // If user has native text selected, let the browser copy it
+    const sel = window.getSelection()
+    if (sel && sel.toString().length > 0) return
     event.preventDefault()
     copySelectedRange()
   }
@@ -2013,6 +2059,7 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: text;
 }
 
 .inline-cell > span {
@@ -2021,6 +2068,7 @@ watch(
   text-overflow: ellipsis;
   display: block;
   width: 100%;
+  user-select: text;
 }
 
 .null-placeholder {

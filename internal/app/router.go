@@ -30,6 +30,7 @@ import (
 	"websql/internal/database"
 	"websql/internal/middleware"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -322,12 +323,12 @@ func handleExportDownload(c *gin.Context) {
 }
 
 func StartCleanupScheduler() {
-	go func() {
+	safego.GoWithName("export-cleanup", func() {
 		for {
 			time.Sleep(1 * time.Hour)
 			cleanExpiredExports()
 		}
-	}()
+	})
 	log.Println("[Cleanup] 导出文件清理任务已启动（每1小时清理超过7天的文件）")
 }
 

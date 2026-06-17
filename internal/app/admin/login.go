@@ -12,6 +12,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 	"websql/internal/store"
 
 	"github.com/gin-gonic/gin"
@@ -35,7 +36,7 @@ var authCache = &authLocalCache{
 const authCacheTTL = 10 * time.Second
 
 func init() {
-	go func() {
+	safego.GoWithName("authcache-cleanup", func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -48,7 +49,7 @@ func init() {
 			}
 			authCache.mu.Unlock()
 		}
-	}()
+	})
 }
 
 func (c *authLocalCache) get(token string) (*User, *UserPower, bool) {

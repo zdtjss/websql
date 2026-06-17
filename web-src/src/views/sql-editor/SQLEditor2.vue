@@ -372,7 +372,9 @@ const pasteSnapshot2 = ref<any>(null)
 const selStart2 = ref({ row: -1, col: -1 })
 const selEnd2 = ref({ row: -1, col: -1 })
 const selAnchor2 = ref({ row: -1, col: -1 })
-const isSelDragging2 = ref(false)
+// Pending mousedown state: distinguishes click vs drag for range selection
+const pendingStart2 = ref<{ row: number, col: number } | null>(null)
+const pendingMoved2 = ref(false)
 
 const selectionBounds2 = computed(() => {
     if (selStart2.value.row < 0 || selEnd2.value.row < 0) return null
@@ -402,38 +404,78 @@ function isCellInSelection2(rowIndex: number, colKey: string): boolean {
 
 function onCellMouseDown2(rowIndex: number, colKey: string, e: MouseEvent) {
     if (editingCellRow.value >= 0) return
+    // Only respond to primary button
+    if (e.button !== 0) return
     const colIdx = dataColIndex(colKey)
     if (colIdx < 0) return
 
+    // Alt+drag: native text selection within a cell
+    if (e.altKey) {
+        clearRangeSelection2()
+        return
+    }
+
+    // Shift+click: extend range from anchor (no drag needed)
     if (e.shiftKey && selAnchor2.value.row >= 0) {
         selEnd2.value = { row: rowIndex, col: colIdx }
-    } else {
-        selStart2.value = { row: rowIndex, col: colIdx }
-        selEnd2.value = { row: rowIndex, col: colIdx }
+        return
     }
-    selAnchor2.value = { row: selStart2.value.row, col: selStart2.value.col }
-    isSelDragging2.value = true
+
+    // Plain mousedown: record pending start; do NOT preventDefault so native
+    // text selection can begin. Range selection activates on first mousemove.
+    pendingStart2.value = { row: rowIndex, col: colIdx }
+    pendingMoved2.value = false
+    selAnchor2.value = { row: rowIndex, col: colIdx }
     activeCellRow2.value = rowIndex
     activeCellCol2.value = colKey
-    e.preventDefault()
 }
 
-function onCellMouseEnter2(rowIndex: number, colKey: string) {
-    if (!isSelDragging2.value) return
+function onCellMouseMove2(rowIndex: number, colKey: string) {
+    if (!pendingStart2.value) return
     const colIdx = dataColIndex(colKey)
     if (colIdx < 0) return
+    // Only activate range selection when moving to a DIFFERENT cell.
+    // Same-cell movement = native text selection (don't clear it).
+    if (rowIndex === pendingStart2.value.row && colIdx === pendingStart2.value.col) {
+        return
+    }
+    // First move to another cell: activate range selection and clear native text selection
+    if (!pendingMoved2.value) {
+        pendingMoved2.value = true
+        selStart2.value = { ...pendingStart2.value }
+        selEnd2.value = { row: rowIndex, col: colIdx }
+        const sel = window.getSelection()
+        if (sel) sel.removeAllRanges()
+        return
+    }
     selEnd2.value = { row: rowIndex, col: colIdx }
 }
 
+function onCellMouseEnter2(rowIndex: number, colKey: string) {
+    // During drag-range selection, update end on enter
+    if (pendingStart2.value && pendingMoved2.value) {
+        const colIdx = dataColIndex(colKey)
+        if (colIdx < 0) return
+        selEnd2.value = { row: rowIndex, col: colIdx }
+    }
+}
+
 function onTableMouseUp2() {
-    isSelDragging2.value = false
+    // If user clicked without moving, treat as single-cell selection for Ctrl+C
+    if (pendingStart2.value && !pendingMoved2.value) {
+        selStart2.value = { ...pendingStart2.value }
+        selEnd2.value = { ...pendingStart2.value }
+    }
+    pendingStart2.value = null
+    pendingMoved2.value = false
 }
 
 function clearRangeSelection2() {
     selStart2.value = { row: -1, col: -1 }
     selEnd2.value = { row: -1, col: -1 }
     selAnchor2.value = { row: -1, col: -1 }
-    isSelDragging2.value = false
+    pendingStart2.value = null
+    pendingMoved2.value = false
 }
 
 function copySelectedRange2() {
@@ -702,20 +744,6 @@ function createEditor(editorContainer: any, doc: any) {
         highlightActiveLineGutter(),
         autocompletion(),
         EditorView.editable.of(true),
-        EditorView.domEventHandlers({
-            paste() {
-                setTimeout(() => {
-                    if (editorView.value) {
-                        editorView.value.dispatch({
-                            effects: sqlCompartment.reconfigure(sql({
-                                dialect: dbSchemaProxy.getDialect(schema),
-                                schema: <any>dbSchemaProxy.getAll(schema),
-                            }))
-                        })
-                    }
-                }, 50)
-            }
-        }),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
     ]
@@ -985,6 +1013,7 @@ function buildColumnDef(col: any): any {
                 style: { ...changedStyle, ...nullStyle, ...selectedStyle },
                 onDblclick: (e: MouseEvent) => startInlineEdit(rowIndex, colKey, e),
                 onMousedown: (e: MouseEvent) => onCellMouseDown2(rowIndex, colKey, e),
+                onMousemove: () => onCellMouseMove2(rowIndex, colKey),
                 onMouseenter: () => onCellMouseEnter2(rowIndex, colKey),
             }, displayVal)
         }
@@ -1370,6 +1399,9 @@ function onTableKeydown2(event: KeyboardEvent) {
     }
     if (editingCellRow.value >= 0) return
     if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+        // If user has native text selected, let the browser copy it
+        const sel = window.getSelection()
+        if (sel && sel.toString().length > 0) return
         if (selectionBounds2.value) {
             event.preventDefault()
             copySelectedRange2()
@@ -2108,6 +2140,11 @@ const dragEnd = (e: DragEvent) => {
 
 /* ── Result Table ── */
 .el-table-v2__header-cell-text {
+    user-select: text;
+}
+
+.el-table-v2__row-cell,
+.el-table-v2__row-cell > span {
     user-select: text;
 }
 

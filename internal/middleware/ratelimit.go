@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"websql/internal/pkg/safego"
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 )
@@ -76,14 +78,14 @@ var (
 )
 
 func init() {
-	go func() {
+	safego.GoWithName("ratelimit-cleanup", func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			loginLimiters.cleanup(3 * time.Minute)
 			apiLimiters.cleanup(3 * time.Minute)
 		}
-	}()
+	})
 }
 
 func LoginRateLimitMiddleware() gin.HandlerFunc {

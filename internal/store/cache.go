@@ -7,6 +7,7 @@ import (
 	"time"
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/duke-git/lancet/v2/convertor"
 )
@@ -104,13 +105,13 @@ func (s *shardedStore) cleanExpired() {
 var localStore = newShardedStore()
 
 func init() {
-	go func() {
+	safego.GoWithName("store-cache-cleanup", func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			localStore.cleanExpired()
 		}
-	}()
+	})
 }
 
 func Add(key string, val any) {

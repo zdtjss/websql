@@ -19,6 +19,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -286,15 +287,19 @@ type auditEntry struct {
 var auditCh = make(chan *auditEntry, 256)
 
 func init() {
-	go func() {
+	safego.GoWithName("audit-log-consumer", func() {
 		for entry := range auditCh {
+			if database.Mngtdb == nil {
+				log.Printf("[Audit] Mngtdb 未初始化，丢弃审计记录: toolName=%s", entry.toolName)
+				continue
+			}
 			_, err := database.Mngtdb.Exec(
 				`INSERT INTO t_audit_log (id, user_id, user_name, source, tool_name, sql_text, sql_type, risk_level, status, exec_time)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 				entry.id, entry.userId, entry.userName, entry.source, entry.toolName, entry.sqlText, entry.sqlType, entry.riskLevel, entry.status)
 			logger.PrintErr(err)
 		}
-	}()
+	})
 }
 
 func recordPermissionAudit(toolName, sqlText, userId, userName string) {
@@ -358,7 +363,7 @@ var tokenCache = &tokenLocalCache{
 const tokenCacheTTL = 30 * time.Minute
 
 func init() {
-	go func() {
+	safego.GoWithName("tokencache-cleanup", func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -371,7 +376,7 @@ func init() {
 			}
 			tokenCache.mu.Unlock()
 		}
-	}()
+	})
 }
 
 func (c *tokenLocalCache) get(token string) (*User, bool) {

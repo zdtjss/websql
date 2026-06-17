@@ -102,6 +102,7 @@ func main() {
 }
 
 func startServer(server *http.Server, isHttps *bool, port *string) {
+	defer safego.Recover("startServer")
 	var err error
 	if *isHttps {
 		// 初始化TLS 证书

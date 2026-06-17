@@ -16,6 +16,7 @@ import (
 	"websql/internal/config"
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/safego"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -225,7 +226,7 @@ func OptimizeSQLStream(c *gin.Context) {
 
 	kaStop := make(chan struct{})
 	defer close(kaStop)
-	go func() {
+	safego.GoWithName("sqlopt-keepalive", func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -241,18 +242,18 @@ func OptimizeSQLStream(c *gin.Context) {
 				mu.Unlock()
 			}
 		}
-	}()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	go func() {
+	safego.GoWithName("sqlopt-ctx-watch", func() {
 		<-c.Request.Context().Done()
 		mu.Lock()
 		dead = true
 		mu.Unlock()
 		cancel()
-	}()
+	})
 
 	cm, err := agentv2.BuildChatModel(ctx, aiCfg)
 	if err != nil {

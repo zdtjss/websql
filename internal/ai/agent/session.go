@@ -13,6 +13,7 @@ import (
 
 	"websql/internal/database"
 	"websql/internal/pkg/dberr"
+	"websql/internal/pkg/safego"
 )
 
 // ──────────────────────────────────────────────
@@ -429,7 +430,7 @@ func NewSessionStore() (*SessionStore, error) {
 		cancels: make(map[string]context.CancelFunc),
 		stopCh:  make(chan struct{}),
 	}
-	go ss.cleanLoop()
+	safego.GoWithName("session-clean", ss.cleanLoop)
 	return ss, nil
 }
 

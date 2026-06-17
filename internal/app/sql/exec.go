@@ -18,6 +18,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -128,7 +129,9 @@ func ExecSQL(c *gin.Context) {
 	}
 
 	if checkPrefx(sqlStr, []string{"update", "delete"}) {
-		go asyncBackup(sqlStr, user, connId, conn)
+		safego.GoWithName("sql-async-backup", func() {
+			asyncBackup(sqlStr, user, connId, conn)
+		})
 	} else {
 		asyncRecordHistory(sqlStr, user, connId)
 	}
@@ -633,7 +636,9 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 	}
 
 	if checkPrefx(sqlStr, []string{"update", "delete"}) {
-		go asyncBackup(sqlStr, user, connId, conn)
+		safego.GoWithName("sql-async-backup", func() {
+			asyncBackup(sqlStr, user, connId, conn)
+		})
 	} else {
 		asyncRecordHistory(sqlStr, user, connId)
 	}

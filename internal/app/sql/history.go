@@ -6,6 +6,7 @@ import (
 
 	"websql/internal/database"
 	"websql/internal/logger"
+	"websql/internal/pkg/safego"
 )
 
 type historyRecord struct {
@@ -30,7 +31,7 @@ var historyWriter = &asyncHistoryWriter{
 }
 
 func init() {
-	go historyWriter.consume()
+	safego.GoWithName("sql-history-consumer", historyWriter.consume)
 }
 
 func (w *asyncHistoryWriter) enqueue(record *historyRecord) {

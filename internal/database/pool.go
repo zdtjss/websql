@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"websql/internal/config"
+	"websql/internal/pkg/safego"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -126,7 +127,10 @@ func GetConn(param *DBParam) *sqlx.DB {
 
 	log.Printf("数据库连接成功， env = %s, db = %s", param.Name, param.User)
 
-	go startHealthCheck(ctx, key, db)
+	go func() {
+		defer safego.Recover("db-healthcheck")
+		startHealthCheck(ctx, key, db)
+	}()
 
 	return db
 }

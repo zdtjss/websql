@@ -16,6 +16,8 @@ import (
 
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/schema"
+
+	"websql/internal/pkg/safego"
 )
 
 type OSFilesystemBackend struct {
@@ -325,13 +327,13 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 
 	sr, sw := schema.Pipe[*filesystem.ExecuteResponse](10)
 
-	go func() {
+	safego.GoWithName("osfs-exec-collector", func() {
 		defer sw.Close()
 
 		var output strings.Builder
 
 		stdoutDone := make(chan struct{})
-		go func() {
+		safego.GoWithName("osfs-stdout-reader", func() {
 			defer close(stdoutDone)
 			scanner := bufio.NewScanner(stdout)
 			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -339,10 +341,10 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 				output.WriteString(scanner.Text())
 				output.WriteString("\n")
 			}
-		}()
+		})
 
 		stderrDone := make(chan struct{})
-		go func() {
+		safego.GoWithName("osfs-stderr-reader", func() {
 			defer close(stderrDone)
 			scanner := bufio.NewScanner(stderr)
 			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -350,7 +352,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 				output.WriteString(scanner.Text())
 				output.WriteString("\n")
 			}
-		}()
+		})
 
 		<-stdoutDone
 		<-stderrDone
@@ -373,7 +375,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 			Output:   strings.TrimSpace(output.String()),
 			ExitCode: &exitCode,
 		}, nil)
-	}()
+	})
 
 	return sr, nil
 }

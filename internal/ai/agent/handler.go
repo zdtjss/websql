@@ -17,6 +17,7 @@ import (
 	system "websql/internal/app/system"
 	"websql/internal/database"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
 )
@@ -76,7 +77,7 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 	// 使用请求级 context 作为父级，确保服务关闭时请求被优雅取消
 	runnerCtx, runnerCancel := context.WithTimeout(parentCtx, 5*time.Minute)
 
-	go func() {
+	safego.GoWithName("sse-keepalive", func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -92,7 +93,7 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 				})
 			}
 		}
-	}()
+	})
 
 	flush := func(chunk StreamChunk) {
 		wg.tryWrite(func() {
@@ -111,14 +112,14 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 	}
 
 	// 监听客户端断开 → 触发 runnerCancel
-	go func() {
+	safego.GoWithName("sse-ctx-watch", func() {
 		select {
 		case <-parentCtx.Done():
 			wg.markDead()
 			sse.runnerCancel()
 		case <-runnerCtx.Done():
 		}
-	}()
+	})
 
 	return sse
 }
@@ -255,10 +256,10 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	// 注册 Agent Cancel：当客户端断开连接时，触发 Agent 安全点取消
 	// 用 runID 精确指定要取消的 run，避免多 SSE / 多 tab 并发时错位
 	runID := fmt.Sprintf("%s_%d", req.SessionID, time.Now().UnixNano())
-	go func() {
+	safego.GoWithName("agent-cancel-watch", func() {
 		<-c.Request.Context().Done()
 		agent.Cancel(runID)
-	}()
+	})
 
 	sessionID, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush)
 	close(sse.kaStop)

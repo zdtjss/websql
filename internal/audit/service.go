@@ -9,6 +9,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/safego"
 )
 
 type AuditService struct {
@@ -130,7 +131,7 @@ func newAsyncWriter() *asyncWriter {
 	w := &asyncWriter{
 		ch: make(chan *AuditLog, 4096),
 	}
-	go w.consume()
+	safego.GoWithName("audit-log-consumer", w.consume)
 	return w
 }
 
@@ -229,10 +230,13 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 // ─── cleanup scheduler ───
 
 func StartAuditLogCleaner() {
-	go func() {
+	safego.GoWithName("audit-log-cleaner", func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
+			if database.Mngtdb == nil {
+				continue
+			}
 			svc := GetAuditService()
 			svc.ReloadConfig()
 			cfg := svc.GetConfig()
@@ -245,9 +249,12 @@ func StartAuditLogCleaner() {
 				log.Printf("[AuditCleaner] 清理过期日志失败 - err=%v\n", err)
 				continue
 			}
+			if result == nil {
+				continue
+			}
 			if n, _ := result.RowsAffected(); n > 0 {
 				log.Printf("[AuditCleaner] 已清理 %d 条过期审计日志（保留 %d 天）\n", n, cfg.RetentionDays)
 			}
 		}
-	}()
+	})
 }
