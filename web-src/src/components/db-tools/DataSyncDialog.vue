@@ -278,7 +278,15 @@
 import { ref, computed, watch, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Right, FullScreen, Close, Loading } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import {
+  listConn,
+  getSyncTargets,
+  generateSyncSQL,
+  compareSyncSchema,
+  compareDataChunked,
+  applySchemaDiff,
+  applyDataSync,
+} from '@/api/conn'
 
 const visible = defineModel({ default: false })
 
@@ -409,7 +417,7 @@ async function onOpen() {
 
 async function loadConnections() {
   try {
-    const res = await http.get('/listConn2', { params: { pageSize: 9999 } })
+    const res = await listConn({ pageSize: 9999 })
     const result = res.data.data || res.data
     connections.value = result.data || []
   } catch (e) {}
@@ -418,7 +426,7 @@ async function loadConnections() {
 async function onSourceConnChange() {
   if (!sourceConnId.value) return
   try {
-    const res = await http.get('/sync/targets', { params: { connId: sourceConnId.value } })
+    const res = await getSyncTargets(sourceConnId.value)
     const result = res.data.data || res.data
     sourceSchemas.value = result.schemas || []
     sourceTables.value = result.tables || []
@@ -428,7 +436,7 @@ async function onSourceConnChange() {
 async function onTargetConnChange() {
   if (!targetConnId.value) return
   try {
-    const res = await http.get('/sync/targets', { params: { connId: targetConnId.value } })
+    const res = await getSyncTargets(targetConnId.value)
     const result = res.data.data || res.data
     targetSchemas.value = result.schemas || []
   } catch (e) {}
@@ -459,7 +467,7 @@ async function loadSyncSQL() {
     formData.append('targetSchema', targetSchema.value)
     formData.append('table', syncTable.value)
     formData.append('direction', syncDirection.value)
-    const res = await http.post('/sync/generateSyncSQL', formData)
+    const res = await generateSyncSQL(formData)
     const result = res.data.data || res.data
     syncSQL.value = result.sql || '-- 无需同步'
   } catch (e) {
@@ -514,7 +522,7 @@ async function startStructureCompare() {
   formData.append('sourceSchema', sourceSchema.value)
   formData.append('targetSchema', targetSchema.value)
   if (tableFilter.value.length) formData.append('tables', tableFilter.value.join(','))
-  const res = await http.post('/sync/compareSchema', formData)
+  const res = await compareSyncSchema(formData)
   const result = res.data.data || res.data
   if (result.error) {
     ElMessage.error(result.error)
@@ -556,7 +564,7 @@ async function startDataCompareChunked() {
     formData.append('direction', syncDirection.value)
     formData.append('generateSQL', 'true')
 
-    const res = await http.post('/sync/compareDataChunked', formData, { signal: abortController.signal })
+    const res = await compareDataChunked(formData, abortController.signal)
     const result = res.data.data || res.data
 
     if (result.error) {
@@ -681,7 +689,7 @@ async function executeStructureSync() {
   formData.append('connId', targetConnId.value)
   formData.append('schema', targetSchema.value)
   formData.append('sql', sqlToApply)
-  const res = await http.post('/sync/applySchemaDiff', formData)
+  const res = await applySchemaDiff(formData)
   const result = res.data.data || res.data
   syncSuccess.value = result.success
   syncResult.value = `成功执行 ${result.executedCount || 0} 条语句` + (result.errors && result.errors.length ? `，${result.errors.length} 条失败` : '')
@@ -726,7 +734,7 @@ async function executeDataSyncBatched() {
     formData.append('sql', batches[i])
 
     try {
-      const res = await http.post('/sync/applyDataSync', formData, { signal: abortController.signal })
+      const res = await applyDataSync(formData, abortController.signal)
       const result = res.data.data || res.data
       totalInsert += result.insertCount || 0
       totalUpdate += result.updateCount || 0

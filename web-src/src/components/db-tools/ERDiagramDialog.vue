@@ -21,7 +21,7 @@
 import { DagreLayout } from '@antv/layout'
 import { Graph, Shape } from '@antv/x6'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
-import http from '@/utils/httpProxy.js'
+import { execSQL } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 
@@ -153,12 +153,7 @@ const filteredEdges = computed(() => {
 })
 
 async function execQuery(sql, maxLine) {
-  const params = new URLSearchParams()
-  params.append('connId', connId)
-  params.append('schema', schema)
-  params.append('sql', sql)
-  params.append('maxLine', String(maxLine || 5000))
-  const resp = await http.post('/execSQL', params)
+  const resp = await execSQL({ connId, schema, sql, maxLine: String(maxLine || 5000) })
   return resp.data.data?.data || []
 }
 

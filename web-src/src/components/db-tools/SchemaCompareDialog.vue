@@ -142,7 +142,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Right } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import { listConn, getSyncTargets, compareSyncSchema, compareSyncData } from '@/api/conn'
 
 const visible = defineModel({ default: false })
 
@@ -186,7 +186,7 @@ const modifyCount = computed(() => schemaDiffs.value.filter(d => d.diffType === 
 
 async function onOpen() {
   try {
-    const res = await http.get('/listConn2')
+    const res = await listConn({})
     connections.value = (res.data.data || []).filter(c => c && c.id)
   } catch (e) {}
   if (connId) { sourceConn.value = connId; targetConn.value = connId }
@@ -197,7 +197,7 @@ async function onOpen() {
 async function onSourceConnChange() {
   if (!sourceConn.value) return
   try {
-    const res = await http.get('/sync/targets', { params: { connId: sourceConn.value } })
+    const res = await getSyncTargets(sourceConn.value)
     const result = res.data.data || res.data
     sourceSchemas.value = result.schemas || []
     sourceTables.value = result.tables || []
@@ -207,7 +207,7 @@ async function onSourceConnChange() {
 async function onTargetConnChange() {
   if (!targetConn.value) return
   try {
-    const res = await http.get('/sync/targets', { params: { connId: targetConn.value } })
+    const res = await getSyncTargets(targetConn.value)
     const result = res.data.data || res.data
     targetSchemas.value = result.schemas || []
   } catch (e) {}
@@ -228,7 +228,7 @@ async function startCompare() {
       formData.append('targetConnId', targetConn.value)
       formData.append('sourceSchema', sourceSchema.value)
       formData.append('targetSchema', targetSchema.value)
-      const res = await http.post('/sync/compareSchema', formData)
+      const res = await compareSyncSchema(formData)
       const result = res.data.data || res.data
       if (result.error) {
         ElMessage.error(result.error)
@@ -243,7 +243,7 @@ async function startCompare() {
       formData.append('sourceSchema', sourceSchema.value)
       formData.append('targetSchema', targetSchema.value)
       formData.append('table', compareTable.value)
-      const res = await http.post('/sync/compareData', formData)
+      const res = await compareSyncData(formData)
       dataResult.value = res.data.data || res.data
       ElMessage.success('数据比较完成')
     }

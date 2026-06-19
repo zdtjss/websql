@@ -1,36 +1,50 @@
 package permission
 
 import (
+	"log"
 	"time"
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
 	"websql/internal/database"
-	"websql/internal/logger"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SaveTree(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	tree := []*DirTree{}
-	jsonutil.UnmarshalJson(c.Request.Body, &tree)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &tree); err != nil {
+		response.WriteErr(c, 200, 400, "请求参数解析失败")
+		return
+	}
 	doTreeInsert(tree)
 }
 
 func DelTreeNode(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	database.Mngtdb.Exec("delete from t_tree where id = ?", c.PostForm("id"))
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func ListDirTree(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	treeList := []*DirTree{}
 	err := database.Mngtdb.Select(&treeList, "select * from t_tree")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[ListDirTree] 查询目录树失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 	tree := []*conn.Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &conn.Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_DIR})
@@ -44,15 +58,21 @@ func ListDirTree(c *gin.Context) {
 	for _, cfg := range firstLevel {
 		cfg.Children = findChild(cfg, tree, map[string][]*conn.ConnCfgBase{})
 	}
-	jsonutil.WriteJson(c.Writer, firstLevel)
+	response.WriteOK(c, firstLevel)
 }
 
 func ConnBaseTree(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 
 	treeList := []*DirTree{}
 	err := database.Mngtdb.Select(&treeList, "select * from t_tree")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[ConnBaseTree] 查询目录树失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 	tree := []*conn.Tree{}
 	for _, cfg := range treeList {
 		tree = append(tree, &conn.Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_DIR})
@@ -69,7 +89,11 @@ func ConnBaseTree(c *gin.Context) {
 	}
 	firstLevelConns := []*conn.ConnCfgBase{}
 	err = database.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = '' or parent_id is null)")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[ConnBaseTree] 查询一级连接失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 	for _, c := range firstLevelConns {
 		name := ""
 		if c.Name != nil {
@@ -77,7 +101,7 @@ func ConnBaseTree(c *gin.Context) {
 		}
 		firstLevel = append(firstLevel, &conn.Tree{Label: name, Parent: c.ParentId, Id: c.Id, Type: conn.TREE_NODE_TYPE_CONN})
 	}
-	jsonutil.WriteJson(c.Writer, firstLevel)
+	response.WriteOK(c, firstLevel)
 }
 
 func findChild(curNode *conn.Tree, nodes []*conn.Tree, connMap map[string][]*conn.ConnCfgBase) []*conn.Tree {
@@ -107,13 +131,19 @@ func doTreeInsert(tree []*DirTree) {
 	planeDir := expendDirTreeAll(tree)
 
 	tx, err := database.Mngtdb.Beginx()
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[doTreeInsert] 开启事务失败: %v", err)
+		return
+	}
 	defer tx.Rollback()
 
 	tx.Exec("delete from t_tree")
 
 	stmt, err := tx.Prepare("insert into t_tree (id, label, parent) values (?, ?, ?)")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[doTreeInsert] 预处理插入语句失败: %v", err)
+		return
+	}
 	for _, t := range planeDir {
 		id := t.Id
 		if id == "" {
@@ -149,7 +179,10 @@ func expendDirTree(p *DirTree) []*DirTree {
 func listConnBase() map[string][]*conn.ConnCfgBase {
 	cfgList := []*conn.ConnCfgBase{}
 	err := database.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[listConnBase] 查询连接基础列表失败: %v", err)
+		return nil
+	}
 	rolePowerMap := make(map[string][]*conn.ConnCfgBase, len(cfgList))
 	for _, c := range cfgList {
 		v, ok := rolePowerMap[c.ParentId]

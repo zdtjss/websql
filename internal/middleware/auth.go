@@ -12,13 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var authPathMap = map[string]bool{
-	"/api/login":       true,
-	"/api/logout":      true,
-	"/api/healthCheck": true,
-	"/api/sysMode":     true,
-}
-
 func getTokenFromRequest(c *gin.Context) string {
 	authorization := c.GetHeader("Authorization")
 	if authorization == "" && strings.HasPrefix(c.Request.URL.Path, "/api/exports/") {

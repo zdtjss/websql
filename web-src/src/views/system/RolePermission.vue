@@ -85,7 +85,7 @@
 <script setup>
 import { ref, reactive, onMounted, nextTick, useTemplateRef } from 'vue'
 import { Delete, Plus } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy'
+import { getRoleList, saveRole, delRole, getPermissionTree } from '@/api/system'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const roles = ref([])
@@ -134,7 +134,7 @@ onMounted(() => {
 })
 
 function loadRoles() {
-  http.get('/roleList').then(resp => {
+  getRoleList().then(resp => {
     roles.value = resp.data.data || []
   })
 }
@@ -146,7 +146,7 @@ function createRole() {
     inputPattern: /.+/,
     inputErrorMessage: '角色名称不能为空',
   }).then(({ value }) => {
-    http.post('/saveRole', { id: '', name: value, addPowers: [], delPowers: [], viewClassic: 0, allowModify: 1 }).then(() => {
+    saveRole({ id: '', name: value, addPowers: [], delPowers: [], viewClassic: 0, allowModify: 1 }).then(() => {
       loadRoles()
     })
   })
@@ -167,7 +167,7 @@ function deleteRole(role) {
   ElMessageBox.confirm(`确定要删除角色 "${role.name}" 吗？`, '确认删除', {
     confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
   }).then(() => {
-    http.get('/delRole', { params: { id: role.id } }).then(() => {
+    delRole(role.id).then(() => {
       ElMessage.success('删除成功')
       if (currentRole.value?.id === role.id) currentRole.value = null
       loadRoles()
@@ -223,7 +223,7 @@ function loadTree() {
   if (selectedSchema.value) params.schema = selectedSchema.value
   if (selectedTable.value) params.table = selectedTable.value
 
-  http.get('/permissionTree', { params }).then(resp => {
+  getPermissionTree(params).then(resp => {
     treeData.value = resp.data.data || []
     currentTreeNodeKeys.clear()
     collectNodeKeys(treeData.value)
@@ -280,8 +280,6 @@ function computeAndApplyCheckedKeys() {
       implicitKeys.add(key)
     }
   }
-
-  console.log('[computeAndApplyCheckedKeys] allVisualKeys:', allVisualKeys)
 
   // 设置 default-checked-keys 并递增 key 强制重建树
   treeCheckedKeys.value = allVisualKeys
@@ -415,10 +413,8 @@ function onModifyDataChanged() {
 }
 
 function handleCheck(nodeData, checkState) {
-  if (isProgrammatic) { console.log('[handleCheck] blocked by isProgrammatic'); return }
+  if (isProgrammatic) { return }
   const nodeKey = getNodeFullKey(nodeData)
-  console.log('[handleCheck] nodeKey:', nodeKey, 'level:', nodeData.level, 'currentLevel:', currentLevel.value, 'isChecked:', checkState.checkedKeys.includes(nodeData.id))
-  console.log('[handleCheck] explicitKeys:', [...explicitKeys], 'uncheckedKeys:', [...uncheckedKeys], 'serverCheckedKeys:', [...serverCheckedKeys])
   if (nodeData.id.startsWith('dir::')) {
     if (nodeData.children) {
       const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
@@ -577,12 +573,6 @@ function savePermissions() {
     }
   }
 
-  console.log('[savePermissions] START - currentLevel:', currentLevel.value)
-  console.log('[savePermissions] explicitKeys:', [...explicitKeys])
-  console.log('[savePermissions] baselineCheckedKeys:', [...baselineCheckedKeys])
-  console.log('[savePermissions] uncheckedKeys:', [...uncheckedKeys])
-  console.log('[savePermissions] serverCheckedKeys:', [...serverCheckedKeys])
-
   // 根据当前编辑的层级，筛选出该层级的权限用于对比
   // 其他层级的权限保持不变，不发送 add/del 请求
   const currentExplicitKeys = new Set()
@@ -736,8 +726,6 @@ function savePermissions() {
       deletedCurrentLevelKeys.add(key)
     }
   }
-  console.log('[savePermissions] deletedCurrentLevelKeys:', [...deletedCurrentLevelKeys])
-  console.log('[savePermissions] delPowers before cascade:', JSON.stringify(delPowers))
   for (const key of baselineCheckedKeys) {
     if (key.startsWith('dir::')) continue
     if (explicitKeys.has(key)) continue
@@ -781,9 +769,7 @@ function savePermissions() {
     allowModify: modifyDataEnabled.value ? 1 : 0,
   }
 
-  console.log('[savePermissions] FINAL roleData:', JSON.stringify(roleData))
-
-  http.post('/saveRole', roleData).then(() => {
+  saveRole(roleData).then(() => {
     saving.value = false
     classicViewDirty = false
     modifyDataDirty = false

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
@@ -116,18 +118,21 @@ func SaveSystemConfig(cfg *SystemConfigSave) {
 					_, err := database.Mngtdb.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
 						cfg.ConfigValue, cfg.ConfigType, cfg.Remark, time.Now(), existCfg.Id)
 					if err != nil {
-						logger.PanicErr(err)
+						log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
+						return
 					}
 					return
 				}
 			}
-			logger.PanicErr(err)
+			log.Printf("[SaveSystemConfig] 插入配置失败: %v", err)
+			return
 		}
 	} else {
 		_, err := database.Mngtdb.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
 			cfg.ConfigValue, cfg.ConfigType, cfg.Remark, time.Now(), existCfg.Id)
 		if err != nil {
-			logger.PanicErr(err)
+			log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
+			return
 		}
 	}
 }
@@ -140,7 +145,10 @@ func ListSystemConfig(configType string) []*SystemConfig {
 	} else {
 		err = database.Mngtdb.Select(&configs, "select * from t_system_config where config_type = ? order by config_key", configType)
 	}
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[ListSystemConfig] 查询系统配置列表失败: %v", err)
+		return nil
+	}
 	return configs
 }
 
@@ -225,7 +233,10 @@ func GetAllowedIPFromDB() []string {
 
 func SaveAllowedIPToDB(ips []string) {
 	ipJSON, err := json.Marshal(ips)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[SaveAllowedIPToDB] 序列化IP列表失败: %v", err)
+		return
+	}
 
 	cfg := GetSystemConfigByKey("system.allowedIP")
 	saveCfg := &SystemConfigSave{
@@ -330,7 +341,7 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 func GetSystemConfig(c *gin.Context) {
 	configType := c.Query("type")
 	configs := ListSystemConfig(configType)
-	jsonutil.WriteJson(c.Writer, configs)
+	response.WriteOK(c, configs)
 }
 
 func GetAllSystemConfigHandler(c *gin.Context) {
@@ -417,13 +428,18 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 	}
 
 	logger.PrintErr(fmt.Errorf("返回配置数据：%+v", cfg))
-	jsonutil.WriteJson(c.Writer, cfg)
+	response.WriteOK(c, cfg)
 }
 
 func SaveAllSystemConfigHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	cfg := &SystemConfigAll{}
-	jsonutil.UnmarshalJson(c.Request.Body, cfg)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, cfg); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 
 	modelListJSON, _ := json.Marshal(cfg.AIModelList)
 	SaveSystemConfig(&SystemConfigSave{
@@ -457,21 +473,26 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 		ConfigKey: "system.defaultHomepage", ConfigValue: cfg.DefaultHomepage, ConfigType: "system", Remark: "默认首页",
 	})
 
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func SaveSystemConfigHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	cfg := &SystemConfigSave{}
-	jsonutil.UnmarshalJson(c.Request.Body, cfg)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, cfg); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	SaveSystemConfig(cfg)
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func GetAIConfigHandler(c *gin.Context) {
 	cfg := GetAIConfigFromDB()
 	if cfg == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"provider": "",
 			"baseUrl":  "",
 			"model":    "",
@@ -479,66 +500,81 @@ func GetAIConfigHandler(c *gin.Context) {
 		})
 		return
 	}
-	jsonutil.WriteJson(c.Writer, cfg)
+	response.WriteOK(c, cfg)
 }
 
 func SaveAIConfigHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	cfg := &AIConfig{}
-	jsonutil.UnmarshalJson(c.Request.Body, cfg)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, cfg); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	SaveAIConfigToDB(*cfg)
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func GetOutterUserHandler(c *gin.Context) {
 	url := GetOutterUserFromDB()
-	jsonutil.WriteJson(c.Writer, map[string]string{"outterUser": url})
+	response.WriteOK(c, map[string]string{"outterUser": url})
 }
 
 func SaveOutterUserHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	var req struct {
 		OutterUser string `json:"outterUser"`
 	}
-	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &req); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	SaveOutterUserToDB(req.OutterUser)
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func GetAllowedIPHandler(c *gin.Context) {
 	ips := GetAllowedIPFromDB()
-	jsonutil.WriteJson(c.Writer, map[string][]string{"allowedIP": ips})
+	response.WriteOK(c, map[string][]string{"allowedIP": ips})
 }
 
 func SaveAllowedIPHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	var req struct {
 		AllowedIP []string `json:"allowedIP"`
 	}
-	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &req); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	SaveAllowedIPToDB(req.AllowedIP)
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func TestOutterUserHandler(c *gin.Context) {
 	url := GetOutterUserFromDB()
 	if url == "" {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "未配置外部用户认证接口"})
+		response.WriteErr(c, http.StatusOK, 400, "未配置外部用户认证接口")
 		return
 	}
 
 	resp, err := http.Get(url)
 	if err != nil {
 		logger.PrintErr(err)
-		c.JSON(http.StatusOK, gin.H{"code": 500, "msg": "接口调用失败，请检查网络和配置"})
+		response.WriteErr(c, http.StatusOK, 500, "接口调用失败，请检查网络和配置")
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{"code": 200, "msg": "接口调用成功"})
+		response.WriteOK(c, "接口调用成功")
 	} else {
-		c.JSON(http.StatusOK, gin.H{"code": resp.StatusCode, "msg": "接口返回异常状态码"})
+		response.WriteErr(c, http.StatusOK, resp.StatusCode, "接口返回异常状态码")
 	}
 }
 
@@ -563,9 +599,14 @@ func saveModelListToDB(modelList []AIModelItem) {
 }
 
 func SaveAIModelHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	var model AIModelItem
-	jsonutil.UnmarshalJson(c.Request.Body, &model)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &model); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 
 	modelList := getModelListFromDB()
 
@@ -587,17 +628,22 @@ func SaveAIModelHandler(c *gin.Context) {
 	}
 
 	saveModelListToDB(modelList)
-	jsonutil.WriteJson(c.Writer, model)
+	response.WriteOK(c, model)
 }
 
 func DeleteAIModelHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	var req struct {
 		Id string `json:"id"`
 	}
-	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &req); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	if req.Id == "" {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "模型 ID 不能为空"})
+		response.WriteErr(c, http.StatusOK, 400, "模型 ID 不能为空")
 		return
 	}
 
@@ -623,17 +669,22 @@ func DeleteAIModelHandler(c *gin.Context) {
 		})
 	}
 
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func SelectAIModelHandler(c *gin.Context) {
-	admin.CheckAdminPower(c)
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	var req struct {
 		Id string `json:"id"`
 	}
-	jsonutil.UnmarshalJson(c.Request.Body, &req)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, &req); err != nil {
+		response.WriteErr(c, http.StatusOK, 400, "请求参数解析失败")
+		return
+	}
 	if req.Id == "" {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "模型 ID 不能为空"})
+		response.WriteErr(c, http.StatusOK, 400, "模型 ID 不能为空")
 		return
 	}
 
@@ -641,7 +692,7 @@ func SelectAIModelHandler(c *gin.Context) {
 		ConfigKey: "ai.selectedModelId", ConfigValue: req.Id, ConfigType: "ai", Remark: "当前选中的模型ID",
 	})
 	LoadSystemConfigToMemory()
-	jsonutil.WriteJson(c.Writer, "")
+	response.WriteOK(c, "")
 }
 
 func GetAIModelListHandler(c *gin.Context) {
@@ -649,7 +700,7 @@ func GetAIModelListHandler(c *gin.Context) {
 
 	modelListJSON := GetSystemConfigValue("ai.modelList")
 	if modelListJSON == "" || modelListJSON == "[]" {
-		jsonutil.WriteJson(c.Writer, &AIModelListResponse{
+		response.WriteOK(c, &AIModelListResponse{
 			AIModelList:     []AIModelBrief{},
 			SelectedModelId: selectedModelId,
 		})
@@ -659,7 +710,7 @@ func GetAIModelListHandler(c *gin.Context) {
 	var modelList []AIModelItem
 	err := json.Unmarshal([]byte(modelListJSON), &modelList)
 	if err != nil {
-		jsonutil.WriteJson(c.Writer, &AIModelListResponse{
+		response.WriteOK(c, &AIModelListResponse{
 			AIModelList:     []AIModelBrief{},
 			SelectedModelId: selectedModelId,
 		})
@@ -675,7 +726,7 @@ func GetAIModelListHandler(c *gin.Context) {
 		})
 	}
 
-	jsonutil.WriteJson(c.Writer, &AIModelListResponse{
+	response.WriteOK(c, &AIModelListResponse{
 		AIModelList:     briefList,
 		SelectedModelId: selectedModelId,
 	})

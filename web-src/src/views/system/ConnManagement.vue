@@ -81,7 +81,7 @@
             <span class="action-icon" @mousedown.prevent @click.stop="saveConnCfg(scope.row)"><el-icon><CircleCheck /></el-icon></span>
           </el-tooltip>
           <el-tooltip content="测试连接" placement="top">
-            <el-icon class="action-icon" :class="{ 'is-loading': scope.row.testing }" @click="testDbConn(scope.row)"><Connection /></el-icon>
+            <el-icon class="action-icon" :class="{ 'is-loading': scope.row.testing }" @click="testDbConnRow(scope.row)"><Connection /></el-icon>
           </el-tooltip>
           <el-popconfirm title="确定要删除这个连接吗？" @confirm="delConnCfg(scope.row)">
             <template #reference>
@@ -107,7 +107,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import http from '@/utils/httpProxy'
+import { listConn, saveConn, testDbConn, delConn, listDirTree } from '@/api/conn'
 import { ElMessage } from 'element-plus'
 import { CircleCheck, Connection, Delete } from '@element-plus/icons-vue'
 
@@ -185,20 +185,20 @@ function findLabelInTree(nodes, id) {
   return null
 }
 
-const listDirTree = () => {
-  http.get("/listDirTree").then((resp) => {
+const listDirTreeData = () => {
+  listDirTree().then((resp) => {
     conCfgTreeData.value = resp.data.data.length === 0 ? [{ label: "", value: "", id: "", children: [] }] : resp.data.data
   })
 }
 
 const listConnCfg = () => {
   pagination.value.page = 1
-  const param = new URLSearchParams()
-  param.append("name", connQuery.value.name)
-  param.append("parentId", connQuery.value.parentId || '')
-  param.append("page", pagination.value.page)
-  param.append("pageSize", pagination.value.pageSize)
-  http.get("/listConn2", { params: param }).then((resp) => {
+  listConn({
+    name: connQuery.value.name,
+    parentId: connQuery.value.parentId || '',
+    page: pagination.value.page,
+    pageSize: pagination.value.pageSize
+  }).then((resp) => {
     const result = resp.data.data || resp.data
     connList.value = result.data || []
     pagination.value.total = result.total || 0
@@ -221,7 +221,7 @@ const addConn = () => {
 }
 
 const saveConnCfg = (row) => {
-  http.post("/saveConn", row).then((resp) => {
+  saveConn(row).then((resp) => {
     ElMessage.success("保存成功")
     editingCell.value = null
     const saved = resp.data
@@ -235,9 +235,9 @@ const saveConnCfg = (row) => {
   })
 }
 
-const testDbConn = (row) => {
+const testDbConnRow = (row) => {
   row.testing = true
-  http.post("/testDbConn", row)
+  testDbConn(row)
     .then((resp) => {
       if (resp.data.code === 200) {
         ElMessage.success("数据库连接成功")
@@ -257,7 +257,7 @@ const testDbConn = (row) => {
 
 const delConnCfg = (row) => {
   if (row.id) {
-    http.get("/delConn", { params: { id: row.id } }).then(() => {
+    delConn(row.id).then(() => {
       ElMessage.success("删除成功")
       pagination.value.page = 1
       listConnCfg()
@@ -269,7 +269,7 @@ const delConnCfg = (row) => {
   }
 }
 
-listDirTree()
+listDirTreeData()
 listConnCfg()
 </script>
 

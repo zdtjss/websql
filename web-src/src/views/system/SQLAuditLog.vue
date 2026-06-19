@@ -142,7 +142,7 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy.js'
+import { getAuditLogs, findUserBase } from '@/api/system'
 import { highlightSql } from '@/utils/lazyDeps.js'
 import { ElMessage } from 'element-plus'
 import { onMounted, ref, reactive, computed, watch } from 'vue'
@@ -185,7 +185,7 @@ async function loadLogs() {
       params.startTime = dateRange.value[0]
       params.endTime = dateRange.value[1]
     }
-    const resp = await http.get('/audit/logs', { params })
+    const resp = await getAuditLogs(params)
     logs.value = resp.data.data || []
     total.value = resp.data.total || 0
   } catch (e) {
@@ -208,7 +208,7 @@ async function searchUsers(query) {
   }
   userLoading.value = true
   try {
-    const resp = await http.get('/findUserBase', { params: { key: query } })
+    const resp = await findUserBase(query)
     userList.value = resp.data.data || []
   } catch (e) {
     console.error('[SQLAuditLog] 搜索用户失败:', e)

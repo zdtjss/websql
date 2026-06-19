@@ -41,11 +41,12 @@ func WriteJson(w http.ResponseWriter, v any) {
 	w.Write(data)
 }
 
-func UnmarshalJson[T any](r io.Reader, v *T) {
+func UnmarshalJson[T any](r io.Reader, v *T) error {
 	jsonData, err := io.ReadAll(r)
-	logger.PrintErr(err)
-	err = json.Unmarshal(jsonData, v)
-	logger.PrintErr(err)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(jsonData, v)
 }
 
 func UnmarshalJson2[T any](r io.Reader, v *T) error {

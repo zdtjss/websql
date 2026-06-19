@@ -10,8 +10,9 @@ import (
 	"websql/internal/database"
 	"websql/internal/dialect"
 	"websql/internal/logger"
+	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/crypto"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -43,7 +44,9 @@ type PermissionNode struct {
 }
 
 func ShowBackupData(c *gin.Context) {
-	CheckAdminPower(c)
+	if !CheckAdminPower(c) {
+		return
+	}
 	backupId := c.Query("backupId")
 	stmt, err := database.Mngtdb.Preparex("select data from t_history where id = ?")
 	logger.PrintErr(err)
@@ -53,13 +56,15 @@ func ShowBackupData(c *gin.Context) {
 	if rowsx.Next() {
 		rowsx.Scan(&backupData)
 	}
-	jsonutil.WriteJson(c.Writer, backupData)
+	response.WriteOK(c, backupData)
 }
 
 func ListBackupData(c *gin.Context) {
-	CheckAdminPower(c)
-	user := GetUser(c.GetHeader("Authorization"))
-	connId := c.Query("connId")
+	if !CheckAdminPower(c) {
+		return
+	}
+	user := GetUser(appctx.Ctx.GetAuthorization(c))
+	connId := appctx.Ctx.GetConnID(c)
 
 	var (
 		countSQL  string
@@ -73,7 +78,7 @@ func ListBackupData(c *gin.Context) {
 	baseQuerySQL := "SELECT a.id, a.exec_sql, a.exec_time, a.operation_type FROM t_history a " + baseWhere +
 		" ORDER BY a.exec_time DESC LIMIT ?, ?"
 
-	if user.Id != config.AdminId {
+	if !isUserAdmin(user.Id) {
 		countSQL = "SELECT COUNT(*) FROM t_history a WHERE a.user = ? AND conn_id = ?"
 		querySQL = "SELECT a.id, a.exec_sql, a.exec_time, a.operation_type FROM t_history a WHERE a.user = ? AND conn_id = ? ORDER BY exec_time DESC LIMIT ?,?"
 		countArgs = []any{user.LoginName, connId}
@@ -92,7 +97,7 @@ func ListBackupData(c *gin.Context) {
 	logger.PrintErr(err)
 
 	if total == 0 {
-		jsonutil.WriteJson(c.Writer, map[string]any{"data": []map[string]any{}, "total": 0})
+		response.WriteOK(c, map[string]any{"data": []map[string]any{}, "total": 0})
 		return
 	}
 
@@ -106,7 +111,7 @@ func ListBackupData(c *gin.Context) {
 	}
 	offset := (current - 1) * pageSize
 
-	if user.Id != config.AdminId {
+	if !isUserAdmin(user.Id) {
 		queryArgs = []any{user.LoginName, connId, offset, pageSize}
 	} else {
 		queryArgs = []any{connId, offset, pageSize}
@@ -123,29 +128,29 @@ func ListBackupData(c *gin.Context) {
 	data, err := database.GetResultRows(database.Mngtdb.DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("查询操作日志失败", err)
-		c.JSON(200, gin.H{"code": 500, "msg": err.Error()})
+		response.WriteErr(c, 200, 500, err.Error())
 		return
 	}
-	jsonutil.WriteJson(c.Writer, map[string]any{"data": data, "total": total})
+	response.WriteOK(c, map[string]any{"data": data, "total": total})
 }
 
 func GetPermissionTree(c *gin.Context) {
 	if config.Cfg.IsRemote {
-		authorization := c.GetHeader("Authorization")
+		authorization := appctx.Ctx.GetAuthorization(c)
 		user := GetUser(authorization)
-		if user == nil || user.Id != config.AdminId {
+		if user == nil || !isUserAdmin(user.Id) {
 			logger.PrintErr(errors.New("无权访问"))
-			c.JSON(403, gin.H{"code": 403, "msg": "无权访问"})
+			response.WriteErr(c, 403, 403, "无权访问")
 			return
 		}
 	}
 
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schemaName := c.Query("schema")
 	tableName := c.Query("table")
 	level := c.Query("level")
 	roleId := c.Query("roleId")
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 
 	if level == "" {
 		level = "conn"
@@ -158,19 +163,19 @@ func GetPermissionTree(c *gin.Context) {
 		data = getConnTree(roleId)
 	case "schema":
 		if connId == "" {
-			jsonutil.WriteJson(c.Writer, data)
+			response.WriteOK(c, data)
 			return
 		}
 		data = getSchemaTree(connId, authorization, roleId)
 	case "table":
 		if connId == "" || schemaName == "" {
-			jsonutil.WriteJson(c.Writer, data)
+			response.WriteOK(c, data)
 			return
 		}
 		data = getTableTree(connId, schemaName, authorization, roleId)
 	case "column":
 		if connId == "" || schemaName == "" || tableName == "" {
-			jsonutil.WriteJson(c.Writer, data)
+			response.WriteOK(c, data)
 			return
 		}
 		data = getColumnTree(connId, schemaName, tableName, authorization, roleId)
@@ -180,7 +185,7 @@ func GetPermissionTree(c *gin.Context) {
 		data = []*PermissionNode{}
 	}
 
-	jsonutil.WriteJson(c.Writer, data)
+	response.WriteOK(c, data)
 }
 
 func getConnTree(roleId string) []*PermissionNode {
@@ -617,10 +622,10 @@ func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[
 }
 
 func UserPermissions(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
 	if user == nil {
-		jsonutil.WriteJson(c.Writer, []string{})
+		response.WriteOK(c, []string{})
 		return
 	}
 
@@ -641,14 +646,14 @@ func UserPermissions(c *gin.Context) {
 		permissionKeys = append(permissionKeys, key)
 	}
 
-	jsonutil.WriteJson(c.Writer, permissionKeys)
+	response.WriteOK(c, permissionKeys)
 }
 
 func CanUseClassicView(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
 	if user == nil {
-		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		response.WriteOK(c, gin.H{"allowed": false})
 		return
 	}
 
@@ -658,7 +663,7 @@ func CanUseClassicView(c *gin.Context) {
 		"select r.id, r.view_classic from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", user.Id)
 	if err != nil {
 		logger.PrintErr(err)
-		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		response.WriteOK(c, gin.H{"allowed": false})
 		return
 	}
 	for _, role := range roles {
@@ -667,14 +672,14 @@ func CanUseClassicView(c *gin.Context) {
 			break
 		}
 	}
-	jsonutil.WriteJson(c.Writer, gin.H{"allowed": allowed})
+	response.WriteOK(c, gin.H{"allowed": allowed})
 }
 
 func CanModifyData(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
 	if user == nil {
-		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		response.WriteOK(c, gin.H{"allowed": false})
 		return
 	}
 
@@ -684,7 +689,7 @@ func CanModifyData(c *gin.Context) {
 		"select r.id, r.name, r.allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", user.Id)
 	if err != nil {
 		logger.PrintErr(err)
-		jsonutil.WriteJson(c.Writer, gin.H{"allowed": false})
+		response.WriteOK(c, gin.H{"allowed": false})
 		return
 	}
 	for _, role := range roles {
@@ -693,7 +698,7 @@ func CanModifyData(c *gin.Context) {
 			break
 		}
 	}
-	jsonutil.WriteJson(c.Writer, gin.H{"allowed": allowed})
+	response.WriteOK(c, gin.H{"allowed": allowed})
 }
 
 func getConnNoCheckInternal(connId string) *sqlx.DB {

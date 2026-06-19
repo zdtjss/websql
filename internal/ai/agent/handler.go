@@ -461,27 +461,3 @@ func collectSchemaNames(connID, dbSchema string, req *ChatRequest) []string {
 	}
 	return names
 }
-
-func detectSQLType(sql string) string {
-	upper := strings.ToUpper(strings.TrimSpace(sql))
-	for _, prefix := range []string{"DROP", "TRUNCATE", "DELETE", "ALTER", "CREATE", "INSERT", "UPDATE", "REPLACE", "MERGE"} {
-		if strings.HasPrefix(upper, prefix) {
-			return prefix
-		}
-	}
-	return "UNKNOWN"
-}
-
-func detectRiskLevel(sql string) string {
-	upper := strings.ToUpper(strings.TrimSpace(sql))
-	if strings.HasPrefix(upper, "DROP") || strings.HasPrefix(upper, "TRUNCATE") {
-		return "high"
-	}
-	if strings.HasPrefix(upper, "DELETE") || strings.HasPrefix(upper, "ALTER") {
-		if !strings.Contains(upper, "WHERE") {
-			return "high"
-		}
-		return "medium"
-	}
-	return "medium"
-}

@@ -77,7 +77,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import http from '@/utils/httpProxy.js'
+import { execSQL } from '@/api/sql'
 
 const visible = defineModel({ default: false })
 const { connId, schema } = defineProps({
@@ -104,12 +104,7 @@ const connPercentage = computed(() => {
 })
 
 async function execQuery(sql) {
-  const params = new URLSearchParams()
-  params.append('connId', connId)
-  params.append('schema', schema)
-  params.append('sql', sql)
-  params.append('maxLine', '500')
-  const resp = await http.post('/execSQL', params)
+  const resp = await execSQL({ connId, schema, sql, maxLine: '500' })
   return resp.data.data?.data || []
 }
 

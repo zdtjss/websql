@@ -14,19 +14,20 @@ import (
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
 	"websql/internal/database"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/strutil"
 
 	"github.com/gin-gonic/gin"
 )
 
 func ShowTree(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	key := c.Query("key")
 	curType := c.Query("type")
 	level := c.Query("level")
 	schema := c.Query("schema")
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	userPower := admin.GetUserPower(authorization)
 
 	nextType := getNextType(curType)
@@ -56,21 +57,21 @@ func ShowTree(c *gin.Context) {
 	case conn.TREE_NODE_TYPE_ALLCOLUMN:
 		data = dbops.ListAllColumns(connId, key, authorization)
 	}
-	jsonutil.WriteJson(c.Writer, data)
+	response.WriteOK(c, data)
 }
 
 func ListTableColumns(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 
 	param := conn.ColumnsQuery{}
 	c.ShouldBindJSON(&param)
 
 	columns := dbops.ListTableColumns(param.ConnId, param.TableName, param.Schema, authorization)
-	jsonutil.WriteJson(c.Writer, strutil.SnakeToCamel(columns))
+	response.WriteOK(c, strutil.SnakeToCamel(columns))
 }
 
 func ListUserConnSchemasStream(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	userPower := admin.GetUserPower(authorization)
 
 	type SchemaDTO struct {
@@ -189,15 +190,15 @@ type tableNameDTO struct {
 }
 
 func ListTableNames(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
-	connId := c.Query("connId")
+	authorization := appctx.Ctx.GetAuthorization(c)
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 	schemasJSON := c.Query("schemas")
 
 	if schemasJSON != "" {
 		var refs []SchemaRef
 		if err := json.Unmarshal([]byte(schemasJSON), &refs); err != nil || len(refs) == 0 {
-			jsonutil.WriteJson(c.Writer, []any{})
+			response.WriteOK(c, []any{})
 			return
 		}
 		userPower := admin.GetUserPower(authorization)
@@ -222,12 +223,12 @@ func ListTableNames(c *gin.Context) {
 				})
 			}
 		}
-		jsonutil.WriteJson(c.Writer, result)
+		response.WriteOK(c, result)
 		return
 	}
 
 	if connId == "" {
-		jsonutil.WriteJson(c.Writer, []any{})
+		response.WriteOK(c, []any{})
 		return
 	}
 
@@ -254,7 +255,7 @@ func ListTableNames(c *gin.Context) {
 		result[i] = tableNameDTO{Name: table.Name, Comment: table.Comment}
 	}
 
-	jsonutil.WriteJson(c.Writer, result)
+	response.WriteOK(c, result)
 }
 
 func getNextType(curType string) string {

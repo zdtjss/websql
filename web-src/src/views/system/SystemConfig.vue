@@ -202,7 +202,9 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy'
+import { getSystemConfig, saveSystemConfig, saveAIModel, deleteAIModel, selectAIModel, testOutterUser } from '@/api/system'
+import { testAIConfig } from '@/api/ai'
+import { saveUserBio } from '@/api/auth'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { Check, Coin, Connection, Delete, Edit, HomeFilled, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -273,7 +275,7 @@ watch(() => modelForm.value.model, (newModel) => {
 })
 
 const loadSystemConfig = () => {
-  http.get("/system/config/all/get").then((resp) => {
+  getSystemConfig().then((resp) => {
     if (resp.data && resp.data.data) {
       const data = resp.data.data
       systemConfig.value.outterUser = data.outterUser || ''
@@ -302,7 +304,7 @@ const saveAllConfig = () => {
   savingAll.value = true
   const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
 
-  http.post("/system/config/all/save", {
+  saveSystemConfig({
     aiModelList: aiModelList.value,
     selectedModelId: systemConfig.value.selectedModelId,
     outterUser: systemConfig.value.outterUser,
@@ -366,7 +368,7 @@ const saveModel = () => {
     payload.id = ''
   }
 
-  http.post('/system/config/ai/model/save', payload).then((resp) => {
+  saveAIModel(payload).then((resp) => {
     const saved = resp.data?.data
     if (editingModel.value) {
       const idx = aiModelList.value.findIndex(m => m.id === editingModel.value.id)
@@ -389,7 +391,7 @@ const removeModel = (model) => {
     '确认删除',
     { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
   ).then(() => {
-    http.post('/system/config/ai/model/delete', { id: model.id }).then(() => {
+    deleteAIModel(model.id).then(() => {
       aiModelList.value = aiModelList.value.filter(m => m.id !== model.id)
       if (systemConfig.value.selectedModelId === model.id) {
         systemConfig.value.selectedModelId = aiModelList.value.length > 0 ? aiModelList.value[0].id : ''
@@ -402,7 +404,7 @@ const removeModel = (model) => {
 }
 
 const selectModel = (model) => {
-  http.post('/system/config/ai/model/select', { id: model.id }).then(() => {
+  selectAIModel(model.id).then(() => {
     systemConfig.value.selectedModelId = model.id
     ElMessage.success(`已选择模型：${model.model}`)
   }).catch(() => {
@@ -412,7 +414,7 @@ const selectModel = (model) => {
 
 const testModelConfig = () => {
   modelTesting.value = true
-  http.post("/ai/config/test", {
+  testAIConfig({
     provider: modelForm.value.provider,
     baseUrl: modelForm.value.baseUrl,
     model: modelForm.value.model,
@@ -426,7 +428,7 @@ const testModelConfig = () => {
 
 const testOutterUser = () => {
   testingOutterUser.value = true
-  http.post("/system/config/outterUser/test", { url: systemConfig.value.outterUser })
+  testOutterUser(systemConfig.value.outterUser)
     .then((resp) => {
       if (resp.data.code === 200) {
         ElMessage.success("测试成功：" + JSON.stringify(resp.data.data))
@@ -454,9 +456,6 @@ const checkBioRegistered = () => {
 }
 
 const registerBio = async () => {
-  console.log('[SystemConfig.vue] 点击注册生物识别按钮')
-  console.log('[SystemConfig.vue] 当前 currentUser:', currentUser.value)
-
   if (!bioSupported.value) {
     ElMessage({
       showClose: true,
@@ -479,13 +478,10 @@ const registerBio = async () => {
   })
 
   const parsed = parsers.parseRegistration(registration)
-  console.log(JSON.stringify(parsed))
 
   localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
-  const params = new URLSearchParams();
-  params.append("bioKey", parsed.credential.id);
-  http.post("/saveUserBio", params).then((resp) => {
+  saveUserBio(parsed.credential.id).then((resp) => {
     if (resp.data.code == 200) {
       ElMessage("注册成功")
       checkBioRegistered()
@@ -511,7 +507,6 @@ onMounted(() => {
   loadSystemConfig()
   checkBioSupport()
   checkBioRegistered()
-  console.log('[SystemConfig.vue] onMounted, inject 的 currentUser:', currentUser.value)
 })
 </script>
 

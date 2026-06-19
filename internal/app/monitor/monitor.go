@@ -10,7 +10,8 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/config"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -77,9 +78,9 @@ func init() {
 }
 
 func GetMetrics(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -171,7 +172,7 @@ func GetMetrics(c *gin.Context) {
 	}
 	metricsCache.Unlock()
 
-	jsonutil.WriteJson(c.Writer, snapshot)
+	response.WriteOK(c, snapshot)
 }
 
 func countLockWaits(conn *sqlx.DB) int {
@@ -190,17 +191,17 @@ func GetMetricsHistory(c *gin.Context) {
 	history := make([]MetricsSnapshot, len(metricsCache.history))
 	copy(history, metricsCache.history)
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"history": history,
 		"count":   len(history),
 	})
 }
 
 func GetResources(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -283,7 +284,7 @@ func GetResources(c *gin.Context) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"dbResources":    snapshot,
 		"appMemoryAlloc": memStats.Alloc,
 		"appMemoryTotal": memStats.Sys,
@@ -293,9 +294,9 @@ func GetResources(c *gin.Context) {
 }
 
 func GetProcesses(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -305,7 +306,7 @@ func GetProcesses(c *gin.Context) {
 		rows, err := conn.Queryx("SHOW FULL PROCESSLIST")
 		if err != nil {
 			logger.PrintErrf("获取进程列表失败", err)
-			jsonutil.WriteJson(c.Writer, map[string]any{"processes": processes, "count": 0})
+			response.WriteOK(c, map[string]any{"processes": processes, "count": 0})
 			return
 		}
 		defer rows.Close()
@@ -364,16 +365,16 @@ func GetProcesses(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"processes": processes,
 		"count":     len(processes),
 	})
 }
 
 func GetServerVariables(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -395,7 +396,7 @@ func GetServerVariables(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"variables": variables,
 	})
 }

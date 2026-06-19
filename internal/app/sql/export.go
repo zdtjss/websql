@@ -15,16 +15,17 @@ import (
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
 	"websql/internal/database"
-	"websql/internal/logger"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
 )
 
 func ExportXlsx(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	table := c.Query("table")
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
 	permission.CheckTablePermission(connId, schema, table, authorization)
@@ -32,17 +33,25 @@ func ExportXlsx(c *gin.Context) {
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("content-disposition", "attachment;filename="+table+current+".xlsx")
-	queryAndWrite(schema+"."+table, schema, c.Writer, connId, authorization)
+	queryAndWrite(c, schema+"."+table, schema, connId, authorization)
 }
-func queryAndWrite(table, schema string, out io.Writer, connId string, authorization string) {
+func queryAndWrite(c *gin.Context, table, schema string, connId string, authorization string) {
 	log.Println("正在导出: ", table)
 
 	connCtx := conn.GetConn(connId, authorization)
 	rows, err := connCtx.Query("SELECT * from " + table)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("查询失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	allColumns, err := rows.Columns()
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("获取字段失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	columnComment := make([]string, 0)
 	columnMap := dbops.ColumnMapFiltered(table, schema, connId, authorization, connCtx)
@@ -52,7 +61,11 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	}
 
 	cts, err := rows.ColumnTypes()
-	logger.PanicErrf("获取字段类型失败", err)
+	if err != nil {
+		log.Printf("获取字段类型失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -68,7 +81,11 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	}()
 
 	streamWriter, err := excel.NewStreamWriter("Sheet1")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("创建流写入器失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	var columns2 = make([]any, len(allColumns))
 	for idx := range allColumns {
@@ -91,7 +108,11 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	count := 2
 	for rows.Next() {
 		err = rows.Scan(scanArgs...)
-		logger.PanicErr(err)
+		if err != nil {
+			log.Printf("扫描行失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
 
 		var row = make([]any, 0, len(allColumns))
 		for i := range allColumns {
@@ -104,20 +125,23 @@ func queryAndWrite(table, schema string, out io.Writer, connId string, authoriza
 	}
 
 	if err = rows.Err(); err != nil {
-		logger.PanicErr(err)
-	}
-	if err := streamWriter.Flush(); err != nil {
-		logger.PanicErrf("导出excel失败", err)
+		log.Printf("遍历行失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
 		return
 	}
-	excel.Write(out)
+	if err := streamWriter.Flush(); err != nil {
+		log.Printf("导出excel失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
+	excel.Write(c.Writer)
 	log.Println("导出完成: ", table)
 
 }
 
 func ExportXlsxBySql(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
-	connId := c.PostForm("connId")
+	authorization := appctx.Ctx.GetAuthorization(c)
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	filename := c.PostForm("filename")
 	sqlStr := c.PostForm("sql")
@@ -140,28 +164,40 @@ func ExportXlsxBySql(c *gin.Context) {
 	analysis := permission.AnalyzeSQL(sqlStr, schema)
 	permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
 	if !permResult.Allowed {
-		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+		response.WriteErr(c, 200, 500, permResult.Message)
 		return
 	}
 
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
-	queryAndWriteBySql(sqlStr, c.Writer, connId, authorization)
+	queryAndWriteBySql(c, sqlStr, connId, authorization)
 }
 
-func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorization string) {
+func queryAndWriteBySql(c *gin.Context, sqlStr string, connId string, authorization string) {
 	log.Println("正在导出SQL: ", sqlStr)
 
 	connCtx := conn.GetConn(connId, authorization)
 	rows, err := connCtx.Query(sqlStr)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("查询失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	columns, err := rows.Columns()
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("获取字段失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	cts, err := rows.ColumnTypes()
-	logger.PanicErrf("获取字段类型失败", err)
+	if err != nil {
+		log.Printf("获取字段类型失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	colTypeMap := map[string]string{}
 	for _, ct := range cts {
@@ -176,7 +212,11 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 	}()
 
 	streamWriter, err := excel.NewStreamWriter("Sheet1")
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("创建流写入器失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	var columns2 = make([]any, len(columns))
 	for idx := range columns {
@@ -194,7 +234,11 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 	count := 1
 	for rows.Next() {
 		err = rows.Scan(scanArgs...)
-		logger.PanicErr(err)
+		if err != nil {
+			log.Printf("扫描行失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
 
 		var row = make([]any, 0, len(columns))
 		for i, col := range columns {
@@ -207,31 +251,34 @@ func queryAndWriteBySql(sqlStr string, out io.Writer, connId string, authorizati
 	}
 
 	if err = rows.Err(); err != nil {
-		logger.PanicErr(err)
-	}
-	if err := streamWriter.Flush(); err != nil {
-		logger.PanicErrf("导出 excel 失败", err)
+		log.Printf("遍历行失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
 		return
 	}
-	excel.Write(out)
+	if err := streamWriter.Flush(); err != nil {
+		log.Printf("导出 excel 失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
+	excel.Write(c.Writer)
 	log.Println("导出完成")
 }
 
 func handleExportDownload(c *gin.Context) {
 	fileName := c.Param("filename")
 	if fileName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件名不能为空"})
+		response.WriteErr(c, http.StatusBadRequest, 500, "文件名不能为空")
 		return
 	}
 
 	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件名"})
+		response.WriteErr(c, http.StatusBadRequest, 500, "非法文件名")
 		return
 	}
 
 	cleanPath := filepath.Clean("exports/" + fileName)
 	if !strings.HasPrefix(cleanPath, "exports") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件路径"})
+		response.WriteErr(c, http.StatusBadRequest, 500, "非法文件路径")
 		return
 	}
 
@@ -253,14 +300,14 @@ func handleExportDownload(c *gin.Context) {
 		}
 	}
 	if ext == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的文件类型"})
+		response.WriteErr(c, http.StatusBadRequest, 500, "不支持的文件类型")
 		return
 	}
 
 	filePath := "exports/" + fileName
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在"})
+		response.WriteErr(c, http.StatusNotFound, 500, "文件不存在")
 		return
 	}
 
@@ -269,14 +316,14 @@ func handleExportDownload(c *gin.Context) {
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "读取文件失败")
 		return
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文件信息失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "获取文件信息失败")
 		return
 	}
 	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))

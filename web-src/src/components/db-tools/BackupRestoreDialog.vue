@@ -104,7 +104,14 @@
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Grid, Search, VideoPlay } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import {
+  listBackups,
+  listBackupTables,
+  createBackup as createBackupApi,
+  downloadBackup as downloadBackupApi,
+  restoreBackup as restoreBackupApi,
+  deleteBackup as deleteBackupApi,
+} from '@/api/sql'
 
 const visible = defineModel({ default: false })
 
@@ -160,11 +167,11 @@ function formatSize(bytes) {
 
 async function loadBackups() {
   try {
-    const res = await http.get('/backup/list', { params: { connId, schema } })
+    const res = await listBackups(connId, schema)
     backupList.value = res.data.data?.records || []
   } catch (e) {}
   try {
-    const res = await http.get('/backup/tables', { params: { connId, schema } })
+    const res = await listBackupTables(connId, schema)
     const tables = res.data.data?.tables || []
     const tableCounts = res.data.data?.tableCounts || []
     const countMap = new Map(tableCounts.map(c => [c.table, c.rows ?? c.count ?? 0]))
@@ -190,7 +197,7 @@ async function createBackup() {
     formData.append('withData', withData.value.toString())
     formData.append('encrypt', encrypt.value.toString())
     formData.append('compress', 'false')
-    const res = await http.post('/backup/create', formData)
+    const res = await createBackupApi(formData)
     backupResult.value = res.data.data
     if (res.data.data?.success) ElMessage.success('备份创建成功')
     else ElMessage.warning('备份创建完成，但有部分错误')
@@ -206,7 +213,7 @@ function selectBackup(row) { selectedBackup.value = row }
 
 async function downloadBackup(row) {
   try {
-    const res = await http.get('/backup/download', { params: { backupId: row.id }, responseType: 'blob' })
+    const res = await downloadBackupApi(row.id)
     const blob = new Blob([res.data])
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -234,7 +241,7 @@ async function doRestore(row) {
     formData.append('backupId', row.id)
     formData.append('connId', connId)
     formData.append('schema', schema)
-    const res = await http.post('/backup/restore', formData)
+    const res = await restoreBackupApi(formData)
     if (res.data.data?.success) ElMessage.success(`恢复成功，执行 ${res.data.data?.executed || 0} 条语句`)
     else ElMessage.error(`恢复部分失败: ${(res.data.data?.failedCount || 0)} 条错误`)
     loadBackups()
@@ -250,7 +257,7 @@ async function deleteBackup(row) {
     await ElMessageBox.confirm(`确定删除备份 "${row.name}" 吗？`, '确认删除', { type: 'warning' })
     const formData = new FormData()
     formData.append('backupId', row.id)
-    await http.post('/backup/delete', formData)
+    await deleteBackupApi(formData)
     ElMessage.success('删除成功')
     selectedBackup.value = null
     loadBackups()

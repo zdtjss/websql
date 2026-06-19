@@ -15,7 +15,8 @@ import (
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -65,18 +66,18 @@ func CompareData(c *gin.Context) {
 	page := c.DefaultPostForm("page", "1")
 	pageSize := c.DefaultPostForm("pageSize", "500")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
 
 	if conn1 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": "源数据库连接不可用，请检查连接配置或权限",
 		})
 		return
 	}
 	if conn2 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": "目标数据库连接不可用，请检查连接配置或权限",
 		})
 		return
@@ -85,7 +86,7 @@ func CompareData(c *gin.Context) {
 	dbType1 := conn1.DriverName()
 	dbType2 := conn2.DriverName()
 	if dbType1 != dbType2 {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": fmt.Sprintf("不允许跨数据库类型比较数据: 源=%s, 目标=%s", dbType1, dbType2),
 		})
 		return
@@ -93,14 +94,14 @@ func CompareData(c *gin.Context) {
 	dbType := dbType1
 
 	if table == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": "表名不能为空",
 		})
 		return
 	}
 
 	if !isValidIdentifier(table) {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": "表名包含非法字符",
 		})
 		return
@@ -115,7 +116,7 @@ func CompareData(c *gin.Context) {
 	sourceCount := getRowCount(conn1, dbType, schema1, table)
 	targetCount := getRowCount(conn2, dbType, schema2, table)
 	if sourceCount > maxCompareRows || targetCount > maxCompareRows {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": fmt.Sprintf("数据量过大，源表%d行，目标%d行，上限%d行，请使用数据导出功能", sourceCount, targetCount, maxCompareRows),
 		})
 		return
@@ -134,7 +135,7 @@ func CompareData(c *gin.Context) {
 	if len(keyColumns) == 0 {
 		keyColumns = findCommonColumns(sourceData, targetData)
 		if len(keyColumns) == 0 {
-			jsonutil.WriteJson(c.Writer, map[string]any{
+			response.WriteOK(c, map[string]any{
 				"error": "无法确定比较键列，请确保表有主键",
 			})
 			return
@@ -202,7 +203,7 @@ func CompareData(c *gin.Context) {
 
 	pagedResult := applyPagination(result, page, pageSize)
 
-	jsonutil.WriteJson(c.Writer, pagedResult)
+	response.WriteOK(c, pagedResult)
 }
 
 func applyPagination(result *DataDiffResult, pageStr, pageSizeStr string) map[string]any {
@@ -454,20 +455,20 @@ func escapeSQLValue(v any) string {
 }
 
 func ApplyDataSync(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	dbConn := conn.GetConn(connId, authorization)
 
 	if dbConn == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 
 	if strings.TrimSpace(sqlStr) == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "SQL不能为空"})
+		response.WriteOK(c, map[string]any{"success": false, "message": "SQL不能为空"})
 		return
 	}
 
@@ -483,7 +484,7 @@ func ApplyDataSync(c *gin.Context) {
 			continue
 		}
 		if err := validateDataSQL(s); err != nil {
-			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": err.Error()})
+			response.WriteOK(c, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
 		validatedSQLs = append(validatedSQLs, s)
@@ -493,14 +494,14 @@ func ApplyDataSync(c *gin.Context) {
 	if config.Cfg.IsRemote {
 		// 检查用户是否有写权限
 		if !permission.CheckUserCanModify(authorization) {
-			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行同步操作"})
+			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行同步操作"})
 			return
 		}
 		for _, s := range validatedSQLs {
 			analysis := permission.AnalyzeSQL(s, schema)
 			permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
 			if !permResult.Allowed {
-				jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": permResult.Message})
+				response.WriteOK(c, map[string]any{"success": false, "message": permResult.Message})
 				return
 			}
 		}
@@ -510,7 +511,7 @@ func ApplyDataSync(c *gin.Context) {
 
 	tx, err := dbConn.Beginx()
 	if err != nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
+		response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
 		return
 	}
 
@@ -576,7 +577,7 @@ func ApplyDataSync(c *gin.Context) {
 	log.Printf("[SyncAudit] ApplyDataSync connId=%s schema=%s sqlCount=%d insert=%d update=%d delete=%d success=%v user=%s",
 		connId, schema, len(validatedSQLs), insertCount, updateCount, deleteCount, len(errors) == 0, authorization)
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"success":     len(errors) == 0,
 		"insertCount": insertCount,
 		"updateCount": updateCount,
@@ -627,23 +628,23 @@ func GenerateSyncSQL(c *gin.Context) {
 	table := c.PostForm("table")
 	syncDirection := c.DefaultPostForm("direction", "source_to_target")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
 
 	if conn1 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 	if conn2 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 
 	dbType := conn1.DriverName()
 
 	if !isValidIdentifier(table) {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": "表名包含非法字符",
 		})
 		return
@@ -658,7 +659,7 @@ func GenerateSyncSQL(c *gin.Context) {
 	sourceCount := getRowCount(conn1, dbType, schema1, table)
 	targetCount := getRowCount(conn2, dbType, schema2, table)
 	if sourceCount > maxCompareRows || targetCount > maxCompareRows {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"error": fmt.Sprintf("数据量过大，源表%d行，目标%d行，上限%d行", sourceCount, targetCount, maxCompareRows),
 		})
 		return
@@ -745,7 +746,7 @@ func GenerateSyncSQL(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"sql": sqlBuf.String(),
 	})
 }
@@ -823,33 +824,33 @@ func CompareDataChunked(c *gin.Context) {
 	generateSQLFlag := c.DefaultPostForm("generateSQL", "false")
 	phase := c.DefaultPostForm("phase", "compare")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
 
 	if conn1 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"error": "源数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 	if conn2 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"error": "目标数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 
 	dbType := conn1.DriverName()
 
 	if table == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "表名不能为空"})
+		response.WriteOK(c, map[string]any{"error": "表名不能为空"})
 		return
 	}
 	if !isValidIdentifier(table) {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "表名包含非法字符"})
+		response.WriteOK(c, map[string]any{"error": "表名包含非法字符"})
 		return
 	}
 
 	keyColumns := getKeyColumns(conn1, dbType, schema1, table, keyColumnsStr)
 	if len(keyColumns) == 0 {
-		jsonutil.WriteJson(c.Writer, map[string]any{"error": "无法确定比较键列，请确保表有主键或指定keyColumns参数"})
+		response.WriteOK(c, map[string]any{"error": "无法确定比较键列，请确保表有主键或指定keyColumns参数"})
 		return
 	}
 
@@ -938,7 +939,7 @@ func CompareDataChunked(c *gin.Context) {
 
 	hasMore := chunkIndex < totalChunks-1
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"tableName":    table,
 		"totalSource":  sourceCount,
 		"totalTarget":  targetCount,
@@ -974,7 +975,7 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 		if generateSQLFlag == "true" && len(allData) > 0 {
 			sqlStr = generateChunkSQL(nil, allData, nil, keyColumns, tgtSchema, table, qi)
 		}
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"tableName":    table,
 			"totalSource":  sourceCount,
 			"totalTarget":  targetCount,
@@ -1006,7 +1007,7 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 	}
 
 	if len(whereParts) == 0 {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"tableName":    table,
 			"totalSource":  sourceCount,
 			"totalTarget":  targetCount,
@@ -1053,7 +1054,7 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 		sqlStr = generateChunkSQL(nil, outOfRangeData, nil, keyColumns, tgtSchema, table, qi)
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"tableName":    table,
 		"totalSource":  sourceCount,
 		"totalTarget":  targetCount,

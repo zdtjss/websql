@@ -8,7 +8,7 @@
                     <template #default="scope">
                         <el-row :gutter="10">
                             <el-col :span="6">
-                                <el-button size="small" @click="exportXlsx(scope.row)"
+                                <el-button size="small" @click="exportXlsxRow(scope.row)"
                                     :loading="scope.row.exporting">导出</el-button>
                             </el-col>
                             <el-col :span="9" v-if="canImport">
@@ -30,7 +30,7 @@
                 </el-table-column>
                 <el-table-column v-else label="操作" align="center" width="100">
                     <template #default="scope">
-                        <el-button size="small" @click="exportXlsx(scope.row)" :loading="scope.row.exporting">导出</el-button>
+                        <el-button size="small" @click="exportXlsxRow(scope.row)" :loading="scope.row.exporting">导出</el-button>
                     </template>
                 </el-table-column>
             </el-table>
@@ -55,7 +55,8 @@ import { ElMessage } from 'element-plus'
 import { onMounted, ref, useTemplateRef } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '@/components/data/ImportPreviewDialog.vue'
-import http from '@/utils/httpProxy.js'
+import { listTable } from '@/api/conn'
+import { exportXlsx, execSQL } from '@/api/sql'
 import { buildSelectSQL } from '@/utils/sqlHelper.ts'
 
 const { connId, schema, opt, canImport, dbType } = defineProps({
@@ -83,18 +84,18 @@ onMounted(() => {
 })
 
 function queryData() {
-    http.get("/listTable?connId=" + connId + "&schema=" + schema)
+    listTable(connId, schema)
         .then((resp) => {
             tableData.value = resp.data
         })
         .catch((error) => {
-            console.log(error);
+            console.error(error);
         });
 }
 
-function exportXlsx(row) {
+function exportXlsxRow(row) {
     row.exporting = true
-    http.get("/exportXlsx?connId=" + connId + "&schema=" + schema + "&table=" + row.name, { responseType: 'blob' }).then((res) => {
+    exportXlsx({ connId, schema, table: row.name }).then((res) => {
         if (!res) {
             ElMessage.error("下载失败")
             return;
@@ -157,12 +158,8 @@ function handleFileSelect(options) {
 function fetchDbColumns(tableName) {
     return new Promise((resolve) => {
         const sql = buildSelectSQL(tableName, dbType, { limit: 0, offset: 0 })
-        const params = new URLSearchParams()
-        params.append('connId', connId)
-        params.append('schema', schema)
-        params.append('sql', sql)
-        
-        http.post('/execSQL', params).then((resp) => {
+
+        execSQL({ connId, schema, sql, maxLine: '' }).then((resp) => {
             const data = resp.data.data
             if (data && data.columns) {
                 dbColumns.value = data.columns.map(col => col.name)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 
 	appperm "websql/internal/app/permission"
@@ -119,7 +118,7 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.checkQueryAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
-		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt":
+		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "import_data":
 			return m.checkImportAccess(ctx, argumentsInJSON, endpoint, opts...)
@@ -162,7 +161,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return m.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "list_tables":
 			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
-		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt":
+		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		default:
 			m.logAllow(tCtx.Name+"(stream)", "unmonitored_tool")
@@ -295,66 +294,6 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 	return schemaResult, nil
 }
 
-func (m *PermissionMiddleware) postFilterSync(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (string, error) {
-	if m.Scope.AllSchemasFull || m.Scope.SkipChecks() {
-		m.logAllow(toolName, "full_access")
-		return endpoint(ctx, args, opts...)
-	}
-	result, err := endpoint(ctx, args, opts...)
-	if err != nil {
-		return "", err
-	}
-	m.logAllow(toolName, "post_filter")
-	return filter(result), nil
-}
-
-func (m *PermissionMiddleware) postFilterStream(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, filter func(string) string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-	if m.Scope.AllSchemasFull || m.Scope.SkipChecks() {
-		m.logAllow(toolName+"(stream)", "full_access")
-		return endpoint(ctx, args, opts...)
-	}
-	reader, err := endpoint(ctx, args, opts...)
-	if err != nil {
-		return nil, err
-	}
-	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
-		}
-		sb.WriteString(chunk)
-	}
-	m.logAllow(toolName+"(stream)", "post_filter")
-	return schema.StreamReaderFromArray([]string{filter(sb.String())}), nil
-}
-
-func (m *PermissionMiddleware) filterListTablesResult(result string) string {
-	var output ListTablesOutput
-	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		m.logDeny("list_tables", "结果JSON解析失败，拒绝返回未过滤数据", nil)
-		safeOutput, _ := json.Marshal(ListTablesOutput{Tables: []TableInfo{}, Count: 0})
-		return string(safeOutput)
-	}
-
-	filtered := make([]TableInfo, 0, len(output.Tables))
-	for _, t := range output.Tables {
-		if m.Scope.IsTableAllowedIgnoreCase(t.TableName) {
-			filtered = append(filtered, t)
-		}
-	}
-
-	removedCount := len(output.Tables) - len(filtered)
-	if removedCount > 0 {
-		m.logInfo("list_tables", "过滤无权限表 - 原始=%d, 保留=%d, 移除=%d", len(output.Tables), len(filtered), removedCount)
-	}
-
-	output.Tables = filtered
-	output.Count = len(filtered)
-	outputJSON, _ := json.Marshal(output)
-	return string(outputJSON)
-}
-
 func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
 	sql := m.extractSQLFromArgs(args)
 	if sql == "" {
@@ -436,24 +375,6 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 		return "", err
 	}
 	return m.applyQueryResultFilter(result, tables)
-}
-
-func (m *PermissionMiddleware) applyQueryResultFilter(result string, tables []string) (string, error) {
-	var output QueryOutput
-	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		return result, nil
-	}
-	beforeColCount := len(output.Columns)
-	beforeRowCount := len(output.Data)
-	output.Columns, output.Data = m.Scope.FilterResultColumns(output.Columns, output.Data, tables)
-	output.Count = len(output.Data)
-	removedCount := beforeColCount - len(output.Columns)
-	if removedCount > 0 {
-		log.Printf("%s [过滤] query_data 结果集列过滤 - 输入列数=%d, 输出列数=%d, 移除=%d, 输入行数=%d, 输出行数=%d\n",
-			m.logPrefix(), beforeColCount, len(output.Columns), removedCount, beforeRowCount, len(output.Data))
-	}
-	outputJSON, _ := json.Marshal(output)
-	return string(outputJSON), nil
 }
 
 func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
@@ -625,73 +546,6 @@ func (m *PermissionMiddleware) checkImportAccess(ctx context.Context, args strin
 
 	m.logAllow("import_data", "scope_check")
 	return endpoint(ctx, args, opts...)
-}
-
-func filterDDLByScope(ddl string, tables []string, scope *PermissionScope) string {
-	lines := strings.Split(ddl, "\n")
-	var filtered []string
-	columnDefRegex := regexp.MustCompile("(?i)^\\s+[`\"']?(\\w+)[`\"']?\\s+")
-	createTableRegex := regexp.MustCompile("(?i)CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[`\"']?(\\w+)[`\"']?")
-
-	currentTable := ""
-	removedColCount := 0
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		upperTrimmed := strings.ToUpper(trimmed)
-
-		if strings.HasPrefix(upperTrimmed, "CREATE ") {
-			if match := createTableRegex.FindStringSubmatch(line); len(match) >= 2 {
-				currentTable = match[1]
-			}
-			filtered = append(filtered, line)
-			continue
-		}
-
-		if strings.HasPrefix(upperTrimmed, ")") ||
-			strings.HasPrefix(upperTrimmed, "PRIMARY KEY") ||
-			strings.HasPrefix(upperTrimmed, "KEY ") ||
-			strings.HasPrefix(upperTrimmed, "INDEX ") ||
-			strings.HasPrefix(upperTrimmed, "UNIQUE ") ||
-			strings.HasPrefix(upperTrimmed, "CONSTRAINT ") ||
-			strings.HasPrefix(upperTrimmed, "ENGINE") ||
-			strings.HasPrefix(upperTrimmed, "DEFAULT CHARSET") ||
-			strings.HasPrefix(upperTrimmed, "COMMENT") ||
-			strings.HasPrefix(upperTrimmed, "AUTO_INCREMENT") ||
-			trimmed == "" || trimmed == ";" {
-			filtered = append(filtered, line)
-			continue
-		}
-
-		match := columnDefRegex.FindStringSubmatch(line)
-		if len(match) >= 2 {
-			colName := match[1]
-			if currentTable != "" {
-				accessLevel := scope.GetTableAccessLevel(currentTable)
-				if accessLevel == "full" {
-					filtered = append(filtered, line)
-				} else if accessLevel == "column" {
-					if scope.IsColumnAllowed(currentTable, colName) {
-						filtered = append(filtered, line)
-					} else {
-						removedColCount++
-					}
-				} else {
-					removedColCount++
-				}
-			} else {
-				filtered = append(filtered, line)
-			}
-		} else {
-			filtered = append(filtered, line)
-		}
-	}
-
-	if removedColCount > 0 {
-		log.Printf("[PermScope:DDLFilter] DDL列过滤 - user=%s, 移除列数=%d\n", scope.UserID, removedColCount)
-	}
-
-	return strings.Join(filtered, "\n")
 }
 
 func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
@@ -961,37 +815,6 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 	}
 
 	return reader, nil
-}
-
-func (m *PermissionMiddleware) applyStreamQueryResultFilter(reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {
-	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
-		}
-		sb.WriteString(chunk)
-	}
-	rawResult := sb.String()
-
-	var output QueryOutput
-	if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
-		return schema.StreamReaderFromArray([]string{rawResult})
-	}
-
-	beforeColCount := len(output.Columns)
-	beforeRowCount := len(output.Data)
-	output.Columns, output.Data = m.Scope.FilterResultColumns(output.Columns, output.Data, tables)
-	output.Count = len(output.Data)
-
-	removedCount := beforeColCount - len(output.Columns)
-	if removedCount > 0 {
-		log.Printf("%s [过滤] query_data(stream) 结果集列过滤 - 输入列数=%d, 输出列数=%d, 移除=%d, 输入行数=%d, 输出行数=%d\n",
-			m.logPrefix(), beforeColCount, len(output.Columns), removedCount, beforeRowCount, len(output.Data))
-	}
-
-	outputJSON, _ := json.Marshal(output)
-	return schema.StreamReaderFromArray([]string{string(outputJSON)})
 }
 
 func truncateForLog(s string) string {

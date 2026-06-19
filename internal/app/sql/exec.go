@@ -16,7 +16,9 @@ import (
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
+	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/sanitize"
 	"websql/internal/pkg/safego"
 
@@ -57,7 +59,7 @@ type BatchSQLResult struct {
 
 func ExecSQL(c *gin.Context) {
 
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	tableName := c.PostForm("tableName")
 	sqlStr := c.PostForm("sql")
@@ -67,18 +69,18 @@ func ExecSQL(c *gin.Context) {
 
 	const maxSQLLength = 1024 * 1024
 	if len(sqlStr) > maxSQLLength {
-		c.JSON(200, gin.H{"code": 500, "msg": "SQL 语句过长，请拆分执行"})
+		response.WriteErr(c, 200, 500, "SQL 语句过长，请拆分执行")
 		return
 	}
 	if sqlStr == "" {
-		c.JSON(200, gin.H{"code": 500, "msg": "SQL 语句不能为空"})
+		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
 		return
 	}
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	if conn == nil {
-		c.JSON(200, gin.H{"code": 500, "msg": "数据库连接不可用，请检查连接配置或稍后重试"})
+		response.WriteErr(c, 200, 500, "数据库连接不可用，请检查连接配置或稍后重试")
 		return
 	}
 	userVal, _ := c.Get("currentUser")
@@ -103,7 +105,7 @@ func ExecSQL(c *gin.Context) {
 			subAnalysis := permission.AnalyzeSQL(singleSQL, schema)
 			subResult := permission.CheckAnalysisPermission(subAnalysis, connId, authorization)
 			if !subResult.Allowed {
-				c.JSON(200, gin.H{"code": 500, "msg": subResult.Message})
+				response.WriteErr(c, 200, 500, subResult.Message)
 				return
 			}
 		}
@@ -111,7 +113,7 @@ func ExecSQL(c *gin.Context) {
 		analysis := permission.AnalyzeSQL(sqlStr, schema)
 		permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
 		if !permResult.Allowed {
-			c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+			response.WriteErr(c, 200, 500, permResult.Message)
 			return
 		}
 	}
@@ -159,7 +161,7 @@ func ExecSQL(c *gin.Context) {
 			}
 		}
 		recordEditorAudit(c, user, connId, sqlStr, "success", totalAffected, startTime, "")
-		jsonutil.WriteJson(c.Writer, rspData)
+		response.WriteOK(c, rspData)
 	} else {
 		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
@@ -229,7 +231,7 @@ func ExecSQL(c *gin.Context) {
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
 		recordEditorAudit(c, user, connId, sqlStr, "success", len(data), startTime, "")
-		jsonutil.WriteJson(c.Writer, rspData)
+		response.WriteOK(c, rspData)
 	}
 }
 
@@ -239,10 +241,7 @@ func writeSQLError(c *gin.Context, err error) {
 	if len(msg) > 500 {
 		msg = msg[:500] + "..."
 	}
-	c.JSON(200, gin.H{
-		"code": 500,
-		"msg":  msg,
-	})
+	response.WriteErr(c, 200, 500, msg)
 }
 
 func IsAlphaNumeric(str string) bool {
@@ -788,18 +787,18 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableName, maxLine string, user *admin.User, connId, authorization string, startTime time.Time) {
 	sqlArr := splitSQL(sqlStr)
 	if len(sqlArr) == 0 {
-		c.JSON(200, gin.H{"code": 500, "msg": "SQL 语句不能为空"})
+		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
 		return
 	}
 	if len(sqlArr) > 50 {
-		c.JSON(200, gin.H{"code": 500, "msg": "批量SQL数量不能超过50条"})
+		response.WriteErr(c, 200, 500, "批量SQL数量不能超过50条")
 		return
 	}
 
 	// 使用批量权限检查，避免重复查询用户权限数据
 	permResult := permission.CheckBatchSQLPermission(sqlArr, connId, schema, authorization)
 	if permResult != nil {
-		c.JSON(200, gin.H{"code": 500, "msg": permResult.Message})
+		response.WriteErr(c, 200, 500, permResult.Message)
 		return
 	}
 
@@ -884,5 +883,5 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 	}
 	recordEditorAudit(c, user, connId, sqlStr, auditStatus, auditAffectedRows, startTime, auditErrorMsg)
 
-	jsonutil.WriteJson(c.Writer, batchResult)
+	response.WriteOK(c, batchResult)
 }

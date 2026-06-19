@@ -65,12 +65,10 @@ const activeTab = ref('system')
 // 当前用户信息 - 从 sessionStorage 读取（App.vue 存储的）
 // 在 setup 阶段立即读取，确保在子组件初始化前就有值
 const storedUser = sessionStorage.getItem('systemManagement_user')
-console.log('[SystemManagement.vue] setup 阶段从 sessionStorage 读取:', storedUser)
 
 const currentUser = ref(
   storedUser ? JSON.parse(storedUser) : { id: "", name: "", isAdmin: false }
 )
-console.log('[SystemManagement.vue] currentUser 初始化为:', currentUser.value)
 
 // 提供给子组件 SystemConfig.vue 使用
 provide('currentUser', currentUser)

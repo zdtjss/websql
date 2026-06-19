@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy.js'
+import { getAuditConfig, saveAuditConfig } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import { reactive, ref, onMounted } from 'vue'
 
@@ -89,7 +89,7 @@ const saving = ref(false)
 async function loadConfig() {
   loading.value = true
   try {
-    const resp = await http.get('/audit/config/get')
+    const resp = await getAuditConfig()
     Object.assign(config, resp.data.data || defaultConfig)
   } catch (e) {
     console.error('[AuditConfig] 加载配置失败:', e)
@@ -101,7 +101,7 @@ async function loadConfig() {
 async function saveConfig() {
   saving.value = true
   try {
-    await http.post('/audit/config/save', config)
+    await saveAuditConfig(config)
     ElMessage.success('审计配置已保存')
   } catch (e) {
     console.error('[AuditConfig] 保存配置失败:', e)

@@ -3,14 +3,16 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	"websql/internal/database"
-	"websql/internal/logger"
+	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
@@ -141,11 +143,7 @@ type PromptShare struct {
 }
 
 func getCurrentUserId(c *gin.Context) string {
-	userId, _ := c.Get("userId")
-	if userId == nil {
-		return ""
-	}
-	return userId.(string)
+	return appctx.Ctx.GetUserID(c)
 }
 
 func PromptList(c *gin.Context) {
@@ -249,7 +247,11 @@ func PromptList(c *gin.Context) {
 
 	var countResult int
 	countSql = "select count(*) from (" + innerSql + ") t where 1=1" + tabCond
-	logger.PanicErr(database.Mngtdb.Get(&countResult, countSql, countArgs...))
+	if err := database.Mngtdb.Get(&countResult, countSql, countArgs...); err != nil {
+		log.Printf("查询提示词数量失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	pagedSql := "select * from (" + innerSql + ") t where 1=1" + tabCond +
 		" order by updated_at desc limit ? offset ?"
@@ -257,7 +259,9 @@ func PromptList(c *gin.Context) {
 
 	prompts := []*Prompt{}
 	if err := database.Mngtdb.Select(&prompts, pagedSql, args...); err != nil {
-		logger.PanicErr(err)
+		log.Printf("查询提示词列表失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
 	}
 
 	if prompts == nil {
@@ -286,7 +290,7 @@ func PromptList(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, gin.H{
+	response.WriteOK(c, gin.H{
 		"items":    prompts,
 		"total":    countResult,
 		"page":     page,
@@ -295,10 +299,12 @@ func PromptList(c *gin.Context) {
 }
 
 func PromptListByRole(c *gin.Context) {
-	CheckAdminPower(c)
+	if !CheckAdminPower(c) {
+		return
+	}
 	roleId := c.Query("roleId")
 	if roleId == "" {
-		jsonutil.WriteJson(c.Writer, []*Prompt{})
+		response.WriteOK(c, []*Prompt{})
 		return
 	}
 
@@ -308,7 +314,11 @@ func PromptListByRole(c *gin.Context) {
 		from t_prompt
 		where role_id = ?
 		order by updated_at desc`, roleId)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("查询角色提示词失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	if prompts == nil {
 		prompts = []*Prompt{}
@@ -324,18 +334,23 @@ func PromptListByRole(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, prompts)
+	response.WriteOK(c, prompts)
 }
 
 func PromptDetail(c *gin.Context) {
 	id := c.Query("id")
 	if id == "" {
-		logger.PanicErr(errors.New("缺少 id 参数"))
+		response.WriteErr(c, 200, 400, "缺少 id 参数")
+		return
 	}
 
 	prompt := &Prompt{}
 	err := database.Mngtdb.Get(prompt, "select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at from t_prompt where id = ?", id)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("查询提示词详情失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	sharedToIds := []string{}
 	database.Mngtdb.Select(&sharedToIds, "select shared_to from t_prompt_share where prompt_id = ?", id)
@@ -358,19 +373,24 @@ func PromptDetail(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, prompt)
+	response.WriteOK(c, prompt)
 }
 
 func SavePrompt(c *gin.Context) {
 	userId := getCurrentUserId(c)
 	req := &PromptSave{}
-	jsonutil.UnmarshalJson(c.Request.Body, req)
+	if err := jsonutil.UnmarshalJson(c.Request.Body, req); err != nil {
+		response.WriteErr(c, 200, 400, "请求参数解析失败")
+		return
+	}
 
 	if req.Title == "" {
-		logger.PanicErr(errors.New("标题不能为空"))
+		response.WriteErr(c, 200, 400, "标题不能为空")
+		return
 	}
 	if req.Content == "" {
-		logger.PanicErr(errors.New("内容不能为空"))
+		response.WriteErr(c, 200, 400, "内容不能为空")
+		return
 	}
 
 	now := time.Now().Format("2006-01-02 15:04:05")
@@ -403,11 +423,19 @@ func SavePrompt(c *gin.Context) {
 		req.Id = idgen.RandomStr()
 		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, role_id, schemas, tables, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			req.Id, req.Title, req.Content, userId, roleId, schemasVal, tablesVal, now, now)
-		logger.PanicErrf("保存提示词失败", err)
+		if err != nil {
+			log.Printf("保存提示词失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
 	} else {
 		_, err := tx.Exec("update t_prompt set title = ?, content = ?, role_id = ?, schemas = ?, tables = ?, updated_at = ? where id = ?",
 			req.Title, req.Content, roleId, schemasVal, tablesVal, now, req.Id)
-		logger.PanicErrf("更新提示词失败", err)
+		if err != nil {
+			log.Printf("更新提示词失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
 	}
 
 	tx.Exec("delete from t_prompt_share where prompt_id = ?", req.Id)
@@ -416,32 +444,43 @@ func SavePrompt(c *gin.Context) {
 		for _, sharedTo := range req.SharedUserIds {
 			_, err := tx.Exec("insert into t_prompt_share (id, prompt_id, shared_by, shared_to) values (?, ?, ?, ?)",
 				idgen.RandomStr(), req.Id, userId, sharedTo)
-			logger.PanicErrf("保存提示词分享失败", err)
+			if err != nil {
+				log.Printf("保存提示词分享失败: %v", err)
+				response.WriteErr(c, 200, 500, "操作失败")
+				return
+			}
 		}
 	}
 
 	err := tx.Commit()
-	logger.PanicErrf("保存提示词失败", err)
-	jsonutil.WriteJson(c.Writer, "保存成功")
+	if err != nil {
+		log.Printf("保存提示词失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
+	response.WriteOK(c, "保存成功")
 }
 
 func DelPrompt(c *gin.Context) {
 	userId := getCurrentUserId(c)
 	id := c.Query("id")
 	if id == "" {
-		logger.PanicErr(errors.New("缺少 id 参数"))
+		response.WriteErr(c, 200, 400, "缺少 id 参数")
+		return
 	}
 
 	prompt := &Prompt{}
 	err := database.Mngtdb.Get(prompt, "select id, created_by, role_id from t_prompt where id = ?", id)
 	if err != nil {
-		logger.PanicErr(errors.New("提示词不存在"))
+		response.WriteErr(c, 200, 400, "提示词不存在")
+		return
 	}
 
 	isCreator := prompt.CreatedBy != nil && *prompt.CreatedBy == userId
 	isRoleOwner := prompt.RoleId != nil && *prompt.RoleId != ""
 	if !isCreator && !isRoleOwner {
-		logger.PanicErr(errors.New("无权删除此提示词"))
+		response.WriteErr(c, 200, 400, "无权删除此提示词")
+		return
 	}
 
 	tx, _ := database.Mngtdb.Beginx()
@@ -449,9 +488,17 @@ func DelPrompt(c *gin.Context) {
 
 	tx.Exec("delete from t_prompt_share where prompt_id = ?", id)
 	_, err = tx.Exec("delete from t_prompt where id = ?", id)
-	logger.PanicErrf("删除提示词失败", err)
+	if err != nil {
+		log.Printf("删除提示词失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
 
 	err = tx.Commit()
-	logger.PanicErrf("删除提示词失败", err)
-	jsonutil.WriteJson(c.Writer, "删除成功")
+	if err != nil {
+		log.Printf("删除提示词失败: %v", err)
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
+	response.WriteOK(c, "删除成功")
 }

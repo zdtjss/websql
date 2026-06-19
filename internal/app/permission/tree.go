@@ -2,6 +2,7 @@ package permission
 
 import (
 	"bytes"
+	"log"
 	"strings"
 
 	"websql/internal/app/admin"
@@ -28,7 +29,10 @@ func FilterConnsWithPermission(parentId string, userPower *admin.UserPower) []*c
 	appendPmsnStrict(&sql, "id", &param, userPower)
 	cfgList := []conn.ConnCfg{}
 	err := database.Mngtdb.Select(&cfgList, sql.String(), param...)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[FilterConnsWithPermission] 查询连接列表失败: %v", err)
+		return nil
+	}
 
 	tree := make([]*conn.Tree, 0, len(cfgList))
 	for _, cfg := range cfgList {
@@ -61,7 +65,10 @@ func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 	schemaName := ""
 	dc := conn.GetConn(connId, authorization)
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listSchema"])
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[FilterSchemasWithPermission] 查询schema列表失败: %v", err)
+		return nil
+	}
 	allSchemas := make([]*conn.Tree, 0)
 	for row.Next() {
 		row.Scan(&schemaName)
@@ -106,7 +113,10 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 
 	tableName2, columnName, columnComment := "", "", ""
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[FilterTablesWithPermission] 查询列信息失败: %v", err)
+		return nil
+	}
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
 		columnComment = ""
@@ -205,7 +215,10 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 	}
 	connList := []connParent{}
 	err := database.Mngtdb.Select(&connList, connSQL.String(), connParam...)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[FilterDirTreeWithPermission] 查询连接列表失败: %v", err)
+		return nil
+	}
 
 	dirsWithConn := make(map[string]bool)
 	for _, c := range connList {
@@ -263,7 +276,10 @@ func findByParent(parentId string, userPower *admin.UserPower) []*conn.Tree {
 	}
 	treeList := []*DirTree{}
 	err := database.Mngtdb.Select(&treeList, sql.String(), param...)
-	logger.PanicErr(err)
+	if err != nil {
+		log.Printf("[findByParent] 查询目录树失败: %v", err)
+		return nil
+	}
 	tree := make([]*conn.Tree, len(treeList))
 	for i, cfg := range treeList {
 		tree[i] = &conn.Tree{Label: cfg.Label, Parent: cfg.Parent, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_DIR}

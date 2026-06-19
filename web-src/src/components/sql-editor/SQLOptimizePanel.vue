@@ -107,7 +107,7 @@ import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
 import { getMarkdownRenderer, getHljs } from '@/utils/lazyDeps'
 import { useTheme } from '@/utils/useTheme'
-import http from '@/utils/httpProxy.js'
+import { explainSqlOpt } from '@/api/sql'
 
 let md = null
 let hljsLib = null
@@ -305,7 +305,7 @@ async function runExplain() {
     formData.append('connId', connId)
     formData.append('schema', schema)
     formData.append('sql', sql)
-    const res = await http.post('/sqlopt/explain', formData)
+    const res = await explainSqlOpt(formData)
     const result = decodeExplainData(res.data.data)
     if (result && result.rows && result.rows.length) {
       explainResult.value = result

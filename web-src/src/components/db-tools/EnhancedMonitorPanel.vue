@@ -145,7 +145,7 @@
 
 <script setup>
 import { ref, watch, onUnmounted } from 'vue'
-import http from '@/utils/httpProxy.js'
+import { getMonitorMetrics, getMonitorResources, getMonitorProcesses } from '@/api/conn'
 
 const drawerVisible = defineModel('visible', { default: false })
 const { connId, schema } = defineProps({
@@ -180,7 +180,7 @@ function formatNum(val) {
 async function loadMetrics() {
   if (!connId) return
   try {
-    const res = await http.get('/monitor/metrics', { params: { connId } })
+    const res = await getMonitorMetrics(connId)
     metrics.value = res.data
   } catch (e) {}
 }
@@ -188,7 +188,7 @@ async function loadMetrics() {
 async function loadResources() {
   if (!connId) return
   try {
-    const res = await http.get('/monitor/resources', { params: { connId, schema } })
+    const res = await getMonitorResources(connId, schema)
     resources.value = res.data.dbResources || res.data
   } catch (e) {}
 }
@@ -196,7 +196,7 @@ async function loadResources() {
 async function loadProcesses() {
   if (!connId) return
   try {
-    const res = await http.get('/monitor/processes', { params: { connId } })
+    const res = await getMonitorProcesses(connId)
     processes.value = res.data.processes || []
   } catch (e) {}
 }

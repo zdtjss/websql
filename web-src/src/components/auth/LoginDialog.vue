@@ -18,9 +18,10 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy.js'
+import { useLogin } from '@/composables/useLogin'
+import { getSystemConfig } from '@/api/system'
 import { ElMessage } from 'element-plus'
-import { client, server } from '@passwordless-id/webauthn'
+import { client } from '@passwordless-id/webauthn'
 import { reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { resetDefaultHomepageCache } from '@/router'

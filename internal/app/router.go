@@ -59,6 +59,7 @@ func MainRegister(router *gin.Engine) {
 	router.Use(middleware.APIRateLimitMiddleware())
 	router.Use(middleware.CircuitBreakerMiddleware())
 	router.Use(middleware.AuthMiddleware())
+	router.Use(ContextMiddleware())
 
 	router.Use(middleware.HostCheck())
 	router.Use(middleware.CORSMiddleware())
@@ -285,6 +286,7 @@ func handleExportDownload(c *gin.Context) {
 		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		".png":  "image/png",
 		".jpg":  "image/jpeg",
+		".html": "text/html; charset=utf-8",
 	}
 
 	ext := ""
@@ -309,7 +311,12 @@ func handleExportDownload(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", ct)
-	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+	// HTML 文件使用 inline 方便浏览器直接打开预览
+	if ext == ".html" {
+		c.Header("Content-Disposition", "inline; filename=\""+fileName+"\"")
+	} else {
+		c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+	}
 
 	file, err := os.Open(filePath)
 	if err != nil {

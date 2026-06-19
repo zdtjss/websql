@@ -119,7 +119,9 @@
 
 <script setup>
 import { ref, computed, onUnmounted, nextTick, watch, shallowRef, useTemplateRef } from 'vue'
-import http from '@/utils/httpProxy'
+import { listTableNamesBySchemas } from '@/api/conn'
+import { getPromptDetail, savePrompt } from '@/api/ai'
+import { findUserByLoginName } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import { Close, Promotion, Loading } from '@element-plus/icons-vue'
 import { loadVditorModule, ensureVditorCss, preloadVditor } from '@/utils/vditorLoader'
@@ -317,9 +319,7 @@ async function loadTableListForSchemas() {
       return
     }
 
-    const resp = await http.get('/listTableNames', {
-      params: { schemas: JSON.stringify(schemaRefs) }
-    })
+    const resp = await listTableNamesBySchemas(schemaRefs)
     const tables = resp.data.data || []
     const allTables = tables.map(t => {
       const hasSchema = t.schema && selectedConnSchema.value.length > 1
@@ -461,7 +461,7 @@ onUnmounted(() => {
 
 async function loadPromptDetail(id) {
   try {
-    const resp = await http.get('/promptDetail', { params: { id } })
+    const resp = await getPromptDetail(id)
     const data = resp.data.data
     if (data) {
       form.value = {
@@ -507,7 +507,7 @@ async function searchUsers(query) {
   if (!query) return
   userSearchLoading.value = true
   try {
-    const resp = await http.get('/findUserBase', { params: { loginName: query } })
+    const resp = await findUserByLoginName(query)
     const users = resp.data.data || []
     userOptions.value = users.map(u => ({ id: u.id, name: u.name, loginName: u.loginName }))
     const existingIds = new Set(userOptions.value.map(u => u.id))
@@ -529,7 +529,7 @@ async function handleSave() {
 
   saving.value = true
   try {
-    await http.post('/savePrompt', form.value)
+    await savePrompt(form.value)
     ElMessage.success('保存成功')
     emit('saved')
     dialogVisible.value = false

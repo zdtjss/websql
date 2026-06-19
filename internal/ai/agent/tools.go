@@ -10,6 +10,7 @@ import (
 	"time"
 	conn "websql/internal/app/conn"
 	admin "websql/internal/app/admin"
+	"websql/internal/ai/agent/sqlutil"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -190,7 +191,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		startTime := time.Now()
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
-		conn, _ := GetConn(targetConnID, userId)
+		conn, dbType := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
 			if len(schemaNames) > 0 {
@@ -201,7 +202,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			return nil, err
 		}
 		sql := strings.TrimSpace(input.SQL)
-		stripped := StripSQLComments(sql)
+		stripped := sqlutil.StripSQLComments(sql)
 		upper := strings.ToUpper(stripped)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
 			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
@@ -209,6 +210,14 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			err := errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, err
+		}
+		// 方言兼容性预检：在执行前检测不兼容语法（如 MySQL 上的 PERCENTILE_CONT），
+		// 避免无谓的数据库往返，同时给 LLM 提供精确的替代写法
+		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType); len(dialectErrs) > 0 {
+			errMsg := sqlutil.FormatDialectErrors(dialectErrs)
+			log.Printf("[Tool:query_data] 方言预检失败 - dbType=%s, errors=%d\n", dbType, len(dialectErrs))
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), errMsg)
+			return nil, errors.New(errMsg)
 		}
 		if strings.HasPrefix(upper, "WITH") {
 			writeKW := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
@@ -345,7 +354,7 @@ func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID 
 // 区别于 extractSchemaFromSQL（后者可能从配置/会话中推断 schema），
 // 本函数是**纯静态**文本分析，避免误判。
 func extractExplicitSchemaFromSQL(sql string) string {
-	cleaned := StripSQLComments(sql)
+	cleaned := sqlutil.StripSQLComments(sql)
 	// 三段式：schema.table
 	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO)\s+(?:` +
 		"`" + `([A-Za-z_][A-Za-z0-9_]*)` + "`" + `\s*\.\s*` + "`" + `[A-Za-z_][A-Za-z0-9_]*` + "`" + `|` +
@@ -367,7 +376,7 @@ func extractExplicitSchemaFromSQL(sql string) string {
 
 func extractTableNamesFromSQL(sql string) []string {
 	// 先剥离注释，避免注释里的 from/join/select 等被误识别为表名或关键字
-	cleaned := StripSQLComments(sql)
+	cleaned := sqlutil.StripSQLComments(sql)
 	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN)\s+(?:` +
 		"`" + `([^` + "`" + `]+)` + "`" + `|` +
 		`"([^"]+)"|` +
@@ -408,7 +417,7 @@ func qualifyBareTableNames(sql, dbType, schema string) string {
 		return sql
 	}
 	// 先剥离注释，避免注释中的"FROM xxx"被误加前缀
-	cleaned := StripSQLComments(sql)
+	cleaned := sqlutil.StripSQLComments(sql)
 	re := regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	var result strings.Builder
 	lastEnd := 0
@@ -458,7 +467,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 		if !isDefaultConn && input.ConnID != "" {
 			log.Printf("[Tool:exec_sql] 非默认连接操作：原始connId=%s → 目标连接=%s（默认=%s）", input.ConnID, targetConnID, connId)
 		}
-		conn, _ := GetConn(targetConnID, userId)
+		conn, dbType := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s（原始输入 connId=%s，解析后=%s）", targetConnID, input.ConnID, targetConnID)
 			if len(schemaNames) > 0 {
@@ -467,8 +476,15 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 			return nil, fmt.Errorf("%s", msg)
 		}
 
-		sqlType := detectSQLType(sql)
-		riskLevel := detectRiskLevel(sql)
+		// 方言兼容性预检
+		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType); len(dialectErrs) > 0 {
+			errMsg := sqlutil.FormatDialectErrors(dialectErrs)
+			log.Printf("[Tool:exec_sql] 方言预检失败 - dbType=%s, errors=%d\n", dbType, len(dialectErrs))
+			return nil, errors.New(errMsg)
+		}
+
+		sqlType := string(sqlutil.DetectSQLType(sql))
+		riskLevel := string(sqlutil.DetectRiskLevel(sql))
 
 		result, err := conn.ExecContext(ctx, sql)
 		if err != nil {
@@ -691,20 +707,6 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef, use
 			}
 		case "sqlite":
 			query = "SELECT name, '' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-		case "postgresql", "postgres":
-			if actualDbSchema != "" {
-				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname = $1 ORDER BY tablename"
-				args = []any{actualDbSchema}
-			} else {
-				query = "SELECT tablename, obj_description((schemaname||'.'||tablename)::regclass, 'pg_class') FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY tablename"
-			}
-		case "sqlserver", "mssql":
-			if actualDbSchema != "" {
-				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' WHERE SCHEMA_NAME(t.schema_id) = @p1 ORDER BY t.name"
-				args = []any{actualDbSchema}
-			} else {
-				query = "SELECT t.name, CAST(ep.value AS NVARCHAR(500)) FROM sys.tables t LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description' ORDER BY t.name"
-			}
 		default:
 			if actualDbSchema != "" {
 				query = "SELECT TABLE_NAME, TABLE_COMMENT FROM information_schema.TABLES WHERE table_schema = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
@@ -1283,10 +1285,6 @@ func quoteIdent(dbType, name string) string {
 	switch dbType {
 	case "oracle":
 		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-	case "postgresql", "postgres":
-		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-	case "sqlserver", "mssql":
-		return "[" + strings.ReplaceAll(name, "]", "]]") + "]"
 	default: // mysql, mariadb, sqlite
 		return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 	}
@@ -1326,7 +1324,7 @@ func applyRowLimit(sql, driverName string, maxRows int) string {
 	// **必须**先剥注释——否则 SELECT * FROM users -- LIMIT 999 中的 LIMIT 999
 	// 会被正则误识别为"已有 LIMIT"，导致永远不追加真实 LIMIT。
 	// （EINO_DEEP_ANALYSIS §5.3 双重 LIMIT 反向 case）
-	stripped := StripSQLComments(sql)
+	stripped := sqlutil.StripSQLComments(sql)
 	trimmed := strings.TrimRight(stripped, "; \t\r\n")
 	upper := strings.ToUpper(trimmed)
 	switch driverName {

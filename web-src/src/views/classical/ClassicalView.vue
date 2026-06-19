@@ -224,7 +224,17 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy.js'
+import { showTree } from '@/api/conn'
+import {
+  loginByPassword,
+  loginByToken as loginByTokenApi,
+  loginByBio as loginByBioApi,
+  logout as logoutApi,
+  changePassword as changePasswordApi,
+  saveUserBio as saveUserBioApi,
+  getSysMode,
+} from '@/api/auth'
+import { getSystemConfig } from '@/api/system'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
@@ -356,7 +366,7 @@ function openAiChat() {
 
 function navigateAfterLogin() {
   resetDefaultHomepageCache()
-  http.get('/system/config/all/get').then(resp => {
+  getSystemConfig().then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       const homepage = resp.data.data.defaultHomepage
       localStorage.setItem('defaultHomepage', homepage)
@@ -379,10 +389,7 @@ function submitChangePassword() {
   changePwdFormRef.value.validate(isValid => {
     if (isValid) {
       changingPwd.value = true
-      const params = new URLSearchParams()
-      params.append('oldPassword', changePwdForm.value.oldPassword)
-      params.append('newPassword', changePwdForm.value.newPassword)
-      http.post('/changePassword', params).then((resp) => {
+      changePasswordApi(changePwdForm.value.oldPassword, changePwdForm.value.newPassword).then((resp) => {
         ElMessage.success('密码修改成功，请重新登录')
         changePwdDialogVisible.value = false
         // 修改密码后自动退出
@@ -465,9 +472,7 @@ const addTab = async (node) => {
 
   if (!alreadyLoaded) {
     try {
-      const resp = await http.get("/showTree", {
-        params: { connId: conn.id, key: schemaName, type: 'schema', level: 2, schema: schemaName }
-      })
+      const resp = await showTree({ connId: conn.id, key: schemaName, type: 'schema', level: 2, schema: schemaName })
       if (resp.data.data) {
         dbSchemaProxy.addTable(schemaName, dbType, resp.data.data, conn.id)
       }
@@ -521,7 +526,7 @@ function loadTree(node, resolve) {
   }
   const conn = findConn(node)
   const schema = node.data.type === 'table' ? node.parent?.data?.label || '' : ''
-  http.get("/showTree", { params: { connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level, schema } })
+  showTree({ connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level, schema })
     .then((resp) => {
       if (node.data.type === "schema") {
         dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data, conn.id)
@@ -536,7 +541,7 @@ function loadTree(node, resolve) {
       }
     })
     .catch((error) => {
-      console.log(error);
+      console.error(error);
       node.loading = false
     });
 }
@@ -570,13 +575,10 @@ async function register() {
   })
 
   const parsed = parsers.parseRegistration(registration)
-  console.log(JSON.stringify(parsed))
 
   window.localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
-  const params = new URLSearchParams();
-  params.append("bioKey", parsed.credential.id);
-  http.post("/saveUserBio", params).then((resp) => {
+  saveUserBioApi(parsed.credential.id).then((resp) => {
     if (resp.data.code == 200) {
       ElMessage("注册成功")
     } else {
@@ -605,10 +607,7 @@ function toLogin() {
 }
 
 function loginByToken(token) {
-  const params = new URLSearchParams();
-  params.append("key", token);
-  params.append("loginType", "token");
-  http.post("/login", params).then((resp) => {
+  loginByTokenApi(token).then((resp) => {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
@@ -634,15 +633,7 @@ function login() {
   loginFormRef.value.validate(isValid => {
     if (isValid) {
       logining.value = true
-      const params = new URLSearchParams();
-      params.append("name", loginForm.value.name);
-      params.append("password", loginForm.value.password);
-      params.append("loginType", "pwd");
-      http.post("/login", params, {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }).then((resp) => {
+      loginByPassword({ name: loginForm.value.name, password: loginForm.value.password }).then((resp) => {
         currentUser.value = resp.data.data
         sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
         sessionStorage.setItem("authentication", resp.headers.get("authentication"))
@@ -669,10 +660,7 @@ async function loginBio() {
 
   const authenticationParsed = await parsers.parseAuthentication(authentication);
 
-  const params = new URLSearchParams();
-  params.append("key", authenticationParsed.credentialId);
-  params.append("loginType", "bio");
-  http.post("/login", params).then((resp) => {
+  loginByBioApi(authenticationParsed.credentialId).then((resp) => {
     if (resp.data.code == 200) {
       currentUser.value = resp.data.data
       sessionStorage.setItem("currentUser", JSON.stringify(resp.data.data))
@@ -696,7 +684,7 @@ async function loginBio() {
 }
 
 function logout() {
-  http.post("/logout")
+  logoutApi()
     .then((resp) => {
       refreshTree()
       currentUser.value = {}
@@ -708,7 +696,7 @@ function logout() {
 }
 
 function getSysModel() {
-  http.get("/sysMode").then((resp) => {
+  getSysMode().then((resp) => {
     isRemote.value = resp.data.data.isRemote
     if (!loginSucc.value && isRemote.value) {
       toLogin()
@@ -724,7 +712,7 @@ function refreshTree() {
   if (treeLoading.value) return
   treeLoading.value = true
   treeData.value = []
-  http.get("/showTree", { params: { connId: "", key: "", type: "dir", level: 0 } })
+  showTree({ connId: "", key: "", type: "dir", level: 0 })
     .then((resp) => {
       treeData.value = resp.data.data
     })

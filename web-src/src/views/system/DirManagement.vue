@@ -64,7 +64,7 @@
         </el-tree>
       </div>
       <div class="panel-footer">
-        <el-button type="primary" @click="saveTree">
+        <el-button type="primary" @click="saveTreeData">
           <el-icon><Check /></el-icon>
           保存目录结构
         </el-button>
@@ -75,7 +75,7 @@
 
 <script setup>
 import { ref, onMounted, nextTick, watch } from 'vue'
-import http from '@/utils/httpProxy'
+import { listDirTree, delTreeNode, saveTree } from '@/api/conn'
 import { ElMessage } from 'element-plus'
 import { Check, Delete, Plus, Select, Close, Folder } from '@element-plus/icons-vue'
 
@@ -227,8 +227,8 @@ watch(conCfgTreeData, () => {
   })
 }, { immediate: false })
 
-const listDirTree = () => {
-  http.get("/listDirTree").then((resp) => {
+const loadDirTree = () => {
+  listDirTree().then((resp) => {
     const data = resp.data.data
     if (Array.isArray(data) && data.length > 0) {
       ensureNodeIds(data)
@@ -275,7 +275,7 @@ const removeDir = (node, data) => {
   }
 
   if (data.id && !String(data.id).startsWith('temp_node_')) {
-    http.get("/delTreeNode", { params: { id: data.id } }).then(() => {
+    delTreeNode(data.id).then(() => {
       ElMessage.success("删除成功")
     }).catch(() => {
       ElMessage.error("删除失败，请重试")
@@ -283,7 +283,7 @@ const removeDir = (node, data) => {
   }
 }
 
-const saveTree = () => {
+const saveTreeData = () => {
   const treeData = conCfgTreeData.value
   if (treeData.length === 0) {
     ElMessage.warning("目录为空，无需保存")
@@ -302,14 +302,14 @@ const saveTree = () => {
   }
   applyCheckedState(treeData)
 
-  http.post("/saveTree", treeData).then(() => {
+  saveTree(treeData).then(() => {
     ElMessage.success("保存成功")
     emit('tree-saved', treeData)
   })
 }
 
 onMounted(() => {
-  listDirTree()
+  loadDirTree()
 })
 </script>
 

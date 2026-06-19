@@ -1,17 +1,16 @@
 package admin
 
 import (
-	"errors"
 	"fmt"
-	"net/http"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"websql/internal/config"
-	"websql/internal/logger"
+	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/idgen"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
 
@@ -145,26 +144,44 @@ func Login(c *gin.Context) {
 	var user *User
 	switch loginType {
 	case "pwd":
-		user = findByLoginName(loginName)
+		u, err := findByLoginName(loginName)
+		if err != nil {
+			log.Printf("查询用户失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
+		user = u
 		if user == nil || !CheckPassword(pwd, user.Pwd) {
-			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "用户名或密码不正确"})
+			response.WriteErr(c, 200, 400, "用户名或密码不正确")
 			return
 		}
 		user.LoginName = loginName
 	case "bio":
-		user = findByBio(key)
+		u, err := findByBio(key)
+		if err != nil {
+			log.Printf("查询用户失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
+		user = u
 		if user == nil {
-			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "无效的指纹/面容信息"})
+			response.WriteErr(c, 200, 400, "无效的指纹/面容信息")
 			return
 		}
 	case "token":
-		user = findByToken(key)
+		u, err := findByToken(key)
+		if err != nil {
+			log.Printf("token登录失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+			return
+		}
+		user = u
 		if user == nil {
-			c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "传入的登录信息无效"})
+			response.WriteErr(c, 200, 400, "传入的登录信息无效")
 			return
 		}
 	default:
-		c.JSON(http.StatusOK, gin.H{"code": 400, "msg": "不支持的登录方式"})
+		response.WriteErr(c, 200, 400, "不支持的登录方式")
 		return
 	}
 	power := findUserPower(user.Id)
@@ -175,14 +192,14 @@ func Login(c *gin.Context) {
 	user.Pwd = ""
 	store.Add(formatStoreKey(token+"_user"), user)
 	authCache.set(token, user, &userPowerVal)
-	jsonutil.WriteJson(c.Writer, map[string]any{"id": user.Id, "name": user.Name, "isAdmin": user.Id == config.AdminId, "authentication": token})
+	response.WriteOK(c, map[string]any{"id": user.Id, "name": user.Name, "isAdmin": isUserAdmin(user.Id), "authentication": token})
 }
 
 func Logout(c *gin.Context) {
 	key := c.GetHeader("Authentication")
 	store.Remove(formatStoreKey(key))
 	authCache.remove(key)
-	jsonutil.WriteJson(c.Writer, "退出成功")
+	response.WriteOK(c, "退出成功")
 }
 
 func GetUserPower(authorization string) *UserPower {
@@ -195,21 +212,18 @@ func GetUser(authorization string) *User {
 	return user
 }
 
-func CheckAdminPower(c *gin.Context) {
+func CheckAdminPower(c *gin.Context) bool {
 	if !config.Cfg.IsRemote {
-		return
+		return true
 	}
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	var userPower = GetUserPower(authorization)
-	// 兼容原有的硬编码管理员 ID
-	if userPower.UserId == config.AdminId {
-		return
-	}
 	// 支持多管理员：检查用户角色是否有管理员标记（role name 为 "admin" 或 "管理员"）
 	if isUserAdmin(userPower.UserId) {
-		return
+		return true
 	}
-	logger.PanicErr(errors.New("无权访问"))
+	response.WriteAuthErr(c, "无权访问")
+	return false
 }
 
 // isUserAdmin 检查用户是否拥有管理员角色

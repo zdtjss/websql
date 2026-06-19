@@ -65,6 +65,11 @@ func main() {
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()
 	}
+
+	// 构建应用依赖容器（聚合已有全局变量，供后续 Handler/Service 使用）
+	container := app.NewContainer()
+	defer container.Close()
+
 	// https 默认端口 443
 	if *isHttps && *port == "80" {
 		*port = "443"

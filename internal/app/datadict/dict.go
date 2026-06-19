@@ -9,7 +9,8 @@ import (
 	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -50,11 +51,11 @@ type DictExport struct {
 }
 
 func GenerateDict(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	tablesStr := c.PostForm("tables")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -81,7 +82,7 @@ func GenerateDict(c *gin.Context) {
 		dict.Tables = append(dict.Tables, dt)
 	}
 
-	jsonutil.WriteJson(c.Writer, dict)
+	response.WriteOK(c, dict)
 }
 
 func buildDictTable(conn *sqlx.DB, dbType, schema, table string) DictTable {
@@ -210,11 +211,11 @@ func buildDictTable(conn *sqlx.DB, dbType, schema, table string) DictTable {
 }
 
 func ExportDictHTML(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	tablesStr := c.PostForm("tables")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -400,11 +401,11 @@ func generateDictHTML(dict *DictExport, forPrint bool) string {
 }
 
 func ExportDictPDF(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	tablesStr := c.PostForm("tables")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -437,10 +438,10 @@ func ExportDictPDF(c *gin.Context) {
 }
 
 func GetDictTables(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -461,7 +462,7 @@ func GetDictTables(c *gin.Context) {
 		briefs = append(briefs, TableBrief{Name: table, Comment: comment, Rows: rows})
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{"tables": briefs})
+	response.WriteOK(c, map[string]any{"tables": briefs})
 }
 
 func getDictTables(conn *sqlx.DB, dbType, schema string) []string {

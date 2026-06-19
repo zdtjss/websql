@@ -14,13 +14,6 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// StripSQLComments 是 sqlutil.StripSQLComments 的本地别名（EINO_DEEP_ANALYSIS §10.1）。
-//
-// 历史上 export 包有自己的一份 StripSQLComments（按行过滤实现），
-// 无法处理 /* ... */ 块注释和字符串内的 --。已统一到 sqlutil 包。
-// 保留本别名仅为兼容 export 包内部历史调用点；新代码请直接用 sqlutil.StripSQLComments。
-func StripSQLComments(sql string) string { return sqlutil.StripSQLComments(sql) }
-
 type QueryResult struct {
 	Columns []string
 	Data    []map[string]any
@@ -31,7 +24,7 @@ func QueryForExport(conn *sqlx.DB, sql string) (*QueryResult, error) {
 	if sql == "" {
 		return nil, errors.New("SQL 不能为空")
 	}
-	stripped := StripSQLComments(sql)
+	stripped := sqlutil.StripSQLComments(sql)
 	upper := strings.ToUpper(stripped)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
 		return nil, errors.New("导出仅支持 SELECT 查询")
@@ -68,7 +61,7 @@ func SanitizeFileName(name, defaultPrefix string) string {
 	if name == "" {
 		return fmt.Sprintf("%s_%s", defaultPrefix, timestamp)
 	}
-	for _, ext := range []string{".xlsx", ".xls", ".csv", ".docx", ".pptx", ".png", ".jpg"} {
+	for _, ext := range []string{".xlsx", ".xls", ".csv", ".docx", ".pptx", ".png", ".jpg", ".html"} {
 		name = strings.TrimSuffix(name, ext)
 	}
 	return fmt.Sprintf("%s_%s", name, timestamp)

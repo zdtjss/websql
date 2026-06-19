@@ -19,6 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Deprecated: 使用 Container，将在阶段 4 移除
 var Mngtdb *sqlx.DB
 
 var (
@@ -147,15 +148,10 @@ func startHealthCheck(ctx context.Context, key string, db *sqlx.DB) {
 		case <-t.C:
 			err := db.Ping()
 			if err != nil {
+				// 健康检查失败：关闭并移除连接池，避免连接泄漏
 				dbMapMu.Lock()
 				if current, ok := DBMap[key]; ok && current == db {
-					delete(DBMap, key)
-					delete(dbLastUsed, key)
-					if c, ok := dbCancels[key]; ok {
-						delete(dbCancels, key)
-						// 不需要调用 c()，因为当前 goroutine 即将退出
-						_ = c
-					}
+					closeConnLocked(key)
 				}
 				dbMapMu.Unlock()
 				return

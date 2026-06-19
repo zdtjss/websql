@@ -13,7 +13,8 @@ import (
 	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/dialect"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -79,19 +80,19 @@ func CompareSchema(c *gin.Context) {
 	schema2 := c.PostForm("targetSchema")
 	tableFilter := c.PostForm("tables")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
 	conn2 := conn.GetConn(connId2, authorization)
 
 	if conn1 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"diffs": []SchemaDiffItem{},
 			"error": "源数据库连接不可用，请检查连接配置或权限",
 		})
 		return
 	}
 	if conn2 == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"diffs": []SchemaDiffItem{},
 			"error": "目标数据库连接不可用，请检查连接配置或权限",
 		})
@@ -102,7 +103,7 @@ func CompareSchema(c *gin.Context) {
 	dbType2 := conn2.DriverName()
 
 	if dbType1 != dbType2 {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"diffs": []SchemaDiffItem{},
 			"error": fmt.Sprintf("不允许跨数据库类型比较: 源=%s, 目标=%s", dbType1, dbType2),
 		})
@@ -123,7 +124,7 @@ func CompareSchema(c *gin.Context) {
 			}
 			errMsg += fmt.Sprintf("目标库: %v", err2)
 		}
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"diffs": []SchemaDiffItem{},
 			"error": errMsg,
 		})
@@ -195,7 +196,7 @@ func CompareSchema(c *gin.Context) {
 		return diffs[i].TableName < diffs[j].TableName
 	})
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"diffs":       diffs,
 		"totalCount":  len(diffs),
 		"addCount":    countByType(diffs, "ADD"),
@@ -747,20 +748,20 @@ func generateShowDDL(conn *sqlx.DB, dbType, table string) string {
 }
 
 func ApplySchemaDiff(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	dbConn := conn.GetConn(connId, authorization)
 
 	if dbConn == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
+		response.WriteOK(c, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
 
 	if strings.TrimSpace(sqlStr) == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "SQL不能为空"})
+		response.WriteOK(c, map[string]any{"success": false, "message": "SQL不能为空"})
 		return
 	}
 
@@ -771,7 +772,7 @@ func ApplySchemaDiff(c *gin.Context) {
 	// 权限校验：检查用户是否有写权限
 	if config.Cfg.IsRemote {
 		if !permission.CheckUserCanModify(authorization) {
-			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行 Schema 变更"})
+			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行 Schema 变更"})
 			return
 		}
 	}
@@ -784,7 +785,7 @@ func ApplySchemaDiff(c *gin.Context) {
 			continue
 		}
 		if err := validateSchemaSQL(s); err != nil {
-			jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": err.Error()})
+			response.WriteOK(c, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
 		validatedSQLs = append(validatedSQLs, s)
@@ -794,7 +795,7 @@ func ApplySchemaDiff(c *gin.Context) {
 
 	tx, err := dbConn.Beginx()
 	if err != nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
+		response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
 		return
 	}
 
@@ -852,7 +853,7 @@ func ApplySchemaDiff(c *gin.Context) {
 	log.Printf("[SyncAudit] ApplySchemaDiff connId=%s schema=%s sqlCount=%d success=%v user=%s",
 		connId, schema, len(validatedSQLs), len(errors) == 0, authorization)
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"success":       len(errors) == 0,
 		"executedCount": executedCount,
 		"errorCount":    len(errors),
@@ -896,13 +897,13 @@ func validateSchemaSQL(sql string) error {
 }
 
 func GetSyncTargets(c *gin.Context) {
-	authorization := c.GetHeader("Authorization")
-	connId := c.Query("connId")
+	authorization := appctx.Ctx.GetAuthorization(c)
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
 	dbConn := conn.GetConn(connId, authorization)
 	if dbConn == nil {
-		jsonutil.WriteJson(c.Writer, map[string]any{
+		response.WriteOK(c, map[string]any{
 			"tables":  []string{},
 			"schemas": []string{},
 			"error":   "数据库连接不可用，请检查连接配置或权限",
@@ -925,7 +926,7 @@ func GetSyncTargets(c *gin.Context) {
 	tables, _ := getTableList(dbConn, dbType, schema)
 	schemas := getSchemaList(dbConn, dbType)
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"tables":  tables,
 		"schemas": schemas,
 	})

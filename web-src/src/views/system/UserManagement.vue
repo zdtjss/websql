@@ -14,7 +14,7 @@
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="findUser">查询</el-button>
+          <el-button type="primary" @click="findUserQuery">查询</el-button>
           <el-button type="primary" @click="addUser">添加用户</el-button>
         </el-form-item>
       </el-form>
@@ -70,11 +70,11 @@
             v-else 
             type="success" 
             size="small"
-            @click="saveUser(scope.row)"
+            @click="saveUserRow(scope.row)"
           >
             保存
           </el-button>
-          <el-popconfirm title="确定要删除这个用户吗？" @confirm="delUser(scope.row)">
+          <el-popconfirm title="确定要删除这个用户吗？" @confirm="delUserRow(scope.row)">
             <template #reference>
               <el-button type="danger" size="small">删除</el-button>
             </template>
@@ -87,7 +87,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import http from '@/utils/httpProxy'
+import { getRoleList, findUser, saveUser, delUser } from '@/api/system'
 import { ElMessage } from 'element-plus'
 
 const emit = defineEmits(['user-saved', 'user-deleted'])
@@ -97,17 +97,17 @@ const roleList = ref([])
 const userQuery = ref({ name: "", loginName: "", roleId: "" })
 
 const loadRoles = () => {
-  http.get("/roleList").then((resp) => {
+  getRoleList().then((resp) => {
     roleList.value = resp.data.data || []
   })
 }
 
-const findUser = () => {
+const findUserQuery = () => {
   if (!userQuery.value.name && !userQuery.value.loginName && !userQuery.value.roleId) {
     ElMessage.warning("请指定查询条件")
     return
   }
-  http.get("/findUser", { params: userQuery.value }).then((resp) => {
+  findUser(userQuery.value).then((resp) => {
     userList.value = resp.data.data.map(e => Object.assign({ editing: false }, e))
   })
 }
@@ -123,8 +123,8 @@ const addUser = () => {
   })
 }
 
-const saveUser = (row) => {
-  http.post("/saveUser", row).then(() => {
+const saveUserRow = (row) => {
+  saveUser(row).then(() => {
     ElMessage.success("保存成功")
     row.roleName = row.roleId.map((val) => {
       const role = roleList.value.find(item => item.id === val)
@@ -135,11 +135,11 @@ const saveUser = (row) => {
   })
 }
 
-const delUser = (row) => {
+const delUserRow = (row) => {
   if (row.id) {
-    http.get("/delUser", { params: { id: row.id } }).then(() => {
+    delUser(row.id).then(() => {
       ElMessage.success("删除成功")
-      findUser()
+      findUserQuery()
       emit('user-deleted', row)
     })
   } else {

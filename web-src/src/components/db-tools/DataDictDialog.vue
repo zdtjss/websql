@@ -89,7 +89,7 @@
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Document, FullScreen, Close } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import { getDatadictTables, generateDatadict, exportDatadictHtml, exportDatadictPdf } from '@/api/sql'
 
 const visible = defineModel({ default: false })
 const { connId, schema } = defineProps({
@@ -129,7 +129,7 @@ function toggleSelectAll() {
 
 async function loadTables() {
   try {
-    const res = await http.get('/datadict/tables', { params: { connId, schema } })
+    const res = await getDatadictTables(connId, schema)
     const result = res.data.data || res.data
     tables.value = (result.tables || []).map(t => ({ ...t, checked: false }))
   } catch (e) {
@@ -146,7 +146,7 @@ async function generateDict() {
     formData.append('connId', connId)
     formData.append('schema', schema)
     formData.append('tables', selected)
-    const res = await http.post('/datadict/generate', formData)
+    const res = await generateDatadict(formData)
     dictData.value = res.data.data || res.data
     ElMessage.success('字典生成成功')
   } catch (e) {
@@ -166,7 +166,7 @@ async function exportHTML() {
     formData.append('connId', connId)
     formData.append('schema', schema)
     formData.append('tables', selected)
-    const res = await http.post('/datadict/export/html', formData, { responseType: 'blob' })
+    const res = await exportDatadictHtml(formData)
     const blob = new Blob([res.data], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -187,7 +187,7 @@ async function exportPDF() {
     formData.append('connId', connId)
     formData.append('schema', schema)
     formData.append('tables', selected)
-    const res = await http.post('/datadict/export/pdf', formData, { responseType: 'blob' })
+    const res = await exportDatadictPdf(formData)
     const blob = new Blob([res.data], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const win = window.open(url, '_blank')

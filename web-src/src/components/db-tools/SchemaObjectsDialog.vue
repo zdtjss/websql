@@ -83,7 +83,7 @@ import { CopyDocument } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { getHljs, highlightSql } from '@/utils/lazyDeps'
-import http from '@/utils/httpProxy.js'
+import { execSQL } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 
@@ -121,12 +121,8 @@ function loadProcedures() {
     return
   }
   loading.value = true
-  const params = new URLSearchParams()
-  params.append('connId', connId)
-  params.append('schema', schema)
-  params.append('sql', `SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, CREATED, ROUTINE_COMMENT, ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '${schema}' ORDER BY ROUTINE_TYPE, ROUTINE_NAME`)
-  params.append('maxLine', '500')
-  http.post('/execSQL', params)
+  const sql = `SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER, CREATED, ROUTINE_COMMENT, ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '${schema}' ORDER BY ROUTINE_TYPE, ROUTINE_NAME`
+  execSQL({ connId, schema, sql, maxLine: '500' })
     .then(resp => {
       const data = resp.data.data?.data || []
       procedureList.value = data.map(r => ({
@@ -149,12 +145,8 @@ function loadTriggers() {
     return
   }
   loading.value = true
-  const params = new URLSearchParams()
-  params.append('connId', connId)
-  params.append('schema', schema)
-  params.append('sql', `SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT, CREATED FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '${schema}' ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION`)
-  params.append('maxLine', '500')
-  http.post('/execSQL', params)
+  const sql = `SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT, CREATED FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '${schema}' ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION`
+  execSQL({ connId, schema, sql, maxLine: '500' })
     .then(resp => {
       const data = resp.data.data?.data || []
       triggerList.value = data.map(r => ({

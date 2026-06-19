@@ -514,7 +514,10 @@ import PromptEditDialog from '@/components/ai/PromptEditDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
 import { usePromptEditDialog } from '@/components/ai/usePromptEditDialog'
 import LoginDialog from '@/components/auth/LoginDialog.vue'
-import http from '@/utils/httpProxy.js'
+import { getPromptList, delPrompt, getAIModels } from '@/api/ai'
+import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
+import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
+import { getSystemConfig } from '@/api/system'
 import { sanitizeError } from '@/utils/errorHandler.js'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
@@ -660,7 +663,7 @@ async function fetchPrompts(tab) {
   const targetLoading = tab === 'mine' ? myPromptLoading : systemPromptLoading
   targetLoading.value = true
   try {
-    const resp = await http.get('/promptList', { params })
+    const resp = await getPromptList(params)
     const data = resp.data.data || {}
     const items = (data.items || []).map(p => ({
       ...p,
@@ -972,9 +975,7 @@ async function loadTableListForSchemas() {
       return
     }
 
-    const resp = await http.get('/listTableNames', {
-      params: { schemas: JSON.stringify(schemaRefs) }
-    })
+    const resp = await listTableNamesBySchemas(schemaRefs)
     const tables = resp.data.data || []
     const allTables = tables.map(t => {
       const hasSchema = t.schema && selectedSchemas.value.length > 1
@@ -1009,9 +1010,7 @@ async function loadTableList(connId, schema) {
       tablesLoading.value = false
       return
     }
-    const resp = await http.get('/listTableNames', {
-      params: { connId, schema: schema || '' }
-    })
+    const resp = await listTableNames(connId, schema || '')
     const newTableList = resp.data.data || []
 
     if (selectedTables.value.length > 0) {
@@ -1052,7 +1051,7 @@ function buildRequestSchemas() {
 // AI 模型相关
 function loadModelList() {
   modelLoading.value = true
-  http.get("/system/config/ai/models").then((resp) => {
+  getAIModels().then((resp) => {
     if (resp.data && resp.data.data) {
       const data = resp.data.data
       if (data.aiModelList && Array.isArray(data.aiModelList) && data.aiModelList.length > 0) {
@@ -2957,7 +2956,7 @@ function handlePromptSaved() {
 
 async function handleDeletePrompt(prompt) {
   try {
-    await http.get('/delPrompt', { params: { id: prompt.id } })
+    await delPrompt(prompt.id)
     ElMessage.success('删除成功')
     loadPrompts()
   } catch (e) {
@@ -3004,7 +3003,6 @@ function insertToEditor() {
   if (!lastSql.value) return
   // emit('insertSql', lastSql.value.trim())
   // emit('update:modelValue', false)
-  console.log('SQL 待插入:', lastSql.value.trim())
 }
 
 // --- 语音识别 ---
@@ -3061,7 +3059,7 @@ function handleEscKey(e) {
 }
 
 function logout() {
-  http.post("/logout")
+  logoutApi()
     .then((resp) => {
       currentUser.value = {}
       loginSucc.value = false
@@ -3116,12 +3114,12 @@ function handleLoginSuccess(userData) {
 }
 
 function checkClassicViewPermission() {
-  http.get('/canUseClassicView').then(resp => {
+  canUseClassicViewApi().then(resp => {
     canUseClassicView.value = !!(resp.data.data && resp.data.data.allowed)
   }).catch(() => {
     canUseClassicView.value = false
   })
-  http.get('/system/config/all/get').then(resp => {
+  getSystemConfig().then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       localStorage.setItem('defaultHomepage', resp.data.data.defaultHomepage)
     }
@@ -3133,14 +3131,13 @@ function loadPromptList() {
 }
 
 function openSystemManagement() {
-  console.log('[ChatView] 打开系统管理页面，当前 currentUser:', currentUser.value)
   // 将 currentUser 存储到 sessionStorage
   sessionStorage.setItem('systemManagement_user', JSON.stringify(currentUser.value))
   router.push('/system-management')
 }
 
 function getSysModel() {
-  http.get("/sysMode").then((resp) => {
+  getSysMode().then((resp) => {
     isRemote.value = resp.data?.isRemote ?? resp.data?.data?.isRemote ?? false
     sessionStorage.setItem("isRemote", isRemote.value.toString())
     if (!loginSucc.value && isRemote.value) {

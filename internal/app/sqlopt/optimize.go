@@ -15,7 +15,8 @@ import (
 	"websql/internal/app/system"
 	"websql/internal/config"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 
 	"github.com/cloudwego/eino/adk"
@@ -39,16 +40,16 @@ type ExplainColumn struct {
 }
 
 func ExplainSQL(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	_ = c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
 	if strings.TrimSpace(sqlStr) == "" {
-		c.JSON(200, gin.H{"code": 500, "msg": "SQL不能为空"})
+		response.WriteErr(c, 200, 500, "SQL不能为空")
 		return
 	}
 
@@ -58,7 +59,7 @@ func ExplainSQL(c *gin.Context) {
 		_, execErr := conn.Exec(explainSQL)
 		if execErr != nil {
 			logger.PrintErrf("EXPLAIN失败", execErr)
-			c.JSON(200, gin.H{"code": 500, "msg": "EXPLAIN失败: " + execErr.Error()})
+			response.WriteErr(c, 200, 500, "EXPLAIN失败: "+execErr.Error())
 			return
 		}
 		explainSQL = "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY())"
@@ -67,7 +68,7 @@ func ExplainSQL(c *gin.Context) {
 	rows, err := conn.Queryx(explainSQL)
 	if err != nil {
 		logger.PrintErrf("EXPLAIN失败", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "EXPLAIN失败: " + err.Error()})
+		response.WriteErr(c, 200, 500, "EXPLAIN失败: "+err.Error())
 		return
 	}
 	defer rows.Close()
@@ -122,7 +123,7 @@ func ExplainSQL(c *gin.Context) {
 	}
 	result.Raw = strings.Join(simpleLines, "\n")
 
-	jsonutil.WriteJson(c.Writer, result)
+	response.WriteOK(c, result)
 }
 
 func keep(val *any) {}
@@ -173,7 +174,7 @@ func execExplain(conn *sqlx.DB, dbType, sql string) (*ExplainResult, error) {
 }
 
 func OptimizeSQLStream(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	dbSchema := c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
 
@@ -185,13 +186,13 @@ func OptimizeSQLStream(c *gin.Context) {
 	log.Printf("[OptAgent] 开始优化 - connID=%s, dbType=%s, schema=%s, sqlLen=%d\n", connId, dbType, dbSchema, len(sqlStr))
 
 	if strings.TrimSpace(sqlStr) == "" {
-		c.JSON(200, gin.H{"code": 500, "msg": "SQL不能为空"})
+		response.WriteErr(c, 200, 500, "SQL不能为空")
 		return
 	}
 
 	aiCfg := system.GetSelectedModelConfig("")
 	if aiCfg == nil || aiCfg.ApiKey == "" || aiCfg.BaseURL == "" {
-		c.JSON(200, gin.H{"code": 500, "msg": "AI 模型未配置，请先在系统设置中配置 AI 模型"})
+		response.WriteErr(c, 200, 500, "AI 模型未配置，请先在系统设置中配置 AI 模型")
 		return
 	}
 
@@ -265,7 +266,7 @@ func OptimizeSQLStream(c *gin.Context) {
 	log.Printf("[OptAgent] 模型初始化成功 - provider=%s, model=%s\n", aiCfg.Provider, aiCfg.Model)
 
 	schemas := []agentv2.SchemaRef{{ConnID: connId, Schema: dbSchema}}
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	var optUserId string
 	if authorization != "" {
 		if user := admin.GetUser(authorization); user != nil {

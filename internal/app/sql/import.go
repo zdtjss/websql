@@ -15,6 +15,8 @@ import (
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
 	"websql/internal/database"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -23,9 +25,9 @@ import (
 
 func ImportXlsx(c *gin.Context) {
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	table := c.PostForm("table")
 	operType := c.PostForm("optType")
@@ -39,21 +41,21 @@ func ImportXlsx(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		log.Printf("[ImportXlsx] 文件上传失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, "文件上传失败，请检查文件是否正确选择")
+		response.WriteErr(c, http.StatusBadRequest, 500, "文件上传失败，请检查文件是否正确选择")
 		return
 	}
 
 	file, err := fileHeader.Open()
 	if err != nil {
 		log.Printf("[ImportXlsx] 打开文件失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, "打开文件失败，请重试")
+		response.WriteErr(c, http.StatusBadRequest, 500, "打开文件失败，请重试")
 		return
 	}
 	defer file.Close()
 
 	if mappingStr == "" {
 		if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
-			c.JSON(http.StatusBadRequest, "表名不匹配（文件名中横线后为表名，如用户列数据导出: t_user.xlsx）")
+			response.WriteErr(c, http.StatusBadRequest, 500, "表名不匹配（文件名中横线后为表名，如用户列数据导出: t_user.xlsx）")
 			return
 		}
 	}
@@ -61,7 +63,7 @@ func ImportXlsx(c *gin.Context) {
 	excel, err := excelize.OpenReader(file)
 	if err != nil {
 		log.Printf("[ImportXlsx] 读取 Excel 文件失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, "读取 Excel 文件失败，请检查文件格式")
+		response.WriteErr(c, http.StatusBadRequest, 500, "读取 Excel 文件失败，请检查文件格式")
 		return
 	}
 	defer func() {
@@ -73,7 +75,7 @@ func ImportXlsx(c *gin.Context) {
 	tx, err := conn.GetConn(connId, authorization).Beginx()
 	if err != nil {
 		log.Printf("[ImportXlsx] 数据库连接失败 - err=%v\n", err)
-		c.JSON(http.StatusInternalServerError, "数据库连接失败，请检查配置")
+		response.WriteErr(c, http.StatusInternalServerError, 500, "数据库连接失败，请检查配置")
 		return
 	}
 	defer tx.Rollback()
@@ -81,7 +83,7 @@ func ImportXlsx(c *gin.Context) {
 	rows, err := excel.Rows("Sheet1")
 	if err != nil {
 		log.Printf("[ImportXlsx] 读取工作表失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, "读取工作表失败，请检查文件内容")
+		response.WriteErr(c, http.StatusBadRequest, 500, "读取工作表失败，请检查文件内容")
 		return
 	}
 	defer rows.Close()
@@ -91,7 +93,7 @@ func ImportXlsx(c *gin.Context) {
 		row, err := rows.Columns()
 		if err != nil {
 			log.Printf("[ImportXlsx] 读取表头失败 - err=%v\n", err)
-			c.JSON(http.StatusBadRequest, "读取表头失败，请检查文件内容")
+			response.WriteErr(c, http.StatusBadRequest, 500, "读取表头失败，请检查文件内容")
 			return
 		}
 		header = append(header, row...)
@@ -102,7 +104,7 @@ func ImportXlsx(c *gin.Context) {
 		err = json.Unmarshal([]byte(mappingStr), &columnMapping)
 		if err != nil {
 			log.Printf("[ImportXlsx] 解析列映射失败 - err=%v\n", err)
-			c.JSON(http.StatusBadRequest, "解析列映射失败，请检查参数格式")
+			response.WriteErr(c, http.StatusBadRequest, 500, "解析列映射失败，请检查参数格式")
 			return
 		}
 
@@ -146,7 +148,7 @@ func ImportXlsx(c *gin.Context) {
 		row, err := rows.Columns()
 		if err != nil {
 			log.Printf("[ImportXlsx] 读取行数据失败 - err=%v\n", err)
-			c.JSON(http.StatusBadRequest, "读取行数据失败，请检查文件内容")
+			response.WriteErr(c, http.StatusBadRequest, 500, "读取行数据失败，请检查文件内容")
 			return
 		}
 
@@ -183,13 +185,13 @@ func ImportXlsx(c *gin.Context) {
 			if strings.EqualFold(operType, "insert") {
 				if err := insertToDb(schema, table, columns, totalValues, tx); err != nil {
 					log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
-					c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
+					response.WriteErr(c, http.StatusInternalServerError, 500, "插入数据失败，请检查数据格式")
 					return
 				}
 			} else {
 				if err := UpdateToDb(schema, table, columns, totalValues, tx); err != nil {
 					log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
-					c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
+					response.WriteErr(c, http.StatusInternalServerError, 500, "更新数据失败，请检查数据格式")
 					return
 				}
 			}
@@ -201,13 +203,13 @@ func ImportXlsx(c *gin.Context) {
 		if strings.EqualFold(operType, "insert") {
 			if err := insertToDb(schema, table, columns, totalValues[:count+1], tx); err != nil {
 				log.Printf("[ImportXlsx] 插入数据失败 - err=%v\n", err)
-				c.JSON(http.StatusInternalServerError, "插入数据失败，请检查数据格式")
+				response.WriteErr(c, http.StatusInternalServerError, 500, "插入数据失败，请检查数据格式")
 				return
 			}
 		} else {
 			if err := UpdateToDb(schema, table, columns, totalValues[:count+1], tx); err != nil {
 				log.Printf("[ImportXlsx] 更新数据失败 - err=%v\n", err)
-				c.JSON(http.StatusInternalServerError, "更新数据失败，请检查数据格式")
+				response.WriteErr(c, http.StatusInternalServerError, 500, "更新数据失败，请检查数据格式")
 				return
 			}
 		}
@@ -215,15 +217,15 @@ func ImportXlsx(c *gin.Context) {
 
 	if err = tx.Commit(); err != nil {
 		log.Printf("提交事务失败: %v", err)
-		c.JSON(http.StatusInternalServerError, "提交事务失败，请重试")
+		response.WriteErr(c, http.StatusInternalServerError, 500, "提交事务失败，请重试")
 		return
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
-			c.JSON(http.StatusOK, "导入完成")
+			response.WriteOK(c, "导入完成")
 		} else {
 			log.Println("更新完成")
-			c.JSON(http.StatusOK, "更新完成")
+			response.WriteOK(c, "更新完成")
 		}
 	}
 }

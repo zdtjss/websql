@@ -24,6 +24,14 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 			continue
 		}
 
+		// 水平分割线
+		if matched, _ := regexp.MatchString(`^[-*_]{3,}\s*$`, trimmed); matched {
+			blocks = append(blocks, MdBlock{Type: "hr", Content: ""})
+			i++
+			continue
+		}
+
+		// 代码块（含 mermaid）
 		if strings.HasPrefix(trimmed, "```") {
 			lang := strings.TrimPrefix(trimmed, "```")
 			var codeLines []string
@@ -47,6 +55,22 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 			continue
 		}
 
+		// 标题 h4-h6
+		if strings.HasPrefix(trimmed, "###### ") {
+			blocks = append(blocks, MdBlock{Type: "h6", Content: strings.TrimPrefix(trimmed, "###### ")})
+			i++
+			continue
+		}
+		if strings.HasPrefix(trimmed, "##### ") {
+			blocks = append(blocks, MdBlock{Type: "h5", Content: strings.TrimPrefix(trimmed, "##### ")})
+			i++
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#### ") {
+			blocks = append(blocks, MdBlock{Type: "h4", Content: strings.TrimPrefix(trimmed, "#### ")})
+			i++
+			continue
+		}
 		if strings.HasPrefix(trimmed, "### ") {
 			blocks = append(blocks, MdBlock{Type: "h3", Content: strings.TrimPrefix(trimmed, "### ")})
 			i++
@@ -63,6 +87,7 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 			continue
 		}
 
+		// 表格
 		if strings.HasPrefix(trimmed, "|") {
 			var tableLines []string
 			for i < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
@@ -73,6 +98,32 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 			continue
 		}
 
+		// 任务列表（- [ ] / - [x]）
+		if strings.HasPrefix(trimmed, "- [ ] ") || strings.HasPrefix(trimmed, "- [x] ") || strings.HasPrefix(trimmed, "- [X] ") {
+			var items []string
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(t, "- [ ] ") {
+					items = append(items, "[ ] "+strings.TrimPrefix(t, "- [ ] "))
+					i++
+				} else if strings.HasPrefix(t, "- [x] ") || strings.HasPrefix(t, "- [X] ") {
+					items = append(items, "[x] "+strings.TrimPrefix(t, "- [x] "))
+					i++
+				} else if strings.HasPrefix(t, "- [ ] ") {
+					items = append(items, "[ ] "+strings.TrimPrefix(t, "- [ ] "))
+					i++
+				} else if t == "" {
+					i++
+					break
+				} else {
+					break
+				}
+			}
+			blocks = append(blocks, MdBlock{Type: "tasklist", Content: strings.Join(items, "\n")})
+			continue
+		}
+
+		// 无序列表
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			var items []string
 			for i < len(lines) {
@@ -94,17 +145,16 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 			continue
 		}
 
-		if matched, _ := regexp.MatchString(`^[-*_]{3,}\s*$`, trimmed); matched {
-			i++
-			continue
-		}
-
+		// 引用块
 		if strings.HasPrefix(trimmed, "> ") {
 			var items []string
 			for i < len(lines) {
 				t := strings.TrimSpace(lines[i])
 				if strings.HasPrefix(t, "> ") {
 					items = append(items, strings.TrimPrefix(t, "> "))
+					i++
+				} else if t == ">" {
+					items = append(items, "")
 					i++
 				} else if t == "" {
 					i++
@@ -113,10 +163,11 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 					break
 				}
 			}
-			blocks = append(blocks, MdBlock{Type: "paragraph", Content: strings.Join(items, "\n")})
+			blocks = append(blocks, MdBlock{Type: "blockquote", Content: strings.Join(items, "\n")})
 			continue
 		}
 
+		// 有序列表
 		if strings.HasPrefix(trimmed, "1. ") || strings.HasPrefix(trimmed, "1) ") {
 			var items []string
 			for i < len(lines) {
@@ -132,16 +183,24 @@ func ParseMarkdownBlocks(content string) []MdBlock {
 					break
 				}
 			}
-			blocks = append(blocks, MdBlock{Type: "list", Content: strings.Join(items, "\n")})
+			blocks = append(blocks, MdBlock{Type: "olist", Content: strings.Join(items, "\n")})
 			continue
 		}
 
+		// 图片块（独占一行的 ![alt](url)）
+		if strings.HasPrefix(trimmed, "![") {
+			blocks = append(blocks, MdBlock{Type: "image", Content: trimmed})
+			i++
+			continue
+		}
+
+		// 段落
 		var paraLines []string
 		for i < len(lines) {
 			t := strings.TrimSpace(lines[i])
 			if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```") ||
 				strings.HasPrefix(t, "|") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ") ||
-				strings.HasPrefix(t, "> ") {
+				strings.HasPrefix(t, "> ") || strings.HasPrefix(t, "![") {
 				break
 			}
 			if matched, _ := regexp.MatchString(`^\d+[.)]\s`, t); matched {

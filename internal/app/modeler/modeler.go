@@ -2,13 +2,15 @@ package modeler
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"websql/internal/app/conn"
 	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -53,11 +55,11 @@ type ERRelation struct {
 }
 
 func ReverseEngineer(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	includeRelations := c.DefaultPostForm("includeRelations", "true")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -76,7 +78,7 @@ func ReverseEngineer(c *gin.Context) {
 		model.Relations = extractRelations(conn, dbType, schema)
 	}
 
-	jsonutil.WriteJson(c.Writer, model)
+	response.WriteOK(c, model)
 }
 
 func buildERTable(conn *sqlx.DB, dbType, schema, tableName string) ERTable {
@@ -100,7 +102,10 @@ func buildERTable(conn *sqlx.DB, dbType, schema, tableName string) ERTable {
 		}
 		var cols []OracleCol
 		err := conn.Select(&cols, sqlTmpl, "notexists", tableName)
-		logger.PanicErrf("获取列信息失败", err)
+		if err != nil {
+			log.Printf("[buildERTable] 获取列信息失败: %v", err)
+			return table
+		}
 		for _, c := range cols {
 			isPK := false
 			for _, pk := range primaryKeys {
@@ -128,7 +133,10 @@ func buildERTable(conn *sqlx.DB, dbType, schema, tableName string) ERTable {
 		}
 		var cols []MySQLCol
 		err := conn.Select(&cols, sqlTmpl, schema, tableName)
-		logger.PanicErrf("获取列信息失败", err)
+		if err != nil {
+			log.Printf("[buildERTable] 获取列信息失败: %v", err)
+			return table
+		}
 		for _, c := range cols {
 			isPK := c.ColumnKey == "PRI"
 			defaultVal := ""
@@ -291,14 +299,14 @@ func getSyncTableList(conn *sqlx.DB, dbType, schema string) []string {
 }
 
 func ForwardEngineer(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	ddlSql := c.PostForm("ddl")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 
 	if strings.TrimSpace(ddlSql) == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"success": false, "message": "DDL不能为空"})
+		response.WriteOK(c, map[string]any{"success": false, "message": "DDL不能为空"})
 		return
 	}
 
@@ -329,7 +337,7 @@ func ForwardEngineer(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"successCount": successCount,
 		"failCount":    failCount,
 		"results":      results,
@@ -374,11 +382,11 @@ func splitDDL(ddl string) []string {
 }
 
 func ExportModel(c *gin.Context) {
-	connId := c.PostForm("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	format := c.DefaultPostForm("format", "json")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -398,11 +406,11 @@ func ExportModel(c *gin.Context) {
 	switch format {
 	case "ddl":
 		ddl := generateDDLExport(model)
-		jsonutil.WriteJson(c.Writer, map[string]any{"ddl": ddl, "format": "ddl"})
+		response.WriteOK(c, map[string]any{"ddl": ddl, "format": "ddl"})
 	case "json":
-		jsonutil.WriteJson(c.Writer, map[string]any{"model": model, "format": "json"})
+		response.WriteOK(c, map[string]any{"model": model, "format": "json"})
 	default:
-		jsonutil.WriteJson(c.Writer, map[string]any{"model": model, "format": format})
+		response.WriteOK(c, map[string]any{"model": model, "format": format})
 	}
 }
 

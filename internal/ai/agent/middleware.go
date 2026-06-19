@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"websql/internal/ai/agent/sqlutil"
-
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
@@ -22,12 +19,6 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
-
-// StripSQLComments 是 sqlutil.StripSQLComments 的本地别名。
-//
-// 项目内任何 SQL 注释剥离都应通过本别名调用，确保在 agent 与 export
-// 子包中行为一致（EINO_DEEP_ANALYSIS §10.1）。新代码请直接用 sqlutil.StripSQLComments。
-func StripSQLComments(sql string) string { return sqlutil.StripSQLComments(sql) }
 
 // buildPatchToolCallsMiddleware 构造 eino 0.9 官方的 patchtoolcalls 中间件。
 //
@@ -55,21 +46,6 @@ func buildPatchToolCallsMiddleware() adk.ChatModelAgentMiddleware {
 		return nil
 	}
 	return mw
-}
-
-func isDangerousSQL(sql string) bool {
-	stripped := StripSQLComments(strings.TrimSpace(sql))
-	upper := strings.ToUpper(stripped)
-	for _, p := range []string{
-		"DROP ", "TRUNCATE ", "DELETE ",
-		"ALTER ", "CREATE ", "REPLACE ",
-		"INSERT ", "UPDATE ", "MERGE ",
-	} {
-		if strings.HasPrefix(upper, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // buildEinoReductionMiddleware 构造 eino 0.9 官方的 reduction 中间件
@@ -150,31 +126,6 @@ func reductionTokenCounter(_ context.Context, msgs []*schema.Message, _ []*schem
 	return total, nil
 }
 
-func containsDangerousSQL(sql string) bool {
-	for _, line := range strings.Split(sql, ";") {
-		line = strings.TrimSpace(line)
-		if line != "" && isDangerousSQL(line) {
-			return true
-		}
-	}
-	return false
-}
-
-type DangerousSQLInfo struct {
-	SQL       string `json:"sql"`
-	RiskLevel string `json:"riskLevel"`
-	SQLType   string `json:"sqlType"`
-}
-
-func init() {
-	schema.RegisterName[*DangerousSQLInfo]("agent.DangerousSQLInfo")
-}
-
-type SQLApprovalResult struct {
-	Approved         bool   `json:"approved"`
-	DisapproveReason string `json:"disapproveReason,omitempty"`
-}
-
 type DangerousSQLApprovalMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
@@ -229,67 +180,6 @@ func (m *DangerousSQLApprovalMiddleware) WrapStreamableToolCall(
 	}, nil
 }
 
-type execFunc func(ctx context.Context, args string, opts []tool.Option) (string, error)
-
-func approvalGate(
-	ctx context.Context,
-	toolName string,
-	argumentsInJSON string,
-	opts []tool.Option,
-	exec execFunc,
-) (string, error) {
-
-	wasInterrupted, _, savedArgs := tool.GetInterruptState[string](ctx)
-
-	if !wasInterrupted {
-		sql := extractSQLFromArgs(argumentsInJSON)
-		if sql == "" || !containsDangerousSQL(sql) {
-			return exec(ctx, argumentsInJSON, opts)
-		}
-		log.Printf("[ApprovalMiddleware] 拦截危险 SQL - tool=%s, sql=%s\n", toolName, sql)
-		return "", tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-			SQL:       sql,
-			RiskLevel: detectRiskLevel(sql),
-			SQLType:   detectSQLType(sql),
-		}, argumentsInJSON)
-	}
-
-	isTarget, hasData, approval := tool.GetResumeContext[SQLApprovalResult](ctx)
-
-	if isTarget && hasData && approval.Approved {
-		log.Printf("[ApprovalMiddleware] 用户批准执行 - tool=%s\n", toolName)
-		return exec(ctx, savedArgs, opts)
-	}
-
-	if isTarget && hasData && !approval.Approved {
-		reason := approval.DisapproveReason
-		if reason == "" {
-			reason = "用户取消执行"
-		}
-		log.Printf("[ApprovalMiddleware] 用户拒绝执行 - tool=%s, reason=%s\n", toolName, reason)
-		return fmt.Sprintf(`{"message": "%s", "affectedRows": 0}`, reason), nil
-	}
-
-	sql := extractSQLFromArgs(savedArgs)
-	if sql == "" {
-		sql = savedArgs
-	}
-	log.Printf("[ApprovalMiddleware] 重新中断 - tool=%s, isTarget=%v, hasData=%v\n", toolName, isTarget, hasData)
-	return "", tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
-		SQL:       sql,
-		RiskLevel: detectRiskLevel(sql),
-		SQLType:   detectSQLType(sql),
-	}, savedArgs)
-}
-
-func extractSQLFromArgs(argumentsInJSON string) string {
-	var input ExecInput
-	if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(input.SQL)
-}
-
 type ToolErrorRecoveryMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
@@ -321,7 +211,8 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 			}
 			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
 			log.Printf("[ToolErrorRecovery] tool %s error - err=%v\n", tCtx.Name, err)
-			return "", fmt.Errorf("[%s] %w\n%s", tCtx.Name, err, hint)
+			// 将错误转化为工具结果，让 LLM 看到错误并有机会重试
+			return formatToolErrorAsResult(tCtx.Name, err, hint), nil
 		}
 		return result, nil
 	}, nil
@@ -340,14 +231,91 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 			}
 			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
 			log.Printf("[ToolErrorRecovery:Stream] tool %s error - err=%v\n", tCtx.Name, err)
-			return nil, fmt.Errorf("[%s] %w\n%s", tCtx.Name, err, hint)
+			errorMsg := formatToolErrorAsResult(tCtx.Name, err, hint)
+			return schema.StreamReaderFromArray([]string{errorMsg}), nil
 		}
 		return result, nil
 	}, nil
 }
 
+// formatToolErrorAsResult 将工具错误格式化为 JSON 结果字符串，让 LLM 能看到错误并重试
+func formatToolErrorAsResult(toolName string, err error, hint string) string {
+	return fmt.Sprintf(
+		`{"error":true,"tool":"%s","message":"工具执行失败：%s","recovery_hint":"%s"}`,
+		toolName, escapeJSONString(err.Error()), escapeJSONString(hint),
+	)
+}
+
+// escapeJSONString 转义 JSON 字符串中的特殊字符
+func escapeJSONString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
+
 func recoveryHint(toolName, args string, err error) string {
 	errStr := err.Error()
+
+	// SQL 工具的错误恢复提示
+	if toolName == "query_data" || toolName == "exec_sql" || toolName == "execute_sql" {
+		// 方言不兼容错误（来自预检器）
+		if strings.Contains(errStr, "方言不兼容") {
+			return errStr + "\n\n请根据上述替代方案重写 SQL 后重试。不要使用相同的语法再次尝试。"
+		}
+		// MySQL 语法错误
+		if strings.Contains(errStr, "Error 1064") {
+			if strings.Contains(errStr, "PERCENTILE_CONT") || strings.Contains(errStr, "WITHIN GROUP") {
+				return "MySQL 不支持 PERCENTILE_CONT/WITHIN GROUP 语法（Oracle 专有）。\n" +
+					"计算中位数：SELECT AVG(x) FROM (SELECT x FROM t ORDER BY x LIMIT 2 OFFSET (cnt-1)/2) tmp\n" +
+					"计算分位数：用 PERCENT_RANK() 窗口函数（MySQL 8.0+）\n" +
+					"示例：SELECT PERCENT_RANK() OVER (ORDER BY col) as pct FROM t"
+			}
+			if strings.Contains(errStr, "STRING_AGG") {
+				return "MySQL 不支持 STRING_AGG，请用 GROUP_CONCAT(col SEPARATOR ',') 替代。"
+			}
+			if strings.Contains(errStr, "LISTAGG") {
+				return "MySQL 不支持 LISTAGG，请用 GROUP_CONCAT(col SEPARATOR ',') 替代。"
+			}
+			if strings.Contains(errStr, "DATE_TRUNC") {
+				return "MySQL 不支持 DATE_TRUNC，请用 DATE_FORMAT(date, '%Y-%m-01') 按月截断，DATE(date) 按天截断。"
+			}
+			if strings.Contains(errStr, "ARRAY_AGG") {
+				return "MySQL 不支持 ARRAY_AGG，请用 GROUP_CONCAT 或 JSON_ARRAYAGG 替代。"
+			}
+			if strings.Contains(errStr, "RETURNING") {
+				return "MySQL 不支持 RETURNING 子句，需要单独的 SELECT 查询获取数据。"
+			}
+			if strings.Contains(errStr, "FETCH") && strings.Contains(errStr, "ROWS ONLY") {
+				return "MySQL 不支持 FETCH FIRST/NEXT 语法，请用 LIMIT n 替代。"
+			}
+			return "SQL 语法错误(Error 1064)。请检查：\n1) 是否使用了其他数据库专有函数（PERCENTILE_CONT/STRING_AGG/LISTAGG/DATE_TRUNC 等）\n2) 引号是否匹配\n3) 关键字拼写\n4) 错误信息 'near' 后指示出错位置"
+		}
+		// 表不存在
+		if strings.Contains(errStr, "Error 1146") {
+			return "表不存在(Error 1146)。请先调用 list_tables 确认正确表名，注意大小写和 schema 前缀。"
+		}
+		// 字段不存在
+		if strings.Contains(errStr, "Error 1054") {
+			return "字段不存在(Error 1054)。请先调用 get_table_schema 获取正确字段名，注意大小写。"
+		}
+		// 列歧义
+		if strings.Contains(errStr, "Error 1052") {
+			return "列名歧义(Error 1052)。请在列名前加表别名前缀，如 t1.column_name。"
+		}
+		// GROUP BY 错误
+		if strings.Contains(errStr, "Error 1140") {
+			return "GROUP BY 错误(Error 1140)。ONLY_FULL_GROUP_BY 模式要求 SELECT 中的非聚合列必须出现在 GROUP BY 中。请将所有非聚合列加入 GROUP BY，或用 ANY_VALUE() 包裹。"
+		}
+		// 连接错误
+		if strings.Contains(errStr, "connection") || strings.Contains(errStr, "timeout") {
+			return "数据库连接超时。请简化 SQL，减少扫描量，或添加 WHERE 条件限制数据范围。"
+		}
+		return "SQL 执行失败，请根据错误信息调整 SQL 后重试。"
+	}
+
 	isExecuteOrSkill := toolName == "execute" || toolName == "skill"
 	if !isExecuteOrSkill {
 		return "Please adjust parameters and retry."
@@ -374,11 +342,11 @@ func recoveryHint(toolName, args string, err error) string {
 		strings.Contains(args, "check_deps")
 
 	if isPipOrPython && (isEncodingOrSyntax || isSkillExport) {
-		return "Python skill execution failed on Windows. Use dedicated export tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. These tools internally prefer Python Skill (same quality) with automatic Go fallback - no manual script assembly needed."
+		return "Python skill execution failed on Windows. You have two options: (1) retry the skill workflow with corrected parameters, or (2) fall back to Go native tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. Go native tools require no Python and produce basic but valid output."
 	}
 
 	if isSkillExport {
-		return "Skill script execution failed. Use dedicated export tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. They automatically try Python Skill first and fallback to Go if needed."
+		return "Skill script execution failed. You can retry with corrected parameters, or fall back to Go native tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. Go native tools produce basic but valid output without Python dependency."
 	}
 
 	return "Please adjust parameters and retry."

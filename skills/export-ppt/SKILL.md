@@ -1,77 +1,103 @@
 ---
 name: export-ppt
-description: 使用 Python 生成科技感数据分析 PPT，支持图文混排、多种图表类型，深色主题配色
-inclusion: manual
------------------
+description: 生成专业数据分析 PPT 演示文稿（.pptx）。Agent 负责用 query_data 取数并计算统计指标，本 Skill 的 Python 脚本负责渲染成带封面、目录、图表页的科技感深色主题 PPT。当用户需要 PPT/幻灯片时使用。
+---
 
-# PPT 生成器 Skill
+# PPT 演示文稿生成 Skill
 
-科技感数据分析 PPT 生成，基于 python-pptx + matplotlib，支持图文混排。
+本 Skill 将结构化数据渲染为科技感深色主题 PPT。**Agent 负责取数与统计计算，Python 脚本只负责幻灯片渲染**。
 
-## 使用前提
+## 工作流（Agent 必须按序执行）
 
-依赖：`pip install python-pptx matplotlib numpy Pillow`
+1. **取数**：用 `query_data` 工具执行用户的 SELECT SQL，获得 `columns` 和 `data`
+2. **计算统计**：Agent 自行计算 summary 和 highlights（规则见下文）
+3. **组装 JSON**：按"输入数据契约"组装 stdin JSON
+4. **执行脚本**：用 `execute` 工具运行：
+   ```
+   python <本 SKILL 目录>/scripts/export_ppt.py
+   ```
+   JSON 通过 stdin 传入
+5. **解析输出**：脚本 stdout 返回 `{"success":true,"outputPath":"...","slideCount":15}` 或 `{"success":false,"error":"..."}`
+6. **返回链接**：把 outputPath 转成下载链接 `/exports/<文件名>.pptx` 返回用户
 
-## 工作流程
+## 输入数据契约（stdin JSON）
 
-1. 运行本目录下的 `pscripts/export_ppt.py` 作为模块导入
-2. 调用脚本中 `sys.path/scripts` 指向本 skill 目录
+### data 模式（从 SQL 取数）
 
-## 调用模板
-
-```python
-import sys, os
-# 指向本 skill 目录（AI 执行时替换为实际路径）
-SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.kiro', 'skills', 'ppt-generator')
-sys.path.insert(0, SKILL_DIR)
-from ppt_generator import PPTBuilder
-
-builder = PPTBuilder()
-builder.add_cover(title="标题", subtitle="副标题", date="日期", author="作者")
-builder.add_toc(["章节1", "章节2"])
-builder.add_section_divider("章节标题", "描述")
-builder.add_kpi_page("指标概览", [
-    {"label": "指标名", "value": "数值", "change": "+X%", "trend": "up"},
-])
-builder.add_chart_page("图表标题", "line", data, insights=["要点"], layout="left_chart")
-builder.add_dual_chart_page("双图标题", {"type":"bar","data":{...}}, {"type":"pie","data":{...}})
-builder.add_text_page("标题", ["要点1", "要点2"], highlight_indices=[0])
-builder.add_comparison_page("对比", "左标题", ["左项"], "右标题", ["右项"])
-builder.add_summary_page("总结", ["结论1", "结论2"])
-builder.add_thank_you("感谢聆听", "联系方式")
-builder.save("output.pptx")
+```json
+{
+  "mode": "data",
+  "title": "PPT 标题",
+  "columns": ["month", "revenue", "cost"],
+  "data": [{"month": "2026-01", "revenue": 10000, "cost": 8000}],
+  "summary": {
+    "totalRows": 12,
+    "totalCols": 3,
+    "columns": ["month", "revenue", "cost"],
+    "stats": {
+      "revenue": {"min": 8000, "max": 15000, "avg": 11000},
+      "cost": {"min": 6000, "max": 9000, "avg": 7500}
+    }
+  },
+  "numericColumns": ["revenue", "cost"],
+  "chartPaths": ["/exports/report_ppt_chart.png"],
+  "highlights": ["revenue — 平均: 11000, 峰值: 15000", "cost — 平均: 7500, 峰值: 9000"],
+  "outputPath": "/exports/slides_20260619.pptx"
+}
 ```
 
-## 图表类型
+### content 模式（从 Markdown 文本生成）
 
-line, bar, horizontal\_bar, pie, donut, scatter, radar, heatmap, area, stacked\_bar
-
-## 数据格式
-
-```python
-# 折线/柱状/面积/堆叠
-{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
-# 饼图/环形
-{"title":"", "labels":[...], "values":[...]}
-# 散点
-{"title":"", "x":[...], "y":[...], "x_label":"", "y_label":""}
-# 雷达
-{"title":"", "categories":[...], "series":[{"name":"", "values":[...]}]}
-# 热力图
-{"title":"", "x_labels":[...], "y_labels":[...], "values":[[...]]}
+```json
+{
+  "mode": "content",
+  "title": "PPT 标题",
+  "sections": [
+    {"title": "章节标题", "blocks": [{"type": "paragraph", "content": "要点1"}]}
+  ],
+  "outputPath": "/exports/slides_20260619.pptx"
+}
 ```
 
-## 布局选项
+## 统计字段计算规则（Agent 自行计算）
 
-left\_chart（左图右文，默认）| full\_chart（全幅）| top\_chart（上图下文）
+- **numericColumns**：首行值可转为 float 的列名列表
+- **summary**：
+  - `totalRows` / `totalCols`：数据行列数
+  - `stats`：对每个 numericColumn 计算 min/max/avg
+- **highlights**：基于 stats 生成 5-8 条亮点，格式 `"列名 — 平均: X, 峰值: Y"`
+- **chartPaths**：若需要图表，先用 `execute` 调 `chart_generator.py` 生成 PNG
 
-## 内容要求
+## 图表生成（可选）
 
-- 每页有分析观点，不能只放图不解读
-- 使用具体数字，逻辑递进：现状→趋势→原因→建议
-- 页数 12-18 页，内容丰富
-- 典型结构：封面→目录→背景→KPI→趋势→对比→构成→分布→洞察→风险→建议→总结→致谢
+如需在 PPT 中嵌入图表，先执行：
+```
+python <本 SKILL 目录>/scripts/chart_generator.py
+```
+输入 JSON：
+```json
+{
+  "chartType": "line|bar",
+  "title": "图表标题",
+  "outputPath": "/exports/xxx.png",
+  "series": [{"name": "系列名", "xLabels": ["a","b"], "yValues": [1,2]}]
+}
+```
 
-## 工具脚本参考
+## 失败处理
 
-\#\[\[file:scripts/export\_ppt.py]]
+- 脚本返回 `success: false` → 告知用户失败原因，建议改用 `export_html` 工具
+- Python 不可用 → 直接回退到 `export_ppt` 工具（Go 原生 PPT 生成）
+
+## 依赖
+
+`pip install python-pptx matplotlib numpy Pillow`
+
+## 输出路径规则
+
+- outputPath 必须以 `/exports/` 开头，文件名含时间戳
+- 示例：`/exports/slides_20260619_120000.pptx`
+
+## 典型 PPT 结构（12-18 页）
+
+封面 → 目录 → 背景 → KPI 概览 → 趋势分析 → 对比分析 → 构成分析 → 分布分析 → 洞察 → 风险 → 建议 → 总结 → 致谢

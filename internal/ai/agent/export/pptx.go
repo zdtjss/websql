@@ -863,6 +863,8 @@ func pptxContentSlide(slideTitle string, blocks []MdBlock, pageNum int) string {
 			if len(mermaidLines) > 8 {
 				textLines = append(textLines, fmt.Sprintf("  ... \u5171 %d \u884c", len(mermaidLines)))
 			}
+		case "blockquote":
+			textLines = append(textLines, "💡 "+block.Content)
 		}
 	}
 

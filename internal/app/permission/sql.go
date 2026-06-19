@@ -8,7 +8,6 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
-	"websql/internal/logger"
 )
 
 type SQLAnalysis struct {
@@ -358,7 +357,7 @@ func CheckTableWritePermission(connId string, schemaName string, tableName strin
 	}
 	CheckTablePermission(connId, schemaName, tableName, authorization)
 	if !CheckUserCanModify(authorization) {
-		logger.PanicErr(errors.New("当前角色禁止修改数据"))
+		panic(errors.New("当前角色禁止修改数据"))
 	}
 }
 

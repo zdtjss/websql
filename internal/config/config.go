@@ -9,9 +9,8 @@ import (
 )
 
 var (
+	// Deprecated: 使用 Container，将在阶段 4 移除
 	Cfg *Config
-	// 管理员用?id
-	AdminId = "825683877312860160"
 )
 
 func ReadConfig() *Config {
@@ -66,6 +65,11 @@ type Config struct {
 	} `json:"https"`
 	OutterUser string   `json:"outterUser"`
 	AllowedIP  []string `json:"allowedIP"`
+	Security   struct {
+		// AESKey 为 16/24/32 字节密钥的 base64 编码，用于加解密连接密码与备份内容。
+		// 留空时回退到内置默认密钥（仅用于兼容存量数据，不安全，生产环境务必配置）。
+		AESKey string `json:"aesKey"`
+	} `json:"security"`
 	AI         struct {
 		Provider       string  `json:"provider"`
 		BaseURL        string  `json:"baseUrl"`

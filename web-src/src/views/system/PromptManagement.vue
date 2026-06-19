@@ -90,7 +90,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import http from '@/utils/httpProxy'
+import { getRoleBaseList, getPromptListByRole, delPrompt } from '@/api/ai'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Edit, Loading, Plus, Search, User } from '@element-plus/icons-vue'
 import PromptEditDialog from '@/components/ai/PromptEditDialog.vue'
@@ -119,7 +119,7 @@ onMounted(() => {
 async function loadRoles() {
   loadingRoles.value = true
   try {
-    const resp = await http.get('/roleBaseList')
+    const resp = await getRoleBaseList()
     roles.value = resp.data.data || []
   } catch (e) {
     console.error('加载角色列表失败:', e)
@@ -136,7 +136,7 @@ function handleRoleSelect(role) {
 async function loadPromptsByRole(roleId) {
   loadingPrompts.value = true
   try {
-    const resp = await http.get('/promptListByRole', { params: { roleId } })
+    const resp = await getPromptListByRole(roleId)
     prompts.value = resp.data.data || []
   } catch (e) {
     console.error('加载提示词列表失败:', e)
@@ -164,7 +164,7 @@ function handleDelete(prompt) {
     { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
   ).then(async () => {
     try {
-      await http.get('/delPrompt', { params: { id: prompt.id } })
+      await delPrompt(prompt.id)
       ElMessage.success('删除成功')
       loadPromptsByRole(currentRole.value.id)
     } catch (e) {

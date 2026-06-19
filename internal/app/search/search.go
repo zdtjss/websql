@@ -8,7 +8,8 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/config"
 	"websql/internal/dialect"
-	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
@@ -44,17 +45,17 @@ type SearchResponse struct {
 }
 
 func SearchObjects(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 	keyword := c.Query("keyword")
 	searchType := c.DefaultQuery("searchType", "all")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
 	if strings.TrimSpace(keyword) == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"results": []ObjectSearchResult{}, "totalResults": 0})
+		response.WriteOK(c, map[string]any{"results": []ObjectSearchResult{}, "totalResults": 0})
 		return
 	}
 
@@ -193,7 +194,7 @@ func SearchObjects(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"results":      results,
 		"totalResults": len(results),
 		"query":        keyword,
@@ -202,18 +203,18 @@ func SearchObjects(c *gin.Context) {
 }
 
 func SearchData(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 	keyword := c.Query("keyword")
 	maxTables := c.DefaultQuery("maxTables", "50")
 	timeout := c.DefaultQuery("timeout", "30")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
 	if strings.TrimSpace(keyword) == "" {
-		jsonutil.WriteJson(c.Writer, map[string]any{"results": []DataSearchResult{}, "totalResults": 0, "searchedTables": 0})
+		response.WriteOK(c, map[string]any{"results": []DataSearchResult{}, "totalResults": 0, "searchedTables": 0})
 		return
 	}
 
@@ -262,7 +263,7 @@ func SearchData(c *gin.Context) {
 	_ = timeout
 	<-done
 
-	jsonutil.WriteJson(c.Writer, map[string]any{
+	response.WriteOK(c, map[string]any{
 		"results":        results,
 		"totalResults":   len(results),
 		"searchedTables": searchCount,
@@ -310,17 +311,17 @@ func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) 
 }
 
 func SearchAll(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 	keyword := c.Query("keyword")
 	searchType := c.DefaultQuery("searchType", "all")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
 	if strings.TrimSpace(keyword) == "" {
-		jsonutil.WriteJson(c.Writer, &SearchResponse{
+		response.WriteOK(c, &SearchResponse{
 			Query:         keyword,
 			SearchType:    searchType,
 			TotalResults:  0,
@@ -397,7 +398,7 @@ func SearchAll(c *gin.Context) {
 		}
 	}
 
-	jsonutil.WriteJson(c.Writer, &SearchResponse{
+	response.WriteOK(c, &SearchResponse{
 		Query:          keyword,
 		SearchType:     searchType,
 		TotalResults:   len(objectResults) + len(dataResults),
@@ -408,10 +409,10 @@ func SearchAll(c *gin.Context) {
 }
 
 func GetSearchTables(c *gin.Context) {
-	connId := c.Query("connId")
+	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
-	authorization := c.GetHeader("Authorization")
+	authorization := appctx.Ctx.GetAuthorization(c)
 	conn := conn.GetConn(connId, authorization)
 	dbType := conn.DriverName()
 
@@ -429,7 +430,7 @@ func GetSearchTables(c *gin.Context) {
 		infos = append(infos, TableInfo{Name: table, Comment: comment})
 	}
 
-	jsonutil.WriteJson(c.Writer, map[string]any{"tables": infos})
+	response.WriteOK(c, map[string]any{"tables": infos})
 }
 
 func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {

@@ -987,6 +987,13 @@ func GenerateDocxFromContent(content, title, outputPath string) error {
 			body.WriteString(docxSpacing(4))
 		case "code":
 			body.WriteString(docxCodeBlock(block.Content))
+		case "mermaid":
+			body.WriteString(docxRichParagraph("📊 Mermaid 图表", true, 24, "", false))
+			body.WriteString(docxCodeBlock(block.Content))
+			body.WriteString(docxSpacing(4))
+		case "blockquote":
+			body.WriteString(docxRichParagraph("💡 "+block.Content, false, 22, "", true))
+			body.WriteString(docxSpacing(4))
 		case "table":
 			body.WriteString(docxMarkdownTable(block.Content))
 			body.WriteString(docxSpacing(8))

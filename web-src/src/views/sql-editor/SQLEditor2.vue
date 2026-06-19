@@ -230,8 +230,9 @@ import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
 import SQLOptimizePanel from '@/components/sql-editor/SQLOptimizePanel.vue'
 
-import axios from 'axios'
-import http from '@/utils/httpProxy.js'
+import { isCancel } from '@/api'
+import { execSQL, listBackupData, showBackupData as showBackupDataApi, type SQLResult } from '@/api/sql'
+import { canModifyData } from '@/api/auth'
 import excel from '@/utils/excel.js'
 import copyToClipboard from '@/utils/copy-to-clipboard.js'
 import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper.ts'
@@ -574,7 +575,7 @@ const filteredSqlHistory = computed(() => {
 })
 
 function showSqlHistory() {
-    http.get("/listBackupData", { params: { connId: connId, schema: schema, current: sqlHistoryCurrent.value, pageSize: sqlHistoryPageSize.value } })
+    listBackupData({ connId: connId, schema: schema, current: sqlHistoryCurrent.value, pageSize: sqlHistoryPageSize.value })
         .then((resp: any) => {
             sqlHistoryList.value = resp.data.data.data || []
             sqlHistoryTotal.value = resp.data.data.total || 0
@@ -621,13 +622,8 @@ async function handleSqlFile(options: any) {
     let errorCount = 0
 
     for (const stmt of statements) {
-        const params = new URLSearchParams()
-        params.append("connId", connId)
-        params.append("schema", schema)
-        params.append("sql", stmt)
-        params.append("maxLine", maxLine.value)
         try {
-            await http.post("/execSQL", params)
+            await execSQL({ connId, schema, sql: stmt, maxLine: maxLine.value })
             successCount++
         } catch {
             errorCount++
@@ -679,7 +675,7 @@ onMounted(() => {
     createEditor(codemirror, doc);
     const schemaPathLower = schemaPath.toLowerCase()
     const schemaCanModify = schemaPathLower.indexOf("_test") != -1 || schemaPathLower.indexOf("_uat") != -1 || schemaPathLower.indexOf("_dev") != -1 || schemaPathLower.indexOf("_read") != -1
-    http.get('/canModifyData').then(resp => {
+    canModifyData().then(resp => {
         const allowed = resp.data.data?.allowed !== false
         if (!allowed) {
             roleForbidModify.value = true
@@ -811,7 +807,7 @@ function toggleOptimizePanel() {
 }
 
 function showBackupData(backupId: any) {
-    http.get("/showBackupData", { params: { backupId: backupId } })
+    showBackupDataApi(backupId)
         .then((resp) => {
             backupData.value = JSON.stringify(JSON.parse(resp.data.data), null, 4)
             backupDataDrawerShow.value = true
@@ -1143,15 +1139,8 @@ function execBatch(statements: string[]) {
     const startTime = performance.now()
     const fullSql = statements.join(";")
 
-    const params = new URLSearchParams()
-    params.append("connId", connId)
-    params.append("schema", schema)
-    params.append("sql", fullSql)
-    params.append("maxLine", maxLine.value)
-    params.append("batch", "true")
-
     abortController = new AbortController()
-    http.post("/execSQL", params, { signal: abortController.signal })
+    execSQL({ connId, schema, sql: fullSql, maxLine: maxLine.value, batch: "true" }, abortController.signal)
         .then((resp) => {
             executionTime.value = Math.round(performance.now() - startTime)
             batchResults.value = resp.data.data.results || []
@@ -1167,7 +1156,7 @@ function execBatch(statements: string[]) {
             exectingSql.value = false
             abortController = null
         }).catch((error) => {
-            if (axios.isCancel(error)) {
+            if (isCancel(error)) {
                 sqlError.value = '执行已终止'
             } else {
                 sqlError.value = error.message || '执行失败'
@@ -1203,21 +1192,15 @@ function exec(silent = false) {
     executionTime.value = null
     sqlError.value = ''
     const startTime = performance.now()
-    const params = new URLSearchParams()
-    params.append("connId", connId)
-    params.append("schema", schema)
-    params.append("tableName", currentSelectTable.value)
-    params.append("sql", effiectiveSql)
-    params.append("maxLine", maxLine.value)
     abortController = new AbortController()
-    http.post("/execSQL", params, { signal: abortController.signal })
+    execSQL({ connId, schema, sql: effiectiveSql, maxLine: maxLine.value, tableName: currentSelectTable.value }, abortController.signal)
         .then((resp) => {
             executionTime.value = Math.round(performance.now() - startTime)
             applyResultToUI(resp.data.data)
             exectingSql.value = false
             abortController = null
         }).catch((error) => {
-            if (axios.isCancel(error)) {
+            if (isCancel(error)) {
                 sqlError.value = '执行已终止'
             } else {
                 sqlError.value = error.message || '执行失败'
@@ -1487,12 +1470,7 @@ function saveInlineChanges() {
             sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
         }
 
-        const params = new URLSearchParams()
-        params.append('connId', connId)
-        params.append('schema', schema)
-        params.append('tableName', currentSelectTable.value)
-        params.append('sql', sql)
-        promises.push(http.post('/execSQL', params))
+        promises.push(execSQL({ connId, schema, sql, maxLine: maxLine.value, tableName: currentSelectTable.value }))
     })
 
     Promise.all(promises)
@@ -1542,23 +1520,18 @@ function saveData(rowData: any) {
 
     onDataSaving.value = true
 
-    const params = new URLSearchParams()
-    params.append("connId", connId)
-    params.append("schema", schema)
-    params.append("tableName", currentSelectTable.value)
-    params.append("sql", effiectiveSql)
-
-    http.post("/execSQL", params)
+    execSQL({ connId, schema, sql: effiectiveSql, maxLine: maxLine.value, tableName: currentSelectTable.value })
         .then((resp) => {
             onDataSaving.value = false
-            if (!resp.data.data.msg) {
+            const result = resp.data.data as SQLResult
+            if (!result.msg) {
                 dataDetailsDialogVisible.value = false
             }
-            const respConlumn = resp.data.data.columns[0].name
-            const respData = resp.data.data.data[0]
-            ElMessage({ message: resp.data.data.msg ? "操作失败，请检查 SQL 语句" : "修改了 " + respData[respConlumn] + " 条数据", type: resp.data.data.msg ? "error" : "success" })
+            const respConlumn = result.columns![0].name
+            const respData = (result.data as Record<string, unknown>[])[0]
+            ElMessage({ message: result.msg ? "操作失败，请检查 SQL 语句" : "修改了 " + respData[respConlumn] + " 条数据", type: result.msg ? "error" : "success" })
         }).catch((error) => {
-            console.log(error);
+            console.error(error);
         });
 }
 
@@ -1883,8 +1856,6 @@ function onResultDivResize(index: number, sizes: number[]) {
             sqlAreaRef.value.style.setProperty('height', (sizes[index] - 25) + "px", 'important')
         }
     })
-
-    console.log(index, JSON.stringify(sizes))
 }
 
 function openTableManager() {

@@ -54,7 +54,7 @@
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import { listConn, showTree, searchObjects } from '@/api/conn'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 
@@ -123,7 +123,7 @@ async function init() {
   schemas.value = []
 
   try {
-    const res = await http.get('/listConn2', { params: { pageSize: 1000 } })
+    const res = await listConn({ pageSize: 1000 })
     const result = (res.data && res.data.data ? res.data.data : res.data) || {}
     connections.value = result.data || []
   } catch (e) {}
@@ -161,7 +161,7 @@ async function onConnChange() {
   }
   if (!filterConnId.value) return
   try {
-    const res = await http.get('/showTree', { params: { connId: filterConnId.value, key: '', type: 'conn', level: '2' } })
+    const res = await showTree({ connId: filterConnId.value, key: '', type: 'conn', level: '2' })
     schemas.value = res.data && res.data.data ? res.data.data : (Array.isArray(res.data) ? res.data : [])
   } catch (e) {}
 }
@@ -175,7 +175,7 @@ async function onSchemaChange() {
 async function loadSchemaTables(schemaName) {
   if (!filterConnId.value || !schemaName) return
   try {
-    const res = await http.get('/showTree', { params: { connId: filterConnId.value, key: schemaName, type: 'schema', level: '3' } })
+    const res = await showTree({ connId: filterConnId.value, key: schemaName, type: 'schema', level: '3' })
     const schemaObj = schemas.value.find(s => s.label === schemaName)
     const dbType = schemaObj?.data?.dbType || ''
     if (res.data && res.data.data) {
@@ -277,9 +277,7 @@ async function searchTablesRemotely(keyword, type) {
   const allResults = []
   const tasks = connIds.map(async (cid) => {
     try {
-      const res = await http.get('/search/objects', {
-        params: { connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type }
-      })
+      const res = await searchObjects({ connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type })
       const payload = res.data
       const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
       return remoteResults.map(r => ({
@@ -321,9 +319,7 @@ async function searchRemotely(keyword, type) {
   const allResults = []
   const tasks = connIds.map(async (cid) => {
     try {
-      const res = await http.get('/search/objects', {
-        params: { connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type }
-      })
+      const res = await searchObjects({ connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type })
       const payload = res.data
       const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
       return remoteResults.map(r => ({
