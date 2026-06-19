@@ -25,6 +25,7 @@ func CreateBackup(c *gin.Context) {
 	_ = c.DefaultPostForm("compress", "false")
 	authorization := appctx.Ctx.GetAuthorization(c)
 
+	ensureDefaultBackup()
 	result, err := defaultBackupService.CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
@@ -37,6 +38,7 @@ func ListBackups(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
+	ensureDefaultBackup()
 	result, err := defaultBackupService.ListBackups(connId, schema)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
@@ -50,6 +52,7 @@ func RestoreBackup(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	authorization := appctx.Ctx.GetAuthorization(c)
 
+	ensureDefaultBackup()
 	result, err := defaultBackupService.RestoreBackup(backupId, connId, authorization)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 400, err.Error())
@@ -61,6 +64,7 @@ func RestoreBackup(c *gin.Context) {
 func DeleteBackup(c *gin.Context) {
 	backupId := c.PostForm("backupId")
 
+	ensureDefaultBackup()
 	err := defaultBackupService.DeleteBackup(backupId)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
@@ -74,6 +78,7 @@ func GetBackupTables(c *gin.Context) {
 	schema := c.Query("schema")
 	authorization := appctx.Ctx.GetAuthorization(c)
 
+	ensureDefaultBackup()
 	result, err := defaultBackupService.GetBackupTables(connId, schema, authorization)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
@@ -85,6 +90,7 @@ func GetBackupTables(c *gin.Context) {
 func DownloadBackup(c *gin.Context) {
 	backupId := c.Query("backupId")
 
+	ensureDefaultBackup()
 	err := defaultBackupService.DownloadBackup(c, backupId)
 	if err != nil {
 		response.WriteErr(c, http.StatusNotFound, 500, err.Error())

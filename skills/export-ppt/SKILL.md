@@ -12,13 +12,21 @@ description: 生成专业数据分析 PPT 演示文稿（.pptx）。Agent 负责
 1. **取数**：用 `query_data` 工具执行用户的 SELECT SQL，获得 `columns` 和 `data`
 2. **计算统计**：Agent 自行计算 summary 和 highlights（规则见下文）
 3. **组装 JSON**：按"输入数据契约"组装 stdin JSON
-4. **执行脚本**：用 `execute` 工具运行：
+4. **执行脚本**：用 `execute` 工具（Eino Filesystem Middleware 提供）运行：
    ```
    python <本 SKILL 目录>/scripts/export_ppt.py
    ```
    JSON 通过 stdin 传入
 5. **解析输出**：脚本 stdout 返回 `{"success":true,"outputPath":"...","slideCount":15}` 或 `{"success":false,"error":"..."}`
 6. **返回链接**：把 outputPath 转成下载链接 `/exports/<文件名>.pptx` 返回用户
+
+## 依赖安装（首次执行前）
+
+若 Python 脚本报 `ModuleNotFoundError`，先用 `execute` 工具安装依赖：
+```
+pip install -r <本 SKILL 目录>/scripts/requirements.txt
+```
+安装完成后重试脚本执行。
 
 ## 输入数据契约（stdin JSON）
 
@@ -66,23 +74,13 @@ description: 生成专业数据分析 PPT 演示文稿（.pptx）。Agent 负责
   - `totalRows` / `totalCols`：数据行列数
   - `stats`：对每个 numericColumn 计算 min/max/avg
 - **highlights**：基于 stats 生成 5-8 条亮点，格式 `"列名 — 平均: X, 峰值: Y"`
-- **chartPaths**：若需要图表，先用 `execute` 调 `chart_generator.py` 生成 PNG
+- **chartPaths**：预留字段，当前 export_ppt.py 已内置 matplotlib 图表生成，无需单独生成 PNG
 
-## 图表生成（可选）
+## 图表生成（内置）
 
-如需在 PPT 中嵌入图表，先执行：
-```
-python <本 SKILL 目录>/scripts/chart_generator.py
-```
-输入 JSON：
-```json
-{
-  "chartType": "line|bar",
-  "title": "图表标题",
-  "outputPath": "/exports/xxx.png",
-  "series": [{"name": "系列名", "xLabels": ["a","b"], "yValues": [1,2]}]
-}
-```
+export_ppt.py 已内置 matplotlib 图表生成能力，无需单独执行图表脚本。
+在 `chartPages` 中指定图表类型和数据，脚本会自动生成图表并嵌入 PPT。
+支持的图表类型：line / bar / horizontal_bar / pie / donut / scatter / radar / heatmap / area / stacked_bar
 
 ## 失败处理
 

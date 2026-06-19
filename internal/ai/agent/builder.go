@@ -38,6 +38,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	}
 	if err := export.InitSkillEnv(ctx, skillsDir); err != nil {
 		log.Printf("[Agent] 初始化 Skill 环境失败 - err=%v\n", err)
+		// 不 return error，Agent 仍可运行（无 skill/execute 工具，使用 Go 原生导出兜底）
+		// 系统提示词会根据 skillEnv 是否为 nil 动态调整
 	}
 
 	cm, err := BuildChatModel(ctx, cfg)
@@ -155,7 +157,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
-		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas),
+		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas, skillEnv != nil),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: coreTools},

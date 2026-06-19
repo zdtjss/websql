@@ -591,20 +591,32 @@ if __name__ == "__main__":
     import sys
     from datetime import datetime
 
+    # Windows 下默认 stdin/stdout 编码可能为 GBK（cp936），导致中文路径/内容乱码或
+    # surrogate 编码异常。显式重配置为 UTF-8，与 Go 端 chcp 65001 + PYTHONIOENCODING=utf-8 对齐。
+    try:
+        sys.stdin.reconfigure(encoding='utf-8')
+        sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass  # Python < 3.7 或已重配置，忽略
+
     try:
         raw = sys.stdin.read()
         if not raw:
-            print(json.dumps({"success": False, "error": "stdin 为空"}))
+            print(json.dumps({"success": False, "error": "stdin 为空"}, ensure_ascii=False))
             sys.exit(1)
         data = json.loads(raw)
     except Exception as e:
-        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"}))
+        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"}, ensure_ascii=False))
         sys.exit(1)
 
     try:
         mode = data.get("mode", "data")
         title = data.get("title", "数据分析报告")
         output_path = data.get("outputPath", "exports/output.docx")
+        # 规范化输出路径：去掉前导 / 使其成为相对路径，确保 Windows 下保存到项目 exports/ 目录
+        # （/exports/x.docx 在 Windows 下会解析到驱动器根 D:\exports\，而非项目目录）
+        if output_path.startswith("/"):
+            output_path = output_path.lstrip("/")
         builder = WordBuilder(title=title)
 
         builder.add_cover(title, date=datetime.now().strftime("%Y-%m-%d"))
@@ -619,8 +631,11 @@ if __name__ == "__main__":
                 for b in blocks:
                     content = b.get("content", "")
                     block_type = b.get("type", "text")
-                    if block_type == "text":
+                    if block_type == "text" or block_type == "paragraph":
                         builder.add_paragraph(content)
+                    elif block_type == "heading":
+                        level = b.get("level", 2)
+                        builder.add_heading(content, level=min(max(int(level), 1), 4))
                     elif block_type == "bullet":
                         items = [item for item in content.split("\n") if item.strip()]
                         builder.add_bullet_list(items)
@@ -632,11 +647,32 @@ if __name__ == "__main__":
                     elif block_type == "h3":
                         builder.add_heading(content, level=3)
                     elif block_type == "table":
-                        rows_data = parse_markdown_table(content)
-                        if rows_data:
-                            headers = rows_data[0]
-                            body = rows_data[1:]
+                        # 支持两种格式：markdown 字符串 或 list-of-lists（[[header...], [row...], ...]）
+                        if isinstance(content, list):
+                            rows_data = content if content else None
+                        else:
+                            rows_data = parse_markdown_table(content)
+                        if rows_data and len(rows_data) >= 1:
+                            headers = [str(h) for h in rows_data[0]]
+                            body = [[str(c) for c in row] for row in rows_data[1:]]
                             builder.add_table(headers, body, caption="")
+                    elif block_type == "chart":
+                        # content 模式图表：支持 {labels, values} 简单格式
+                        chart_type = b.get("chartType", "bar")
+                        chart_title = b.get("title", "")
+                        chart_data = b.get("data", {})
+                        labels = chart_data.get("labels", [])
+                        values = chart_data.get("values", [])
+                        if labels and values:
+                            internal_data = {
+                                "categories": [str(l) for l in labels],
+                                "series": [{"name": chart_title, "values": list(values)}],
+                                "title": chart_title,
+                            }
+                            try:
+                                builder.add_chart(chart_type, internal_data, caption=chart_title)
+                            except Exception:
+                                builder.add_paragraph(f"[图表渲染失败: {chart_title}]")
                     elif block_type == "code":
                         builder.add_code_block(content)
                     else:
@@ -726,7 +762,11 @@ if __name__ == "__main__":
                         builder.doc.add_paragraph()
 
         builder.save(output_path)
-        print(json.dumps({"success": True, "outputPath": output_path}))
+        # 返回 URL 路径（/exports/...），供前端下载链接使用
+        url_path = "/" + output_path.replace("\\", "/").lstrip("/")
+        print(json.dumps({"success": True, "outputPath": url_path}, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"success": False, "error": str(e)}))
+        # 异常消息可能含 surrogate 字符（如 matplotlib 字体错误），需清理后再输出
+        safe_err = str(e).encode('utf-8', errors='replace').decode('utf-8')
+        print(json.dumps({"success": False, "error": safe_err}, ensure_ascii=False))
         sys.exit(1)

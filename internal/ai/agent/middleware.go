@@ -260,7 +260,7 @@ func recoveryHint(toolName, args string, err error) string {
 	errStr := err.Error()
 
 	// SQL 工具的错误恢复提示
-	if toolName == "query_data" || toolName == "exec_sql" || toolName == "execute_sql" {
+	if toolName == "query_data" || toolName == "exec_sql" {
 		// 方言不兼容错误（来自预检器）
 		if strings.Contains(errStr, "方言不兼容") {
 			return errStr + "\n\n请根据上述替代方案重写 SQL 后重试。不要使用相同的语法再次尝试。"

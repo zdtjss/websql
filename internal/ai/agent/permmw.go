@@ -119,9 +119,18 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 		case "exec_sql":
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
-			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "import_data":
 			return m.checkImportAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "skill":
+			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
+			m.logAllow(tCtx.Name, "skill_read_only")
+			return endpoint(ctx, argumentsInJSON, opts...)
+		case "execute":
+			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
+			// 此处记录审计日志后放行，命令黑名单校验在执行层拦截
+			m.logAllow(tCtx.Name, "execute_validated_by_backend")
+			return endpoint(ctx, argumentsInJSON, opts...)
 		default:
 			m.logAllow(tCtx.Name, "unmonitored_tool")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -163,6 +172,14 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
 		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+		case "skill":
+			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
+			m.logAllow(tCtx.Name+"(stream)", "skill_read_only")
+			return endpoint(ctx, argumentsInJSON, opts...)
+		case "execute":
+			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
+			m.logAllow(tCtx.Name+"(stream)", "execute_validated_by_backend")
+			return endpoint(ctx, argumentsInJSON, opts...)
 		default:
 			m.logAllow(tCtx.Name+"(stream)", "unmonitored_tool")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -187,6 +204,26 @@ func (m *PermissionMiddleware) extractSQLFromArgs(args string) string {
 		return ""
 	}
 	return strings.TrimSpace(sqlStr)
+}
+
+// isContentModeExportTool 判断是否为支持 content 模式的导出工具
+// 这些工具允许通过 content 参数直接传入 Markdown 内容（由 Agent 生成），无需 SQL 即可导出
+func isContentModeExportTool(toolName string) bool {
+	switch toolName {
+	case "export_html", "export_ppt", "export_analysis_docx":
+		return true
+	}
+	return false
+}
+
+// hasContentArg 检查参数中是否包含非空 content 字段
+func hasContentArg(args string) bool {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return false
+	}
+	content, ok := raw["content"].(string)
+	return ok && strings.TrimSpace(content) != ""
 }
 
 func (m *PermissionMiddleware) buildPermError(decision *PermDecisionOutput) *PermissionError {
@@ -454,9 +491,15 @@ func (m *PermissionMiddleware) checkExecAccessFallback(ctx context.Context, args
 	return endpoint(ctx, args, opts...)
 }
 
-func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, opts ...tool.Option) (string, error) {
 	sql := m.extractSQLFromArgs(args)
 	if sql == "" {
+		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
+		// 内容由 Agent 生成（基于已通过权限校验的查询结果），不直接访问数据库，无需 SQL 权限校验
+		if isContentModeExportTool(toolName) && hasContentArg(args) {
+			m.logAllow(toolName, "content_mode(no_sql)")
+			return endpoint(ctx, args, opts...)
+		}
 		return "", m.denyEmptySQL("export", args)
 	}
 
@@ -742,6 +785,12 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 	sql := m.extractSQLFromArgs(args)
 
 	if sql == "" {
+		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
+		// 内容由 Agent 生成（基于已通过权限校验的查询结果），不直接访问数据库，无需 SQL 权限校验
+		if isContentModeExportTool(toolName) && hasContentArg(args) {
+			m.logAllow(toolName+"(stream)", "content_mode(no_sql)")
+			return endpoint(ctx, args, opts...)
+		}
 		m.logDeny(toolName+"(stream)", "无法解析SQL参数，拒绝执行", nil)
 		log.Printf("%s [安全] 原始参数(截断) - args=%s\n", m.logPrefix(), truncateForLog(args))
 		return streamFromStr("权限检查失败：无法解析SQL语句，已拒绝执行"), nil

@@ -12,13 +12,21 @@ description: 生成专业数据分析 Word 报告（.docx）。Agent 负责用 q
 1. **取数**：用 `query_data` 工具执行用户的 SELECT SQL，获得 `columns` 和 `data`
 2. **计算统计**：Agent 自行计算以下字段（规则见下文）
 3. **组装 JSON**：按"输入数据契约"组装 stdin JSON
-4. **执行脚本**：用 `execute` 工具运行：
+4. **执行脚本**：用 `execute` 工具（Eino Filesystem Middleware 提供）运行：
    ```
    python <本 SKILL 目录>/scripts/word_generator.py
    ```
    JSON 通过 stdin 传入（execute 工具支持 stdin）
 5. **解析输出**：脚本 stdout 返回 `{"success":true,"outputPath":"..."}` 或 `{"success":false,"error":"..."}`
 6. **返回链接**：把 outputPath 转成下载链接 `/exports/<文件名>.docx` 返回用户
+
+## 依赖安装（首次执行前）
+
+若 Python 脚本报 `ModuleNotFoundError`，先用 `execute` 工具安装依赖：
+```
+pip install -r <本 SKILL 目录>/scripts/requirements.txt
+```
+安装完成后重试脚本执行。
 
 ## 输入数据契约（stdin JSON）
 
@@ -54,6 +62,18 @@ description: 生成专业数据分析 Word 报告（.docx）。Agent 负责用 q
 }
 ```
 
+#### 支持的 block 类型
+
+| type | content 字段 | 说明 |
+|------|-------------|------|
+| `text` / `paragraph` | 字符串 | 普通段落 |
+| `heading` | 字符串 | 标题，需额外提供 `level`（1-4） |
+| `h1` / `h2` / `h3` | 字符串 | 快捷标题（h1→1级, h2→2级, h3→3级） |
+| `bullet` / `list` | 字符串（`\n` 分隔） | 无序列表 |
+| `table` | 字符串（Markdown 表格）或 list（`[[表头...], [行...]]`） | 数据表格 |
+| `chart` | 无需 content | 图表，需提供 `chartType`（bar/pie/horizontal_bar/line）、`title`、`data: {labels:[], values:[]}` |
+| `code` | 字符串 | 代码块 |
+
 ## 统计字段计算规则（Agent 自行计算）
 
 - **numericColumns**：首行值可转为 float 的列名列表
@@ -64,23 +84,13 @@ description: 生成专业数据分析 Word 报告（.docx）。Agent 负责用 q
 - **findings**：基于 numericStats 生成 3-5 条洞察，例如：
   - "amount 平均值 1234.56，峰值 9999.0，波动较大"
   - "数据分布右偏，存在极端高值"
-- **chartPaths**：若需要图表，先用 `execute` 调 `chart_generator.py` 生成 PNG，路径填入此数组
+- **chartPaths**：预留字段，当前 word_generator.py 已内置 matplotlib 图表生成，无需单独生成 PNG。如需图表，在 `includeCharts: true` 时脚本会自动根据数据生成
 
-## 图表生成（可选）
+## 图表生成（内置）
 
-如需在报告中嵌入图表，先执行：
-```
-python <本 SKILL 目录>/scripts/chart_generator.py
-```
-输入 JSON：
-```json
-{
-  "chartType": "line|bar|pie",
-  "title": "图表标题",
-  "outputPath": "/exports/xxx.png",
-  "series": [{"name": "系列名", "xLabels": ["a","b"], "yValues": [1,2]}]
-}
-```
+word_generator.py 已内置 matplotlib 图表生成能力，无需单独执行图表脚本。
+在输入 JSON 中设置 `includeCharts: true`，脚本会根据数据自动生成合适的图表并嵌入报告。
+支持的图表类型：line / bar / horizontal_bar / pie / donut / scatter / radar / heatmap / area / stacked_bar
 
 ## 失败处理
 

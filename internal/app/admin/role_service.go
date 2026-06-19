@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"websql/internal/database"
 )
@@ -18,10 +19,21 @@ func NewRoleService(repo RoleRepo) *RoleService {
 }
 
 // 默认实例，保持对包级别函数的向后兼容
+// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
+// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
 var (
-	defaultRoleRepo    = NewRoleRepo(database.Mngtdb)
-	defaultRoleService = NewRoleService(defaultRoleRepo)
+	defaultRoleRepo    RoleRepo
+	defaultRoleService *RoleService
+	defaultRoleOnce    sync.Once
 )
+
+// ensureDefaultRole 初始化默认的 RoleRepo 和 RoleService
+func ensureDefaultRole() {
+	defaultRoleOnce.Do(func() {
+		defaultRoleRepo = NewRoleRepo(database.Mngtdb)
+		defaultRoleService = NewRoleService(defaultRoleRepo)
+	})
+}
 
 // SaveRole 保存角色及权限，并记录审计日志、清除认证缓存
 func (s *RoleService) SaveRole(role *RoleSave, currentUserId, currentUserName string) error {

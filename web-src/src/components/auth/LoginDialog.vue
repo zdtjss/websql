@@ -20,6 +20,7 @@
 <script setup>
 import { useLogin } from '@/composables/useLogin'
 import { getSystemConfig } from '@/api/system'
+import http from '@/api/index'
 import { ElMessage } from 'element-plus'
 import { client } from '@passwordless-id/webauthn'
 import { reactive, ref, useTemplateRef, watch } from 'vue'

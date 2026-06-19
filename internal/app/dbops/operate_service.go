@@ -3,6 +3,7 @@ package dbops
 import (
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/app/admin"
@@ -25,10 +26,21 @@ func NewOperateService(repo OperateRepo) *OperateService {
 }
 
 // 默认实例，保持对包级别函数的向后兼容
+// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
+// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
 var (
-	defaultOperateRepo    = NewOperateRepo(database.Mngtdb)
-	defaultOperateService = NewOperateService(defaultOperateRepo)
+	defaultOperateRepo    OperateRepo
+	defaultOperateService *OperateService
+	defaultOperateOnce    sync.Once
 )
+
+// ensureDefaultOperate 初始化默认的 OperateRepo 和 OperateService
+func ensureDefaultOperate() {
+	defaultOperateOnce.Do(func() {
+		defaultOperateRepo = NewOperateRepo(database.Mngtdb)
+		defaultOperateService = NewOperateService(defaultOperateRepo)
+	})
+}
 
 // ===== 表元数据缓存 =====
 
@@ -413,41 +425,51 @@ func filterTreeTablesByPermission(tables []*conn.Tree, connId, schema, authoriza
 // 这些函数被 treehandler / sql 等外部包调用，保持原有签名不变，委托到 defaultOperateService。
 
 func ListSchema(key string, authorization string) []*conn.Tree {
+	ensureDefaultOperate()
 	return defaultOperateService.ListSchema(key, authorization)
 }
 
 func ListTable(key string, schema, authorization string) []*conn.Tree {
+	ensureDefaultOperate()
 	return defaultOperateService.ListTable(key, schema, authorization)
 }
 
 func ListColumns(connId string, table, schema, authorization string) []*conn.Tree {
+	ensureDefaultOperate()
 	return defaultOperateService.ListColumns(connId, table, schema, authorization)
 }
 
 func ListAllColumns(key string, schema, authorization string) []*conn.Tree {
+	ensureDefaultOperate()
 	return defaultOperateService.ListAllColumns(key, schema, authorization)
 }
 
 func ListTableColumns(connIdParam string, tableName, schema, authorization string) []map[string]any {
+	ensureDefaultOperate()
 	return defaultOperateService.ListTableColumns(connIdParam, tableName, schema, authorization)
 }
 
 func QueryTableInfo(key string, schema, authorization string) []*conn.Table {
+	ensureDefaultOperate()
 	return defaultOperateService.QueryTableInfo(key, schema, authorization)
 }
 
 func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
+	ensureDefaultOperate()
 	return defaultOperateService.ColumnMap(table, schema, conn)
 }
 
 func ColumnMapFiltered(table, schema, connId, authorization string, dc *sqlx.DB) map[string]string {
+	ensureDefaultOperate()
 	return defaultOperateService.ColumnMapFiltered(table, schema, connId, authorization, dc)
 }
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
+	ensureDefaultOperate()
 	return defaultOperateService.QueryPrimaryKey(schema, table, tx)
 }
 
 func QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string {
+	ensureDefaultOperate()
 	return defaultOperateService.QueryPrimaryKeyCached(connId, schema, table, dc)
 }

@@ -1248,7 +1248,7 @@ function preprocessMarkdown(text) {
     return inner
   })
   processed = processed.replace(/\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/g, '[$1]($2)')
-  processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
+  processed = processed.replace(/`((\/|\.\/)[^`\s]+\.(xlsx|docx|pptx|html|csv|pdf|txt|zip|json|md))`/g, (match, path) => {
     const filename = path.substring(path.lastIndexOf('/') + 1)
     return `[${filename}](${path})`
   })

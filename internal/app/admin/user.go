@@ -12,6 +12,7 @@ import (
 )
 
 func FindUserBase(c *gin.Context) {
+	ensureDefaultUser()
 	loginName := c.Query("loginName")
 	key := c.Query("key")
 	userList, err := defaultUserService.FindUserBase(loginName, key)
@@ -24,6 +25,7 @@ func FindUserBase(c *gin.Context) {
 }
 
 func FindUser(c *gin.Context) {
+	ensureDefaultUser()
 	key := c.Query("key")
 	name := c.Query("name")
 	loginName := c.Query("loginName")
@@ -48,6 +50,7 @@ func SaveUser(c *gin.Context) {
 		return
 	}
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
+	ensureDefaultUser()
 	err := defaultUserService.Save(user, currentUser.Id, currentUser.Name)
 	if err != nil {
 		if err.Error() == "此登录名已存在" {
@@ -65,6 +68,7 @@ func SaveUserBio(c *gin.Context) {
 	bioKey := c.PostForm("bioKey")
 	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
+	ensureDefaultUser()
 	err := defaultUserService.SaveUserBio(user.Id, bioKey)
 	if err != nil {
 		log.Printf("保存用户失败: %v", err)
@@ -94,6 +98,7 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
+	ensureDefaultUser()
 	err := defaultUserService.ChangePassword(user.Id, oldPwd, newPwd)
 	if err != nil {
 		if err.Error() == "用户信息异常" || err.Error() == "旧密码不正确" {
@@ -122,6 +127,7 @@ func InitUser(c *gin.Context) {
 	if !CheckAdminPower(c) {
 		return
 	}
+	ensureDefaultUser()
 	err := defaultUserService.InitUser()
 	if err != nil {
 		log.Printf("初始化用户失败: %v", err)
@@ -135,6 +141,7 @@ func DelUser(c *gin.Context) {
 	if !CheckAdminPower(c) {
 		return
 	}
+	ensureDefaultUser()
 	defaultUserService.Delete(c.PostForm("id"))
 	response.WriteOK(c, "")
 }

@@ -213,7 +213,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	if defaultConnID == "" && len(req.Schemas) > 0 {
 		defaultConnID = req.Schemas[0].ConnID
 	}
-	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, a.scope, req.Schemas)
+	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, a.scope, req.Schemas, export.GetSkillEnv() != nil)
 
 	if detectPreviousExecution(allMsgs) {
 		sysPrompt += "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +

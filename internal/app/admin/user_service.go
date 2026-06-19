@@ -33,10 +33,21 @@ func NewUserService(repo UserRepo) *UserService {
 }
 
 // 默认实例，保持对包级别函数的向后兼容
+// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
+// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
 var (
-	defaultUserRepo    = NewUserRepo(database.Mngtdb)
-	defaultUserService = NewUserService(defaultUserRepo)
+	defaultUserRepo    UserRepo
+	defaultUserService *UserService
+	defaultUserOnce    sync.Once
 )
+
+// ensureDefaultUser 初始化默认的 UserRepo 和 UserService
+func ensureDefaultUser() {
+	defaultUserOnce.Do(func() {
+		defaultUserRepo = NewUserRepo(database.Mngtdb)
+		defaultUserService = NewUserService(defaultUserRepo)
+	})
+}
 
 // FindByLoginName 按登录名查询用户
 func (s *UserService) FindByLoginName(loginName string) (*User, error) {
@@ -231,34 +242,42 @@ func Md5sum(s string) string {
 // 保持原有签名不变，委托到 defaultUserService / defaultUserRepo。
 
 func findByLoginName(loginName string) (*User, error) {
+	ensureDefaultUser()
 	return defaultUserService.FindByLoginName(loginName)
 }
 
 func findByBio(bioKey string) (*User, error) {
+	ensureDefaultUser()
 	return defaultUserService.FindByBio(bioKey)
 }
 
 func findByToken(token string) (*User, error) {
+	ensureDefaultUser()
 	return defaultUserService.FindByToken(token)
 }
 
 func findUserPower(userId string) []string {
+	ensureDefaultUser()
 	return defaultUserRepo.FindUserPower(userId)
 }
 
 func findUserPowerDetails(userId string) []*PowerDetail {
+	ensureDefaultUser()
 	return defaultUserRepo.FindUserPowerDetails(userId)
 }
 
 func FindUserPowerDetails(userId string) []*PowerDetail {
+	ensureDefaultUser()
 	return defaultUserRepo.FindUserPowerDetails(userId)
 }
 
 func FindUserRoles(userId string) []*Role {
+	ensureDefaultUser()
 	return defaultUserRepo.FindUserRoles(userId)
 }
 
 func findUserRole(userIdList []any) (map[string][]*UserRole, error) {
+	ensureDefaultUser()
 	return defaultUserRepo.FindUserRole(userIdList)
 }
 

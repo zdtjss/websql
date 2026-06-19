@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/app/conn"
@@ -30,10 +31,21 @@ func NewBackupService(repo BackupRepo) *BackupService {
 }
 
 // 默认实例，保持对包级别函数的向后兼容
+// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
+// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
 var (
-	defaultBackupRepo    = NewBackupRepo(database.Mngtdb)
-	defaultBackupService = NewBackupService(defaultBackupRepo)
+	defaultBackupRepo    BackupRepo
+	defaultBackupService *BackupService
+	defaultBackupOnce    sync.Once
 )
+
+// ensureDefaultBackup 初始化默认的 BackupRepo 和 BackupService
+func ensureDefaultBackup() {
+	defaultBackupOnce.Do(func() {
+		defaultBackupRepo = NewBackupRepo(database.Mngtdb)
+		defaultBackupService = NewBackupService(defaultBackupRepo)
+	})
+}
 
 // CreateBackup 创建数据库备份
 func (s *BackupService) CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {

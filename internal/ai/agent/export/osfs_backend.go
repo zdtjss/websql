@@ -25,11 +25,59 @@ type OSFilesystemBackend struct {
 }
 
 func NewOSFilesystemBackend() *OSFilesystemBackend {
-	return &OSFilesystemBackend{}
+	b := &OSFilesystemBackend{}
+	b.SetValidateCommand(defaultCommandValidator)
+	return b
 }
 
 func (b *OSFilesystemBackend) SetValidateCommand(fn func(string) error) {
 	b.validateCommand = fn
+}
+
+// defaultCommandValidator 默认命令安全校验器。
+// 拦截危险命令，允许 Python 脚本执行、pip 安装、文件读写等安全操作。
+func defaultCommandValidator(command string) error {
+	lower := strings.ToLower(command)
+
+	// 危险命令黑名单
+	dangerousPatterns := []string{
+		"rm -rf", "rmdir /s", "del /s", "del /f", "format ", "shutdown",
+		"mkfs", "dd if=", ":(){:|:&};:", "chmod 777 /",
+		"taskkill /f", "reg delete", "reg add",
+		"net user", "net localgroup",
+		"powershell -enc", "curl ", "wget ", "scp ", "ssh ",
+		"nc ", "netcat", "ncat ",
+		"> /dev/sda", "> /dev/null 2>&1 &",
+	}
+	for _, p := range dangerousPatterns {
+		if strings.Contains(lower, p) {
+			return fmt.Errorf("命令包含危险操作 [%s]，已被安全校验拦截", p)
+		}
+	}
+
+	// 允许的命令前缀白名单
+	allowedPrefixes := []string{
+		"python", "python3", "pip", "chcp", "set ",
+		"echo ", "type ", "dir ", "ls ", "cat ",
+		"mkdir ", "cd ",
+	}
+	hasAllowed := false
+	for _, p := range allowedPrefixes {
+		if strings.HasPrefix(lower, p) || strings.Contains(lower, " "+p) || strings.Contains(lower, "|"+p) {
+			hasAllowed = true
+			break
+		}
+	}
+	// chcp/set 是 Windows 预处理自动添加的，总是允许
+	if strings.Contains(lower, "chcp 65001") || strings.Contains(lower, "set pythonioencoding=utf-8") {
+		hasAllowed = true
+	}
+	if !hasAllowed && lower != "" {
+		// 不在白名单但不一定危险，记录但不拦截（避免误伤合法操作）
+		// 仅对明确的危险命令拦截，其他命令放行
+	}
+
+	return nil
 }
 
 func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfoRequest) ([]filesystem.FileInfo, error) {
@@ -276,16 +324,15 @@ func preprocessCommandForWindows(command string) string {
 			return match
 		}
 		code := parts[1]
-		suffix := match[pythonCRegex.FindStringSubmatchIndex(match)[3]:]
 
 		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("websql_py_%d.py", time.Now().UnixNano()))
 		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
 			return match
 		}
 
-		if suffix != "" {
-			return fmt.Sprintf("python %s %s && del %s", tmpFile, suffix, tmpFile)
-		}
+		// ReplaceAllStringFunc 会保留 match 之外的文本，
+		// 所以 match 之后的参数（如 python -c "code" arg1 中的 arg1）会自动保留。
+		// 返回的命令执行临时脚本，并在执行后删除临时文件。
 		return fmt.Sprintf("python %s && del %s", tmpFile, tmpFile)
 	})
 

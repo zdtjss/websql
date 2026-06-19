@@ -3,6 +3,7 @@ package conn
 import (
 	"errors"
 	"log"
+	"sync"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
@@ -24,10 +25,21 @@ func NewConnService(repo ConnRepo) *ConnService {
 }
 
 // 默认实例，保持对包级别函数的向后兼容
+// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
+// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
 var (
-	defaultConnRepo    = NewConnRepo(database.Mngtdb)
-	defaultConnService = NewConnService(defaultConnRepo)
+	defaultConnRepo    ConnRepo
+	defaultConnService *ConnService
+	defaultConnOnce    sync.Once
 )
+
+// ensureDefaultConn 初始化默认的 ConnRepo 和 ConnService
+func ensureDefaultConn() {
+	defaultConnOnce.Do(func() {
+		defaultConnRepo = NewConnRepo(database.Mngtdb)
+		defaultConnService = NewConnService(defaultConnRepo)
+	})
+}
 
 // 连接相关错误，HTTP 处理函数通过 errors.Is 判断
 var (
@@ -321,17 +333,21 @@ func checkPowerByParamForRole(roleDetails []*admin.PowerDetail, param *admin.Pow
 // 这些函数被其他包调用，保持原有签名不变，委托到 defaultConnService。
 
 func ListConn(parentId string, userPower *admin.UserPower) []*Tree {
+	ensureDefaultConn()
 	return defaultConnService.ListConn(parentId, userPower)
 }
 
 func FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table {
+	ensureDefaultConn()
 	return defaultConnService.FilterTablesByPermission(tables, connId, schema, userPower)
 }
 
 func GetConn(id string, authorization string) *sqlx.DB {
+	ensureDefaultConn()
 	return defaultConnService.GetConn(id, authorization)
 }
 
 func GetConnNoCheck(connId string) *sqlx.DB {
+	ensureDefaultConn()
 	return defaultConnService.GetConnNoCheck(connId)
 }

@@ -74,12 +74,12 @@ func initSQLitePragma(db *sqlx.DB) {
 func GetConn(param *DBParam) *sqlx.DB {
 	key := createKey(param)
 
-	dbMapMu.RLock()
+	dbMapMu.Lock()
 	val, ok := DBMap[key]
 	if ok {
 		dbLastUsed[key] = time.Now()
 	}
-	dbMapMu.RUnlock()
+	dbMapMu.Unlock()
 	if ok {
 		return val
 	}
