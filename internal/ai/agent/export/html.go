@@ -3,7 +3,7 @@ package export
 import (
 	"context"
 	"fmt"
-	"html"
+	"html/template"
 	"log"
 	"os"
 	"strings"
@@ -142,17 +142,15 @@ func escapeMarkdownTableCell(s string) string {
 	return s
 }
 
-// wrapHTMLTemplate 将 Markdown 内容包装在完整的 HTML 模板中
-// Markdown 原文放在 <script type="text/markdown"> 中，由前端 marked.js 渲染
-func wrapHTMLTemplate(title, markdownBody string) string {
-	// 转义 </script> 防止截断
-	escapedBody := strings.ReplaceAll(markdownBody, "</script>", "<\\/script>")
-	return fmt.Sprintf(`<!DOCTYPE html>
+// htmlReportTemplate 是 HTML 报告模板。
+// Title 由 html/template 自动转义；Markdown 正文通过占位符 __MARKDOWN_BODY__ 注入，
+// 避免 html/template 的上下文转义破坏 <script type="text/markdown"> 中的原始文本。
+const htmlReportTemplate = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>%s</title>
+<title>{{.Title}}</title>
 <style>
 :root {
   --bg: #ffffff;
@@ -242,7 +240,7 @@ blockquote {
 blockquote p { margin: 0.3em 0; }
 table {
   border-collapse: collapse;
-  width: 100%%;
+  width: 100%;
   font-size: 0.9em;
   margin: 1em 0;
 }
@@ -258,7 +256,7 @@ th {
 }
 tbody tr:nth-child(even) { background: var(--table-stripe); }
 img {
-  max-width: 100%%;
+  max-width: 100%;
   height: auto;
   border-radius: 4px;
 }
@@ -270,7 +268,7 @@ img {
   right: 20px;
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 50%%;
+  border-radius: 50%;
   width: 40px;
   height: 40px;
   cursor: pointer;
@@ -380,7 +378,7 @@ img {
 .mermaid-source-modal-content {
   background: var(--bg);
   border-radius: 8px;
-  width: 80%%;
+  width: 80%;
   max-width: 700px;
   max-height: 80vh;
   display: flex;
@@ -420,13 +418,13 @@ img {
   .theme-toggle, .mermaid-toolbar { display: none; }
   body { max-width: none; padding: 0; }
   pre, table, .mermaid-wrapper { page-break-inside: avoid; }
-  img { max-width: 100%% !important; }
+  img { max-width: 100% !important; }
 }
 </style>
 </head>
 <body data-theme="light">
 <button class="theme-toggle" onclick="toggleTheme()" title="切换主题">🌙</button>
-<script id="markdown-source" type="text/markdown">%s</script>
+<script id="markdown-source" type="text/markdown">__MARKDOWN_BODY__</script>
 <div id="rendered-content"></div>
 
 <!-- 源码查看模态框 -->
@@ -809,5 +807,19 @@ window.addEventListener('load', function() {
 });
 </script>
 </body>
-</html>`, html.EscapeString(title), escapedBody)
+</html>`
+
+var htmlReportTmpl = template.Must(template.New("htmlReport").Parse(htmlReportTemplate))
+
+// wrapHTMLTemplate 将 Markdown 内容包装在完整的 HTML 模板中
+// Markdown 原文放在 <script type="text/markdown"> 中，由前端 marked.js 渲染
+func wrapHTMLTemplate(title, markdownBody string) string {
+	// 转义 </script> 防止截断
+	escapedBody := strings.ReplaceAll(markdownBody, "</script>", "<\\/script>")
+	var sb strings.Builder
+	if err := htmlReportTmpl.Execute(&sb, struct{ Title string }{title}); err != nil {
+		log.Printf("[export_html] 模板执行失败: %v", err)
+		return ""
+	}
+	return strings.Replace(sb.String(), "__MARKDOWN_BODY__", escapedBody, 1)
 }
