@@ -345,18 +345,23 @@ img {
   flex: 1;
   display: flex;
   align-items: flex-start;
-  justify-content: center;
+  justify-content: flex-start;
   cursor: grab;
   position: relative;
 }
 .mermaid-stage:active { cursor: grabbing; }
 .mermaid-wrapper.is-fullscreen .mermaid-stage {
   padding: 20px;
+  align-items: center;
+}
+.mermaid-wrapper.is-fullscreen .mermaid-canvas {
+  margin: auto;
 }
 .mermaid-canvas {
   transform-origin: center center;
   transition: transform 0.05s ease-out;
   display: inline-block;
+  margin: 0 auto;
 }
 .mermaid-canvas.no-transition { transition: none; }
 .mermaid-canvas svg { max-width: none; }
@@ -421,7 +426,7 @@ img {
 </head>
 <body data-theme="light">
 <button class="theme-toggle" onclick="toggleTheme()" title="切换主题">🌙</button>
-<div id="markdown-source" type="text/markdown" style="display:none">%s</div>
+<script id="markdown-source" type="text/markdown">%s</script>
 <div id="rendered-content"></div>
 
 <!-- 源码查看模态框 -->
@@ -441,7 +446,7 @@ img {
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css" id="hljs-light">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css" id="hljs-dark" disabled>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -457,6 +462,8 @@ function renderMath() {
         {left: "$$", right: "$$", display: true},
         {left: "$", right: "$", display: false}
       ],
+      // 忽略 mermaid 容器，避免 KaTeX 误处理 mermaid 源码中的 $ 等字符
+      ignoredClasses: ['mermaid-wrapper'],
       throwOnError: false
     });
   }
@@ -470,7 +477,7 @@ function toggleTheme() {
   document.getElementById('hljs-light').disabled = !isDark;
   document.getElementById('hljs-dark').disabled = isDark;
   if (window.mermaid) {
-    mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'loose' });
+    mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'loose', useMaxWidth: false });
     rerenderMermaid();
   }
 }
@@ -479,6 +486,9 @@ function toggleTheme() {
 function renderMarkdown() {
   var mdSource = document.getElementById('markdown-source').textContent;
   if (!mdSource) return;
+  // 反转义 <\/script>（Go 端为防止 script 标签提前闭合做了转义）
+  // 注意：JS 里的 <\/script> 也会被 HTML 解析器当作结束标签，所以用字符串拼接
+  mdSource = mdSource.replace(/<\\\/script>/g, '<' + '/script>');
 
   // marked 配置：GFM、breaks
   marked.setOptions({
@@ -513,14 +523,41 @@ function renderMarkdown() {
 }
 
 // ===== Mermaid 交互处理 =====
+// 为 xychart 注入更大的画布尺寸和标签间距，避免 x/y 轴图例被挤压或遮住
+function enhanceXyChartSource(source) {
+  // 仅处理 xychart 类型（大小写不敏感，允许前导空白）
+  if (!/^\s*xychart\b/im.test(source)) return source;
+  // 已有 frontmatter 配置则不重复注入，避免冲突
+  var trimmed = source.replace(/^\s+/, '');
+  if (trimmed.indexOf('---') === 0) return source;
+
+  var config =
+    '---\n' +
+    'config:\n' +
+    '  xyChart:\n' +
+    '    width: 900\n' +
+    '    height: 600\n' +
+    '    xAxis:\n' +
+    '      labelPadding: 10\n' +
+    '      titlePadding: 15\n' +
+    '    yAxis:\n' +
+    '      labelPadding: 10\n' +
+    '      titlePadding: 15\n' +
+    '---\n';
+  return config + source;
+}
+
 function processMermaidBlocks() {
   var mermaidBlocks = document.querySelectorAll('code.language-mermaid');
+  var items = [];
   mermaidBlocks.forEach(function(codeEl, idx) {
     var pre = codeEl.parentElement;
     if (!pre || pre.dataset.mermaidProcessed) return;
     pre.dataset.mermaidProcessed = '1';
 
     var source = codeEl.textContent;
+    source = enhanceXyChartSource(source);
+
     var wrapper = document.createElement('div');
     wrapper.className = 'mermaid-wrapper';
     wrapper.dataset.mermaidSource = source;
@@ -547,22 +584,26 @@ function processMermaidBlocks() {
 
     pre.parentNode.replaceChild(wrapper, pre);
 
-    // 渲染 mermaid
-    var renderId = 'mermaid-' + Date.now() + '-' + idx;
-    canvas.id = renderId;
     canvas.textContent = source;
+    items.push({ canvas: canvas, wrapper: wrapper, stage: stage, source: source });
 
-    if (window.mermaid) {
-      try {
-        mermaid.run({ nodes: [canvas] });
-      } catch(e) {
-        canvas.textContent = 'Mermaid 渲染失败: ' + e.message;
-      }
-    }
-
-    // 绑定交互
+    // 绑定交互（同步绑定即可，不依赖渲染结果）
     bindMermaidInteractions(wrapper, canvas, stage, source);
   });
+
+  // 顺序渲染 mermaid（避免并发调用 mermaid.run 导致内部状态冲突）
+  if (window.mermaid && items.length > 0) {
+    var i = 0;
+    function renderNext() {
+      if (i >= items.length) return;
+      var item = items[i++];
+      mermaid.run({ nodes: [item.canvas] }).then(renderNext).catch(function(e) {
+        item.canvas.textContent = 'Mermaid 渲染失败: ' + (e && e.message ? e.message : e);
+        renderNext();
+      });
+    }
+    renderNext();
+  }
 }
 
 function bindMermaidInteractions(wrapper, canvas, stage, source) {
@@ -580,7 +621,7 @@ function bindMermaidInteractions(wrapper, canvas, stage, source) {
   function zoomBy(factor) {
     var newScale = scale * factor;
     if (newScale < 0.3) newScale = 0.3;
-    if (newScale > 5) newScale = 5;
+    if (newScale > 15) newScale = 15;
     scale = newScale;
     updateTransform();
   }
@@ -592,6 +633,26 @@ function bindMermaidInteractions(wrapper, canvas, stage, source) {
     updateTransform();
   }
 
+  function toggleFullscreen() {
+    if (wrapper.classList.contains('is-fullscreen')) {
+      wrapper.classList.remove('is-fullscreen');
+      document.body.style.overflow = '';
+      // 退出全屏时重置缩放
+      scale = 1;
+      translateX = 0;
+      translateY = 0;
+      updateTransform();
+    } else {
+      wrapper.classList.add('is-fullscreen');
+      document.body.style.overflow = 'hidden';
+      // 进入全屏时默认放大3倍并居中
+      scale = 3;
+      translateX = 0;
+      translateY = 0;
+      updateTransform();
+    }
+  }
+
   // 工具栏按钮
   wrapper.querySelector('.mermaid-toolbar').addEventListener('click', function(e) {
     var btn = e.target.closest('button');
@@ -601,7 +662,7 @@ function bindMermaidInteractions(wrapper, canvas, stage, source) {
       case 'zoom-in': zoomBy(1.2); break;
       case 'zoom-out': zoomBy(1/1.2); break;
       case 'reset': reset(); break;
-      case 'fullscreen': toggleFullscreen(wrapper); break;
+      case 'fullscreen': toggleFullscreen(); break;
       case 'source': showSource(source); break;
     }
   });
@@ -661,24 +722,18 @@ function bindMermaidInteractions(wrapper, canvas, stage, source) {
   }, { passive: false });
 }
 
-function toggleFullscreen(wrapper) {
-  if (wrapper.classList.contains('is-fullscreen')) {
-    wrapper.classList.remove('is-fullscreen');
-    // 恢复 body 滚动
-    document.body.style.overflow = '';
-  } else {
-    wrapper.classList.add('is-fullscreen');
-    document.body.style.overflow = 'hidden';
-  }
-}
-
 // ESC 退出全屏
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     var fullscreenWrapper = document.querySelector('.mermaid-wrapper.is-fullscreen');
     if (fullscreenWrapper) {
-      fullscreenWrapper.classList.remove('is-fullscreen');
-      document.body.style.overflow = '';
+      var fullscreenBtn = fullscreenWrapper.querySelector('[data-action="fullscreen"]');
+      if (fullscreenBtn) {
+        fullscreenBtn.click();
+      } else {
+        fullscreenWrapper.classList.remove('is-fullscreen');
+        document.body.style.overflow = '';
+      }
     }
     var modal = document.getElementById('mermaidSourceModal');
     if (modal.classList.contains('active')) {
@@ -717,6 +772,7 @@ function copyMermaidSource() {
 
 // 重新渲染所有 mermaid（主题切换时调用）
 function rerenderMermaid() {
+  var canvases = [];
   document.querySelectorAll('.mermaid-wrapper').forEach(function(wrapper) {
     var source = wrapper.dataset.mermaidSource;
     if (!source) return;
@@ -726,15 +782,25 @@ function rerenderMermaid() {
     canvas.innerHTML = '';
     canvas.removeAttribute('data-processed');
     canvas.textContent = source;
-    try {
-      mermaid.run({ nodes: [canvas] });
-    } catch(e) {}
+    canvases.push(canvas);
   });
+
+  // 顺序渲染，避免并发冲突
+  var i = 0;
+  function renderNext() {
+    if (i >= canvases.length) return;
+    var canvas = canvases[i++];
+    mermaid.run({ nodes: [canvas] }).then(renderNext).catch(function(e) {
+      canvas.textContent = 'Mermaid 渲染失败: ' + (e && e.message ? e.message : e);
+      renderNext();
+    });
+  }
+  renderNext();
 }
 
 // 初始化 Mermaid
 if (window.mermaid) {
-  mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+  mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose', useMaxWidth: false });
 }
 
 // 页面加载后渲染
