@@ -70,7 +70,7 @@
         <el-input v-model="systemConfig.outterUser" placeholder="http://localhost:8081/api/login" />
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" @click="testOutterUser" :loading="testingOutterUser">
+        <el-button type="primary" @click="handleTestOutterUser" :loading="testingOutterUser">
           测试接口
         </el-button>
       </el-form-item>
@@ -426,7 +426,7 @@ const testModelConfig = () => {
   })
 }
 
-const testOutterUser = () => {
+const handleTestOutterUser = () => {
   testingOutterUser.value = true
   testOutterUser(systemConfig.value.outterUser)
     .then((resp) => {

@@ -54,7 +54,8 @@
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { listConn, showTree, searchObjects } from '@/api/conn'
+import { listConn, showTree } from '@/api/conn'
+import { searchObjects } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 
