@@ -41,6 +41,9 @@ func InitSkillEnv(ctx context.Context, skillsRootDir string) error {
 	defaultSkillEnvOnce.Do(func() {
 		osfsBackend := NewOSFilesystemBackend()
 
+		// 检测 Python 路径并设置到后端，用于 Windows 上 python3 → python 替换
+		osfsBackend.SetPythonPath(GetPythonPath())
+
 		backend, err := skill.NewBackendFromFilesystem(ctx, &skill.BackendFromFilesystemConfig{
 			Backend: osfsBackend,
 			BaseDir: skillsRootDir,

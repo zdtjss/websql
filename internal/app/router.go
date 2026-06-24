@@ -155,6 +155,8 @@ func MainRegister(router *gin.Engine) {
 		routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	}
 	routerGroup.GET("/exports/:filename", handleExportDownload)
+	// 同时注册不带 /api 前缀的路由，兼容前端未拼接 apiBase 的导出链接
+	router.GET("/exports/:filename", handleExportDownload)
 
 	// 审计日志 API
 	routerGroup.GET("/audit/logs", audit.HandleGetAuditLogs)

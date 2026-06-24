@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	admin "websql/internal/app/admin"
 	"websql/internal/pkg/idgen"
@@ -21,13 +23,37 @@ import (
 const uploadDir = "./data/uploads"
 const uploadMaxAge = 30 * time.Minute
 const uploadCleanSec = 5 * time.Minute
+const maxUploadSize = 20 * 1024 * 1024 // Excel/CSV 最大 20MB；Markdown 不限
+
+// uploadFileType 上传文件类型
+type uploadFileType string
+
+const (
+	fileTypeExcel    uploadFileType = "excel"
+	fileTypeCSV      uploadFileType = "csv"
+	fileTypeMarkdown uploadFileType = "markdown"
+)
+
+func classifyUploadExt(ext string) (uploadFileType, bool) {
+	switch ext {
+	case ".xlsx", ".xls":
+		return fileTypeExcel, true
+	case ".csv":
+		return fileTypeCSV, true
+	case ".md", ".markdown":
+		return fileTypeMarkdown, true
+	}
+	return "", false
+}
 
 type uploadMeta struct {
 	ID        string
 	FileName  string
 	DiskPath  string
-	Columns   []string
-	TotalRows int
+	Type      uploadFileType // excel | csv | markdown
+	Columns   []string       // 表格类（excel/csv）
+	TotalRows int            // 表格类（excel/csv）
+	CharCount int            // markdown 字符数
 }
 
 var uploadCache = NewTTLCache[*uploadMeta](uploadMaxAge, uploadCleanSec, func(key string, meta *uploadMeta) {
@@ -42,8 +68,10 @@ func init() {
 }
 
 type UploadedFile struct {
-	Columns []string
-	Data    [][]string
+	Type    string     // "table"（excel/csv）| "text"（markdown）
+	Columns []string   // table
+	Data    [][]string // table
+	Text    string     // text（markdown 全文）
 }
 
 func GetUploadedFile(id string) (*UploadedFile, error) {
@@ -52,39 +80,65 @@ func GetUploadedFile(id string) (*UploadedFile, error) {
 		return nil, fmt.Errorf("上传文件不存在或已过期（id=%s），请重新上传", id)
 	}
 
-	f, err := excelize.OpenFile(meta.DiskPath)
-	if err != nil {
-		return nil, fmt.Errorf("读取暂存文件失败：%w", err)
+	switch meta.Type {
+	case fileTypeMarkdown:
+		raw, err := os.ReadFile(meta.DiskPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
+		}
+		return &UploadedFile{Type: "text", Text: string(raw)}, nil
+	case fileTypeCSV:
+		f, err := os.Open(meta.DiskPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
+		}
+		defer f.Close()
+		reader := csv.NewReader(f)
+		reader.LazyQuotes = true
+		reader.FieldsPerRecord = -1 // 允许行列数不一致
+		allRows, err := reader.ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("解析 CSV 失败：%w", err)
+		}
+		return buildTabularUploaded(allRows)
+	default: // excel
+		f, err := excelize.OpenFile(meta.DiskPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
+		}
+		defer f.Close()
+		sheetName := f.GetSheetName(0)
+		allRows, err := f.GetRows(sheetName)
+		if err != nil {
+			return nil, fmt.Errorf("解析工作表失败：%w", err)
+		}
+		return buildTabularUploaded(allRows)
 	}
-	defer f.Close()
+}
 
-	sheetName := f.GetSheetName(0)
-	rows, err := f.GetRows(sheetName)
-	if err != nil {
-		return nil, fmt.Errorf("解析工作表失败：%w", err)
-	}
-	if len(rows) < 2 {
+// buildTabularUploaded 将二维行数据（首行表头）转为 UploadedFile，跳过空行并按列数补齐。
+func buildTabularUploaded(allRows [][]string) (*UploadedFile, error) {
+	if len(allRows) < 2 {
 		return nil, errors.New("文件数据不足")
 	}
-
-	columns := rows[0]
+	columns := allRows[0]
 	var data [][]string
-	for _, row := range rows[1:] {
+	for _, row := range allRows[1:] {
 		hasValue := false
 		for _, cell := range row {
-			if cell != "" {
+			if strings.TrimSpace(cell) != "" {
 				hasValue = true
 				break
 			}
 		}
-		if hasValue {
-			padded := make([]string, len(columns))
-			copy(padded, row)
-			data = append(data, padded)
+		if !hasValue {
+			continue
 		}
+		padded := make([]string, len(columns))
+		copy(padded, row)
+		data = append(data, padded)
 	}
-
-	return &UploadedFile{Columns: columns, Data: data}, nil
+	return &UploadedFile{Type: "table", Columns: columns, Data: data}, nil
 }
 
 func RemoveUploadedFile(id string) {
@@ -94,26 +148,27 @@ func RemoveUploadedFile(id string) {
 func HandleUploadExcel(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
-		log.Printf("[UploadExcel] 文件上传失败 - err=%v\n", err)
+		log.Printf("[Upload] 文件上传失败 - err=%v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "文件上传失败，请检查文件是否正确选择"})
 		return
 	}
 
-	const maxFileSize = 20 * 1024 * 1024
-	if fileHeader.Size > maxFileSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件大小不能超过 20MB"})
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	ft, ok := classifyUploadExt(ext)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "仅支持 .xlsx/.xls/.csv/.md/.markdown 格式的文件"})
 		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-	if ext != ".xlsx" && ext != ".xls" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "仅支持 .xlsx 和 .xls 格式的 Excel 文件"})
+	// Markdown 不做数据量限制；Excel/CSV 限制 20MB
+	if ft != fileTypeMarkdown && fileHeader.Size > maxUploadSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件大小不能超过 20MB"})
 		return
 	}
 
 	src, err := fileHeader.Open()
 	if err != nil {
-		log.Printf("[UploadExcel] 打开文件失败 - err=%v\n", err)
+		log.Printf("[Upload] 打开文件失败 - err=%v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "打开文件失败，请重试"})
 		return
 	}
@@ -124,44 +179,63 @@ func HandleUploadExcel(c *gin.Context) {
 
 	dst, err := os.Create(diskPath)
 	if err != nil {
-		log.Printf("[UploadExcel] 保存文件失败 - err=%v\n", err)
+		log.Printf("[Upload] 保存文件失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败，请重试"})
 		return
 	}
 	if _, err := io.Copy(dst, src); err != nil {
 		dst.Close()
 		os.Remove(diskPath)
-		log.Printf("[UploadExcel] 写入文件失败 - err=%v\n", err)
+		log.Printf("[Upload] 写入文件失败 - err=%v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败，请重试"})
 		return
 	}
 	dst.Close()
 
-	xlsx, err := excelize.OpenFile(diskPath)
-	if err != nil {
-		os.Remove(diskPath)
-		log.Printf("[UploadExcel] 读取 Excel 文件失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取 Excel 文件失败，请检查文件格式"})
+	// Markdown：读取全文，不做数据量限制
+	if ft == fileTypeMarkdown {
+		raw, err := os.ReadFile(diskPath)
+		if err != nil {
+			os.Remove(diskPath)
+			log.Printf("[Upload] 读取 Markdown 失败 - err=%v\n", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败，请检查文件内容"})
+			return
+		}
+		text := string(raw)
+		charCount := utf8.RuneCountInString(text)
+		uploadCache.Set(fileID, &uploadMeta{
+			ID:        fileID,
+			FileName:  fileHeader.Filename,
+			DiskPath:  diskPath,
+			Type:      ft,
+			CharCount: charCount,
+		})
+		log.Printf("[Upload] Markdown 已暂存 - id=%s, name=%s, chars=%d\n", fileID, fileHeader.Filename, charCount)
+		c.JSON(http.StatusOK, gin.H{
+			"fileId":      fileID,
+			"fileName":    fileHeader.Filename,
+			"fileType":    string(ft),
+			"charCount":   charCount,
+			"textPreview": markdownPreview(text),
+		})
 		return
 	}
-	defer xlsx.Close()
 
-	sheetName := xlsx.GetSheetName(0)
-	allRows, err := xlsx.GetRows(sheetName)
+	// 表格类：Excel / CSV
+	allRows, err := readTabularRows(diskPath, ft)
 	if err != nil {
 		os.Remove(diskPath)
-		log.Printf("[UploadExcel] 读取工作表失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取工作表失败，请检查文件内容"})
+		log.Printf("[Upload] 解析表格失败 - type=%s, err=%v\n", ft, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if len(allRows) < 2 {
 		os.Remove(diskPath)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Excel 文件至少需要包含表头行和一行数据"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件至少需要包含表头行和一行数据"})
 		return
 	}
 
 	columns := allRows[0]
-
 	var preview [][]string
 	totalRows := 0
 	for _, row := range allRows[1:] {
@@ -187,20 +261,66 @@ func HandleUploadExcel(c *gin.Context) {
 		ID:        fileID,
 		FileName:  fileHeader.Filename,
 		DiskPath:  diskPath,
+		Type:      ft,
 		Columns:   columns,
 		TotalRows: totalRows,
 	})
 
-	log.Printf("[UploadExcel] 文件已暂存 - id=%s, name=%s, columns=%v, rows=%d\n",
-		fileID, fileHeader.Filename, columns, totalRows)
+	log.Printf("[Upload] 表格文件已暂存 - id=%s, name=%s, type=%s, columns=%v, rows=%d\n",
+		fileID, fileHeader.Filename, ft, columns, totalRows)
 
 	c.JSON(http.StatusOK, gin.H{
 		"fileId":    fileID,
 		"fileName":  fileHeader.Filename,
+		"fileType":  string(ft),
 		"columns":   columns,
 		"totalRows": totalRows,
 		"preview":   preview,
 	})
+}
+
+// readTabularRows 读取表格文件（excel/csv）的全部行。
+func readTabularRows(diskPath string, ft uploadFileType) ([][]string, error) {
+	if ft == fileTypeCSV {
+		f, err := os.Open(diskPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取文件失败，请重试")
+		}
+		defer f.Close()
+		reader := csv.NewReader(f)
+		reader.LazyQuotes = true
+		reader.FieldsPerRecord = -1 // 允许行列数不一致
+		rows, err := reader.ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("解析 CSV 失败，请检查文件格式")
+		}
+		return rows, nil
+	}
+	// excel
+	xlsx, err := excelize.OpenFile(diskPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Excel 文件失败，请检查文件格式")
+	}
+	defer xlsx.Close()
+	sheetName := xlsx.GetSheetName(0)
+	rows, err := xlsx.GetRows(sheetName)
+	if err != nil {
+		return nil, fmt.Errorf("读取工作表失败，请检查文件内容")
+	}
+	return rows, nil
+}
+
+// markdownPreview 截取前 30 行（且不超过 2000 字符）作为预览文本。
+func markdownPreview(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > 30 {
+		lines = lines[:30]
+	}
+	preview := strings.Join(lines, "\n")
+	if utf8.RuneCountInString(preview) > 2000 {
+		preview = string([]rune(preview)[:2000]) + "…"
+	}
+	return preview
 }
 
 func HandlePreMatchColumns(c *gin.Context) {

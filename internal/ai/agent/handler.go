@@ -75,7 +75,10 @@ func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
 	wg := &writeGuard{}
 	kaStop := make(chan struct{})
 	// 使用请求级 context 作为父级，确保服务关闭时请求被优雅取消
-	runnerCtx, runnerCancel := context.WithTimeout(parentCtx, 5*time.Minute)
+	// 超时设为 30 分钟，与 ChatModel 的 HTTP Timeout 对齐。
+	// 复杂问题（多轮工具调用 + LLM 思考）5 分钟不够用，会导致 context deadline exceeded。
+	// 客户端主动断开时 parentCtx.Done() 会触发 runnerCancel，无需依赖此超时兜底。
+	runnerCtx, runnerCancel := context.WithTimeout(parentCtx, 30*time.Minute)
 
 	safego.GoWithName("sse-keepalive", func() {
 		ticker := time.NewTicker(5 * time.Second)

@@ -9,7 +9,12 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
+
+	"websql/internal/ai/agent/export"
 )
 
 func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext []string, scope *PermissionScope, schemas []SchemaRef, skillAvailable bool) string {
@@ -76,6 +81,13 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
    - 预计影响行数
 3. 用户确认后调用 import_data（传入 fileId、tableName、mode），后端自动按列名匹配
 4. 若用户未指定目标表，必须先询问
+
+## 数据文件分析流程
+用户上传数据文件后，意图由其提问决定，不要默认当作导入：
+1. 仅分析文件数据（统计/趋势/异常/可视化）：调用 read_file_data 读取数据（可分页，默认 100 行、最大 500 行）后分析，禁止调用 import_data
+2. 结合数据库表分析：同时调用 read_file_data 读取文件、query_data 查询相关表，进行关联对比分析
+3. 仅当用户明确要求"导入/写入数据库"时，才走「数据导入流程」
+4. 文件内容只读，read_file_data 不会修改数据库，可多次分页调用以获取更多数据
 
 ## 多轮对话
 你拥有完整对话历史。"刚才的""上一个""这个结果"均指上一轮上下文。
@@ -297,6 +309,9 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 		fmt.Fprintf(&sb, "当前环境 — 数据库产品：%s，版本：%s，Schema：%s\n", dbProductName, dbVersion, dbSchema)
 	}
 
+	// 操作系统环境信息（指导 LLM 生成 OS 兼容的命令和脚本路径）
+	sb.WriteString(buildOSEnvironmentInfo())
+
 	// 版本兼容性要求：告知 LLM 数据库产品名称和版本号，让它自行判断该版本支持的 SQL 特性
 	// 这种方式比硬编码版本阈值更灵活，能适应数据库新版本发布，且充分利用 LLM 的知识库
 	if dbVersion != "" {
@@ -386,6 +401,64 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
    - **回退**：若仅需简单跨库对比，可直接分步 query_data 取数后由你综合分析，无需加载 Skill
 `)
 	}
+
+	return sb.String()
+}
+
+// buildOSEnvironmentInfo 返回操作系统环境信息，指导 LLM 生成 OS 兼容的命令和脚本路径。
+// 这解决了 LLM 生成不兼容当前 OS 的命令（如 Windows 上用 python3、ls、/tmp/...）导致执行失败的问题。
+func buildOSEnvironmentInfo() string {
+	var sb strings.Builder
+
+	goos := runtime.GOOS
+	tmpDir := os.TempDir()
+
+	sb.WriteString("\n## 执行环境（execute 工具约束）\n")
+
+	// 操作系统
+	osName := goos
+	switch goos {
+	case "windows":
+		osName = "Windows"
+	case "darwin":
+		osName = "macOS"
+	case "linux":
+		osName = "Linux"
+	}
+	fmt.Fprintf(&sb, "- **操作系统**：%s\n", osName)
+
+	// Python 命令
+	pythonPath := export.GetPythonPath()
+	pythonCmd := "python"
+	if pythonPath != "" {
+		base := filepath.Base(pythonPath)
+		base = strings.TrimSuffix(base, ".exe")
+		if base == "python3" || base == "python" {
+			pythonCmd = base
+		}
+	}
+	fmt.Fprintf(&sb, "- **Python 命令**：使用 `%s` 执行脚本\n", pythonCmd)
+
+	// 临时目录
+	fmt.Fprintf(&sb, "- **临时目录**：`%s`\n", tmpDir)
+
+	// 文件操作工具优先
+	sb.WriteString("- **文件操作**：优先使用 `ls`/`read_file`/`write_file`/`edit_file`/`grep`/`glob` 工具（跨平台），不要用 `execute` 执行 `ls`/`cat`/`dir`/`type` 等命令\n")
+
+	// Shell 约束
+	if goos == "windows" {
+		sb.WriteString("- **Shell**：Windows `cmd`，路径用 `\\` 或 `/` 分隔\n")
+	} else {
+		sb.WriteString("- **Shell**：POSIX `sh`\n")
+	}
+
+	// 脚本执行最佳实践
+	sb.WriteString("- **脚本执行**：推荐先用 `write_file` 写入 `.py` 文件再用 `execute` 执行，避免 `python -c` 的引号转义问题\n")
+
+	// 安全约束
+	sb.WriteString("- **安全约束**：脚本不得删除/篡改系统文件、修改系统配置、访问网络外传数据。仅操作临时目录内的文件\n")
+
+	sb.WriteString("\n")
 
 	return sb.String()
 }

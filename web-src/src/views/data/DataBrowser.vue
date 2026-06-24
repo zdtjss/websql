@@ -449,6 +449,12 @@ const changedRows = ref({})  // { [rowKey]: { [colName]: newValue, ... } }
 const originalRows = ref({})  // { [rowKey]: { [colName]: value, ... } }
 const savingInline = ref(false)
 let editInputRef = null
+// Guards against repeated setup on every re-render (inline ref functions are
+// re-invoked on each render because the arrow function identity changes).
+// Without this, el.select() runs on every keystroke/paste, selecting all text
+// and breaking cursor positioning — especially after paste where el-input's
+// own setCursor() never fires (paste is preventDefault'd).
+let _editInputSetupDone = false
 
 // Capture-phase paste handler for inline editing input
 // Bypasses el-input's internal event handling by intercepting at capture phase
@@ -911,6 +917,8 @@ function rowClassName({ row }) {
 function setEditInputRef(el) {
   if (el) {
     editInputRef = el
+    if (_editInputSetupDone) return
+    _editInputSetupDone = true
     el.focus?.()
     el.select?.()
     // Attach capture-phase paste handler directly on the native input
@@ -949,6 +957,7 @@ function startInlineEdit(row, colName, event) {
   const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
   editingOriginalValue.value = currentVal
   editingValue.value = currentVal ?? ''
+  _editInputSetupDone = false
   editingCell.value = { rowKey: key, colName }
 }
 
@@ -1221,7 +1230,7 @@ async function saveInlineChanges() {
       if (insertCols.length === 0) continue
 
       const colList = insertCols.map(c => quoteId(c.name, effectiveDbType.value)).join(', ')
-      const valList = insertCols.map(c => fmtVal(merged[c.name])).join(', ')
+      const valList = insertCols.map(c => fmtVal(merged[c.name], effectiveDbType.value)).join(', ')
 
       sqlStatements.push('INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')')
     }
@@ -1233,7 +1242,7 @@ async function saveInlineChanges() {
 
       const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
       const setClauses = Object.keys(changed)
-        .map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(changed[k]))
+        .map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(changed[k], effectiveDbType.value))
         .join(', ')
 
       const allWhereCols = [
@@ -1423,15 +1432,15 @@ function buildColumnCondition() {
       ElMessage({ message: '请至少输入一个值', type: 'warning' })
       return ''
     }
-    const formatted = values.map(v => fmtVal(v)).join(', ')
+    const formatted = values.map(v => fmtVal(v, effectiveDbType.value)).join(', ')
     return `${colName} ${op} (${formatted})`
   }
   
   if (op === 'LIKE' || op === 'NOT LIKE') {
-    return `${colName} ${op} ${fmtVal(val)}`
+    return `${colName} ${op} ${fmtVal(val, effectiveDbType.value)}`
   }
   
-  return `${colName} ${op} ${fmtVal(val)}`
+  return `${colName} ${op} ${fmtVal(val, effectiveDbType.value)}`
 }
 
 function applyColumnFilter() {
@@ -1591,7 +1600,7 @@ async function saveData() {
     return
   }
 
-  const setClauses = changedCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(current[key])).join(', ')
+  const setClauses = changedCols.map(key => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(current[key], effectiveDbType.value)).join(', ')
 
   const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(origin).slice(0, 1)
   const allWhereCols = [
@@ -1646,7 +1655,7 @@ async function insertData() {
   }
 
   const colList = cols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
-  const valList = cols.map(k => fmtVal(row[k])).join(', ')
+  const valList = cols.map(k => fmtVal(row[k], effectiveDbType.value)).join(', ')
   const sql = 'INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')'
 
   inserting.value = true
@@ -1911,10 +1920,10 @@ async function handleCsvJsonImport({ data, mapping, mode }) {
           const nonNullCols = cols.filter(k => row[k] !== null)
           if (nonNullCols.length === 0) continue
           const colList = nonNullCols.map(k => quoteId(k, effectiveDbType.value)).join(', ')
-          const valList = nonNullCols.map(k => fmtVal(row[k])).join(', ')
+          const valList = nonNullCols.map(k => fmtVal(row[k], effectiveDbType.value)).join(', ')
           sqlStatements.push('INSERT INTO ' + quoteId(tableName, effectiveDbType.value) + ' (' + colList + ') VALUES (' + valList + ')')
         } else {
-          const setClauses = cols.map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k])).join(', ')
+          const setClauses = cols.map(k => quoteId(k, effectiveDbType.value) + ' = ' + fmtVal(row[k], effectiveDbType.value)).join(', ')
           const pkCols = pkColumns.value.length > 0 ? pkColumns.value : cols.slice(0, 1)
           const whereClauses = pkCols.map(k => buildWhereCondition(k, row[k], effectiveDbType.value)).join(' AND ')
           if (!whereClauses) continue

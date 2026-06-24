@@ -61,15 +61,24 @@ export function buildSelectSQL(tableName: string, dbType: string, options?: {
   return sql
 }
 
-export function fmtVal(val: any): string {
+export function fmtVal(val: any, dbType?: string): string {
   if (val === null || val === undefined) {
     return 'NULL'
   }
+  const db = (dbType || '').toLowerCase()
+  const isMySQL = db === 'mysql' || db === 'mariadb'
   if (typeof val === 'string') {
-    if (val.length > 2 && val.startsWith("b'") && val.endsWith("'")) {
+    // MySQL BIT columns come back as b'...' literals; pass through only for MySQL/MariaDB
+    if (isMySQL && val.length > 2 && val.startsWith("b'") && val.endsWith("'")) {
       return val
     }
-    return "'" + val.replace(/\\/g, '\\\\').replace(/'/g, "''") + "'"
+    // MySQL/MariaDB use backslash escaping; Oracle and others do not by default
+    let escaped = val
+    if (isMySQL) {
+      escaped = escaped.replace(/\\/g, '\\\\')
+    }
+    escaped = escaped.replace(/'/g, "''")
+    return "'" + escaped + "'"
   }
   if (typeof val === 'number' || typeof val === 'bigint') {
     return String(val)
@@ -77,19 +86,25 @@ export function fmtVal(val: any): string {
   if (typeof val === 'boolean') {
     return val ? '1' : '0'
   }
-  return String(val)
+  // Fallback: quote any unknown type as a string to avoid SQL syntax errors
+  return "'" + String(val).replace(/'/g, "''") + "'"
 }
 
 export function buildWhereCondition(col: string, val: any, dbType?: string): string {
   if (val === null || val === undefined) {
     return quoteId(col, dbType) + ' IS NULL'
   }
-  return quoteId(col, dbType) + ' = ' + fmtVal(val)
+  // Oracle treats '' as NULL; using "= ''" would never match
+  const db = (dbType || '').toLowerCase()
+  if (db === 'oracle' && val === '') {
+    return quoteId(col, dbType) + ' IS NULL'
+  }
+  return quoteId(col, dbType) + ' = ' + fmtVal(val, dbType)
 }
 
 export function buildUpdateSQL(tableName: string, changedCols: Record<string, any>, pkCols: Record<string, any>, dbType?: string): string {
   const setClauses = Object.keys(changedCols)
-    .map(key => quoteId(key, dbType) + ' = ' + fmtVal(changedCols[key]))
+    .map(key => quoteId(key, dbType) + ' = ' + fmtVal(changedCols[key], dbType))
     .join(', ')
   const whereClauses = Object.keys(pkCols)
     .map(key => buildWhereCondition(key, pkCols[key], dbType))
@@ -100,7 +115,7 @@ export function buildUpdateSQL(tableName: string, changedCols: Record<string, an
 export function buildInsertSQL(tableName: string, row: Record<string, any>, dbType?: string): string {
   const cols = Object.keys(row).filter(k => row[k] !== null && row[k] !== undefined)
   const colList = cols.map(k => quoteId(k, dbType)).join(', ')
-  const valList = cols.map(k => fmtVal(row[k])).join(', ')
+  const valList = cols.map(k => fmtVal(row[k], dbType)).join(', ')
   return 'INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + valList + ')'
 }
 

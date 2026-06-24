@@ -8,9 +8,10 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	conn "websql/internal/app/conn"
-	admin "websql/internal/app/admin"
+	"unicode/utf8"
 	"websql/internal/ai/agent/sqlutil"
+	admin "websql/internal/app/admin"
+	conn "websql/internal/app/conn"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -785,6 +786,83 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 	return sb.String()
 }
 
+// ReadFileDataInput 读取已上传文件数据（只读，用于数据分析，不会导入数据库）
+type ReadFileDataInput struct {
+	FileID string `json:"fileId" jsonschema:"required"`
+	Limit  int    `json:"limit"`  // 返回行数，默认 100，最大 500
+	Offset int    `json:"offset"` // 起始行偏移，默认 0
+}
+type ReadFileDataOutput struct {
+	Type         string     `json:"type"` // "table"（excel/csv）| "text"（markdown）
+	Columns      []string   `json:"columns,omitempty"`
+	Rows         [][]string `json:"rows,omitempty"`
+	TotalRows    int        `json:"totalRows,omitempty"`
+	ReturnedRows int        `json:"returnedRows,omitempty"`
+	Text         string     `json:"text,omitempty"`      // markdown 全文
+	CharCount    int        `json:"charCount,omitempty"` // markdown 字符数
+}
+
+// NewReadFileDataFunc 返回读取已上传文件数据的工具函数（只读，供 LLM 分析文件内容）。
+// 与 import_data 不同：它不会写入数据库，也不会删除暂存文件，可多次分页调用。
+// 表格类（excel/csv）按 limit/offset 分页返回行；文本类（markdown）不做数据量限制，返回全文。
+func NewReadFileDataFunc() func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
+	return func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
+		log.Printf("[Tool:read_file_data] fileId=%s, limit=%d, offset=%d\n", input.FileID, input.Limit, input.Offset)
+		if input.FileID == "" {
+			return nil, errors.New("fileId is required")
+		}
+		upload, err := GetUploadedFile(input.FileID)
+		if err != nil {
+			return nil, err
+		}
+
+		// 文本类（Markdown）：不做数据量限制，返回全文
+		if upload.Type == "text" {
+			return &ReadFileDataOutput{
+				Type:      "text",
+				Text:      upload.Text,
+				CharCount: utf8.RuneCountInString(upload.Text),
+			}, nil
+		}
+
+		// 表格类：分页读取
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		offset := input.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		total := len(upload.Data)
+		start := offset
+		if start > total {
+			start = total
+		}
+		end := start + limit
+		if end > total {
+			end = total
+		}
+		src := upload.Data[start:end]
+		rows := make([][]string, len(src))
+		for i, r := range src {
+			cp := make([]string, len(r))
+			copy(cp, r)
+			rows[i] = cp
+		}
+		return &ReadFileDataOutput{
+			Type:         "table",
+			Columns:      upload.Columns,
+			Rows:         rows,
+			TotalRows:    total,
+			ReturnedRows: len(rows),
+		}, nil
+	}
+}
+
 type ImportDataInput struct {
 	FileID    string            `json:"fileId" jsonschema:"required"`
 	TableName string            `json:"tableName" jsonschema:"required"`
@@ -817,6 +895,10 @@ func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx, 
 		upload, err := GetUploadedFile(input.FileID)
 		if err != nil {
 			return nil, err
+		}
+		// Markdown/文本文件非表格结构，不支持导入，仅支持分析
+		if upload.Type == "text" {
+			return nil, errors.New("Markdown/文本文件不支持导入数据库，仅支持内容分析")
 		}
 		tableColumns, err := getTableColumns(conn, dbType, dbSchema, input.TableName)
 		if err != nil {

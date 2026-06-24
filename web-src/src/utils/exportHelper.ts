@@ -1,4 +1,4 @@
-import { quoteId } from './sqlHelper.ts'
+import { quoteId, fmtVal } from './sqlHelper.ts'
 
 export function downloadBlob(data: BlobPart, filename: string, mimeType: string) {
   const blob = new Blob([data], { type: mimeType })
@@ -39,15 +39,7 @@ export function exportToCsv(columns: string[], rows: any[], filename: string) {
 export function exportToSql(columns: string[], rows: any[], tableName: string, dbType?: string): string {
   const colList = columns.map(c => quoteId(c, dbType)).join(', ')
   const values = rows.map(row => {
-    const vals = columns.map(col => {
-      const val = row[col]
-      if (val === null || val === undefined) return 'NULL'
-      if (typeof val === 'string') {
-        if (val.length > 2 && val.startsWith("b'") && val.endsWith("'")) return val
-        return "'" + val.replace(/\\/g, '\\\\').replace(/'/g, "''") + "'"
-      }
-      return String(val)
-    }).join(', ')
+    const vals = columns.map(col => fmtVal(row[col], dbType)).join(', ')
     return 'INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + vals + ');'
   }).join('\n')
   return values

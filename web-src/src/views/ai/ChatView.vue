@@ -104,14 +104,17 @@
           <div class="input-label">
             <span>描述你的需求（数据查询 / 数据分析 / SQL 生成 / 数据导出 / 数据导入）</span>
             <div style="display: flex; gap: 0px;">
-              <!-- 已上传的 Excel 文件信息 -->
+              <!-- 已上传的文件信息 -->
             <div v-if="uploadedExcel" class="uploaded-file-info" style="margin-left: 12px;">
-              <span>{{ uploadedExcel.name }} ({{ uploadedExcel.rows }} 行, {{ uploadedExcel.columns.length }} 列)</span>
+              <span>{{ uploadedExcel.name }}
+                <template v-if="uploadedExcel.fileType === 'markdown'">(Markdown, {{ uploadedExcel.charCount }} 字符)</template>
+                <template v-else>({{ uploadedExcel.rows }} 行, {{ uploadedExcel.columns.length }} 列)</template>
+              </span>
               <el-button size="small" text type="danger" @click="clearUploadedExcel">✕</el-button>
             </div>
-               <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" style="margin-left: 12px;" accept=".xlsx,.xls"
+               <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" style="margin-left: 12px;" accept=".xlsx,.xls,.csv,.md,.markdown"
                 :on-change="handleExcelUpload" :disabled="excelUploading">
-                <el-button class="toolbar-btn" size="small" title="上传 Excel 导入数据" :loading="excelUploading">
+                <el-button class="toolbar-btn" size="small" title="上传数据文件（Excel/CSV/Markdown，可分析/结合数据库/导入）" :loading="excelUploading">
                   <el-icon v-if="!excelUploading"><Upload /></el-icon>
                 </el-button>
               </el-upload>
@@ -1123,7 +1126,7 @@ const retryMessage = ref('')
 const lastQuestion = ref('')
 
 // Excel 上传
-const uploadedExcel = ref(null) // { fileId, name, columns, rows, preview }
+const uploadedExcel = ref(null) // { fileId, name, fileType, columns, rows, charCount }
 const excelUploadRef = useTemplateRef('excelUploadRef')
 const excelUploading = ref(false)
 
@@ -2088,6 +2091,11 @@ async function sendMessage() {
   const text = question.value.trim()
   if (!text && !uploadedExcel.value) return
   if (loading.value) return
+  // 上传文件后若未描述需求，无法判断意图（分析/结合库/导入），提示用户补充
+  if (!text && uploadedExcel.value) {
+    ElMessage.warning('请描述你对这个文件的需求（例如：分析这份数据 / 导入到 xx 表 / 和 xx 表对比）')
+    return
+  }
 
   // 重置状态
   resetDetectFlag()
@@ -2105,15 +2113,18 @@ async function sendMessage() {
       fileId: excel.fileId,
       columns: excel.columns,
       totalRows: excel.rows,
+      fileType: excel.fileType,
+      charCount: excel.charCount,
     }
-    if (!text) {
-      messageContent = `请将上传的 Excel 数据导入数据库。文件ID：${excel.fileId}，Excel 列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
+    // 仅附带文件元信息上下文，不预设“导入”意图；意图由用户提问决定
+    if (excel.fileType === 'markdown') {
+      messageContent += `\n\n[已上传文件] Markdown 文档，文件ID：${excel.fileId}，共 ${excel.charCount} 字符。`
     } else {
-      messageContent += `\n\n[Excel 文件上下文] 文件ID：${excel.fileId}，列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
+      messageContent += `\n\n[已上传文件] 文件ID：${excel.fileId}，列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
     }
   }
 
-  chatHistory.value.push({ role: 'user', content: text || '导入 Excel 数据' })
+  chatHistory.value.push({ role: 'user', content: text })
   question.value = ''
   loading.value = true
   thinkingText.value = ''
@@ -2811,8 +2822,10 @@ async function handleExcelUpload(file) {
   const formData = new FormData()
   formData.append('file', rawFile)
 
-  // 前端文件大小校验（20MB）
-  if (rawFile.size > 20 * 1024 * 1024) {
+  // Markdown 不做数据量限制；Excel/CSV 限制 20MB
+  const lowerName = rawFile.name.toLowerCase()
+  const isMarkdown = lowerName.endsWith('.md') || lowerName.endsWith('.markdown')
+  if (!isMarkdown && rawFile.size > 20 * 1024 * 1024) {
     ElMessage.error('文件大小不能超过 20MB')
     return
   }
@@ -2845,68 +2858,51 @@ async function handleExcelUpload(file) {
     uploadedExcel.value = {
       fileId: data.fileId,
       name: data.fileName,
-      columns: data.columns,
-      rows: data.totalRows,
+      fileType: data.fileType, // excel | csv | markdown
+      columns: data.columns || [],
+      rows: data.totalRows || 0,
+      charCount: data.charCount || 0,
     }
 
     // 在聊天区显示预览
     let previewText = `📎 已上传文件：**${data.fileName}**\n`
-    previewText += `共 ${data.totalRows} 行数据，${data.columns.length} 列\n\n`
-    previewText += `列名：\`${data.columns.join('`, `')}\`\n\n`
-    const previewRows = data.preview || []
-    if (previewRows.length > 0) {
-      previewText += `前 ${previewRows.length} 行原始数据预览：\n`
-      previewText += '| ' + data.columns.join(' | ') + ' |\n'
-      previewText += '| ' + data.columns.map(() => '---').join(' | ') + ' |\n'
-      for (const row of previewRows) {
-        const cells = data.columns.map((_, i) => {
-          const val = row[i] !== undefined && row[i] !== null ? String(row[i]) : ''
-          // 保留原始内容，仅对超长值截断（50字符）
-          return val.length > 50 ? val.substring(0, 50) + '…' : (val || ' ')
-        })
-        previewText += '| ' + cells.join(' | ') + ' |\n'
-      }
-      if (data.totalRows > previewRows.length) {
-        previewText += `\n*共 ${data.totalRows} 行，以上仅展示前 ${previewRows.length} 行*\n`
+    if (data.fileType === 'markdown') {
+      previewText += `Markdown 文档，共 ${data.charCount} 字符\n\n`
+      previewText += `内容预览：\n\n${data.textPreview || ''}\n`
+    } else {
+      const typeLabel = data.fileType === 'csv' ? 'CSV' : 'Excel'
+      previewText += `${typeLabel} 文件，共 ${data.totalRows} 行数据，${data.columns.length} 列\n\n`
+      previewText += `列名：\`${data.columns.join('`, `')}\`\n\n`
+      const previewRows = data.preview || []
+      if (previewRows.length > 0) {
+        previewText += `前 ${previewRows.length} 行原始数据预览：\n`
+        previewText += '| ' + data.columns.join(' | ') + ' |\n'
+        previewText += '| ' + data.columns.map(() => '---').join(' | ') + ' |\n'
+        for (const row of previewRows) {
+          const cells = data.columns.map((_, i) => {
+            const val = row[i] !== undefined && row[i] !== null ? String(row[i]) : ''
+            // 保留原始内容，仅对超长值截断（50字符）
+            return val.length > 50 ? val.substring(0, 50) + '…' : (val || ' ')
+          })
+          previewText += '| ' + cells.join(' | ') + ' |\n'
+        }
+        if (data.totalRows > previewRows.length) {
+          previewText += `\n*共 ${data.totalRows} 行，以上仅展示前 ${previewRows.length} 行*\n`
+        }
       }
     }
 
-    // 如果已选择了相关表，自动预匹配字段
-    const primaryConnId = getPrimaryConnId()
-    if (primaryConnId && selectedTables.value.length === 1) {
-      try {
-        const matchResp = await fetch(apiBase + '/ai/agent/preMatchColumns', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': auth },
-          body: JSON.stringify({
-            fileId: data.fileId,
-            connId: primaryConnId,
-            tableName: selectedTables.value[0],
-          }),
-        })
-        if (matchResp.ok) {
-          const matchData = await matchResp.json()
-          previewText += `\n### 字段自动匹配预览（目标表：\`${selectedTables.value[0]}\`）\n`
-          previewText += `匹配 ${matchData.matchedCount}/${matchData.totalExcel} 列\n\n`
-          previewText += '| Excel 列 | 数据库字段 | 状态 |\n'
-          previewText += '| --- | --- | --- |\n'
-          for (const m of matchData.matches) {
-            const status = m.matched ? '✅ 已匹配' : '❌ 未匹配'
-            previewText += `| ${m.excelColumn} | ${m.dbColumn || '-'} | ${status} |\n`
-          }
-          if (matchData.matchedCount < matchData.totalExcel) {
-            previewText += `\n⚠️ 有 ${matchData.totalExcel - matchData.matchedCount} 列未匹配，这些列的数据将不会导入。\n`
-          }
-        }
-      } catch (matchErr) {
-        console.warn('[App] 预匹配失败，不影响上传:', matchErr)
-      }
-    }
+    // 上传仅暂存文件，不预设“导入”意图。是否导入由用户后续提问决定，
+    // 字段映射在用户明确要求导入时由 AI 走「数据导入流程」处理。
 
     chatHistory.value.push({ role: 'assistant', content: previewText, hasSql: false })
     scrollToBottom()
     doRenderMermaidBlocks()
-    ElMessage.success(`已上传 ${data.fileName}，请输入导入指令（如：将数据导入到 xxx 表）`)
+    if (data.fileType === 'markdown') {
+      ElMessage.success(`已上传 ${data.fileName}，可让我分析/解读这份文档，或结合数据库表分析`)
+    } else {
+      ElMessage.success(`已上传 ${data.fileName}，可让我：分析这份数据 / 结合数据库表分析 / 导入到数据库`)
+    }
   } catch (e) {
     console.error('[App] 上传 Excel 文件失败:', e)
     ElMessage.error('上传 Excel 文件失败，请检查文件格式')
@@ -3370,6 +3366,10 @@ function handleExportLinkClick(e) {
   if (!authToken) return
   e.preventDefault()
   let href = link.getAttribute('href')
+  // 兜底：确保 /exports/ 链接带上 apiBase 前缀，避免打包后路径不匹配
+  if (href.startsWith('/exports/') && !href.startsWith('/api/exports/')) {
+    href = apiBase + href
+  }
   const separator = href.includes('?') ? '&' : '?'
   href = href + separator + 'token=' + encodeURIComponent(authToken)
   window.open(href, '_blank')

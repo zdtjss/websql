@@ -14,7 +14,7 @@ import (
 
 func getTokenFromRequest(c *gin.Context) string {
 	authorization := c.GetHeader("Authorization")
-	if authorization == "" && strings.HasPrefix(c.Request.URL.Path, "/api/exports/") {
+	if authorization == "" && (strings.HasPrefix(c.Request.URL.Path, "/api/exports/") || strings.HasPrefix(c.Request.URL.Path, "/exports/")) {
 		authorization = c.Query("token")
 	}
 	return authorization
@@ -25,7 +25,8 @@ func AuthMiddleware() gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// 非 API 路径直接放行（静态资源、SPA 前端路由等由 NoRoute 处理）
-		if !strings.HasPrefix(path, "/api/") {
+		// 但 /exports/ 路径需要鉴权（导出文件下载）
+		if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/exports/") {
 			c.Next()
 			return
 		}

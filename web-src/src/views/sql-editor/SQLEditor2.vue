@@ -292,6 +292,8 @@ const { tabId, connId, schema, schemaPath, tableName, dbType } = defineProps<{
 
 const emit = defineEmits(['openTableManager', 'openDataBrowser', 'viewTableInfo'])
 
+const effectiveDbType = computed(() => dbType || dbSchemaProxy.getDbType(schema) || '')
+
 const sqlAreaRef: any = ref(null)
 
 const maxLine = ref("15")
@@ -1451,11 +1453,11 @@ function saveInlineChanges() {
 
         const pkConditions = tableKeys.value
             .filter(k => k in row)
-            .map(k => buildWhereCondition(k, row[k]))
+            .map(k => buildWhereCondition(k, row[k], effectiveDbType.value))
 
         const setClauses: string[] = []
         colMap.forEach((newVal, colKey) => {
-            setClauses.push(quoteId(colKey) + ' = ' + fmtVal(newVal))
+            setClauses.push(quoteId(colKey, effectiveDbType.value) + ' = ' + fmtVal(newVal, effectiveDbType.value))
         })
 
         if (setClauses.length === 0) return
@@ -1466,7 +1468,7 @@ function saveInlineChanges() {
         } else {
             const allWhereCols = Object.keys(row)
                 .filter((k: string) => k !== 'col-idx' && colMap.has(k))
-            const whereConditions = allWhereCols.map((k: string) => buildWhereCondition(k, row[k]))
+            const whereConditions = allWhereCols.map((k: string) => buildWhereCondition(k, row[k], effectiveDbType.value))
             sql = 'update ' + currentSelectTable.value + ' set ' + setClauses.join(', ') + ' where ' + whereConditions.join(' and ')
         }
 
@@ -1506,13 +1508,13 @@ function saveData(rowData: any) {
         return
     }
 
-    const updateColumnSets = changedKeys.map((key) => quoteId(key) + " = " + fmtVal(rowData[key]))
+    const updateColumnSets = changedKeys.map((key) => quoteId(key, effectiveDbType.value) + " = " + fmtVal(rowData[key], effectiveDbType.value))
 
     const allWhereCols = [
         ...tableKeys.value,
         ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))
     ]
-    const whereColumns = allWhereCols.map((key: string) => buildWhereCondition(key, originRowData[key]))
+    const whereColumns = allWhereCols.map((key: string) => buildWhereCondition(key, originRowData[key], effectiveDbType.value))
 
     let effiectiveSql = "update " + currentSelectTable.value + " set "
     effiectiveSql += updateColumnSets.join(", ") + " where "
@@ -1691,7 +1693,7 @@ function exportCurrentToSqlInsert() {
         let valueArr = []
         for (let i = 1; i < columns.value.length; i++) {
             let val = result.value[j][columns.value[i]["key"]]
-            rowVal.push(fmtVal(val))
+            rowVal.push(fmtVal(val, effectiveDbType.value))
         }
         valueArr.push(rowVal.join(","))
         sqlArr.push(sql + columnArr.join(",") + ") values (" + valueArr.join(",") + ")")
@@ -1715,12 +1717,12 @@ function exportCurrentToSqlUpdate() {
         for (let i = 2; i < columns.value.length; i++) {
             let column = columns.value[i]["key"]
             let val = result.value[j][column]
-            rowVal.push(quoteId(column) + " = " + fmtVal(val))
+            rowVal.push(quoteId(column, effectiveDbType.value) + " = " + fmtVal(val, effectiveDbType.value))
         }
 
         let conditionVal = []
         for (let i = 0; i < tableKeys.value.length; i++) {
-            conditionVal.push(buildWhereCondition(tableKeys.value[i], result.value[j][tableKeys.value[i]]))
+            conditionVal.push(buildWhereCondition(tableKeys.value[i], result.value[j][tableKeys.value[i]], effectiveDbType.value))
         }
 
         sqlArr.push(sql + rowVal.join(", ") + " where " + conditionVal.join(" and "))

@@ -1,161 +1,172 @@
 <template>
-  <div class="system-config">
-    <el-divider content-position="left">
-      <el-icon>
-        <HomeFilled />
-      </el-icon>
-      默认首页
-    </el-divider>
-    <el-form label-width="120px" :model="systemConfig">
-      <el-form-item >
-        <el-radio-group v-model="systemConfig.defaultHomepage">
-          <el-radio value="ai">AI 对话</el-radio>
-          <el-radio value="classical">经典视图</el-radio>
-        </el-radio-group>
-        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
-          💡 设置用户登录后默认进入的页面，用户仍可通过导航按钮切换视图
-        </div>
-      </el-form-item>
-    </el-form>
+  <div class="system-config" v-loading="pageLoading" element-loading-text="加载配置中...">
+    <!-- Skeleton loading -->
+    <template v-if="pageLoading">
+      <div class="skeleton skeleton-card"></div>
+      <div class="skeleton skeleton-card"></div>
+      <div class="skeleton skeleton-card"></div>
+    </template>
 
-    <el-divider content-position="left">
-      <el-icon>
-        <Monitor />
-      </el-icon>
-      AI 模型管理
-    </el-divider>
-    <div class="model-list-section">
-      <div class="model-list-header">
-        <span>已配置的模型</span>
-        <el-button type="primary" size="small" @click="showAddModelDialog">
-          <el-icon><Plus /></el-icon>
-          添加模型
-        </el-button>
+    <template v-else>
+      <!-- 默认首页 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><HomeFilled /></el-icon>
+          <h3 class="card-title">默认首页</h3>
+          <span class="card-desc">设置用户登录后默认进入的页面</span>
+        </div>
+        <el-form label-width="120px" :model="systemConfig">
+          <el-form-item>
+            <el-radio-group v-model="systemConfig.defaultHomepage">
+              <el-radio value="ai">AI 对话</el-radio>
+              <el-radio value="classical">经典视图</el-radio>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
       </div>
-      <el-empty v-if="aiModelList.length === 0" description="暂无配置模型，请添加" />
-      <div v-else class="model-list">
-        <div v-for="model in aiModelList" :key="model.id"
-          :class="['model-item', { 'is-selected': systemConfig.selectedModelId === model.id }]">
-          <div class="model-item-info">
-            <span class="model-model">{{ model.model }}</span>
-            <span class="model-provider">{{ model.provider }}</span>
+
+      <!-- AI 模型管理 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><Monitor /></el-icon>
+          <h3 class="card-title">AI 模型管理</h3>
+          <el-button type="primary" size="small" @click="showAddModelDialog">
+            <el-icon><Plus /></el-icon>
+            添加模型
+          </el-button>
+        </div>
+        <div v-if="aiModelList.length === 0" class="empty-guide">
+          <el-icon class="empty-icon"><Monitor /></el-icon>
+          <div class="empty-title">暂未配置 AI 模型</div>
+          <div class="empty-desc">添加 AI 模型后，即可在对话中使用智能 SQL 生成与分析功能</div>
+          <el-button type="primary" @click="showAddModelDialog">
+            <el-icon><Plus /></el-icon>
+            添加第一个模型
+          </el-button>
+        </div>
+        <TransitionGroup v-else name="list" tag="div" class="model-list">
+          <div v-for="model in aiModelList" :key="model.id"
+            :class="['model-item', { 'is-selected': systemConfig.selectedModelId === model.id }]">
+            <div class="model-item-info">
+              <span class="model-model">{{ model.model }}</span>
+              <span class="model-provider">{{ model.provider }}</span>
+            </div>
+            <div class="model-item-actions">
+              <el-tag v-if="systemConfig.selectedModelId === model.id" type="success" size="small">当前使用</el-tag>
+              <el-button size="small" text @click="selectModel(model)">
+                <el-icon><Check /></el-icon>
+                设为默认
+              </el-button>
+              <el-button size="small" text type="primary" @click="showEditModelDialog(model)">
+                <el-icon><Edit /></el-icon>
+                编辑
+              </el-button>
+              <el-button size="small" text type="danger" @click="removeModel(model)">
+                <el-icon><Delete /></el-icon>
+                删除
+              </el-button>
+            </div>
           </div>
-          <div class="model-item-actions">
-            <el-tag v-if="systemConfig.selectedModelId === model.id" type="success" size="small">当前使用</el-tag>
-            <el-button size="small" text @click="selectModel(model)">
-              <el-icon><Check /></el-icon>
-              设为默认
+        </TransitionGroup>
+      </div>
+
+      <!-- 外部用户认证 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><Link /></el-icon>
+          <h3 class="card-title">外部用户认证</h3>
+        </div>
+        <el-form label-width="120px" :model="systemConfig">
+          <el-form-item label="认证接口 URL">
+            <el-input v-model="systemConfig.outterUser" placeholder="http://localhost:8081/api/login" />
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="handleTestOutterUser" :loading="testingOutterUser">
+              测试接口
             </el-button>
-            <el-button size="small" text type="primary" @click="showEditModelDialog(model)">
-              <el-icon><Edit /></el-icon>
-              编辑
-            </el-button>
-            <el-button size="small" text type="danger" @click="removeModel(model)">
-              <el-icon><Delete /></el-icon>
-              删除
-            </el-button>
-          </div>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- IP 访问控制 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><Lock /></el-icon>
+          <h3 class="card-title">IP 访问控制</h3>
+        </div>
+        <el-form label-width="120px" :model="systemConfig">
+          <el-form-item label="允许的 IP 列表" :error="ipError">
+            <el-input v-model="systemConfig.allowedIP" type="textarea" :rows="4"
+              placeholder="请输入 IP 地址，每行一个"
+              :class="{ 'is-error': ipError }" />
+            <div class="form-hint">
+              每行一个 IP 地址，例如：127.0.0.1 或 192.168.1.100
+            </div>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- Redis 配置 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><Coin /></el-icon>
+          <h3 class="card-title">Redis 配置</h3>
+        </div>
+        <el-form label-width="120px" :model="systemConfig">
+          <el-form-item label="Redis 地址">
+            <el-input v-model="systemConfig.redisAddr" placeholder="127.0.0.1:6379" />
+          </el-form-item>
+          <el-form-item label="Redis 密码">
+            <el-input v-model="systemConfig.redisPassword" placeholder="可选" show-password />
+          </el-form-item>
+          <el-form-item label="Redis DB">
+            <el-input-number v-model="systemConfig.redisDB" :min="0" :max="15" :step="1" />
+            <span class="form-hint" style="margin-left: 10px;">Redis 数据库编号，范围 0-15</span>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- 生物识别配置 -->
+      <div class="config-card">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><User /></el-icon>
+          <h3 class="card-title">生物识别配置</h3>
+        </div>
+        <div class="bio-section">
+          <el-alert title="生物识别登录" type="info" :closable="false">
+            <div>使用指纹或面容识别快速登录系统，仅在当前设备支持生物识别时可用</div>
+          </el-alert>
+          <el-form label-width="120px">
+            <el-form-item label="设备支持">
+              <el-tag :type="bioSupported ? 'success' : 'danger'">
+                {{ bioSupported ? '支持' : '不支持' }}
+              </el-tag>
+            </el-form-item>
+            <el-form-item label="已注册">
+              <el-tag :type="bioRegistered ? 'success' : 'info'">
+                {{ bioRegistered ? '已注册' : '未注册' }}
+              </el-tag>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="registerBio" :disabled="!bioSupported || bioRegistering"
+                :loading="bioRegistering">
+                <el-icon><User /></el-icon>
+                {{ bioRegistered ? '重新注册' : '注册生物识别' }}
+              </el-button>
+              <el-button v-if="bioRegistered" type="danger" @click="removeBio" :loading="bioRemoving">
+                <el-icon><Delete /></el-icon>
+                删除生物识别
+              </el-button>
+            </el-form-item>
+          </el-form>
         </div>
       </div>
-    </div>
+    </template>
 
-    <el-divider content-position="left">
-      <el-icon>
-        <Link />
-      </el-icon>
-      外部用户认证
-    </el-divider>
-    <el-form label-width="120px" :model="systemConfig">
-      <el-form-item label="认证接口 URL">
-        <el-input v-model="systemConfig.outterUser" placeholder="http://localhost:8081/api/login" />
-      </el-form-item>
-      <el-form-item>
-        <el-button type="primary" @click="handleTestOutterUser" :loading="testingOutterUser">
-          测试接口
-        </el-button>
-      </el-form-item>
-    </el-form>
-
-    <el-divider content-position="left">
-      <el-icon>
-        <Lock />
-      </el-icon>
-      IP 访问控制
-    </el-divider>
-    <el-form label-width="120px" :model="systemConfig">
-      <el-form-item label="允许的 IP 列表">
-        <el-input v-model="systemConfig.allowedIP" type="textarea" :rows="4" placeholder="请输入 IP 地址，每行一个" />
-        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
-          💡 每行一个 IP 地址，例如：127.0.0.1 或 192.168.1.100
-        </div>
-      </el-form-item>
-    </el-form>
-
-    <el-divider content-position="left">
-      <el-icon>
-        <Coin />
-      </el-icon>
-      Redis 配置
-    </el-divider>
-    <el-form label-width="120px" :model="systemConfig">
-      <el-form-item label="Redis 地址">
-        <el-input v-model="systemConfig.redisAddr" placeholder="127.0.0.1:6379" />
-      </el-form-item>
-      <el-form-item label="Redis 密码">
-        <el-input v-model="systemConfig.redisPassword" placeholder="可选" show-password />
-      </el-form-item>
-      <el-form-item label="Redis DB">
-        <el-input-number v-model="systemConfig.redisDB" :min="0" :max="15" :step="1" />
-        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">
-          💡 Redis 数据库编号，范围 0-15
-        </div>
-      </el-form-item>
-    </el-form>
-
-    <el-divider content-position="left">
-      <el-icon>
-        <User />
-      </el-icon>
-      生物识别配置
-    </el-divider>
-    <div class="bio-section">
-      <el-alert title="生物识别登录" type="info" :closable="false">
-        <div>💡 使用指纹或面容识别快速登录系统，仅在当前设备支持生物识别时可用</div>
-      </el-alert>
-      <el-form label-width="120px">
-        <el-form-item label="设备支持">
-          <el-tag :type="bioSupported ? 'success' : 'danger'">
-            {{ bioSupported ? '支持' : '不支持' }}
-          </el-tag>
-        </el-form-item>
-        <el-form-item label="已注册">
-          <el-tag :type="bioRegistered ? 'success' : 'info'">
-            {{ bioRegistered ? '已注册' : '未注册' }}
-          </el-tag>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="registerBio" :disabled="!bioSupported || bioRegistering"
-            :loading="bioRegistering">
-            <el-icon>
-              <User />
-            </el-icon>
-            {{ bioRegistered ? '重新注册' : '注册生物识别' }}
-          </el-button>
-          <el-button v-if="bioRegistered" type="danger" @click="removeBio" :loading="bioRemoving">
-            <el-icon>
-              <Delete />
-            </el-icon>
-            删除生物识别
-          </el-button>
-        </el-form-item>
-      </el-form>
-    </div>
-
-    <div class="config-actions">
+    <!-- Sticky Save Bar -->
+    <div class="sticky-save-bar">
       <el-button type="primary" @click="saveAllConfig" :loading="savingAll" size="large">
-        <el-icon>
-          <Check />
-        </el-icon>
+        <el-icon><Check /></el-icon>
         保存所有配置
       </el-button>
     </div>
@@ -175,7 +186,7 @@
           <el-input v-model="modelForm.model" placeholder="qwen3.5:2b" />
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input v-model="modelForm.apiKey" placeholder="sk-...（OpenAI 必填，Ollama 可留空）" show-password />
+          <el-input v-model="modelForm.apiKey" placeholder="sk-...(OpenAI 必填，Ollama 可留空)" show-password />
         </el-form-item>
         <el-form-item label="Temperature">
           <el-slider v-model="modelForm.temperature" :min="0" :max="2" :step="0.1" show-input />
@@ -208,7 +219,7 @@ import { saveUserBio } from '@/api/auth'
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { Check, Coin, Connection, Delete, Edit, HomeFilled, Link, Lock, Monitor, Plus, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 const emit = defineEmits(['config-saved'])
@@ -221,6 +232,8 @@ const bioRegistered = ref(false)
 const bioRegistering = ref(false)
 const bioRemoving = ref(false)
 
+const pageLoading = ref(true)
+
 const systemConfig = ref({
   outterUser: '',
   allowedIP: '127.0.0.1\n::1',
@@ -230,6 +243,20 @@ const systemConfig = ref({
   redisPassword: '',
   redisDB: 0,
   defaultHomepage: 'ai'
+})
+
+// IP 格式验证
+const ipError = computed(() => {
+  const text = systemConfig.value.allowedIP
+  if (!text || !text.trim()) return ''
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l !== '')
+  const ipRegex = /^(::1|::|(\d{1,3}\.){3}\d{1,3}([\/\d]+)?|[0-9a-fA-F:]+)$/
+  for (const line of lines) {
+    if (!ipRegex.test(line)) {
+      return `IP 格式错误："${line}"`
+    }
+  }
+  return ''
 })
 
 const aiModelList = ref([])
@@ -275,6 +302,7 @@ watch(() => modelForm.value.model, (newModel) => {
 })
 
 const loadSystemConfig = () => {
+  pageLoading.value = true
   getSystemConfig().then((resp) => {
     if (resp.data && resp.data.data) {
       const data = resp.data.data
@@ -297,10 +325,16 @@ const loadSystemConfig = () => {
         systemConfig.value.aiModelList = []
       }
     }
+  }).finally(() => {
+    pageLoading.value = false
   })
 }
 
 const saveAllConfig = () => {
+  if (ipError.value) {
+    ElMessage.warning('请修正 IP 格式错误后再保存')
+    return
+  }
   savingAll.value = true
   const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
 

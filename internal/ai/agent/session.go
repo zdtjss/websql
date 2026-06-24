@@ -625,31 +625,63 @@ func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 	return detail, nil
 }
 
-// buildDisplayMessages 把 summarization 压缩块中的原始 user 消息还原为独立条目。
+// buildDisplayMessages 把 summarization 压缩块中的原始 user 消息还原为独立条目，
+// 并合并同一轮对话中的多条 assistant 消息（工具调用流程会产生中间 assistant 消息）。
 //
-// 背景（EINO_DEEP_ANALYSIS §9.2）：eino 的 summarization 中间件在压缩历史时，
-// 会把所有 user 消息嵌入到一个新的 user summary 消息的 <all_user_messages> 块里。
-// 用户回看历史时看到的就不再是自己当初的提问。
-//
-// 本函数在展示层（GetDetail）解析 <all_user_messages> 块，提取其中的原始 user 消息
-// 并还原为独立条目。无需额外的持久化机制——summarization 块本身已包含原始消息。
+// 背景：
+//  1. summarization 压缩（EINO_DEEP_ANALYSIS §9.2）：eino 会把所有 user 消息嵌入
+//     到一个 summary 消息的 <all_user_messages> 块里，用户回看时看不到原始提问。
+//  2. 工具调用拆分：agent 在一次回复中可能产生多条 assistant 消息（带 tool_calls
+//     的中间消息 + 最终答案），中间还夹杂 tool 消息。直接展示会导致一条回复被
+//     拆成多个气泡。这里将同一轮（两次 user 消息之间）的所有 assistant 内容合并
+//     为一条，并跳过 tool 消息（前端不渲染）。
 //
 // 返回的列表仅供展示，**不能**再喂给 LLM（缺 assistant 响应会导致 LLM 困惑）。
 func buildDisplayMessages(messages []SessionMessage) []SessionMessage {
 	if len(messages) == 0 {
 		return messages
 	}
-	out := make([]SessionMessage, 0, len(messages))
+
+	// 第一步：还原 summarization 压缩块中的原始 user 消息
+	extracted := make([]SessionMessage, 0, len(messages))
 	for _, m := range messages {
 		if m.Role == "user" && strings.Contains(m.Content, "<all_user_messages>") {
-			extracted := extractUserMessagesFromSummary(m.Content)
-			for _, content := range extracted {
-				out = append(out, SessionMessage{Role: "user", Content: content})
+			for _, content := range extractUserMessagesFromSummary(m.Content) {
+				extracted = append(extracted, SessionMessage{Role: "user", Content: content})
 			}
 			continue
 		}
-		out = append(out, m)
+		extracted = append(extracted, m)
 	}
+
+	// 第二步：合并同一轮的 assistant 消息，跳过 tool 消息
+	out := make([]SessionMessage, 0, len(extracted))
+	var assistantBuf strings.Builder
+	flushAssistant := func() {
+		if assistantBuf.Len() > 0 {
+			out = append(out, SessionMessage{Role: "assistant", Content: assistantBuf.String()})
+			assistantBuf.Reset()
+		}
+	}
+	for _, m := range extracted {
+		switch m.Role {
+		case "assistant":
+			if m.Content != "" {
+				if assistantBuf.Len() > 0 {
+					assistantBuf.WriteString("\n\n")
+				}
+				assistantBuf.WriteString(m.Content)
+			}
+		case "tool":
+			// 前端不渲染 tool 消息，跳过
+			continue
+		default:
+			// user 或其他角色：先冲刷积攒的 assistant 内容，再追加当前消息
+			flushAssistant()
+			out = append(out, m)
+		}
+	}
+	flushAssistant()
 	return out
 }
 

@@ -22,6 +22,7 @@ import (
 
 type OSFilesystemBackend struct {
 	validateCommand func(string) error
+	pythonPath      string // 检测到的 Python 可执行文件路径（如 "python" 或 "/usr/bin/python3"）
 }
 
 func NewOSFilesystemBackend() *OSFilesystemBackend {
@@ -34,47 +35,49 @@ func (b *OSFilesystemBackend) SetValidateCommand(fn func(string) error) {
 	b.validateCommand = fn
 }
 
+// SetPythonPath 设置检测到的 Python 可执行文件路径，用于在 Windows 上将 python3 替换为正确的命令。
+func (b *OSFilesystemBackend) SetPythonPath(path string) {
+	b.pythonPath = path
+}
+
 // defaultCommandValidator 默认命令安全校验器。
-// 拦截危险命令，允许 Python 脚本执行、pip 安装、文件读写等安全操作。
+// 拦截可能危害系统安全、操作系统安全、文件或数据被篡改/删除的命令。
+// 允许 Python 脚本执行、pip 安装、文件读写等安全操作。
+// 动态生成的脚本通过 execute 工具执行时，此校验器保护系统不被破坏。
 func defaultCommandValidator(command string) error {
 	lower := strings.ToLower(command)
 
-	// 危险命令黑名单
+	// 危险命令黑名单：拦截可能危害系统/OS/文件安全的操作
 	dangerousPatterns := []string{
-		"rm -rf", "rmdir /s", "del /s", "del /f", "format ", "shutdown",
-		"mkfs", "dd if=", ":(){:|:&};:", "chmod 777 /",
-		"taskkill /f", "reg delete", "reg add",
-		"net user", "net localgroup",
-		"powershell -enc", "curl ", "wget ", "scp ", "ssh ",
+		// 文件/目录批量删除
+		"rm -rf", "rmdir /s", "del /s", "del /f", "rm -r /",
+		// 磁盘/分区操作
+		"format ", "mkfs", "dd if=", "diskpart",
+		// 系统关机/重启
+		"shutdown", "reboot", "halt", "poweroff",
+		// 系统配置修改
+		"reg delete", "reg add", "bcdedit", "defaults write",
+		"chmod 777 /", "chown -r", "takeown /f",
+		// 用户/权限管理
+		"net user", "net localgroup", "useradd", "userdel", "passwd",
+		// 服务管理
+		"systemctl", "launchctl", "sc delete", "sc config",
+		// 定时任务（可能用于持久化攻击）
+		"crontab", "schtasks /create",
+		// 编码/加密执行（可能隐藏恶意行为）
+		"powershell -enc", "powershell -e ",
+		// 网络工具（可能用于数据外传或反弹 shell）
+		"curl ", "wget ", "scp ", "ssh ", "rsync ",
 		"nc ", "netcat", "ncat ",
-		"> /dev/sda", "> /dev/null 2>&1 &",
+		// fork bomb
+		":(){:|:&};:",
+		// 直接写入设备
+		"> /dev/sd", "> /dev/null 2>&1 &",
 	}
 	for _, p := range dangerousPatterns {
 		if strings.Contains(lower, p) {
 			return fmt.Errorf("命令包含危险操作 [%s]，已被安全校验拦截", p)
 		}
-	}
-
-	// 允许的命令前缀白名单
-	allowedPrefixes := []string{
-		"python", "python3", "pip", "chcp", "set ",
-		"echo ", "type ", "dir ", "ls ", "cat ",
-		"mkdir ", "cd ",
-	}
-	hasAllowed := false
-	for _, p := range allowedPrefixes {
-		if strings.HasPrefix(lower, p) || strings.Contains(lower, " "+p) || strings.Contains(lower, "|"+p) {
-			hasAllowed = true
-			break
-		}
-	}
-	// chcp/set 是 Windows 预处理自动添加的，总是允许
-	if strings.Contains(lower, "chcp 65001") || strings.Contains(lower, "set pythonioencoding=utf-8") {
-		hasAllowed = true
-	}
-	if !hasAllowed && lower != "" {
-		// 不在白名单但不一定危险，记录但不拦截（避免误伤合法操作）
-		// 仅对明确的危险命令拦截，其他命令放行
 	}
 
 	return nil
@@ -309,34 +312,112 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 
 var (
 	tailPipeRegex = regexp.MustCompile(`\s*2>&1\s*\|\s*tail\s+-?\d+\s*`)
-	pythonCRegex   = regexp.MustCompile(`python(?:\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
+	pythonCRegex   = regexp.MustCompile(`python(?:3|\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
+	python3Regex   = regexp.MustCompile(`(^|\s)python3(\s|$)`)
 )
 
-func preprocessCommandForWindows(command string) string {
+// unescapeShellCode 对从 python -c "..." 中提取的代码进行 shell 反转义。
+// LLM 生成的 python -c "code" 中，code 内部的双引号会被转义为 \"，
+// 反斜杠会被转义为 \\。写入 .py 文件前需要还原，否则 Python 会报 SyntaxError。
+// 注意：只反转义 shell 双引号上下文中的 \" 和 \\，保留 \n \t 等 Python 转义序列。
+func unescapeShellCode(code string) string {
+	var sb strings.Builder
+	sb.Grow(len(code))
+	i := 0
+	for i < len(code) {
+		if code[i] == '\\' && i+1 < len(code) {
+			next := code[i+1]
+			// 仅反转义 shell 双引号转义：\" → ", \\ → \
+			if next == '"' {
+				sb.WriteByte('"')
+				i += 2
+				continue
+			}
+			if next == '\\' {
+				sb.WriteByte('\\')
+				i += 2
+				continue
+			}
+			// 其他 \x 序列（如 \n \t）是 Python 转义，保留原样
+		}
+		sb.WriteByte(code[i])
+		i++
+	}
+	return sb.String()
+}
+
+// getPythonCommand 根据检测结果返回正确的 Python 命令名称。
+// detectPython 优先检测 python3，其次 python。如果检测到的是 python3，
+// 则命令中保留 python3；如果检测到的是 python（Windows 常见），则返回 python。
+func (b *OSFilesystemBackend) getPythonCommand() string {
+	if b.pythonPath == "" {
+		return "python"
+	}
+	base := filepath.Base(b.pythonPath)
+	base = strings.TrimSuffix(base, ".exe")
+	if base == "python3" || base == "python" {
+		return base
+	}
+	return "python"
+}
+
+// preprocessCommand 跨平台命令预处理。
+// 1. 剥离 tail 管道（部分平台无 tail 命令）
+// 2. 将 python3 替换为检测到的 Python 命令（当 python3 不可用时）
+// 3. 将 /tmp/ 路径映射到 os.TempDir()（跨平台兼容）
+// 4. 将 python -c "code" 提取为临时 .py 文件执行（彻底避免 shell 引号转义问题）
+// 5. Windows 特定：设置 UTF-8 编码
+func (b *OSFilesystemBackend) preprocessCommand(command string) string {
+	// 1. 剥离 tail 管道
 	command = tailPipeRegex.ReplaceAllString(command, "")
 	command = strings.ReplaceAll(command, "2>&1 | tail", "")
 	command = strings.ReplaceAll(command, "| tail -5", "")
 	command = strings.ReplaceAll(command, "| tail-5", "")
 
+	// 2. 确定正确的 Python 命令，若 python3 不可用则替换
+	pythonCmd := b.getPythonCommand()
+	if pythonCmd != "python3" {
+		// 先替换 Unix 绝对路径（python3Regex 无法匹配 /usr/bin/python3 中的 python3）
+		for _, unixPath := range []string{
+			"/usr/local/bin/python3", "/usr/bin/python3",
+			"/usr/local/bin/python", "/usr/bin/python",
+		} {
+			command = strings.ReplaceAll(command, unixPath, pythonCmd)
+		}
+		// 再替换独立的 python3 token
+		command = python3Regex.ReplaceAllString(command, "${1}"+pythonCmd+"${2}")
+	}
+
+	// 3. 将 /tmp/ 映射到系统临时目录（使用正斜杠，跨平台兼容且不引发 Python 转义问题）
+	tmpDir := strings.ReplaceAll(os.TempDir(), "\\", "/")
+	command = strings.ReplaceAll(command, "/tmp/", tmpDir+"/")
+
+	// 4. 将 python -c "code" 提取为临时文件执行
+	// 这在所有平台上都避免了 shell 引号转义导致的 SyntaxError
 	command = pythonCRegex.ReplaceAllStringFunc(command, func(match string) string {
 		parts := pythonCRegex.FindStringSubmatch(match)
 		if len(parts) < 2 {
 			return match
 		}
-		code := parts[1]
+		code := unescapeShellCode(parts[1])
 
 		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("websql_py_%d.py", time.Now().UnixNano()))
 		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
 			return match
 		}
 
-		// ReplaceAllStringFunc 会保留 match 之外的文本，
-		// 所以 match 之后的参数（如 python -c "code" arg1 中的 arg1）会自动保留。
-		// 返回的命令执行临时脚本，并在执行后删除临时文件。
-		return fmt.Sprintf("python %s && del %s", tmpFile, tmpFile)
+		// 执行临时脚本，并在执行后删除（平台相关的删除命令）
+		if runtime.GOOS == "windows" {
+			return fmt.Sprintf("%s %s && del %s", pythonCmd, tmpFile, tmpFile)
+		}
+		return fmt.Sprintf("%s %s && rm -f %s", pythonCmd, tmpFile, tmpFile)
 	})
 
-	command = "chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && " + command
+	// 5. Windows 特定：强制 UTF-8 编码，避免 GBK 编码问题
+	if runtime.GOOS == "windows" {
+		command = "chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && " + command
+	}
+
 	return command
 }
 
@@ -345,19 +426,33 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 		return nil, errors.New("command is required")
 	}
 
-	command := input.Command
-
-	if runtime.GOOS == "windows" {
-		command = preprocessCommandForWindows(command)
-	}
-
+	// 安全校验：在预处理之前验证原始命令（检查用户意图）
 	if b.validateCommand != nil {
 		if err := b.validateCommand(input.Command); err != nil {
 			return nil, fmt.Errorf("command validation failed: %w", err)
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
+	// 跨平台命令预处理
+	command := b.preprocessCommand(input.Command)
+
+	// 根据操作系统选择正确的 shell
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+
+	// 安全措施：设置环境变量
+	// PYTHONIOENCODING：统一 UTF-8 编码，避免 Windows GBK 编码问题
+	// PYTHONDONTWRITEBYTECODE：禁止生成 .pyc 文件，避免代码注入风险
+	// 注意：不设置 cmd.Dir，因为 execute 工具同时用于 skill 脚本（需要在其自身目录下运行）
+	// 注意：不设置 PYTHONNOUSERSITE，因为 Windows 上 pip install 默认安装到用户 site-packages
+	cmd.Env = append(os.Environ(),
+		"PYTHONIOENCODING=utf-8",
+		"PYTHONDONTWRITEBYTECODE=1",
+	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
