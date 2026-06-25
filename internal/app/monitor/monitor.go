@@ -250,7 +250,7 @@ func GetMetrics(c *gin.Context) {
 
 	// 异步将指标持久化到 t_monitor_metric 表，不阻塞 API 响应
 	// 历史趋势查询走 GetMetricHistory（从 DB 读取），无需再维护内存缓存
-	persistMetrics(connId, snapshot)
+	persistMetrics(connId, snapshot, dbType)
 
 	response.WriteOK(c, snapshot)
 }
@@ -807,7 +807,7 @@ func parseStrToInt(s string) int {
 // persistMetrics 异步将指标快照批量写入 t_monitor_metric 表。
 // 使用 safego.GoWithName 异步执行，写入失败不影响监控 API 的正常响应。
 // connId 为空或管理库未初始化时直接跳过。
-func persistMetrics(connId string, snapshot MetricsSnapshot) {
+func persistMetrics(connId string, snapshot MetricsSnapshot, dbType string) {
 	if database.Mngtdb == nil || connId == "" {
 		return
 	}
@@ -822,6 +822,16 @@ func persistMetrics(connId string, snapshot MetricsSnapshot) {
 		{MetricConnections, float64(snapshot.Connections)},
 		{MetricSlowQueries, float64(snapshot.SlowQueries)},
 		{MetricLockWaits, float64(snapshot.LockWaits)},
+	}
+	// Oracle 仅采集到 connections/activeConnections，其余指标为零值；
+	// 跳过零值写入避免历史趋势图显示误导性的全 0 折线
+	if dbType == "oracle" {
+		metrics = []struct {
+			name  string
+			value float64
+		}{
+			{MetricConnections, float64(snapshot.Connections)},
+		}
 	}
 	safego.GoWithName("monitor-metric-write", func() {
 		insertSQL := `INSERT INTO t_monitor_metric (conn_id, metric_name, metric_value, collected_at) VALUES (?, ?, ?, ?)`
@@ -1075,7 +1085,7 @@ func collectAllMetrics() {
 		if db == nil {
 			continue
 		}
-		persistMetrics(r.Id, collectMetricsSnapshot(db, r.DbType))
+		persistMetrics(r.Id, collectMetricsSnapshot(db, r.DbType), r.DbType)
 		if r.DbType == "mysql" || r.DbType == "mariadb" {
 			bp := collectBufferPoolStats(db, r.DbType)
 			persistSingleMetric(r.Id, MetricBufferPoolHitRate, bp.HitRate)

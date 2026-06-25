@@ -50,13 +50,13 @@ type AnalyzeColumn struct {
 
 // AnalyzeRelation AI 推断出的关系
 type AnalyzeRelation struct {
-	Source     string `json:"source"`      // 源表（外键所在表）
-	SourceCol  string `json:"sourceCol"`   // 源表字段
-	Target     string `json:"target"`      // 目标表（被引用表）
-	TargetCol  string `json:"targetCol"`   // 目标表字段
+	Source       string `json:"source"`      // 源表（外键所在表）
+	SourceCol    string `json:"sourceCol"`   // 源表字段
+	Target       string `json:"target"`      // 目标表（被引用表）
+	TargetCol    string `json:"targetCol"`   // 目标表字段
 	RelationType string `json:"relationType"` // 1:1 | 1:N | N:M
-	Confidence string `json:"confidence"`  // high | medium | low
-	Reason     string `json:"reason"`      // 推断依据（命名、注释等）
+	Confidence   string `json:"confidence"`  // high | medium | low
+	Reason       string `json:"reason"`      // 推断依据（命名、注释等）
 }
 
 type AnalyzeResponse struct {

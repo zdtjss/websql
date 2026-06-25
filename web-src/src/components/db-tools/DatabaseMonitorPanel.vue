@@ -436,6 +436,27 @@ const statusList = ref([])
 const statusFilter = ref('')
 const statusLoading = ref(false)
 
+// InnoDB 状态 Tab 数据
+const innodbStatus = ref('')
+const innodbLoading = ref(false)
+const innodbSupported = ref(false)
+const innodbLoaded = ref(false)
+
+// 锁与等待 Tab 数据
+const locksList = ref([])
+const locksLoading = ref(false)
+const locksLoaded = ref(false)
+
+// 慢查询分析 Tab 数据
+const slowList = ref([])
+const slowLoading = ref(false)
+const slowLoaded = ref(false)
+
+// 表统计 Tab 数据
+const topTablesList = ref([])
+const topTablesLoading = ref(false)
+const topTablesLoaded = ref(false)
+
 // ============ 工具函数 ============
 function formatBytes(val) {
   if (!val || val === 0) return '0 B'
@@ -928,6 +949,52 @@ async function doFlushStatus() {
   } catch (e) { handleError(e, '重置状态') }
 }
 
+// ============ InnoDB 状态 / 锁 / 慢查询 / 表统计 Tab ============
+// InnoDB 引擎状态（仅 MySQL/MariaDB 支持，其他库后端返回 supported:false）
+async function loadInnodb() {
+  if (!connId) return
+  innodbLoading.value = true
+  try {
+    const res = await getInnodbStatus(connId)
+    const data = res.data?.data || {}
+    innodbSupported.value = !!data.supported
+    innodbStatus.value = data.status || ''
+  } catch (e) { handleError(e, 'InnoDB 状态') } finally { innodbLoading.value = false; innodbLoaded.value = true }
+}
+
+// 锁与事务等待
+async function loadLocks() {
+  if (!connId) return
+  locksLoading.value = true
+  try {
+    const res = await getLocks(connId)
+    // 后端返回 { locks: [...], count, supported }，取 locks 数组
+    locksList.value = res.data?.data?.locks || []
+  } catch (e) { handleError(e, '锁与等待') } finally { locksLoading.value = false; locksLoaded.value = true }
+}
+
+// 慢查询分析
+async function loadSlow() {
+  if (!connId) return
+  slowLoading.value = true
+  try {
+    const res = await getSlowQueries(connId, 20)
+    // 后端返回 { queries: [...], count, supported }，取 queries 数组
+    slowList.value = res.data?.data?.queries || []
+  } catch (e) { handleError(e, '慢查询分析') } finally { slowLoading.value = false; slowLoaded.value = true }
+}
+
+// 表统计 TOP N（依赖当前 schema）
+async function loadTopTables() {
+  if (!connId) return
+  topTablesLoading.value = true
+  try {
+    const res = await getTopTables(connId, schema || '', 20)
+    // 后端返回 { tables: [...], count, supported }，取 tables 数组
+    topTablesList.value = res.data?.data?.tables || []
+  } catch (e) { handleError(e, '表统计') } finally { topTablesLoading.value = false; topTablesLoaded.value = true }
+}
+
 // ============ Tab 切换与生命周期 ============
 function onTabChange(name) {
   // 切换到对应 Tab 时按需加载数据
@@ -943,6 +1010,10 @@ function onTabChange(name) {
   }
   else if (name === 'variables' && varsList.value.length === 0) loadVariables()
   else if (name === 'status' && statusList.value.length === 0) loadStatus()
+  else if (name === 'innodb' && !innodbLoaded.value) loadInnodb()
+  else if (name === 'locks' && !locksLoaded.value) loadLocks()
+  else if (name === 'slow' && !slowLoaded.value) loadSlow()
+  else if (name === 'topTables' && !topTablesLoaded.value) loadTopTables()
 }
 
 function onOpen() {
@@ -965,6 +1036,16 @@ function onClose() {
   // 重置趋势模式为实时，清空历史数据
   trendMode.value = 'realtime'
   historyPoints.value = []
+  // 清空新增 Tab 数据，避免串连数据污染
+  innodbStatus.value = ''
+  innodbSupported.value = false
+  innodbLoaded.value = false
+  locksList.value = []
+  locksLoaded.value = false
+  slowList.value = []
+  slowLoaded.value = false
+  topTablesList.value = []
+  topTablesLoaded.value = false
 }
 
 onUnmounted(() => {

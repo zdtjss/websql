@@ -16,15 +16,8 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <span v-if="searchQuery" class="er-toolbar-hint er-search-count">{{ matchedNodeIds.length }} 个匹配</span>
-      <span class="er-toolbar-hint">💡 双击表名浏览数据 | Ctrl+滚轮缩放 | 拖动平移 | 点击 ▾ 折叠</span>
+      <span class="er-toolbar-hint">💡 双击表名浏览数据 | 滚轮缩放 | 拖动平移 | 字段左侧圆点拖拽连线 | 点击连线切换类型 | 选中连线 Delete 删除</span>
       <div style="flex:1;"></div>
-      <!-- 全部折叠 / 全部展开 -->
-      <el-button-group size="small">
-        <el-button @click="collapseAll" aria-label="全部折叠表节点">全部折叠</el-button>
-        <el-button @click="expandAll" aria-label="全部展开表节点">全部展开</el-button>
-      </el-button-group>
-      <!-- 重新布局：清除手动拖动位置并重新计算自动布局 -->
-      <el-button size="small" @click="relayout" aria-label="重新计算自动布局">重新布局</el-button>
       <el-radio-group v-model="layoutType" size="small" @change="rebuildGraph" aria-label="布局方向">
         <el-radio-button value="TB">从上到下</el-radio-button>
         <el-radio-button value="LR">从左到右</el-radio-button>
@@ -37,8 +30,6 @@
         aria-label="AI 分析表关系">
         <el-icon style="margin-right:4px;"><MagicStick /></el-icon>AI 分析关系
       </el-button>
-      <!-- 手动编辑关系：增删改连线，仅内存中，不持久化 -->
-      <el-button size="small" @click="openRelationEditor" aria-label="手动编辑表关系">编辑关系</el-button>
       <!-- 导出：支持 PNG / SVG，包含白色背景 -->
       <el-dropdown trigger="click" @command="handleExport" aria-label="导出 ER 图">
         <el-button size="small">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
@@ -69,85 +60,16 @@
     >
       <div class="er-edge-tooltip-type">{{ edgeTooltip.relationType }}</div>
       <div class="er-edge-tooltip-line"><b>{{ edgeTooltip.source }}</b> → <b>{{ edgeTooltip.target }}</b></div>
-      <div class="er-edge-tooltip-cols">字段映射: {{ edgeTooltip.columns }}</div>
+      <div class="er-edge-tooltip-cols">字段映射: {{ edgeTooltip.sourceCol }} = {{ edgeTooltip.targetCol }}</div>
       <div v-if="edgeTooltip.constraintName" class="er-edge-tooltip-fk">外键: {{ edgeTooltip.constraintName }}</div>
     </div>
-
-    <!-- 手动编辑关系对话框：仅修改内存中的 allEdges，关闭即生效，不持久化 -->
-    <el-dialog v-model="relationEditorVisible" title="编辑表关系" width="780px" :draggable="true" :close-on-click-modal="false"
-      append-to-body>
-      <div class="relation-editor-tip">
-        提示：在此处增删的关系仅用于当前 ER 图显示，不会写入数据库也不会保存。刷新页面后将恢复为数据库物理外键。
-      </div>
-      <el-table :data="editableRelations" size="small" max-height="420" border>
-        <el-table-column label="源表" width="160">
-          <template #default="{ row, $index }">
-            <el-select v-model="row.source" size="small" filterable @change="onRelationRowChange($index)">
-              <el-option v-for="n in allNodes" :key="n.id" :label="n.label" :value="n.id" />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="源字段" width="140">
-          <template #default="{ row, $index }">
-            <el-select v-model="row.sourceCol" size="small" filterable :disabled="!row.source">
-              <el-option v-for="c in getColumnsOf(row.source)" :key="c" :label="c" :value="c" />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="目标表" width="160">
-          <template #default="{ row, $index }">
-            <el-select v-model="row.target" size="small" filterable @change="onRelationRowChange($index)">
-              <el-option v-for="n in allNodes" :key="n.id" :label="n.label" :value="n.id" />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="目标字段" width="140">
-          <template #default="{ row }">
-            <el-select v-model="row.targetCol" size="small" filterable :disabled="!row.target">
-              <el-option v-for="c in getColumnsOf(row.target)" :key="c" :label="c" :value="c" />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="90">
-          <template #default="{ row }">
-            <el-select v-model="row.relationType" size="small">
-              <el-option label="1:1" value="1:1" />
-              <el-option label="1:N" value="1:N" />
-              <el-option label="N:M" value="N:M" />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="来源" width="80">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.origin === 'ai' ? 'warning' : (row.origin === 'manual' ? 'success' : 'info')">
-              {{ row.origin === 'ai' ? 'AI' : (row.origin === 'manual' ? '手动' : 'FK') }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="70" fixed="right">
-          <template #default="{ $index }">
-            <el-button size="small" type="danger" link @click="removeRelation($index)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;">
-        <el-button size="small" type="primary" plain @click="addRelation">
-          <el-icon style="margin-right:4px;"><Plus /></el-icon>新增关系
-        </el-button>
-        <span class="relation-editor-count">共 {{ editableRelations.length }} 条关系</span>
-      </div>
-      <template #footer>
-        <el-button @click="relationEditorVisible = false">取消</el-button>
-        <el-button type="primary" @click="applyRelationEditor">应用并关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { DagreLayout } from '@antv/layout'
-import { Graph, Shape, Export } from '@antv/x6'
-import { Search, ArrowDown, MagicStick, Plus } from '@element-plus/icons-vue'
+import { Graph, Shape, Export, Keyboard } from '@antv/x6'
+import { Search, ArrowDown, MagicStick } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { execSQL } from '@/api/sql'
@@ -309,7 +231,7 @@ const collapsedNodes = ref(new Set())
 const manualPositions = ref(new Map())
 
 // 关系连线 hover 提示框状态
-const edgeTooltip = ref({ visible: false, x: 0, y: 0, relationType: '', source: '', target: '', columns: '', constraintName: '' })
+const edgeTooltip = ref({ visible: false, x: 0, y: 0, relationType: '', source: '', target: '', sourceCol: '', targetCol: '', constraintName: '' })
 
 let graph = null
 const allNodes = ref([])
@@ -442,27 +364,13 @@ async function loadMysqlData(schema) {
     }))
   }
 
-  // 保留外键列对信息（用于关系类型推断与 hover 提示）
-  const fkMap = {}
-  fkRows.forEach(r => {
-    const src = r.TABLE_NAME || r.table_name
-    const dst = r.REFERENCED_TABLE_NAME || r.referenced_table_name
-    const constraint = r.CONSTRAINT_NAME || r.constraint_name || ''
-    const srcCol = r.COLUMN_NAME || r.column_name
-    const dstCol = r.REFERENCED_COLUMN_NAME || r.referenced_column_name
-    const key = src + '→' + dst
-    if (!fkMap[key]) fkMap[key] = { source: src, target: dst, columnPairs: [], constraintNames: [] }
-    fkMap[key].columnPairs.push({ sourceCol: srcCol, targetCol: dstCol })
-    if (constraint && !fkMap[key].constraintNames.includes(constraint)) {
-      fkMap[key].constraintNames.push(constraint)
-    }
-  })
-  allEdges.value = Object.values(fkMap).map(e => ({
-    source: e.source,
-    target: e.target,
-    columnPairs: e.columnPairs,
-    columns: e.columnPairs.map(cp => cp.sourceCol + '=' + cp.targetCol).join(', '),
-    constraintName: e.constraintNames.join(', '),
+  // 一条边对应一对字段映射（sourceCol / targetCol），便于字段级拖拽连线
+  allEdges.value = fkRows.map(r => ({
+    source: r.TABLE_NAME || r.table_name,
+    target: r.REFERENCED_TABLE_NAME || r.referenced_table_name,
+    sourceCol: r.COLUMN_NAME || r.column_name || '',
+    targetCol: r.REFERENCED_COLUMN_NAME || r.referenced_column_name || '',
+    constraintName: r.CONSTRAINT_NAME || r.constraint_name || '',
   }))
 }
 
@@ -496,8 +404,8 @@ async function loadSqliteData() {
           fks: fks.map(fk => ({
             source: n.id,
             target: fk.table,
-            columnPairs: [{ sourceCol: fk.from || '', targetCol: fk.to || '' }],
-            columns: (fk.from || '') + '=' + (fk.to || ''),
+            sourceCol: fk.from || '',
+            targetCol: fk.to || '',
           })),
         }
       } catch (err) { handleError(err, '加载SQLite表结构'); return { tableName: n.id, columns: [], fks: [] } }
@@ -514,17 +422,12 @@ async function loadSqliteData() {
     if (colMap[n.id]) n.columns = colMap[n.id]
   })
 
-  const fkMap = {}
-  fkList.forEach(e => {
-    const key = e.source + '→' + e.target
-    if (!fkMap[key]) fkMap[key] = { source: e.source, target: e.target, columnPairs: [] }
-    fkMap[key].columnPairs.push(...e.columnPairs)
-  })
-  allEdges.value = Object.values(fkMap).map(e => ({
+  // 一条边对应一对字段映射（sourceCol / targetCol）
+  allEdges.value = fkList.map(e => ({
     source: e.source,
     target: e.target,
-    columnPairs: e.columnPairs,
-    columns: e.columnPairs.map(cp => cp.sourceCol + '=' + cp.targetCol).join(', '),
+    sourceCol: e.sourceCol,
+    targetCol: e.targetCol,
     constraintName: '',
   }))
 }
@@ -533,8 +436,7 @@ async function loadSqliteData() {
 function isMiddleTable(node, edges) {
   const outEdges = edges.filter(e => e.source === node.id)
   if (outEdges.length < 2) return false
-  const fkSourceCols = new Set()
-  outEdges.forEach(e => (e.columnPairs || []).forEach(cp => fkSourceCols.add(cp.sourceCol)))
+  const fkSourceCols = new Set(outEdges.map(e => e.sourceCol).filter(Boolean))
   const pkCols = (node.columns || []).filter(c => c.primaryKey).map(c => c.name)
   if (pkCols.length === 0) return false
   return pkCols.every(pk => fkSourceCols.has(pk))
@@ -547,12 +449,9 @@ function inferRelationType(edge, nodes, edges) {
     return 'N:M'
   }
   const targetNode = nodes.find(n => n.id === edge.target)
-  if (targetNode && edge.columnPairs && edge.columnPairs.length > 0) {
-    const allPkOrUnique = edge.columnPairs.every(cp => {
-      const col = targetNode.columns.find(c => c.name === cp.targetCol)
-      return col && (col.primaryKey || col.unique)
-    })
-    if (allPkOrUnique) return '1:1'
+  if (targetNode && edge.targetCol) {
+    const col = targetNode.columns.find(c => c.name === edge.targetCol)
+    if (col && (col.primaryKey || col.unique)) return '1:1'
   }
   return '1:N'
 }
@@ -578,6 +477,51 @@ function destroyGraph() {
   }
 }
 
+// 构造节点的端口配置：每个字段一个端口，左侧圆点 magnet 用于拖拽连线
+// 端口 ID 格式 `p-<colIdx>`，仅节点内唯一即可
+function buildNodePorts(n) {
+  const hasComment = !!n.comment
+  return {
+    groups: {
+      left: {
+        position: { name: 'absolute' },
+        attrs: {
+          circle: {
+            r: 4,
+            magnet: true,
+            stroke: '#5F95FF',
+            fill: '#ffffff',
+            strokeWidth: 1,
+          },
+        },
+      },
+    },
+    items: n.columns.map((col, idx) => {
+      // Y 坐标：标题 + (注释) + 第 idx 行字段中点
+      const portY = HEADER_HEIGHT + (hasComment ? COMMENT_HEIGHT : 0) + idx * COL_ROW_HEIGHT + COL_ROW_HEIGHT / 2
+      return {
+        id: 'p-' + idx,
+        group: 'left',
+        args: { x: 0, y: portY },
+      }
+    }),
+  }
+}
+
+// 查找节点中字段对应的端口 ID（找不到返回 null，回退到节点中心）
+function portIdFor(node, colName) {
+  if (!node || !node.columns || !colName) return null
+  const idx = node.columns.findIndex(c => c.name === colName)
+  return idx >= 0 ? 'p-' + idx : null
+}
+
+// 根据端口 ID 反查字段名（端口 ID 格式 `p-<colIdx>`）
+function colNameByPortId(node, portId) {
+  if (!node || !node.columns || !portId) return ''
+  const idx = parseInt(String(portId).replace('p-', ''), 10)
+  return Number.isNaN(idx) ? '' : (node.columns[idx]?.name || '')
+}
+
 async function rebuildGraph() {
   destroyGraph()
   if (!containerRef.value) return
@@ -600,11 +544,56 @@ async function rebuildGraph() {
     panning: { enabled: true },
     mousewheel: {
       enabled: true,
-      modifiers: ['ctrl'],
+      // 移除 modifiers，滚轮直接缩放（原地放大）；限制缩放范围避免图形消失
       factor: 1.1,
+      minScale: 0.3,
+      maxScale: 3,
     },
-    selecting: { enabled: false },
-    connecting: { enabled: false },
+    selecting: {
+      enabled: true,
+      showEdge: true,
+      // 仅允许选中边，节点不参与多选避免误操作
+      filter: ['edge'],
+    },
+    connecting: {
+      // 端口级拖拽连线
+      snap: true,
+      allowLoop: false,        // 禁止自环
+      allowNode: false,        // 必须连到端口，不能连到节点中心
+      allowEdge: false,
+      allowPort: true,
+      allowBlank: false,       // 拖到空白处取消，不创建悬挂边
+      allowMulti: true,        // 允许同一对节点间多条关系（不同字段）
+      highlight: true,         // 拖拽时高亮可用端口
+      connectionPoint: 'anchor',
+      anchor: 'center',
+      createEdge() {
+        // 新建边的视觉样式与现有 FK 边一致；关系类型默认 1:N
+        const c = themeColors.value
+        return new Shape.Edge({
+          zIndex: 0,
+          attrs: {
+            line: {
+              stroke: c.edgeColor,
+              strokeWidth: 1.5,
+              targetMarker: { name: 'classic', width: 8, height: 6 },
+              sourceMarker: { name: 'circle', r: 3 },
+            },
+          },
+          labels: [{
+            attrs: {
+              text: { text: '1:N', fontSize: 10, fill: '#ffffff', fontWeight: 600 },
+              rect: { fill: c.rel1N, stroke: '#ffffff', 'stroke-width': 1, rx: 4, ry: 4 },
+            },
+            position: { distance: 0.5 },
+          }],
+        })
+      },
+      validateConnection({ sourceMagnet, targetMagnet }) {
+        // 源端和目标端都必须是端口 magnet（circle），避免误连到节点正文
+        return !!(sourceMagnet && targetMagnet)
+      },
+    },
     interacting: { nodeMovable: true },
     // 表数量较多时启用异步与虚拟渲染，避免一次性渲染卡顿
     async: useAsync,
@@ -613,6 +602,8 @@ async function rebuildGraph() {
 
   // 注册导出插件（X6 v3 需显式注册后才能使用 toPNG/toSVG）
   graph.use(new Export())
+  // 启用键盘插件，bindKey 删除选中边才生效
+  graph.use(new Keyboard())
 
   mousedownHandler = (e) => {
     // 折叠按钮点击：优先处理，阻止冒泡以避免触发标题栏的双击逻辑
@@ -680,6 +671,10 @@ async function rebuildGraph() {
       nodeConfig.x = manualPos.x
       nodeConfig.y = manualPos.y
     }
+    // 展开且有字段时注册端口（每个字段一个，左侧圆点 magnet）
+    if (!isCollapsed && n.columns && n.columns.length > 0) {
+      nodeConfig.ports = buildNodePorts(n)
+    }
     graph.addNode(nodeConfig)
   })
 
@@ -687,7 +682,12 @@ async function rebuildGraph() {
   edges.forEach(e => {
     const relType = e.relationType || '1:N'
     const relColor = relType === '1:1' ? colors.rel11 : relType === 'N:M' ? colors.relNM : colors.rel1N
-    graph.addEdge({
+    // 查找源/目标字段对应的端口，让连线从字段圆点出发而非节点中心
+    const sourceNode = nodes.find(n => n.id === e.source)
+    const targetNode = nodes.find(n => n.id === e.target)
+    const sourcePort = portIdFor(sourceNode, e.sourceCol)
+    const targetPort = portIdFor(targetNode, e.targetCol)
+    const edgeConfig = {
       source: { cell: e.source },
       target: { cell: e.target },
       zIndex: 0,
@@ -709,7 +709,10 @@ async function rebuildGraph() {
         position: { distance: 0.5 },
       }],
       data: { ...e },
-    })
+    }
+    if (sourcePort) edgeConfig.source.port = sourcePort
+    if (targetPort) edgeConfig.target.port = targetPort
+    graph.addEdge(edgeConfig)
   })
 
   // 仅在没有手动位置时执行自动布局
@@ -757,7 +760,8 @@ async function rebuildGraph() {
         relationType: data.relationType || '1:N',
         source: data.source,
         target: data.target,
-        columns: data.columns || '',
+        sourceCol: data.sourceCol || '',
+        targetCol: data.targetCol || '',
         constraintName: data.constraintName || '',
       }
     }
@@ -767,6 +771,77 @@ async function rebuildGraph() {
     edge.attr('line/strokeWidth', 1.5)
     edge.attr('line/stroke', colors.edgeColor)
     edgeTooltip.value.visible = false
+  })
+
+  // 拖拽连线完成：把新建边写入 allEdges（手动关系，不持久化）
+  // 注意：edge:connected 事件参数中 previousCell/previousPort 是"被拖动那一端的前值"，
+  // 对新建边恒为 null；源端信息必须从 edge 自身读取（getSourceCell/getSourcePortId）。
+  graph.on('edge:connected', ({ edge, isNew, currentCell, currentPort }) => {
+    if (!isNew || !currentCell || !currentPort) {
+      // 目标端不是端口（落到节点中心或空白）→ 移除该边
+      edge.remove()
+      return
+    }
+    const sourceCell = edge.getSourceCell()
+    const sourcePortId = edge.getSourcePortId()
+    if (!sourceCell || !sourcePortId) {
+      edge.remove()
+      return
+    }
+    const sourceNode = allNodes.value.find(n => n.id === sourceCell.id)
+    const targetNode = allNodes.value.find(n => n.id === currentCell.id)
+    const newEdge = {
+      source: sourceCell.id,
+      target: currentCell.id,
+      sourceCol: colNameByPortId(sourceNode, sourcePortId),
+      targetCol: colNameByPortId(targetNode, currentPort),
+      constraintName: '',
+      relationType: '1:N',
+      origin: 'manual',
+    }
+    edge.setData(newEdge)
+    allEdges.value.push(newEdge)
+  })
+
+  // 点击边：循环切换关系类型 1:N → 1:1 → N:M → 1:N，同步更新标签颜色与 allEdges
+  graph.on('edge:click', ({ edge }) => {
+    const data = edge.getData() || {}
+    const newType = data.relationType === '1:N' ? '1:1' : data.relationType === '1:1' ? 'N:M' : '1:N'
+    const c = themeColors.value
+    const relColor = newType === '1:1' ? c.rel11 : newType === 'N:M' ? c.relNM : c.rel1N
+    // 不可变写法：构造新对象回写，避免直接变异 getData() 返回的引用
+    const newData = { ...data, relationType: newType }
+    edge.setData(newData)
+    edge.setLabels([{
+      attrs: {
+        text: { text: newType, fontSize: 10, fill: '#ffffff', fontWeight: 600 },
+        rect: { fill: relColor, stroke: '#ffffff', 'stroke-width': 1, rx: 4, ry: 4 },
+      },
+      position: { distance: 0.5 },
+    }])
+    // 同步到 allEdges（按 source+target+sourceCol+targetCol 定位）
+    const idx = allEdges.value.findIndex(e =>
+      e.source === newData.source && e.target === newData.target &&
+      (e.sourceCol || '') === (newData.sourceCol || '') &&
+      (e.targetCol || '') === (newData.targetCol || ''))
+    if (idx >= 0) allEdges.value[idx].relationType = newType
+  })
+
+  // 选中边后按 Delete/Backspace 删除（同步 allEdges）
+  graph.bindKey(['del', 'backspace'], () => {
+    if (!graph) return false
+    const selectedEdges = graph.getSelectedCells().filter(c => c.isEdge())
+    if (selectedEdges.length === 0) return false
+    selectedEdges.forEach(edge => {
+      const data = edge.getData() || {}
+      const idx = allEdges.value.findIndex(e =>
+        e.source === data.source && e.target === data.target &&
+        (e.sourceCol || '') === (data.sourceCol || '') &&
+        (e.targetCol || '') === (data.targetCol || ''))
+      if (idx >= 0) allEdges.value.splice(idx, 1)
+      edge.remove()
+    })
+    return false  // 阻止浏览器默认删除行为
   })
 
   // 异步渲染完成后应用搜索高亮
@@ -827,13 +902,7 @@ async function applyLayout(preserveManual = false) {
   }
 }
 
-// 重新布局：清除手动位置并重新计算
-async function relayout() {
-  if (!graph) return
-  manualPositions.value.clear()
-  await applyLayout()
-  if (graph) graph.positionContent('center', { padding: 40 })
-}
+// 重新布局已移除（用户要求）；如需重置可拖动节点后释放，位置自动记录
 
 function fitGraph() {
   if (graph) {
@@ -913,35 +982,17 @@ function toggleCollapse(nodeId) {
   const nodeData = filteredNodes.value.find(n => n.id === nodeId) || data
   const height = getNodeHeightByState(nodeData, isCollapsed)
   node.resize(NODE_WIDTH, height)
+  // 折叠后端口会浮在节点可视区外，需先移除；展开时按新字段位置重建
+  node.removePorts()
+  if (!isCollapsed && nodeData.columns && nodeData.columns.length > 0) {
+    const portsConfig = buildNodePorts(nodeData)
+    node.addPorts(portsConfig.items)
+  }
   // HTML 重渲染会重置内联样式，需在下一帧重新应用搜索高亮
   nextTick(() => applySearchHighlight())
 }
 
-// 全部折叠
-function collapseAll() {
-  filteredNodes.value.forEach(n => collapsedNodes.value.add(n.id))
-  applyCollapseStateToAll()
-}
-
-// 全部展开
-function expandAll() {
-  collapsedNodes.value.clear()
-  applyCollapseStateToAll()
-}
-
-// 将当前折叠状态批量应用到画布节点
-function applyCollapseStateToAll() {
-  filteredNodes.value.forEach(n => {
-    const node = graph?.getCellById(n.id)
-    if (!node) return
-    const isCollapsed = collapsedNodes.value.has(n.id)
-    const data = node.getData()
-    node.setData({ ...data, collapsed: isCollapsed })
-    node.resize(NODE_WIDTH, getNodeHeightByState(n, isCollapsed))
-  })
-  // HTML 重渲染会重置内联样式，需在下一帧重新应用搜索高亮
-  nextTick(() => applySearchHighlight())
-}
+// 全部折叠/展开已移除（用户要求仅保留单节点折叠）
 
 // ========== 导出功能 ==========
 // 生成时间戳字符串用于文件名
@@ -1049,15 +1100,15 @@ async function analyzeRelationsWithAI() {
     // 已有的物理外键/AI 关系一并传给 AI，避免重复推断
     const existingRelations = allEdges.value
       .filter(e => e.origin !== 'manual')
-      .flatMap(e => (e.columnPairs || []).map(cp => ({
+      .map(e => ({
         source: e.source,
-        sourceCol: cp.sourceCol,
+        sourceCol: e.sourceCol || '',
         target: e.target,
-        targetCol: cp.targetCol,
+        targetCol: e.targetCol || '',
         relationType: e.relationType || '1:N',
         confidence: 'high',
         reason: '已存在的外键关系',
-      })))
+      }))
 
     const resp = await analyzeERRelations({
       connId,
@@ -1079,12 +1130,11 @@ async function analyzeRelationsWithAI() {
       allEdges.value.push({
         source: r.source,
         target: r.target,
-        columnPairs: [{ sourceCol: r.sourceCol || '', targetCol: r.targetCol || '' }],
-        columns: (r.sourceCol || '') + '=' + (r.targetCol || ''),
+        sourceCol: r.sourceCol || '',
+        targetCol: r.targetCol || '',
         constraintName: '',
         relationType: r.relationType || '1:N',
         origin: 'ai',
-        // confidence/reason 仅在编辑器中显示，不影响画布渲染
         confidence: r.confidence || 'medium',
         reason: r.reason || '',
       })
@@ -1101,88 +1151,7 @@ async function analyzeRelationsWithAI() {
   }
 }
 
-// ========== 手动编辑关系 ==========
-// 提供 UI 增删改连线，仅修改内存 allEdges，关闭对话框后应用，不持久化。
-const relationEditorVisible = ref(false)
-// 编辑器使用独立副本，"应用"时才同步回 allEdges
-const editableRelations = ref([])
-
-function openRelationEditor() {
-  // 打开时深拷贝当前 allEdges，避免取消时污染
-  editableRelations.value = allEdges.value.map(e => ({
-    source: e.source,
-    sourceCol: e.columnPairs?.[0]?.sourceCol || '',
-    target: e.target,
-    targetCol: e.columnPairs?.[0]?.targetCol || '',
-    relationType: e.relationType || '1:N',
-    origin: e.origin || 'fk',
-    confidence: e.confidence || '',
-    reason: e.reason || '',
-  }))
-  relationEditorVisible.value = true
-}
-
-function getColumnsOf(tableId) {
-  if (!tableId) return []
-  const node = allNodes.value.find(n => n.id === tableId)
-  return (node?.columns || []).map(c => c.name)
-}
-
-function onRelationRowChange(idx) {
-  // 表名变更后清空字段，避免出现不存在的字段引用
-  const row = editableRelations.value[idx]
-  if (!row) return
-  row.sourceCol = ''
-  row.targetCol = ''
-}
-
-function addRelation() {
-  editableRelations.value.push({
-    source: '',
-    sourceCol: '',
-    target: '',
-    targetCol: '',
-    relationType: '1:N',
-    origin: 'manual',
-    confidence: '',
-    reason: '',
-  })
-}
-
-function removeRelation(idx) {
-  editableRelations.value.splice(idx, 1)
-}
-
-async function applyRelationEditor() {
-  // 过滤掉不完整的关系（必须有源表、目标表、字段）
-  const valid = editableRelations.value.filter(r =>
-    r.source && r.target && r.sourceCol && r.targetCol && r.source !== r.target
-  )
-  if (valid.length < editableRelations.value.length) {
-    ElMessage.warning('已自动忽略 ' + (editableRelations.value.length - valid.length) + ' 条不完整关系')
-  }
-  // 保留 FK 与 manual，AI 推断的关系若编辑器未删除则保留原样
-  // 此处简化策略：以编辑器内容为准重建 allEdges
-  // 但需要保留 origin=fk 的物理外键（不能被编辑器删除，否则刷新后又出现）
-  const fkEdges = allEdges.value.filter(e => e.origin === 'fk')
-  const newEdges = valid.map(r => ({
-    source: r.source,
-    target: r.target,
-    columnPairs: [{ sourceCol: r.sourceCol, targetCol: r.targetCol }],
-    columns: r.sourceCol + '=' + r.targetCol,
-    constraintName: '',
-    relationType: r.relationType || '1:N',
-    origin: r.origin || 'manual',
-    confidence: r.confidence || '',
-    reason: r.reason || '',
-  }))
-  allEdges.value = [...fkEdges, ...newEdges.filter(e => e.origin !== 'fk')]
-  inferAllRelationTypes()
-  manualPositions.value.clear()
-  relationEditorVisible.value = false
-  await rebuildGraph()
-  ElMessage.success('关系已应用')
-}
+// 关系编辑改为字段级拖拽连线 + 点击切换类型，不再使用对话框（见 rebuildGraph 中的 connecting / edge 事件）
 
 onMounted(() => {
   loadData()

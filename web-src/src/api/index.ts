@@ -4,6 +4,14 @@ import { ElMessage } from 'element-plus'
 
 const env = import.meta.env
 
+// 扩展 axios config，支持请求级别跳过全局错误弹窗（由调用方自行处理错误展示）
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 为 true 时，code=500 业务错误不弹全局 ElMessage，由调用方 handleError 统一展示 */
+    skipGlobalError?: boolean
+  }
+}
+
 const http: AxiosInstance = axios.create({
   timeout: 1000 * 30 * 60
 })
@@ -46,7 +54,10 @@ http.interceptors.response.use(
       return Promise.reject(new Error(''))
     }
     if (code === 500) {
-      ElMessage({ message: sanitizeError(msg) || '系统错误', type: 'error' })
+      // 调用方可通过 config.skipGlobalError 跳过全局弹窗，由调用方 handleError 统一展示
+      if (!response.config?.skipGlobalError) {
+        ElMessage({ message: sanitizeError(msg) || '系统错误', type: 'error' })
+      }
       return Promise.reject(new Error(sanitizeError(msg) || '系统错误'))
     }
     return response
