@@ -60,11 +60,13 @@ type SchemaRef struct {
 	Schema string `json:"schema"`
 }
 
-// ExcelData 前端上传的 Excel 文件信息
+// ExcelData 前端上传的文件信息（支持 excel/csv/markdown）
 type ExcelData struct {
 	FileID    string   `json:"fileId"`
 	Columns   []string `json:"columns"`
 	TotalRows int      `json:"totalRows"`
+	FileType  string   `json:"fileType,omitempty"`  // excel | csv | markdown
+	CharCount int      `json:"charCount,omitempty"` // markdown 字符数
 }
 
 // SessionMeta 会话列表摘要
@@ -223,9 +225,28 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	}
 
 	if req.ExcelData != nil && req.ExcelData.FileID != "" {
-		sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Excel 文件（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
-			req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
-		sysPrompt += "请按「数据导入流程」操作：先确认目标表，向用户说明操作模式、字段映射和影响行数，等用户确认后再调用 import_data。\n"
+		if req.ExcelData.FileType == "markdown" {
+			sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Markdown 文档（fileId=%s）：共 %d 字符。\n",
+				req.ExcelData.FileID, req.ExcelData.CharCount)
+			sysPrompt += "该文件为文本文档，仅支持内容分析/解读/结合数据库分析，不支持导入数据库。" +
+				"需要查看内容时调用 read_file_data 读取全文（不做数据量限制）。\n"
+		} else {
+			ftLabel := "数据文件"
+			switch req.ExcelData.FileType {
+			case "csv":
+				ftLabel = "CSV 文件"
+			case "excel":
+				ftLabel = "Excel 文件"
+			}
+			sysPrompt += fmt.Sprintf("\n\n📎 用户上传了%s（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
+				ftLabel, req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
+			sysPrompt += "用户上传文件的目的可能是：① 仅对文件内数据进行分析/统计/可视化；② 结合数据库表进行关联分析；③ 导入数据库。" +
+				"请根据用户提问判断意图：\n" +
+				"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
+				"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
+				"- 明确要求导入数据库：按「数据导入流程」操作（确认目标表、字段映射、影响行数，用户确认后调用 import_data）。\n" +
+				"注意：用户未明确要求导入时，禁止调用 import_data。\n"
+		}
 	}
 
 	// 构建 Eino 消息列表
@@ -333,7 +354,6 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, target
 	return nil
 }
 
-
 // ──────────────────────────────────────────────
 // 辅助函数
 // ──────────────────────────────────────────────
@@ -418,8 +438,9 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 		return nil, err
 	}
 
-	// 用 ToolCall Index 修复包装器包裹，在流输出层面修复 Index 冲突
-	return &toolCallIndexFixerModel{ToolCallingChatModel: cm}, nil
+	// 1. toolCallIndexFixerModel：在流输出层面修复 ToolCall Index 冲突
+	// 2. loggingToolCallingChatModel：输出模型调用日志（输入/输出概要、耗时、chunk 统计）
+	return newLoggingModel(&toolCallIndexFixerModel{ToolCallingChatModel: cm}), nil
 }
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
@@ -428,14 +449,16 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	schemaTool, sErr := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
 	listTablesTool, lErr := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
 	currentDateInfoTool, dErr := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
+	// read_file_data 为只读工具，用于分析用户上传的数据文件，不依赖写权限，常驻核心工具
+	readFileTool, rfErr := utils.InferTool("read_file_data", "读取已上传的数据文件内容（只读，用于数据分析，不会导入数据库）。可传 limit(默认100,最大500)/offset 分页读取", NewReadFileDataFunc())
 
-	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool} {
+	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool, readFileTool} {
 		if t != nil {
 			coreTools = append(coreTools, t)
 		}
 	}
-	if qErr != nil || sErr != nil || lErr != nil || dErr != nil {
-		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v", qErr, sErr, lErr, dErr)
+	if qErr != nil || sErr != nil || lErr != nil || dErr != nil || rfErr != nil {
+		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v", qErr, sErr, lErr, dErr, rfErr)
 	}
 
 	// 导出工具均为 Go 原生兜底实现：当 Python Skill 不可用或失败时使用。

@@ -71,7 +71,7 @@ func buildEinoReductionMiddleware() adk.ChatModelAgentMiddleware {
 
 	mw, err := reduction.New(context.Background(), &reduction.Config{
 		Backend:                   backend,
-		MaxLengthForTrunc:         50_000, // 单条 tool result 超过 50k 字符触发 truncate
+		MaxLengthForTrunc:         30_000, // 单条 tool result 超过 30k 字符触发 truncate + offload 到文件
 		TokenCounter:              reductionTokenCounter,
 		MaxTokensForClear:         160_000, // 总 token 超 160k 触发 clear
 		ClearRetentionSuffixLimit: 4,       // 保留最近 4 条不 clear
@@ -79,7 +79,10 @@ func buildEinoReductionMiddleware() adk.ChatModelAgentMiddleware {
 			"dangerous_sql_approval",
 			"interrupt",
 		},
-		TruncExcludeTools: nil,
+		TruncExcludeTools: []string{ // 永不 truncate 这些工具的结果（与 ClearExcludeTools 保持一致）
+			"dangerous_sql_approval",
+			"interrupt",
+		},
 	})
 	if err != nil {
 		log.Printf("[Reduction] 创建 eino reduction 中间件失败 - err=%v，使用 noop\n", err)
@@ -209,7 +212,7 @@ func (m *ToolErrorRecoveryMiddleware) WrapInvokableToolCall(
 			if isInterruptErr(err) {
 				return "", err
 			}
-			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
+			hint := recoveryHintWithSkillMeta(ctx, tCtx.Name, argumentsInJSON, err)
 			log.Printf("[ToolErrorRecovery] tool %s error - err=%v\n", tCtx.Name, err)
 			// 将错误转化为工具结果，让 LLM 看到错误并有机会重试
 			return formatToolErrorAsResult(tCtx.Name, err, hint), nil
@@ -229,7 +232,7 @@ func (m *ToolErrorRecoveryMiddleware) WrapStreamableToolCall(
 			if isInterruptErr(err) {
 				return nil, err
 			}
-			hint := recoveryHint(tCtx.Name, argumentsInJSON, err)
+			hint := recoveryHintWithSkillMeta(ctx, tCtx.Name, argumentsInJSON, err)
 			log.Printf("[ToolErrorRecovery:Stream] tool %s error - err=%v\n", tCtx.Name, err)
 			errorMsg := formatToolErrorAsResult(tCtx.Name, err, hint)
 			return schema.StreamReaderFromArray([]string{errorMsg}), nil
@@ -254,6 +257,35 @@ func escapeJSONString(s string) string {
 	s = strings.ReplaceAll(s, "\r", `\r`)
 	s = strings.ReplaceAll(s, "\t", `\t`)
 	return s
+}
+
+// recoveryHintWithSkillMeta 先尝试从活跃 Skill 的 errorHints 匹配，
+// 再回退到全局 errorHints 匹配，最后回退到原有的硬编码 recoveryHint。
+//
+// 优先级：
+//  1. 活跃 Skill 的 errorHints（精确匹配当前 Skill 场景）
+//  2. 全局 errorHints（所有 Skill 的 hints 聚合匹配）
+//  3. 硬编码 recoveryHint（SQL 方言错误等细节提示，保持向后兼容）
+func recoveryHintWithSkillMeta(ctx context.Context, toolName, args string, err error) string {
+	if err == nil {
+		return ""
+	}
+	// 1. 尝试活跃 Skill 的 errorHints
+	if activeSkill := getActiveSkillFromContext(ctx); activeSkill != "" {
+		if meta := globalSkillMetaRegistry.GetSkillMeta(activeSkill); meta != nil {
+			if hint := MatchErrorHint(meta, err); hint != "" {
+				log.Printf("[ToolErrorRecovery] 命中活跃 Skill errorHint - skill=%s\n", activeSkill)
+				return hint
+			}
+		}
+	}
+	// 2. 尝试全局 errorHints 匹配
+	if hint := MatchGlobalErrorHint(err); hint != "" {
+		log.Printf("[ToolErrorRecovery] 命中全局 errorHint\n")
+		return hint
+	}
+	// 3. 回退到原有的硬编码提示（保持向后兼容）
+	return recoveryHint(toolName, args, err)
 }
 
 func recoveryHint(toolName, args string, err error) string {
@@ -353,24 +385,108 @@ func recoveryHint(toolName, args string, err error) string {
 }
 
 type contextKeyStartTime struct{}
+type contextKeyIteration struct{}
+type contextKeyToolCallStats struct{}
+
+// toolCallStats 记录一次 Agent Run 期间的工具调用统计信息。
+type toolCallStats struct {
+	totalCalls    int
+	successCalls  int
+	failedCalls   int
+	totalDuration time.Duration
+	toolCounts    map[string]int
+	toolErrors    map[string]int
+}
+
+func newToolCallStats() *toolCallStats {
+	return &toolCallStats{
+		toolCounts: make(map[string]int),
+		toolErrors: make(map[string]int),
+	}
+}
+
+func (s *toolCallStats) recordCall(toolName string, duration time.Duration, err error) {
+	s.totalCalls++
+	s.totalDuration += duration
+	s.toolCounts[toolName]++
+	if err != nil {
+		s.failedCalls++
+		s.toolErrors[toolName]++
+	} else {
+		s.successCalls++
+	}
+}
+
+func (s *toolCallStats) summary() string {
+	if s == nil || s.totalCalls == 0 {
+		return "no tool calls"
+	}
+	tools := make([]string, 0, len(s.toolCounts))
+	for name, count := range s.toolCounts {
+		tools = append(tools, fmt.Sprintf("%s=%d", name, count))
+	}
+	errs := ""
+	if s.failedCalls > 0 {
+		errTools := make([]string, 0, len(s.toolErrors))
+		for name, count := range s.toolErrors {
+			errTools = append(errTools, fmt.Sprintf("%s=%d", name, count))
+		}
+		errs = fmt.Sprintf(", errors=%d(%s)", s.failedCalls, strings.Join(errTools, ","))
+	}
+	return fmt.Sprintf("total=%d, success=%d%s, totalDuration=%v, tools=[%s]",
+		s.totalCalls, s.successCalls, errs, s.totalDuration, strings.Join(tools, ", "))
+}
 
 type ToolCallLoggingMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
+}
+
+// BeforeAgent 在 Agent 开始执行前初始化统计信息到 context 中。
+func (m *ToolCallLoggingMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
+	ctx = context.WithValue(ctx, contextKeyStartTime{}, time.Now())
+	ctx = context.WithValue(ctx, contextKeyIteration{}, new(int))
+	ctx = context.WithValue(ctx, contextKeyToolCallStats{}, newToolCallStats())
+	log.Printf("[AgentLifecycle] Agent 开始执行\n")
+	return ctx, runCtx, nil
 }
 
 // AfterAgent 在 Agent 成功结束后记录总耗时和统计信息（Eino v0.9 新增）
 func (m *ToolCallLoggingMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
 	if startTime, ok := ctx.Value(contextKeyStartTime{}).(time.Time); ok && !startTime.IsZero() {
 		elapsed := time.Since(startTime)
-		log.Printf("[ToolCallLogging] Agent 执行完毕 - 总耗时=%v, 消息数=%d\n", elapsed, len(state.Messages))
+		stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
+		iterCount := 0
+		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
+			iterCount = *ic
+		}
+		msgCount := 0
+		if state != nil {
+			msgCount = len(state.Messages)
+		}
+		log.Printf("[AgentLifecycle] Agent 执行完毕 - 总耗时=%v, 迭代次数=%d, 消息数=%d, 工具调用统计: %s\n",
+			elapsed, iterCount, msgCount, stats.summary())
 	}
 	return ctx, nil
 }
 
-// BeforeModelRewriteState 记录 Agent 开始时间到 context 中（线程安全）
+// BeforeModelRewriteState 在每次模型调用前递增迭代计数器并记录日志。
 func (m *ToolCallLoggingMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
 	if _, ok := ctx.Value(contextKeyStartTime{}).(time.Time); !ok {
 		ctx = context.WithValue(ctx, contextKeyStartTime{}, time.Now())
+		ctx = context.WithValue(ctx, contextKeyIteration{}, new(int))
+		ctx = context.WithValue(ctx, contextKeyToolCallStats{}, newToolCallStats())
+	}
+	if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
+		*ic++
+		toolCount := 0
+		if state != nil && state.ToolInfos != nil {
+			toolCount = len(state.ToolInfos)
+		}
+		msgCount := 0
+		if state != nil {
+			msgCount = len(state.Messages)
+		}
+		log.Printf("[AgentLifecycle] 模型调用 #%d - 消息数=%d, 可见工具数=%d\n", *ic, msgCount, toolCount)
 	}
 	return ctx, state, nil
 }
@@ -382,15 +498,28 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 ) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 		startTime := time.Now()
-		log.Printf("[ToolCall] 开始调用 - name=%s, args=%s\n", tCtx.Name, argumentsInJSON)
+		iterNum := 0
+		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
+			iterNum = *ic
+		}
+		argsPreview := truncateArgsForLog(argumentsInJSON)
+		log.Printf("[ToolCall] 开始调用 - iter=%d, name=%s, callID=%s, args=%s\n",
+			iterNum, tCtx.Name, tCtx.CallID, argsPreview)
 
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 
 		elapsed := time.Since(startTime)
+		stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
+		if stats != nil {
+			stats.recordCall(tCtx.Name, elapsed, err)
+		}
 		if err != nil {
-			log.Printf("[ToolCall] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
+			log.Printf("[ToolCall] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
 		} else {
-			log.Printf("[ToolCall] 调用完成 - name=%s, duration=%v, result=%s\n", tCtx.Name, elapsed, result)
+			resultPreview := truncateResultForLog(result)
+			log.Printf("[ToolCall] 调用完成 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d, result=%s\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(result), resultPreview)
 		}
 
 		return result, err
@@ -404,12 +533,23 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 ) (adk.StreamableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		startTime := time.Now()
-		log.Printf("[ToolCall:Stream] 开始调用 - name=%s, args=%s\n", tCtx.Name, argumentsInJSON)
+		iterNum := 0
+		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
+			iterNum = *ic
+		}
+		argsPreview := truncateArgsForLog(argumentsInJSON)
+		log.Printf("[ToolCall:Stream] 开始调用 - iter=%d, name=%s, callID=%s, args=%s\n",
+			iterNum, tCtx.Name, tCtx.CallID, argsPreview)
 
 		reader, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
 			elapsed := time.Since(startTime)
-			log.Printf("[ToolCall:Stream] 调用失败 - name=%s, duration=%v, err=%v\n", tCtx.Name, elapsed, err)
+			log.Printf("[ToolCall:Stream] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
+			stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
+			if stats != nil {
+				stats.recordCall(tCtx.Name, elapsed, err)
+			}
 			return nil, err
 		}
 
@@ -431,7 +571,8 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[ToolCall:Stream] logger panic recovered - name=%s, panic=%v\n", tCtx.Name, r)
+					log.Printf("[ToolCall:Stream] logger panic recovered - name=%s, callID=%s, panic=%v\n",
+						tCtx.Name, tCtx.CallID, r)
 				}
 			}()
 			var contentBuf strings.Builder
@@ -444,15 +585,31 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 			}
 			elapsed := time.Since(startTime)
 			content := contentBuf.String()
-			// 截断过长日志，避免日志爆炸
-			const maxLog = 4000
-			if len(content) > maxLog {
-				content = content[:maxLog] + "...(truncated)"
+			stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
+			if stats != nil {
+				stats.recordCall(tCtx.Name, elapsed, nil)
 			}
-			log.Printf("[ToolCall:Stream] 流结束 - name=%s, duration=%v, resultLen=%d, result=%s\n",
-				tCtx.Name, elapsed, len(content), content)
+			resultPreview := truncateResultForLog(content)
+			log.Printf("[ToolCall:Stream] 流结束 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d, result=%s\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(content), resultPreview)
 		}()
 
 		return consumer, nil
 	}, nil
+}
+
+// truncateArgsForLog 截断工具调用参数，用于日志输出。
+func truncateArgsForLog(args string) string {
+	if len(args) > 300 {
+		return args[:300] + "...(truncated)"
+	}
+	return strings.ReplaceAll(args, "\n", " ")
+}
+
+// truncateResultForLog 截断工具调用结果，用于日志输出。
+func truncateResultForLog(result string) string {
+	if len(result) > 500 {
+		return result[:500] + "...(truncated)"
+	}
+	return strings.ReplaceAll(result, "\n", " ")
 }

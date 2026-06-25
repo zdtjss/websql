@@ -25,6 +25,31 @@
                 <pre class="sql-pre"><code v-html="highlightSql(msg.content)" /></pre>
               </div>
               <div v-else class="bubble-content markdown-body" v-html="getCachedHtml(msg)"></div>
+              <!-- AI 消息操作栏：复制、重试（hover 时显示） -->
+              <div class="msg-action-bar">
+                <el-button
+                  class="msg-action-btn"
+                  size="small"
+                  text
+                  :title="msg._copied ? '已复制' : '复制'"
+                  @click="copyMessage(msg)"
+                >
+                  <el-icon><CopyDocument /></el-icon>
+                  <span v-if="msg._copied" class="msg-action-text">已复制</span>
+                </el-button>
+                <el-button
+                  class="msg-action-btn"
+                  size="small"
+                  text
+                  title="重试"
+                  :loading="retryingMsg === msg"
+                  :disabled="!canRetryMessage(msg) || loading"
+                  @click="retryAssistantMessage(msg)"
+                >
+                  <el-icon v-if="retryingMsg !== msg"><RefreshRight /></el-icon>
+                  <span v-if="retryingMsg !== msg" class="msg-action-text">重试</span>
+                </el-button>
+              </div>
             </div>
             <div v-else-if="msg.role === 'tool_call'" class="tool-call-block">
               <span>🔧 {{ msg.content }}</span>
@@ -521,10 +546,10 @@ import { getPromptList, delPrompt, getAIModels } from '@/api/ai'
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
 import { getSystemConfig } from '@/api/system'
-import { sanitizeError } from '@/utils/errorHandler.js'
+import { sanitizeError } from '@/utils/errorHandler'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
-import { ChatLineRound, Clock, Coin, Delete, Document, DocumentAdd, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { ChatLineRound, Clock, Coin, CopyDocument, Delete, Document, DocumentAdd, Edit, Loading, Microphone, Moon, Plus, Promotion, RefreshRight, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -618,6 +643,9 @@ const sessionId = ref('')
 const lastSql = ref('')
 const msgContainer = useTemplateRef('msgContainer')
 let speechRecognition = null
+
+// 当前正在重试的 AI 消息引用（用于按钮 loading 状态）
+const retryingMsg = ref(null)
 
 const VISIBLE_MSG_LIMIT = 30
 const showAllHistory = ref(false)
@@ -1342,6 +1370,13 @@ function buildMermaidInnerHtml(svg, source) {
     `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
     `</button>` +
+    // 导出 PNG / SVG 按钮
+    `<button class="mermaid-tb-btn" data-action="export-png" title="导出 PNG">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>` +
+    `</button>` +
+    `<button class="mermaid-tb-btn" data-action="export-svg" title="导出 SVG">` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>` +
+    `</button>` +
      `<button class="mermaid-tb-btn" data-action="fullscreen" title="全屏">` +
       `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>` +
     `</button>` +
@@ -1773,10 +1808,99 @@ function handleMermaidToolbarClick(e) {
       }).catch(() => {})
       break
     }
+    // 导出 Mermaid 图表为 PNG
+    case 'export-png': {
+      exportMermaidAsPNG(container)
+      break
+    }
+    // 导出 Mermaid 图表为 SVG
+    case 'export-svg': {
+      exportMermaidAsSVG(container)
+      break
+    }
     case 'exit-fullscreen': {
       exitMermaidFullscreen()
       break
     }
+  }
+}
+
+// ── Mermaid 导出功能 ──
+
+// 导出 Mermaid 图表为 SVG 文件
+function exportMermaidAsSVG(container) {
+  try {
+    const svg = container.querySelector('.mermaid-svg-wrap svg')
+    if (!svg) {
+      ElMessage.error('未找到可导出的 SVG 图表')
+      return
+    }
+    // 序列化 SVG 为字符串并下载
+    const svgString = new XMLSerializer().serializeToString(svg)
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `mermaid_${Date.now()}.svg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.error('导出 SVG 失败:', e)
+    ElMessage.error('导出 SVG 失败')
+  }
+}
+
+// 导出 Mermaid 图表为 PNG 文件
+function exportMermaidAsPNG(container) {
+  try {
+    const svg = container.querySelector('.mermaid-svg-wrap svg')
+    if (!svg) {
+      ElMessage.error('未找到可导出的 SVG 图表')
+      return
+    }
+    // 将 SVG 序列化为 data URL
+    const svgString = new XMLSerializer().serializeToString(svg)
+    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString)
+
+    const img = new Image()
+    img.onload = () => {
+      // 获取 SVG 原始尺寸
+      const width = svg.width.baseVal.value || svg.getBoundingClientRect().width || 800
+      const height = svg.height.baseVal.value || svg.getBoundingClientRect().height || 600
+      const canvas = document.createElement('canvas')
+      // 2x 缩放提升清晰度
+      const scale = 2
+      canvas.width = width * scale
+      canvas.height = height * scale
+      const ctx = canvas.getContext('2d')
+      // 白色背景（避免透明背景在部分查看器中显示异常）
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          ElMessage.error('生成 PNG 失败')
+          return
+        }
+        const pngUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = pngUrl
+        a.download = `mermaid_${Date.now()}.png`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(pngUrl)
+      }, 'image/png')
+    }
+    img.onerror = () => {
+      ElMessage.error('加载 SVG 图像失败')
+    }
+    img.src = dataUrl
+  } catch (e) {
+    console.error('导出 PNG 失败:', e)
+    ElMessage.error('导出 PNG 失败')
   }
 }
 
@@ -1808,6 +1932,12 @@ function handleMermaidFullscreen(container) {
         </button>
         <button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="mermaid-tb-btn" data-action="export-png" title="导出 PNG">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="mermaid-tb-btn" data-action="export-svg" title="导出 SVG">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>
         </button>
         <button class="mermaid-tb-btn mermaid-tb-btn-exit" data-action="exit-fullscreen" title="退出全屏 (Esc)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -1883,6 +2013,15 @@ function handleMermaidFullscreen(container) {
           fsBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
           setTimeout(() => { fsBtn.innerHTML = origHtml }, 1200)
         }).catch(() => {})
+        break
+      }
+      // 全屏模式导出 PNG / SVG
+      case 'export-png': {
+        exportMermaidAsPNG(overlay.querySelector('.mermaid-fullscreen-container'))
+        break
+      }
+      case 'export-svg': {
+        exportMermaidAsSVG(overlay.querySelector('.mermaid-fullscreen-container'))
         break
       }
       case 'exit-fullscreen': {
@@ -2126,6 +2265,18 @@ async function sendMessage() {
 
   chatHistory.value.push({ role: 'user', content: text })
   question.value = ''
+
+  // 调用核心流式请求（schemas 为空时回退刚加入的用户消息）
+  await streamChatResponse(messageContent, excelContext, {
+    onSchemasEmpty: () => chatHistory.value.pop(),
+  })
+}
+
+// 核心流式请求函数（供 sendMessage 和重试功能共用）
+// messageContent: 发送给 AI 的完整内容；excelContext: 文件上下文（重试时为 null）
+async function streamChatResponse(messageContent, excelContext, options = {}) {
+  const { onSchemasEmpty = null } = options
+
   loading.value = true
   thinkingText.value = ''
   streamingContent.value = ''
@@ -2147,7 +2298,8 @@ async function sendMessage() {
   if (schemas.length === 0) {
     ElMessage.warning('请先选择至少一个数据库 schema')
     loading.value = false
-    chatHistory.value.pop()
+    retryingMsg.value = null
+    if (onSchemasEmpty) onSchemasEmpty()
     return
   }
 
@@ -2311,6 +2463,7 @@ async function sendMessage() {
   } finally {
     loading.value = false
     abortController.value = null
+    retryingMsg.value = null
     // 流结束后渲染 mermaid 图表
     scrollToBottom()
     doRenderMermaidBlocks()
@@ -2318,6 +2471,60 @@ async function sendMessage() {
     setTimeout(() => doRenderMermaidBlocks(false), 500)
     setTimeout(() => doRenderMermaidBlocks(false), 1500)
   }
+}
+
+// ── AI 消息操作：复制、重试 ──
+
+// 复制 AI 消息内容到剪贴板
+async function copyMessage(msg) {
+  try {
+    await navigator.clipboard.writeText(msg.content || '')
+    msg._copied = true
+    setTimeout(() => { msg._copied = false }, 2000)
+  } catch (e) {
+    ElMessage.error('复制失败，请手动选择文本复制')
+  }
+}
+
+// 检查 AI 消息是否可重试（前方是否存在用户消息）
+function canRetryMessage(msg) {
+  const idx = chatHistory.value.indexOf(msg)
+  if (idx < 0) return false
+  for (let i = idx - 1; i >= 0; i--) {
+    if (chatHistory.value[i].role === 'user') return true
+  }
+  return false
+}
+
+// 重试 AI 消息：找到上一条用户消息，移除当前 AI 消息，重新发送请求
+async function retryAssistantMessage(msg) {
+  if (loading.value) return
+  const idx = chatHistory.value.indexOf(msg)
+  if (idx < 0) return
+  // 向前查找最近的用户消息
+  let userMsg = null
+  for (let i = idx - 1; i >= 0; i--) {
+    if (chatHistory.value[i].role === 'user') {
+      userMsg = chatHistory.value[i]
+      break
+    }
+  }
+  if (!userMsg) return
+
+  // 标记重试状态（按钮 loading）
+  retryingMsg.value = msg
+
+  // 移除当前 AI 消息
+  chatHistory.value.splice(idx, 1)
+
+  // 重置状态
+  resetDetectFlag()
+  pendingSQLList.value = []
+  showRetryConfirm.value = false
+  lastQuestion.value = userMsg.content
+
+  // 重新发送请求（不附带 excel 上下文，因为文件已处理完毕）
+  await streamChatResponse(userMsg.content, null)
 }
 
 // 显示确认区域
@@ -3248,7 +3455,7 @@ async function deleteSession(id) {
 
   try {
     const resp = await fetch(url, {
-      method: 'GET',
+      method: 'POST',
       headers: { 'Authorization': auth }
     })
 
@@ -3643,6 +3850,39 @@ onUnmounted(() => {
 
 .bubble-content {
   word-break: break-word;
+}
+
+/* ========== AI 消息操作栏（复制/重试） ========== */
+.msg-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  height: 0;
+  overflow: hidden;
+}
+.chat-bubble.assistant:hover .msg-action-bar {
+  opacity: 1;
+  height: auto;
+}
+.msg-action-btn {
+  font-size: 12px !important;
+  color: #909399;
+  padding: 2px 6px !important;
+  height: 24px;
+}
+.msg-action-btn:hover {
+  color: #409eff;
+}
+.msg-action-btn.is-disabled {
+  opacity: 0.4;
+}
+.msg-action-text {
+  margin-left: 2px;
 }
 
 /* ========== 思考过程块 - 冷色调 ========== */
@@ -5173,6 +5413,17 @@ body.mermaid-resizing * {
 
 [data-theme="dark"] .chat-bubble.assistant .bubble-label {
   color: var(--text-tertiary);
+}
+
+/* AI 消息操作栏暗色主题 */
+[data-theme="dark"] .msg-action-bar {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .msg-action-btn {
+  color: var(--text-tertiary);
+}
+[data-theme="dark"] .msg-action-btn:hover {
+  color: var(--el-color-primary, #409eff);
 }
 
 /* ── Thinking Block ── */

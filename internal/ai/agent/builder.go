@@ -14,6 +14,7 @@ import (
 	system "websql/internal/app/system"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/agentsmd"
 	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
 	"github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
@@ -40,6 +41,17 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		log.Printf("[Agent] 初始化 Skill 环境失败 - err=%v\n", err)
 		// 不 return error，Agent 仍可运行（无 skill/execute 工具，使用 Go 原生导出兜底）
 		// 系统提示词会根据 skillEnv 是否为 nil 动态调整
+	}
+
+	// 初始化 Skill 元信息注册中心（版本管理、依赖检测、错误提示、命令黑名单）
+	// 即使 SkillEnv 初始化失败，也尝试加载元信息（用于全局 errorHints 匹配）
+	InitSkillMetaRegistry(skillsDir)
+
+	// 检查所有 Skill 的版本兼容性（降级模式：仅记录警告，不阻止运行）
+	if warnings := CheckVersionCompatibility(AgentVersion, globalSkillMetaRegistry.AllMetas()); len(warnings) > 0 {
+		for _, w := range warnings {
+			log.Printf("[Agent] Skill 版本兼容性警告 - %s\n", w)
+		}
 	}
 
 	cm, err := BuildChatModel(ctx, cfg)
@@ -106,6 +118,14 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 
 	var tsMiddleware adk.ChatModelAgentMiddleware
 	if len(deferredTools) > 0 {
+		// UseModelToolSearch=false：使用客户端工具搜索模式。
+		// 原因：当前 eino-ext 的 OpenAI/Ollama 模型实现（v0.1.13/v0.1.9）不支持
+		// model.WithDeferredTools 和 model.WithToolSearchTool option，底层 go-openai
+		// 库的 Tool 结构也无 defer_loading 字段。若设为 true，动态工具会被移入
+		// DeferredToolInfos 后被模型静默丢弃，导致导出/写操作工具完全不可用。
+		// 客户端搜索模式通过每次模型调用前过滤 ToolInfos 管理工具可见性，
+		// 唯一缺点是 KV-cache 失效，但对当前工具数量影响有限。
+		// 当未来模型实现支持 WithDeferredTools 时，可改为 true 以提升缓存命中率。
 		tsMiddleware, err = toolsearch.New(ctx, &toolsearch.Config{
 			DynamicTools:       deferredTools,
 			UseModelToolSearch: false,
@@ -131,6 +151,13 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	handlers = append(handlers,
 		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
 		&DangerousSQLApprovalMiddleware{},
+		&SkillGuardMiddleware{
+			Scope:    scope,
+			Schemas:  schemas,
+			ConnID:    connID,
+			DBType:   dbType,
+			DBSchema: dbSchema,
+		},
 		&ToolErrorRecoveryMiddleware{},
 	)
 	// 替换自定义 ReductionMiddleware 为 eino 官方的 reduction 中间件
@@ -141,6 +168,14 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		handlers = append(handlers, reductionMW)
 	}
 	handlers = append(handlers, summarizationMW)
+
+	// AgentsMD 中间件：在每次模型调用前注入 Agents.md 补充指令。
+	// 必须在 summarization 之后注册，使注入内容不被摘要压缩。
+	// 内容是瞬态的（不进入会话状态），每次模型调用都看到完整最新规范。
+	agentsmdMW := buildAgentsMDMiddleware(ctx)
+	if agentsmdMW != nil {
+		handlers = append(handlers, agentsmdMW)
+	}
 
 	// SessionSyncMiddleware：对接 Eino Memory/Session，
 	// 在 summarization 压缩消息后自动同步到 SessionStore
@@ -153,6 +188,11 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	if sm != nil {
 		handlers = append(handlers, sm)
 	}
+
+	// 构建 Model Failover 配置（从系统配置的模型列表中获取备用模型）
+	// 当主模型持续不可用时（429/5xx/timeout 等），自动切换到备用模型
+	// 与 ModelRetryConfig 协同：retry 处理瞬时错误，failover 处理模型持续不可用
+	failoverConfig := buildFailoverConfig(ctx, cfg)
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
@@ -168,6 +208,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			MaxRetries:  3,
 			ShouldRetry: buildShouldRetryFunc(),
 		},
+		ModelFailoverConfig: failoverConfig,
 	})
 
 	if err != nil {
@@ -251,4 +292,35 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 
 		return &adk.RetryDecision{Retry: false}
 	}
+}
+
+// buildAgentsMDMiddleware 创建 AgentsMD 中间件，在每次模型调用前注入 Agents.md 补充指令。
+// Agents.md 位于项目根目录，包含数据安全规范、SQL 性能规范、方言兼容性提醒等运行时指南。
+// 内容是瞬态的（不进入会话状态），不会被 summarization 压缩。
+// 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
+func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
+	// 解析 Agents.md 的绝对路径（相对于工作目录）
+	agentsMDPath := "Agents.md"
+	if absPath, err := filepath.Abs(agentsMDPath); err == nil {
+		agentsMDPath = absPath
+	}
+
+	// 使用 export.OSFilesystemBackend 作为 agentsmd.Backend（只需 Read 方法）
+	backend := export.NewOSFilesystemBackend()
+
+	mw, err := agentsmd.New(ctx, &agentsmd.Config{
+		Backend:        backend,
+		AgentsMDFiles:  []string{agentsMDPath},
+		AllAgentsMDMaxBytes: 100_000, // 100KB 上限
+		OnLoadWarning: func(filePath string, err error) {
+			log.Printf("[AgentsMD] 加载警告 - file=%s, err=%v\n", filePath, err)
+		},
+	})
+	if err != nil {
+		log.Printf("[Agent] 创建 AgentsMD 中间件失败 - err=%v\n", err)
+		return nil
+	}
+
+	log.Printf("[Agent] AgentsMD 中间件已启用 - file=%s\n", agentsMDPath)
+	return mw
 }

@@ -1,6 +1,39 @@
 ---
 name: cross-db-analysis
 description: 跨数据库/多 Schema 大数据量分析。Agent 负责用 query_data 工具分别查询多个数据库，在内存中完成聚合、对比、关联计算，避免将海量数据加载到上下文。适用于跨库关联、对比统计、复杂聚合等数据量可能超过 10 万行的场景。当用户涉及多个 schema 或数据库的分析、对比、统计时必须使用此技能。
+version: "2.1.0"
+min_agent_version: "1.0.0"
+dependencies:
+  - type: context
+    name: connection_id
+    description: 跨库分析需要至少一个数据库连接
+  - type: context
+    name: schema
+    description: 跨库分析需要 schema 信息用于路由查询
+  - type: skill
+    name: query_data
+    description: 使用 query_data 工具分别查各库
+error_hints:
+  - pattern: "connection refused"
+    hint: "数据库连接被拒绝。请检查目标数据库是否运行、网络是否可达"
+    suggestion: "确认连接配置正确，或联系 DBA 检查数据库状态"
+  - pattern: "timeout"
+    hint: "查询超时。可能是数据量过大或缺少索引"
+    suggestion: "添加 WHERE 条件缩小范围，或使用聚合下推（GROUP BY）减少返回行数"
+  - pattern: "syntax error"
+    hint: "SQL 语法错误。注意跨库查询时各库方言可能不同"
+    suggestion: "确认目标库类型，使用兼容的 SQL 语法"
+  - pattern: "table not found"
+    hint: "表不存在。可能是 schema 路由错误或表名大小写不匹配"
+    suggestion: "先用 list_tables 确认表名，注意 schema 前缀"
+  - pattern: "permission denied"
+    hint: "权限不足。当前用户对目标库/表无查询权限"
+    suggestion: "联系管理员开通对应 schema 的查询权限"
+command_blacklist:
+  - DROP DATABASE
+  - DROP SCHEMA
+  - TRUNCATE
+  - SHUTDOWN
 ---
 
 # 跨库大数据量分析 Skill

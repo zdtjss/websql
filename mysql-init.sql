@@ -163,3 +163,33 @@ CREATE TABLE IF NOT EXISTS t_prompt_share (
 	INDEX idx_prompt_id (prompt_id),
 	INDEX idx_shared_to (shared_to)
 );
+
+-- SQL 收藏夹：支持后端同步、分类、标签、关联连接/Schema
+CREATE TABLE IF NOT EXISTS t_sql_snippet (
+	id varchar(64) primary key,
+	user_id varchar(64),
+	title varchar(255) not null,
+	description text,
+	sql_content text not null,
+	category varchar(100),
+	tags varchar(500),
+	db_type varchar(50),
+	conn_id varchar(64),
+	schema_name varchar(100),
+	created_at datetime,
+	updated_at datetime,
+	INDEX idx_snippet_user_id (user_id),
+	INDEX idx_snippet_category (category)
+);
+
+-- 监控指标持久化表：存储历史趋势数据，支持按连接/指标/时间范围查询
+CREATE TABLE IF NOT EXISTS t_monitor_metric (
+	id BIGINT AUTO_INCREMENT PRIMARY KEY,
+	conn_id VARCHAR(64) NOT NULL,
+	metric_name VARCHAR(100) NOT NULL,
+	metric_value DOUBLE NOT NULL,
+	collected_at DATETIME NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	INDEX idx_monitor_metric_conn_time (conn_id, collected_at),
+	INDEX idx_monitor_metric_name_time (metric_name, collected_at)
+);

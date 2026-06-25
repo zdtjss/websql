@@ -1,28 +1,31 @@
 <template>
-  <div class="global-search-content">
+  <div class="global-search-content" role="search" aria-label="全局搜索数据库对象">
     <div class="search-filters">
-      <el-select v-model="filterConnId" placeholder="不限连接" clearable filterable :teleported="false" style="width:220px" @change="onConnChange">
+      <el-select v-model="filterConnId" placeholder="不限连接" clearable filterable :teleported="false" style="width:220px" aria-label="过滤连接" @change="onConnChange">
         <el-option v-for="c in connections" :key="c.id" :label="c.name || c.id" :value="c.id">
           <span>{{ c.name || c.id }}</span>
           <span class="option-extra">{{ c.dbType || '' }}</span>
         </el-option>
       </el-select>
-      <el-select v-model="filterSchema" placeholder="不限Schema" clearable :teleported="false" style="width:180px" @change="onSchemaChange">
+      <el-select v-model="filterSchema" placeholder="不限Schema" clearable :teleported="false" style="width:180px" aria-label="过滤 Schema" @change="onSchemaChange">
         <el-option v-for="s in schemas" :key="s.label" :label="s.label" :value="s.label">
           <span>{{ s.label }}</span>
           <span class="option-extra">{{ s.data?.dbType || '' }}</span>
         </el-option>
       </el-select>
-      <el-button text size="small" @click="doSearch" :loading="searching" title="搜索">
+      <!-- 图标按钮：仅图标无文字，需补充 aria-label（复用 title 的值） -->
+      <el-button text size="small" @click="doSearch" :loading="searching" title="搜索" aria-label="搜索">
         <el-icon :size="16"><Search /></el-icon>
       </el-button>
     </div>
 
     <div class="search-bar">
-      <el-input ref="keywordInputRef" v-model="keyword" placeholder="输入搜索关键词..." size="default" clearable @keyup.enter="doSearch" @clear="onKeywordClear" style="flex:1">
+      <el-input ref="keywordInputRef" v-model="keyword" placeholder="输入搜索关键词..." size="default" clearable
+        aria-label="搜索关键词" aria-keyshortcuts="Ctrl+F"
+        @keyup.enter="doSearch" @clear="onKeywordClear" style="flex:1">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-select v-model="searchType" :teleported="false" style="width:100px" @change="onSearchTypeChange">
+      <el-select v-model="searchType" :teleported="false" style="width:100px" aria-label="搜索类型" @change="onSearchTypeChange">
         <el-option label="表" value="table" />
         <el-option label="视图" value="view" />
         <el-option label="列" value="column" />
@@ -31,20 +34,36 @@
       <el-button v-if="searchType === 'column' || searchType === 'index'" type="primary" @click="doSearch" :loading="searching">搜索</el-button>
     </div>
 
-    <div class="search-summary" v-if="lastQuery">
+    <!-- 搜索结果统计动态变化，aria-live 通知屏幕阅读器 -->
+    <div class="search-summary" v-if="lastQuery" aria-live="polite">
       搜索 "{{lastQuery}}" 找到 {{totalResults}} 个结果
     </div>
 
-    <el-scrollbar max-height="280" v-if="results.length">
-      <div v-for="r in results" :key="r.type+'_'+r.name+'_'+r.schema"
-        class="search-result-item"
-        @click="selectObject(r)">
-        <el-tag :type="getTypeColor(r.type)" size="small" class="result-tag">{{r.typeLabel || r.type}}</el-tag>
-        <span class="result-name" :title="r.name">{{r.name}}</span>
-        <span v-if="r.schema" class="result-schema">{{r.schema}}</span>
-        <span v-if="r.comment" class="result-comment" :title="r.comment">{{r.comment}}</span>
-      </div>
-    </el-scrollbar>
+    <!-- 搜索结果列表：使用虚拟滚动（FixedSizeList）优化大数据量渲染性能 -->
+    <!-- el-auto-resizer 自动撑满父容器并传入可用宽高，FixedSizeList 仅渲染可见区域内的项 -->
+    <div v-if="results.length" class="search-result-container" :style="{ height: resultContainerHeight + 'px' }" role="listbox" aria-label="搜索结果列表" :aria-busy="searching">
+      <el-auto-resizer>
+        <template #default="{ height, width }">
+          <FixedSizeList :data="results" :total="results.length" :item-size="RESULT_ITEM_SIZE" :height="height" :width="width" :cache="4">
+            <template #default="{ data, index, style }">
+              <div :style="style"
+                :key="data[index].type+'_'+data[index].name+'_'+data[index].schema"
+                class="search-result-item"
+                role="option"
+                tabindex="0"
+                :aria-label="`${data[index].typeLabel || data[index].type}：${data[index].name}${data[index].schema ? '，属于 ' + data[index].schema : ''}${data[index].comment ? '，注释 ' + data[index].comment : ''}`"
+                @click="selectObject(data[index])"
+                @keyup.enter="selectObject(data[index])">
+                <el-tag :type="getTypeColor(data[index].type)" size="small" class="result-tag">{{data[index].typeLabel || data[index].type}}</el-tag>
+                <span class="result-name" :title="data[index].name">{{data[index].name}}</span>
+                <span v-if="data[index].schema" class="result-schema">{{data[index].schema}}</span>
+                <span v-if="data[index].comment" class="result-comment" :title="data[index].comment">{{data[index].comment}}</span>
+              </div>
+            </template>
+          </FixedSizeList>
+        </template>
+      </el-auto-resizer>
+    </div>
 
     <el-empty v-if="!searching && searched && !results.length" description="未找到结果" :image-size="60" />
   </div>
@@ -52,19 +71,26 @@
 
 <script setup>
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, FixedSizeList } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { listConn, showTree } from '@/api/conn'
+import { showTree } from '@/api/conn'
 import { searchObjects } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
+import { handleError } from '@/utils/errorHandler'
+import { loadConnections } from '@/utils/dbMetadata'
 const dbSchemaProxy = useDbSchemaStore()
 
-const { visible, connId, schema } = defineProps({
-  visible: Boolean,
+const visible = defineModel({ default: false })
+const { connId, schema } = defineProps({
   connId: String,
   schema: String
 })
 const emit = defineEmits(['select'])
+
+// 虚拟滚动单项高度（px）：与 .search-result-item 的 padding/line-height 匹配
+const RESULT_ITEM_SIZE = 44
+// 结果列表最大高度（与原 el-scrollbar max-height 保持一致）
+const RESULT_MAX_HEIGHT = 280
 
 const keywordInputRef = useTemplateRef('keywordInputRef')
 const filterConnId = ref('')
@@ -78,6 +104,11 @@ const searched = ref(false)
 const lastQuery = ref('')
 const results = ref([])
 const totalResults = ref(0)
+
+// 虚拟滚动容器高度：结果较少时按实际条数计算，避免留白；超过最大高度则按最大高度
+const resultContainerHeight = computed(() =>
+  Math.min(RESULT_MAX_HEIGHT, results.value.length * RESULT_ITEM_SIZE)
+)
 
 let debounceTimer = null
 
@@ -123,11 +154,8 @@ async function init() {
   filterSchema.value = ''
   schemas.value = []
 
-  try {
-    const res = await listConn({ pageSize: 1000 })
-    const result = (res.data && res.data.data ? res.data.data : res.data) || {}
-    connections.value = result.data || []
-  } catch (e) {}
+  // loadConnections 内部已统一处理错误并返回空数组，无需外层 try/catch
+  connections.value = await loadConnections({ pageSize: 1000 })
 
   if (connId) {
     filterConnId.value = connId
@@ -164,7 +192,7 @@ async function onConnChange() {
   try {
     const res = await showTree({ connId: filterConnId.value, key: '', type: 'conn', level: '2' })
     schemas.value = res.data && res.data.data ? res.data.data : (Array.isArray(res.data) ? res.data : [])
-  } catch (e) {}
+  } catch (e) { handleError(e, '加载Schema列表') }
 }
 
 async function onSchemaChange() {
@@ -182,7 +210,7 @@ async function loadSchemaTables(schemaName) {
     if (res.data && res.data.data) {
       dbSchemaProxy.addTable(schemaName, dbType, res.data.data, filterConnId.value)
     }
-  } catch (e) {}
+  } catch (e) { handleError(e, '加载表结构') }
 }
 
 function onSearchTypeChange() {
@@ -230,6 +258,7 @@ async function doSearch() {
     }
     searched.value = true
   } catch (e) {
+    handleError(e, '搜索对象')
   } finally {
     searching.value = false
   }
@@ -379,15 +408,27 @@ function selectObject(obj) {
   font-size: 13px;
 }
 
+/* 虚拟滚动结果容器：需提供明确高度供 el-auto-resizer 读取 */
+.search-result-container {
+  border: 1px solid var(--db-border-light, #ebeef5);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--db-card-bg, #fff);
+}
+
 .search-result-item {
+  /* FixedSizeList 会通过 inline style 注入 position/top/height/width，
+     此处仅补充外观与布局，display:flex 与 absolute 定位兼容 */
   padding: 8px 12px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--db-border-light, #ebeef5);
   cursor: pointer;
   display: flex;
   align-items: center;
+  box-sizing: border-box;
+  background: var(--db-card-bg, #fff);
 }
 .search-result-item:hover {
-  background: #f5f7fa;
+  background: var(--db-bg-hover, #f5f7fa);
 }
 .search-result-item:last-child {
   border-bottom: none;

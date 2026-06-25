@@ -11,6 +11,7 @@ import (
 	"websql/internal/app/permission"
 	"websql/internal/database"
 	"websql/internal/pkg/safego"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -354,6 +355,60 @@ func (s *OperateService) ListIndexes(connId, schema, table, authorization string
 		return []map[string]any{}, nil
 	}
 	return data, nil
+}
+
+// ListObjects 列出 schema 下指定类型的数据库对象（view/procedure/function/trigger/event/table）。
+// 含 schema 标识符的 sanitize 校验与 schema 级访问权限校验，防止 SQL 注入与越权访问。
+func (s *OperateService) ListObjects(connId, schema, objType, authorization string) ([]map[string]any, error) {
+	if err := sanitize.ValidateIdentifier(schema, "schema名"); err != nil {
+		return nil, err
+	}
+	if !isValidObjectType(objType) {
+		return nil, errors.New("不支持的对象类型: " + objType)
+	}
+	admin.CheckSchemaAccess(connId, schema, authorization)
+	dc := conn.GetConn(connId, authorization)
+	if dc == nil {
+		return nil, errors.New("数据库连接失败")
+	}
+	data, err := s.repo.ListObjects(dc, schema, objType)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return []map[string]any{}, nil
+	}
+	return data, nil
+}
+
+// GetObjectDDL 获取指定对象的 DDL 定义文本。
+// schema 与对象名均通过 sanitize.ValidateIdentifier 校验，防止通过标识符进行的 SQL 注入；
+// 同时进行 schema 级访问权限校验。
+func (s *OperateService) GetObjectDDL(connId, schema, name, objType, authorization string) (string, error) {
+	if err := sanitize.ValidateIdentifier(schema, "schema名"); err != nil {
+		return "", err
+	}
+	if err := sanitize.ValidateIdentifier(name, "对象名"); err != nil {
+		return "", err
+	}
+	if !isValidObjectType(objType) {
+		return "", errors.New("不支持的对象类型: " + objType)
+	}
+	admin.CheckSchemaAccess(connId, schema, authorization)
+	dc := conn.GetConn(connId, authorization)
+	if dc == nil {
+		return "", errors.New("数据库连接失败")
+	}
+	return s.repo.GetObjectDDL(dc, schema, name, objType)
+}
+
+// isValidObjectType 校验对象类型是否为支持的取值
+func isValidObjectType(objType string) bool {
+	switch objType {
+	case "table", "view", "procedure", "function", "trigger", "event":
+		return true
+	}
+	return false
 }
 
 // ===== 权限过滤辅助函数 =====

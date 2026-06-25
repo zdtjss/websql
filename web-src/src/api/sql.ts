@@ -144,9 +144,16 @@ export function listBackupTables(connId: string, schema: string): Promise<AxiosR
   return http.get('/backup/tables', { params: { connId, schema } })
 }
 
-/** 备份 - 创建备份，对应 POST /backup/create */
+/** 备份 - 创建备份，对应 POST /backup/create
+ * 异步执行，立即返回 taskId，需配合 getBackupProgress 轮询进度 */
 export function createBackup(formData: FormData): Promise<AxiosResponse> {
   return http.post('/backup/create', formData)
+}
+
+/** 备份 - 查询备份进度，对应 GET /backup/progress
+ * 返回 {status, totalTables, processedTables, currentTable, exportedBytes, result?, error?} */
+export function getBackupProgress(taskId: string): Promise<AxiosResponse> {
+  return http.get('/backup/progress', { params: { taskId } })
 }
 
 /** 备份 - 下载备份，对应 GET /backup/download，返回 blob */
@@ -162,4 +169,26 @@ export function restoreBackup(formData: FormData): Promise<AxiosResponse> {
 /** 备份 - 删除备份，对应 POST /backup/delete */
 export function deleteBackup(formData: FormData): Promise<AxiosResponse> {
   return http.post('/backup/delete', formData)
+}
+
+/** 数据库对象类型 */
+export type DbObjectType = 'table' | 'view' | 'procedure' | 'function' | 'trigger' | 'event'
+
+/** 列出指定类型的数据库对象，对应 GET /db/objects */
+export function listDbObjects(params: {
+  connId: string
+  schema: string
+  type: DbObjectType
+}): Promise<AxiosResponse<ApiResponse<any[]>>> {
+  return http.get('/db/objects', { params })
+}
+
+/** 获取对象的 DDL 定义文本，对应 GET /db/object/ddl */
+export function getObjectDDL(params: {
+  connId: string
+  schema: string
+  type: DbObjectType
+  name: string
+}): Promise<AxiosResponse<ApiResponse<string>>> {
+  return http.get('/db/object/ddl', { params })
 }

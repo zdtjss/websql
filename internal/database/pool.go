@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,11 +14,19 @@ import (
 	"websql/internal/config"
 	"websql/internal/pkg/safego"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/sijms/go-ora/v2"
 	_ "modernc.org/sqlite"
 )
+
+// init 注册 mariadb 驱动别名。
+// MariaDB 与 MySQL 协议兼容，go-sql-driver/mysql 驱动可直接用于连接 MariaDB。
+// 通过注册别名，使 sqlx.Connect("mariadb", ...) 可正常工作，
+// 且 *sqlx.DB.DriverName() 返回 "mariadb"，便于在 dialect map 中区分 MySQL 与 MariaDB。
+func init() {
+	sql.Register("mariadb", &mysql.MySQLDriver{})
+}
 
 // Deprecated: 使用 Container，将在阶段 4 移除
 var Mngtdb *sqlx.DB
@@ -218,7 +227,8 @@ func makeDsn(param *DBParam) string {
 			dsn += "?charset=AL32UTF8"
 		}
 		return dsn
-	case "mysql":
+	case "mysql", "mariadb":
+		// MariaDB 与 MySQL 协议兼容，DSN 格式一致
 		return fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
 	case "sqlite", "sqlite3":
 		return param.Url

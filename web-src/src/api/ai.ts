@@ -120,9 +120,9 @@ export function getPromptList(params: PromptListParams): Promise<AxiosResponse<A
   return http.get('/promptList', { params })
 }
 
-/** 删除提示词，对应 GET /delPrompt */
+/** 删除提示词，对应 POST /delPrompt */
 export function delPrompt(id: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.get('/delPrompt', { params: { id } })
+  return http.post('/delPrompt', null, { params: { id } })
 }
 
 /** 查询角色列表（提示词管理用），对应 GET /roleBaseList */
@@ -165,9 +165,9 @@ export function getChatSessions(params: SessionListParams): Promise<AxiosRespons
   return http.get('/ai/agent/sessions', { params })
 }
 
-/** 删除历史会话，对应 GET /ai/agent/session/delete */
+/** 删除历史会话，对应 POST /ai/agent/session/delete */
 export function deleteChatSession(sessionId: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.get('/ai/agent/session/delete', { params: { sessionId } })
+  return http.post('/ai/agent/session/delete', null, { params: { sessionId } })
 }
 
 /** 加载历史会话详情，对应 GET /ai/agent/session */

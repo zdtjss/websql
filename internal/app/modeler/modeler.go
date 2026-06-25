@@ -11,6 +11,8 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -158,23 +160,29 @@ func buildERTable(conn *sqlx.DB, dbType, schema, tableName string) ERTable {
 	table.Indexes = indexes
 
 	var comment string
-	conn.Get(&comment, fmt.Sprintf("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, tableName))
+	conn.Get(&comment, "SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?", schema, tableName)
 	table.Comment = comment
 
 	return table
 }
 
 func getPKCols(conn *sqlx.DB, dbType, schema, table string) []string {
+	if !sanitize.IsValidIdentifier(table) {
+		return nil
+	}
 	switch dbType {
 	case "oracle":
-		sql := "SELECT b.COLUMN_NAME FROM user_constraints a LEFT JOIN user_cons_columns b ON a.TABLE_NAME = b.TABLE_NAME WHERE a.TABLE_NAME = '" + table + "' AND CONSTRAINT_TYPE = 'P'"
+		sql := "SELECT b.COLUMN_NAME FROM user_constraints a LEFT JOIN user_cons_columns b ON a.TABLE_NAME = b.TABLE_NAME WHERE a.TABLE_NAME = :1 AND CONSTRAINT_TYPE = 'P'"
 		cols := make([]string, 0)
-		e := conn.Select(&cols, sql)
+		e := conn.Select(&cols, sql, table)
 		if e != nil {
 			return nil
 		}
 		return cols
 	default:
+		if !sanitize.IsValidIdentifier(schema) {
+			return nil
+		}
 		sql := fmt.Sprintf("SELECT column_name FROM information_schema.columns WHERE TABLE_SCHEMA = '%s' AND table_name = '%s' AND column_key = 'PRI'", schema, table)
 		cols := make([]string, 0)
 		e := conn.Select(&cols, sql)
@@ -237,12 +245,15 @@ func getSyncTableIndexes(conn *sqlx.DB, dbType, schema, table string) []ERIndex 
 
 func extractRelations(conn *sqlx.DB, dbType, schema string) []ERRelation {
 	relations := make([]ERRelation, 0)
-	sql := fmt.Sprintf(`SELECT 
+	if !sanitize.IsValidIdentifier(schema) {
+		return relations
+	}
+	sql := `SELECT
 		CONSTRAINT_NAME, TABLE_NAME, COLUMN_NAME,
 		REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
-		FROM information_schema.KEY_COLUMN_USAGE 
-		WHERE TABLE_SCHEMA = '%s' AND REFERENCED_TABLE_SCHEMA IS NOT NULL`, schema)
-	rows, err := conn.Queryx(sql)
+		FROM information_schema.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_SCHEMA IS NOT NULL`
+	rows, err := conn.Queryx(sql, schema)
 	if err != nil {
 		logger.PrintErrf("获取外键关系失败", err)
 		return relations
@@ -306,7 +317,7 @@ func ForwardEngineer(c *gin.Context) {
 	conn := conn.GetConn(connId, authorization)
 
 	if strings.TrimSpace(ddlSql) == "" {
-		response.WriteOK(c, map[string]any{"success": false, "message": "DDL不能为空"})
+		response.WriteErr(c, 200, 400, "DDL不能为空")
 		return
 	}
 
@@ -320,17 +331,27 @@ func ForwardEngineer(c *gin.Context) {
 		if stmt == "" {
 			continue
 		}
+		// DDL 安全校验
+		if err := sqlguard.ValidateDDL(stmt); err != nil {
+			results = append(results, map[string]any{
+				"sql":     clampStrLen(200, stmt),
+				"success": false,
+				"error":   err.Error(),
+			})
+			failCount++
+			continue
+		}
 		_, err := conn.Exec(stmt)
 		if err != nil {
 			results = append(results, map[string]any{
-				"sql":     stmt[:clampStrLen(200, stmt)],
+				"sql":     clampStrLen(200, stmt),
 				"success": false,
 				"error":   err.Error(),
 			})
 			failCount++
 		} else {
 			results = append(results, map[string]any{
-				"sql":     stmt[:clampStrLen(200, stmt)],
+				"sql":     clampStrLen(200, stmt),
 				"success": true,
 			})
 			successCount++

@@ -10,6 +10,13 @@
                             <VideoPlay v-else />
                         </el-icon>{{ exectingSql ? '终止' : '执行' }}
                     </el-button>
+                    <el-button type="primary" @click="executeCurrentStatement" :disabled="exectingSql"
+                        title="Alt + Enter 执行光标所在语句">
+                        <el-icon style="margin-right: 4px;">
+                            <Loading v-if="exectingSql" />
+                            <CaretRight v-else />
+                        </el-icon>执行当前
+                    </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
                     <el-button type="success" @click="toggleOptimizePanel" title="AI SQL优化建议">优化</el-button>
@@ -39,7 +46,7 @@
                     </el-upload>
                 </div>
                 <div class="toolbar-right">
-                    <span v-if="executionTime !== null" class="exec-time">{{ executionTime }}ms</span>
+                    <span v-if="executionTime !== null" class="exec-time">{{ formatDuration(executionTime) }}</span>
                     <span v-if="canInlineEdit && result.length > 0" class="inline-edit-badge"
                         title="当前结果集有主键，支持双击单元格内联编辑">✎ 可编辑</span>
                     <el-tooltip :content="roleForbidModify ? '当前角色禁止修改数据' : (canModify ? '当前允许修改数据，点击切换为只读' : '当前为只读模式，点击允许修改数据')" placement="bottom"
@@ -217,14 +224,14 @@ import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark"
 import { EditorState, Compartment } from '@codemirror/state'
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql';
-import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
+import { syntaxHighlighting, HighlightStyle, forceParsing } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { tags } from '@lezer/highlight'
 import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
-import { ElMessage } from 'element-plus'
-import { ArrowDown, VideoPlay, View, Loading } from '@element-plus/icons-vue'
+import { ElMessage, ElLoading } from 'element-plus'
+import { ArrowDown, VideoPlay, View, Loading, CaretRight } from '@element-plus/icons-vue'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
@@ -233,8 +240,8 @@ import SQLOptimizePanel from '@/components/sql-editor/SQLOptimizePanel.vue'
 import { isCancel } from '@/api'
 import { execSQL, listBackupData, showBackupData as showBackupDataApi, type SQLResult } from '@/api/sql'
 import { canModifyData } from '@/api/auth'
-import excel from '@/utils/excel.js'
-import copyToClipboard from '@/utils/copy-to-clipboard.js'
+import excel from '@/utils/excel'
+import copyToClipboard from '@/utils/copy-to-clipboard'
 import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper.ts'
 import { exportToCsv, exportToJson } from '@/utils/exportHelper.ts'
 import { useTheme } from '@/utils/useTheme.ts'
@@ -668,8 +675,8 @@ function onApplySnippet(sql: string) {
 
 onMounted(() => {
     window.addEventListener('keyup', onGlobalKeyup)
-    dbSchemaProxy.registLsn((schema: any) => {
-        if (schema === schema) {
+    dbSchemaProxy.registLsn((changedSchema: any) => {
+        if (changedSchema === schema) {
             reconfigureSql()
         }
     })
@@ -732,6 +739,7 @@ function createEditor(editorContainer: any, doc: any) {
             { key: "Mod-y", run: redo, preventDefault: true },
             { key: "Mod-Shift-z", run: redo, preventDefault: true },
             { key: 'Tab', run: insertTab, preventDefault: true },
+            { key: 'Alt-Enter', run: () => { executeCurrentStatement(); return true }, preventDefault: true },
         ]),
         sqlCompartment.of(sql({
             dialect: dbSchemaProxy.getDialect(schema),
@@ -744,6 +752,33 @@ function createEditor(editorContainer: any, doc: any) {
         EditorView.editable.of(true),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
+        // 粘贴大量内容后主动加速语法解析，防止高亮失效
+        // CodeMirror 6 Lezer parser 是惰性增量解析，粘贴后 parser 需要时间追赶，
+        // 期间高亮缺失。这里采用三层防护：
+        // 1) domEventHandlers.paste 在 paste 事件时立即调度 forceParsing
+        // 2) updateListener 在文档任何变化时调度（覆盖输入/删除/拖拽）
+        // 3) 用 setTimeout(0) 而非 requestAnimationFrame，让解析在当前事件循环结束后
+        //    立即执行，比等下一帧更早；预算提到 500ms 覆盖大文档
+        EditorView.domEventHandlers({
+            paste: (_event, view) => {
+                setTimeout(() => {
+                    if (editorView.value === view) {
+                        forceParsing(view, view.state.doc.length, 500)
+                    }
+                }, 0)
+                return false  // 不阻止 CodeMirror 默认粘贴行为
+            }
+        }),
+        EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+                setTimeout(() => {
+                    const view = editorView.value
+                    if (view) {
+                        forceParsing(view, view.state.doc.length, 500)
+                    }
+                }, 0)
+            }
+        }),
     ]
     const startState = EditorState.create({
         doc: doc,
@@ -753,6 +788,13 @@ function createEditor(editorContainer: any, doc: any) {
         state: startState,
         parent: editorContainer.value,
     });
+    // 编辑器初始化后强制解析整个文档，覆盖从 localStorage 恢复大段 SQL 的场景
+    // CodeMirror 6 默认只解析可见区域，初始 doc 较大时下方内容高亮会缺失
+    setTimeout(() => {
+        if (editorView.value) {
+            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
+        }
+    }, 0)
 }
 
 function reconfigureSql() {
@@ -763,6 +805,13 @@ function reconfigureSql() {
             schema: <any>dbSchemaProxy.getAll(schema),
         }))
     })
+    // 重新配置 SQL 语言后强制解析，防止高亮失效
+    // 用 setTimeout(0) + 500ms 预算，比 requestAnimationFrame 更早调度
+    setTimeout(() => {
+        if (editorView.value) {
+            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
+        }
+    }, 0)
 }
 
 function reconfigureTheme() {
@@ -774,6 +823,12 @@ function reconfigureTheme() {
             highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
         ]
     })
+    // 重新配置高亮样式后强制解析，防止高亮失效
+    setTimeout(() => {
+        if (editorView.value) {
+            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
+        }
+    }, 0)
 }
 //获取编辑器里的文本内容
 const getEditorDoc = (): string => {
@@ -1170,8 +1225,102 @@ function execBatch(statements: string[]) {
         })
 }
 
-function exec(silent = false) {
-    const sqlExec = getSelection()?.toString()
+// 格式化执行耗时显示
+// < 1s 显示 ms，< 1min 显示 X.XXs，>= 1min 显示 Xm Ys
+function formatDuration(ms: number): string {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.round((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+}
+
+// 获取光标所在位置的 SQL 语句
+// 通过状态机扫描文档，正确处理字符串和注释中的分号
+function getCurrentStatement(): { text: string, from: number, to: number } | null {
+    const view = editorView.value
+    if (!view) return null
+    const doc = view.state.doc.toString()
+    if (!doc) return null
+    const cursorPos = view.state.selection.main.head
+
+    // 扫描状态：normal 普通、single 单引号字符串、double 双引号字符串、line 单行注释、block 块注释
+    let state: 'normal' | 'single' | 'double' | 'line' | 'block' = 'normal'
+    let lastSemicolonBeforeCursor = -1  // 光标前最近的语句分隔符位置
+    let firstSemicolonAfterCursor = -1  // 光标后最近的语句分隔符位置
+
+    for (let i = 0; i < doc.length; i++) {
+        const ch = doc[i]
+        const next = doc[i + 1]
+
+        // 仅在普通状态下遇到的分号才作为语句分隔符
+        if (state === 'normal' && ch === ';') {
+            if (i < cursorPos) {
+                lastSemicolonBeforeCursor = i
+            } else {
+                firstSemicolonAfterCursor = i
+                break  // 找到光标后的第一个分号即可停止扫描
+            }
+        }
+
+        switch (state) {
+            case 'normal':
+                if (ch === "'") state = 'single'
+                else if (ch === '"') state = 'double'
+                else if (ch === '-' && next === '-') state = 'line'
+                else if (ch === '/' && next === '/') state = 'line'
+                else if (ch === '/' && next === '*') state = 'block'
+                break
+            case 'single':
+                // SQL 中 '' 表示转义的单引号
+                if (ch === "'") {
+                    if (next === "'") i++
+                    else state = 'normal'
+                }
+                break
+            case 'double':
+                // SQL 中 "" 表示转义的双引号
+                if (ch === '"') {
+                    if (next === '"') i++
+                    else state = 'normal'
+                }
+                break
+            case 'line':
+                // 单行注释到换行符结束
+                if (ch === '\n') state = 'normal'
+                break
+            case 'block':
+                // 块注释到 */ 结束
+                if (ch === '*' && next === '/') {
+                    state = 'normal'
+                    i++
+                }
+                break
+        }
+    }
+
+    const from = lastSemicolonBeforeCursor + 1
+    const to = firstSemicolonAfterCursor === -1 ? doc.length : firstSemicolonAfterCursor
+    const text = doc.substring(from, to).trim()
+
+    if (!text) return null
+    return { text, from, to }
+}
+
+// 执行光标所在的 SQL 语句
+function executeCurrentStatement() {
+    if (exectingSql.value) return
+    const stmt = getCurrentStatement()
+    if (!stmt) {
+        ElMessage({ message: "光标处未找到可执行的 SQL 语句", type: "warning" })
+        return
+    }
+    // 复用 exec 逻辑，传入当前语句文本
+    exec(false, stmt.text)
+}
+
+function exec(silent = false, overrideSql?: string) {
+    const sqlExec = overrideSql ?? getSelection()?.toString()
     if (!sqlExec) {
         if (!silent) ElMessage({ message: "请先选择SQL", type: "error" })
         return
@@ -1654,27 +1803,42 @@ function exportCurrentToXlsx() {
         return
     }
 
-    let header: any = {}
-    let keys: any = []
-    columns.value.forEach((col: any, idx: number) => {
-        if (idx > 0) {
-            keys.push(col["title"])
-            header[col["title"]] = col["title"]
-        }
+    // 大结果集导出时显示 loading，提示用户正在处理 N 行数据
+    // xlsx 生成是同步阻塞操作，需用 setTimeout 让 loading 先渲染
+    const rowCount = result.value.length
+    const loading = ElLoading.service({
+        lock: true,
+        text: `正在导出 ${rowCount} 行数据到 Excel...`,
+        background: 'rgba(0, 0, 0, 0.7)',
     })
 
-    const obj = {
-        header: header,
-        title: '',
-        key: keys,
-        data: [...result.value].map((row) => {
-            delete row["col-idx"]
-            return row
-        }),
-        filename: currentSelectTable.value,
-        autoWidth: false
-    }
-    excel.exportJsonToExcel(obj)
+    setTimeout(() => {
+        try {
+            let header: any = {}
+            let keys: any = []
+            columns.value.forEach((col: any, idx: number) => {
+                if (idx > 0) {
+                    keys.push(col["title"])
+                    header[col["title"]] = col["title"]
+                }
+            })
+
+            const obj = {
+                header: header,
+                title: '',
+                key: keys,
+                data: [...result.value].map((row) => {
+                    delete row["col-idx"]
+                    return row
+                }),
+                filename: currentSelectTable.value,
+                autoWidth: false
+            }
+            excel.exportJsonToExcel(obj)
+        } finally {
+            loading.close()
+        }
+    }, 50)
 }
 
 function exportCurrentToSqlInsert() {
@@ -1743,13 +1907,14 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 function onKeyup(e: KeyboardEvent) {
     onEditorKeyup(e)
     if (saveTimer) clearTimeout(saveTimer)
+    // 防抖时间设为 2000ms，避免在 CodeMirror 语法解析期间阻塞主线程导致高亮失效
     saveTimer = setTimeout(() => {
         try {
             localStorage.setItem(getSqlKey(), getEditorDoc())
         } catch (e) {
             // localStorage may be full, silently ignore
         }
-    }, 500)
+    }, 2000)
 }
 
 function onEditorKeydown(e: KeyboardEvent) {

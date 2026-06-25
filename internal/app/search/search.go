@@ -11,6 +11,7 @@ import (
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -274,8 +275,13 @@ func SearchData(c *gin.Context) {
 func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) []DataSearchResult {
 	results := make([]DataSearchResult, 0)
 
-	colSQL := fmt.Sprintf("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND DATA_TYPE IN ('varchar','char','text','longtext','mediumtext','tinytext')", schema, table)
-	cols, err := conn.Queryx(colSQL)
+	// 标识符白名单校验，防止 SQL 注入
+	if !sanitize.IsValidIdentifier(schema) || !sanitize.IsValidIdentifier(table) {
+		return results
+	}
+
+	colSQL := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND DATA_TYPE IN ('varchar','char','text','longtext','mediumtext','tinytext')"
+	cols, err := conn.Queryx(colSQL, schema, table)
 	if err != nil {
 		return results
 	}
@@ -285,13 +291,15 @@ func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) 
 	for cols.Next() {
 		var colName string
 		cols.Scan(&colName)
-		textCols = append(textCols, colName)
+		if sanitize.IsValidIdentifier(colName) {
+			textCols = append(textCols, colName)
+		}
 	}
 
 	for _, col := range textCols {
-		query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE `%s` LIKE '%s'", schema, table, col, likeKeyword)
+		query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE `%s` LIKE ?", schema, table, col)
 		var count int
-		err := conn.Get(&count, query)
+		err := conn.Get(&count, query, likeKeyword)
 		if err != nil {
 			continue
 		}

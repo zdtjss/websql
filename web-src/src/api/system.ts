@@ -143,9 +143,9 @@ export function saveRole(params: SaveRoleParams): Promise<AxiosResponse<ApiRespo
   return http.post('/saveRole', params)
 }
 
-/** 删除角色，对应 GET /delRole */
+/** 删除角色，对应 POST /delRole */
 export function delRole(id: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.get('/delRole', { params: { id } })
+  return http.post('/delRole', null, { params: { id } })
 }
 
 /** 查询权限树，对应 GET /permissionTree */
@@ -163,9 +163,9 @@ export function saveUser(row: User): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/saveUser', row)
 }
 
-/** 删除用户，对应 GET /delUser */
+/** 删除用户，对应 POST /delUser */
 export function delUser(id: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.get('/delUser', { params: { id } })
+  return http.post('/delUser', null, { params: { id } })
 }
 
 /** 搜索用户基础信息，对应 GET /findUserBase */

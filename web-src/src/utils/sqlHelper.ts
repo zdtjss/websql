@@ -129,6 +129,7 @@ export function buildDeleteSQL(tableName: string, pkCols: Record<string, any>, d
 export function getSqlDialect(dbType: string): 'mysql' | 'plsql' | 'sql' {
   const db = (dbType || '').toLowerCase()
   if (db === 'oracle') return 'plsql'
-  if (db === 'mysql') return 'mysql'
+  // MariaDB 与 MySQL 方言完全兼容，统一使用 mysql 方言
+  if (db === 'mysql' || db === 'mariadb') return 'mysql'
   return 'sql'
 }

@@ -86,7 +86,7 @@ onMounted(() => {
 function queryData() {
     listTable(connId, schema)
         .then((resp) => {
-            tableData.value = resp.data
+            tableData.value = resp.data.data || []
         })
         .catch((error) => {
             console.error(error);

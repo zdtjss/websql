@@ -50,7 +50,7 @@ func TestDbConn(c *gin.Context) {
 	}
 
 	ensureDefaultConn()
-	dbSchema, dbVersion, err := defaultConnService.TestDbConn(cfg)
+	dbSchema, dbVersion, dbType, err := defaultConnService.TestDbConn(cfg)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -60,6 +60,7 @@ func TestDbConn(c *gin.Context) {
 		"msg":       "连接成功",
 		"dbSchema":  dbSchema,
 		"dbVersion": dbVersion,
+		"dbType":    dbType,
 	})
 }
 

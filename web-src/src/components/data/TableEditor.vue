@@ -336,13 +336,13 @@
 <script setup>
 import { ref, useTemplateRef, watch } from 'vue'
 import { Check, Close, CopyDocument, Delete, Edit } from '@element-plus/icons-vue'
-import http from '@/utils/httpProxy.js'
+import http from '@/api/index'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { format } from 'sql-formatter'
 import { highlightSql } from '@/utils/lazyDeps'
-import copyToClipboard from '@/utils/copy-to-clipboard.js'
-import { getSqlDialect } from '@/utils/sqlHelper.ts'
+import copyToClipboard from '@/utils/copy-to-clipboard'
+import { getSqlDialect } from '@/utils/sqlHelper'
 
 const activeName = ref("colums")
 

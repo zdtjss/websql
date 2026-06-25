@@ -20,6 +20,7 @@ import (
 	"websql/internal/app/monitor"
 	"websql/internal/app/permission"
 	"websql/internal/app/search"
+	"websql/internal/app/snippet"
 	"websql/internal/app/sql"
 	"websql/internal/app/sqlopt"
 	syncdb "websql/internal/app/sync"
@@ -74,7 +75,7 @@ func MainRegister(router *gin.Engine) {
 
 	routerGroup.POST("/saveConn", conn.SaveConn)
 	routerGroup.POST("/testDbConn", conn.TestDbConn)
-	routerGroup.GET("/delConn", conn.DelConn)
+	routerGroup.POST("/delConn", conn.DelConn)
 	routerGroup.GET("/connBaseTree", permission.ConnBaseTree)
 	routerGroup.GET("/listConn2", conn.ListConn2)
 	routerGroup.GET("/listUserConn", conn.ListUserConn)
@@ -88,15 +89,19 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/tableStatistics", dbops.TableStatistics)
 	routerGroup.POST("/listIndexes", dbops.ListIndexes)
 
+	// 数据库对象管理 - 列出对象 / 获取对象 DDL（视图、存储过程、函数、触发器、事件、表）
+	routerGroup.GET("/db/objects", dbops.ListObjects)
+	routerGroup.GET("/db/object/ddl", dbops.GetObjectDDL)
+
 	routerGroup.POST("/saveTree", permission.SaveTree)
 	routerGroup.GET("/listDirTree", permission.ListDirTree)
-	routerGroup.GET("/delTreeNode", permission.DelTreeNode)
+	routerGroup.POST("/delTreeNode", permission.DelTreeNode)
 
 	routerGroup.POST("/login", admin.Login)
 	routerGroup.POST("/logout", admin.Logout)
 
 	routerGroup.POST("/saveRole", admin.SaveRole)
-	routerGroup.GET("/delRole", admin.DelRole)
+	routerGroup.POST("/delRole", admin.DelRole)
 	routerGroup.GET("/roleList", admin.RoleList)
 	routerGroup.GET("/roleBaseList", admin.RoleBaseList)
 	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
@@ -108,12 +113,12 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/promptListByRole", admin.PromptListByRole)
 	routerGroup.GET("/promptDetail", admin.PromptDetail)
 	routerGroup.POST("/savePrompt", admin.SavePrompt)
-	routerGroup.GET("/delPrompt", admin.DelPrompt)
+	routerGroup.POST("/delPrompt", admin.DelPrompt)
 
 	routerGroup.GET("/findUser", admin.FindUser)
 	routerGroup.GET("/findUserBase", admin.FindUserBase)
 	routerGroup.POST("/saveUser", admin.SaveUser)
-	routerGroup.GET("/delUser", admin.DelUser)
+	routerGroup.POST("/delUser", admin.DelUser)
 
 	routerGroup.POST("/saveUserBio", admin.SaveUserBio)
 	routerGroup.POST("/changePassword", admin.ChangePassword)
@@ -152,7 +157,7 @@ func MainRegister(router *gin.Engine) {
 		routerGroup.POST("/ai/agent/preMatchColumns", agent.HandlePreMatchColumns)
 		routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 		routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
-		routerGroup.GET("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
+		routerGroup.POST("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
 	}
 	routerGroup.GET("/exports/:filename", handleExportDownload)
 	// 同时注册不带 /api 前缀的路由，兼容前端未拼接 apiBase 的导出链接
@@ -172,14 +177,22 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/sync/applyDataSync", syncdb.ApplyDataSync)
 	routerGroup.POST("/sync/generateSyncSQL", syncdb.GenerateSyncSQL)
 	routerGroup.GET("/sync/targets", syncdb.GetSyncTargets)
+	// 数据同步增强：Dry-Run 试运行、回滚、报告导出
+	routerGroup.POST("/sync/dryRun", syncdb.DryRunSync)
+	routerGroup.GET("/sync/rollbackLog", syncdb.GetRollbackLog)
+	routerGroup.POST("/sync/rollback", syncdb.RollbackSync)
+	routerGroup.POST("/sync/exportReport", syncdb.ExportSyncReport)
 
 	// 数据建模与ER图
 	routerGroup.POST("/modeler/reverse", modeler.ReverseEngineer)
 	routerGroup.POST("/modeler/forward", modeler.ForwardEngineer)
 	routerGroup.POST("/modeler/export", modeler.ExportModel)
+	// ER 关系 AI 推断：根据表结构（命名/注释/字段）推断表关系，不持久化
+	routerGroup.POST("/er/analyzeRelations", modeler.AnalyzeRelationsHandler)
 
 	// 备份恢复体系
 	routerGroup.POST("/backup/create", backup.CreateBackup)
+	routerGroup.GET("/backup/progress", backup.GetBackupProgress)
 	routerGroup.GET("/backup/list", backup.ListBackups)
 	routerGroup.POST("/backup/restore", backup.RestoreBackup)
 	routerGroup.POST("/backup/delete", backup.DeleteBackup)
@@ -198,16 +211,29 @@ func MainRegister(router *gin.Engine) {
 
 	// 监控面板增强
 	routerGroup.GET("/monitor/metrics", monitor.GetMetrics)
-	routerGroup.GET("/monitor/metrics/history", monitor.GetMetricsHistory)
+	routerGroup.GET("/monitor/history", monitor.GetMetricHistory)
 	routerGroup.GET("/monitor/resources", monitor.GetResources)
 	routerGroup.GET("/monitor/processes", monitor.GetProcesses)
 	routerGroup.GET("/monitor/variables", monitor.GetServerVariables)
+	routerGroup.GET("/monitor/innodb-status", monitor.GetInnodbStatus)
+	routerGroup.GET("/monitor/locks", monitor.GetLocks)
+	routerGroup.GET("/monitor/slow-queries", monitor.GetSlowQueries)
+	routerGroup.GET("/monitor/top-tables", monitor.GetTopTables)
 
 	// 全局数据库搜索
 	routerGroup.GET("/search/objects", search.SearchObjects)
 	routerGroup.GET("/search/data", search.SearchData)
 	routerGroup.GET("/search/all", search.SearchAll)
 	routerGroup.GET("/search/tables", search.GetSearchTables)
+
+	// SQL 收藏夹（后端同步、分类、标签、导入导出）
+	routerGroup.GET("/snippet/list", snippet.List)
+	routerGroup.POST("/snippet/save", snippet.Save)
+	routerGroup.POST("/snippet/delete", snippet.Delete)
+	routerGroup.GET("/snippet/export", snippet.Export)
+	routerGroup.POST("/snippet/import", snippet.Import)
+	routerGroup.GET("/snippet/categories", snippet.Categories)
+	routerGroup.GET("/snippet/tags", snippet.Tags)
 
 	routerGroup.GET("/sysMode", func(c *gin.Context) {
 		jsonutil.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})

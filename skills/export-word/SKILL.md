@@ -1,6 +1,36 @@
 ---
 name: export-word
 description: 生成专业数据分析 Word 报告（.docx）。Agent 负责用 query_data 取数并计算统计指标，本 Skill 的 Python 脚本负责渲染成带封面、目录、图表、表格的科技感 Word 文档。当用户需要 Word/PDF 报告时使用。
+version: "1.2.0"
+min_agent_version: "1.0.0"
+dependencies:
+  - type: context
+    name: connection_id
+    description: 需要 query_data 已建立数据库连接
+  - type: skill
+    name: query_data
+    description: 导出前需先用 query_data 取数
+error_hints:
+  - pattern: "ModuleNotFoundError"
+    hint: "Python 依赖缺失。请先用 execute 工具运行 pip install -r requirements.txt 安装依赖后重试"
+    suggestion: "或回退到 export_analysis_docx 工具（Go 原生兜底）"
+  - pattern: "UnicodeEncodeError"
+    hint: "Python 编码错误（Windows 常见 gbk 问题）。建议在脚本头部添加 # -*- coding: utf-8 -*- 并设置 PYTHONIOENCODING=utf-8"
+    suggestion: "或回退到 export_analysis_docx 工具"
+  - pattern: "PermissionError"
+    hint: "文件写入权限不足。请确认 outputPath 以 /exports/ 开头，且后端有写入权限"
+    suggestion: "检查输出目录是否存在，或联系管理员"
+  - pattern: "timeout"
+    hint: "脚本执行超时。可能是数据量过大导致图表生成缓慢"
+    suggestion: "减少数据量或在输入 JSON 中设置 includeCharts: false"
+  - pattern: "SyntaxError"
+    hint: "Python 脚本语法错误。可能是 Python 版本不兼容"
+    suggestion: "回退到 export_analysis_docx 工具（Go 原生兜底）"
+command_blacklist:
+  - DROP DATABASE
+  - DROP SCHEMA
+  - TRUNCATE
+  - SHUTDOWN
 ---
 
 # Word 报告生成 Skill

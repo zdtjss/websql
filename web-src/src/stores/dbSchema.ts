@@ -91,7 +91,8 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
         const entry = schemaProxy.value[schema]
         if (!entry) return StandardSQL
         const dbType = entry["dbType"]
-        if (dbType === "mysql") {
+        if (dbType === "mysql" || dbType === "mariadb") {
+            // MariaDB 与 MySQL 方言兼容，统一使用 MySQL 语法高亮
             return MySQL
         } else if (dbType === "oracle") {
             return PLSQL

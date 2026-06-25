@@ -63,17 +63,21 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 	var fullResponse strings.Builder
 	interrupted := false
 	eventIdx := 0
+	toolCallIdx := 0
+	assistantMsgIdx := 0
+	overallStart := time.Now()
 
 	for {
 		eventStart := time.Now()
 		event, ok := iter.Next()
 		if !ok {
-			log.Printf("[Agent] 事件迭代结束 - totalEvents=%d\n", eventIdx)
+			log.Printf("[Agent] 事件迭代结束 - totalEvents=%d, toolCalls=%d, assistantMsgs=%d, elapsed=%v\n",
+				eventIdx, toolCallIdx, assistantMsgIdx, time.Since(overallStart))
 			break
 		}
 		eventIdx++
 		if event.Err != nil {
-			log.Printf("[Agent] 事件错误 - err=%+v\n", event.Err)
+			log.Printf("[Agent] 事件错误 - eventIdx=%d, err=%+v\n", eventIdx, event.Err)
 			logUnwrappedError(event.Err)
 			if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) {
 				// 原子地"清理+落库"，避免 debounce 在清理与保存之间写脏数据
@@ -87,17 +91,19 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 			var cancelErr *adk.CancelError
 			if errors.As(event.Err, &cancelErr) {
 				_ = sess.CleanAndSave()
-				log.Printf("[Agent] Agent 被主动取消\n")
+				log.Printf("[Agent] Agent 被主动取消 - eventIdx=%d\n", eventIdx)
 				flush(StreamChunk{Type: "cancelled", Content: "已停止生成"})
 				break
 			}
 			if errors.Is(event.Err, adk.ErrExceedMaxIterations) || strings.Contains(event.Err.Error(), "exceeds max iterations") {
 				_ = sess.CleanAndSave()
+				log.Printf("[Agent] 超过最大迭代次数 - eventIdx=%d, maxIter=%d\n", eventIdx, maxIterations)
 				flush(StreamChunk{Type: "error", Content: "AI 处理步骤过多，部分查询尝试未完成。已执行的操作可能已生效。你可以在对话框中继续提问，AI 会基于已有的对话历史继续处理。"})
 				break
 			}
 			if strings.Contains(event.Err.Error(), "stream reader is empty") || strings.Contains(event.Err.Error(), "concat stream reader fail") {
 				_ = sess.CleanAndSave()
+				log.Printf("[Agent] 流读取器异常 - eventIdx=%d\n", eventIdx)
 				flush(StreamChunk{Type: "error", Content: "AI 处理遇到内部错误，前置工具调用可能未成功。你可以重新提问或提供更具体的指令，AI 会重新尝试处理。"})
 				break
 			}
@@ -116,7 +122,8 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				}
 				if sqlInfo, ok := ictx.Info.(*DangerousSQLInfo); ok {
 					hasDangerConfirm = true
-					log.Printf("[Agent] 危险 SQL 中断 - id=%s, sql=%s\n", ictx.ID, sqlInfo.SQL)
+					log.Printf("[Agent] 危险 SQL 中断 - eventIdx=%d, id=%s, sql=%s, riskLevel=%s, sqlType=%s\n",
+						eventIdx, ictx.ID, sqlInfo.SQL, sqlInfo.RiskLevel, sqlInfo.SQLType)
 					flush(StreamChunk{
 						Type:         "danger_confirm",
 						Content:      "检测到危险 SQL，需要用户确认",
@@ -125,14 +132,14 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 						CheckPointID: checkPointID,
 					})
 				} else {
-					log.Printf("[Agent] 未知类型中断 - id=%s, info=%T\n", ictx.ID, ictx.Info)
+					log.Printf("[Agent] 未知类型中断 - eventIdx=%d, id=%s, info=%T\n", eventIdx, ictx.ID, ictx.Info)
 				}
 			}
 			if !hasDangerConfirm {
 				// 中断事件中没有 DangerousSQLInfo，属于异常情况
 				// 标记为非中断，让调用方发送 done，避免前端永远卡住
 				interrupted = false
-				log.Printf("[Agent] 中断事件无 DangerousSQLInfo，视为非中断\n")
+				log.Printf("[Agent] 中断事件无 DangerousSQLInfo，视为非中断 - eventIdx=%d\n", eventIdx)
 				flush(StreamChunk{Type: "error", Content: "AI 处理出现异常中断，请重试"})
 			}
 			if fullResponse.Len() > 0 {
@@ -146,6 +153,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 
 		if !hasOutput {
 			if hasExit {
+				log.Printf("[Agent] 收到 Exit 事件，结束处理 - eventIdx=%d\n", eventIdx)
 				break
 			}
 			continue
@@ -155,6 +163,14 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		role := mo.Role
 		if role == "" && mo.Message != nil {
 			role = mo.Message.Role
+		}
+
+		// 统计工具结果消息
+		if role == schema.Tool {
+			toolCallIdx++
+		}
+		if role == schema.Assistant && (mo.Message != nil || mo.MessageStream != nil) {
+			assistantMsgIdx++
 		}
 
 		log.Printf("[Agent] 事件输出 [#%d] - role=%s, isStreaming=%v, hasStream=%v, hasMsg=%v, toolCalls=%d, exit=%v, waitTime=%v\n",
@@ -230,6 +246,14 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		} else if role == schema.Tool {
 			msg := mo.Message
 			if msg != nil {
+				contentLen := len(msg.Content)
+				contentPreview := msg.Content
+				if len(contentPreview) > 200 {
+					contentPreview = contentPreview[:200] + "...(truncated)"
+				}
+				contentPreview = strings.ReplaceAll(contentPreview, "\n", " ")
+				log.Printf("[Agent] 工具结果 - eventIdx=%d, toolName=%s, callID=%s, contentLen=%d, preview=%s\n",
+					eventIdx, msg.ToolName, msg.ToolCallID, contentLen, contentPreview)
 				sess.AppendMessageNoSave(SessionMessage{
 					Role:       "tool",
 					Content:    msg.Content,
@@ -240,6 +264,13 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 		} else if role == schema.Assistant && mo.Message != nil {
 			msg := mo.Message
 			if len(msg.ToolCalls) > 0 {
+				// 记录工具调用请求的详细信息
+				tcNames := make([]string, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					tcNames = append(tcNames, tc.Function.Name)
+				}
+				log.Printf("[Agent] 助手工具调用请求 - eventIdx=%d, toolCalls=%d, funcs=%v, contentLen=%d\n",
+					eventIdx, len(msg.ToolCalls), tcNames, len(msg.Content))
 				sess.AppendMessageNoSave(SessionMessage{
 					Role:      "assistant",
 					Content:   msg.Content,

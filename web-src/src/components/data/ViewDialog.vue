@@ -23,7 +23,7 @@
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
-import http from '@/utils/httpProxy.js'
+import http from '@/api/index'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { getSqlDialect } from '@/utils/sqlHelper.ts'

@@ -6,6 +6,7 @@ import (
 	"flag"
 	app "websql/internal/app"
 	"websql/internal/audit"
+	"websql/internal/app/monitor"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/https"
@@ -61,6 +62,11 @@ func main() {
 
 	audit.GetAuditService()
 	audit.StartAuditLogCleaner()
+
+	// 启动监控指标自动清理任务（删除 30 天前的历史数据）
+	monitor.StartMetricCleaner()
+	// 启动后台指标采集任务（每 60 秒采集一次，供历史趋势查询）
+	monitor.StartMetricCollector()
 
 	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
 		store.InitRedis()

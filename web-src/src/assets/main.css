@@ -577,47 +577,6 @@
   background-color: rgba(0, 122, 204, 0.3) !important;
 }
 
-/* VSCode Dark+ syntax highlighting */
-[data-theme="dark"] .cm-keyword {
-  color: #569cd6 !important;
-}
-
-[data-theme="dark"] .cm-string {
-  color: #ce9178 !important;
-}
-
-[data-theme="dark"] .cm-number {
-  color: #b5cea8 !important;
-}
-
-[data-theme="dark"] .cm-comment {
-  color: #6a9955 !important;
-}
-
-[data-theme="dark"] .cm-function {
-  color: #dcdcaa !important;
-}
-
-[data-theme="dark"] .cm-variable {
-  color: #9cdcfe !important;
-}
-
-[data-theme="dark"] .cm-operator {
-  color: #d4d4d4 !important;
-}
-
-[data-theme="dark"] .cm-type {
-  color: #4ec9b0 !important;
-}
-
-[data-theme="dark"] .cm-property {
-  color: #9cdcfe !important;
-}
-
-[data-theme="dark"] .cm-punctuation {
-  color: #d4d4d4 !important;
-}
-
 /* dialog dark mode enhancements */
 [data-theme="dark"] .el-dialog {
   --el-dialog-bg-color: var(--bg-primary);

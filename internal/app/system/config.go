@@ -152,7 +152,41 @@ func ListSystemConfig(configType string) []*SystemConfig {
 	return configs
 }
 
+// GetAIConfigFromDB 返回当前生效的 AI 配置（前端选中的模型）。
+//
+// 前端通过模型列表（ai.modelList + ai.selectedModelId）管理 AI；旧版使用的扁平键
+// ai.provider/ai.model 等会在 GetAllSystemConfigHandler 迁移后被删除（config.go DELETE）。
+// 故这里优先从模型列表读取选中模型；模型列表为空时回退读旧扁平键，兼容尚未迁移的部署。
+// analyze.go / HandleGetConfig 均依赖此函数，必须与前端模型列表保持一致。
 func GetAIConfigFromDB() *AIConfig {
+	// 1. 优先从模型列表读取选中模型
+	models := GetAIModelList()
+	if len(models) > 0 {
+		selectedId := GetSelectedModelId()
+		picked := &models[0]
+		for i := range models {
+			if selectedId != "" && models[i].Id == selectedId {
+				picked = &models[i]
+				break
+			}
+		}
+		// Temperature 为 0 视为未设置，回退默认 0.7，与旧路径行为一致
+		temperature := picked.Temperature
+		if temperature == 0 {
+			temperature = 0.7
+		}
+		return &AIConfig{
+			Provider:         picked.Provider,
+			BaseURL:          picked.BaseURL,
+			Model:            picked.Model,
+			ApiKey:           picked.ApiKey,
+			Temperature:      temperature,
+			MaxContextTokens: picked.MaxContextTokens,
+			EnableThinking:   picked.EnableThinking,
+		}
+	}
+
+	// 2. 模型列表为空：回退读旧扁平键（兼容未迁移部署）
 	provider := GetSystemConfigValue("ai.provider")
 	baseUrl := GetSystemConfigValue("ai.baseUrl")
 	model := GetSystemConfigValue("ai.model")
@@ -589,6 +623,17 @@ func getModelListFromDB() []AIModelItem {
 		return []AIModelItem{}
 	}
 	return modelList
+}
+
+// GetAIModelList 返回所有已配置的 AI 模型列表（导出函数，供其他包使用）。
+// 用于 Model Failover 等需要获取备用模型列表的场景。
+func GetAIModelList() []AIModelItem {
+	return getModelListFromDB()
+}
+
+// GetSelectedModelId 返回当前选中的模型 ID。
+func GetSelectedModelId() string {
+	return GetSystemConfigValue("ai.selectedModelId")
 }
 
 func saveModelListToDB(modelList []AIModelItem) {

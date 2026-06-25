@@ -17,6 +17,8 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -458,6 +460,8 @@ func ApplyDataSync(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	schema := c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
+	// 同步会话 ID（前端生成），用于关联回滚日志。为空则不记录回滚信息。
+	syncSessionId := c.PostForm("syncSessionId")
 
 	authorization := appctx.Ctx.GetAuthorization(c)
 	dbConn := conn.GetConn(connId, authorization)
@@ -466,6 +470,7 @@ func ApplyDataSync(c *gin.Context) {
 		response.WriteOK(c, map[string]any{"success": false, "message": "数据库连接不可用，请检查连接配置或权限"})
 		return
 	}
+	dbType := dbConn.DriverName()
 
 	if strings.TrimSpace(sqlStr) == "" {
 		response.WriteOK(c, map[string]any{"success": false, "message": "SQL不能为空"})
@@ -519,13 +524,27 @@ func ApplyDataSync(c *gin.Context) {
 	updateCount := 0
 	deleteCount := 0
 	errors := make([]string, 0)
+	// 仅在提供 syncSessionId 时记录回滚日志（避免无谓的 SELECT 开销）
+	recordUndo := syncSessionId != ""
+	executedOriginals := make([]string, 0, len(validatedSQLs))
+	undoSQLs := make([]string, 0, len(validatedSQLs))
 
 	for _, s := range validatedSQLs {
 		upper := strings.ToUpper(s)
+		// 执行前生成撤销 SQL（UPDATE/DELETE 会先 SELECT 旧值）。
+		// 仅对成功执行的语句保留撤销 SQL，失败语句不记录。
+		var undo string
+		if recordUndo {
+			undo = generateUndoSQL(s, dbConn, dbType)
+		}
 		result, err := tx.Exec(s)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", s[:minStr(80, s)], err.Error()))
 			continue
+		}
+		if recordUndo {
+			executedOriginals = append(executedOriginals, s)
+			undoSQLs = append(undoSQLs, undo)
 		}
 		affected, _ := result.RowsAffected()
 		if strings.HasPrefix(upper, "INSERT") {
@@ -537,10 +556,19 @@ func ApplyDataSync(c *gin.Context) {
 		}
 	}
 
+	committed := false
 	if len(errors) > 0 {
 		tx.Rollback()
 	} else {
-		tx.Commit()
+		if err := tx.Commit(); err == nil {
+			committed = true
+		}
+	}
+
+	// 事务提交成功后，将本批次的撤销 SQL 追加到会话回滚日志（30 分钟后自动清理）
+	if committed && recordUndo && len(executedOriginals) > 0 {
+		rollbackLog := getOrCreateRollbackLog(syncSessionId, connId, schema, dbType)
+		appendRollbackEntries(rollbackLog, executedOriginals, undoSQLs)
 	}
 
 	totalAffected := insertCount + updateCount + deleteCount
@@ -579,6 +607,7 @@ func ApplyDataSync(c *gin.Context) {
 
 	response.WriteOK(c, map[string]any{
 		"success":     len(errors) == 0,
+		"sessionId":   syncSessionId,
 		"insertCount": insertCount,
 		"updateCount": updateCount,
 		"deleteCount": deleteCount,
@@ -588,36 +617,7 @@ func ApplyDataSync(c *gin.Context) {
 }
 
 func validateDataSQL(sql string) error {
-	upper := strings.ToUpper(strings.TrimSpace(sql))
-
-	allowedPrefixes := []string{"INSERT INTO", "UPDATE ", "DELETE FROM"}
-	matched := false
-	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(upper, prefix) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		preview := upper
-		if len(preview) > 40 {
-			preview = preview[:40] + "..."
-		}
-		return fmt.Errorf("不允许执行的SQL类型: %s (仅允许 INSERT/UPDATE/DELETE)", preview)
-	}
-
-	dangerousPatterns := []string{
-		"DROP TABLE", "DROP DATABASE", "TRUNCATE",
-		"GRANT", "REVOKE", "CREATE USER", "ALTER USER", "DROP USER",
-		"SHUTDOWN", "LOAD DATA", "INTO OUTFILE", "INTO DUMPFILE",
-	}
-	for _, d := range dangerousPatterns {
-		if strings.Contains(upper, d) {
-			return fmt.Errorf("SQL包含危险操作: %s", d)
-		}
-	}
-
-	return nil
+	return sqlguard.ValidateDataSQL(sql)
 }
 
 func GenerateSyncSQL(c *gin.Context) {
@@ -627,6 +627,8 @@ func GenerateSyncSQL(c *gin.Context) {
 	schema2 := c.PostForm("targetSchema")
 	table := c.PostForm("table")
 	syncDirection := c.DefaultPostForm("direction", "source_to_target")
+	// 冲突处理策略（默认 update）。详见 handler.go 中的策略常量。
+	conflictStrategy := c.DefaultPostForm("conflictStrategy", StrategyUpdate)
 
 	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
@@ -670,79 +672,36 @@ func GenerateSyncSQL(c *gin.Context) {
 	sqlBuf := new(bytes.Buffer)
 	qi := newQuoteInfo(dbType)
 
+	// 统一处理两个方向：fromMap 为"数据源（真相来源）"，toMap 为"被对齐的一端"，
+	// writeSchema 为实际写入目标 schema。
+	var fromMap, toMap map[string]map[string]any
+	var writeSchema string
 	if syncDirection == "source_to_target" {
-		for key, srcRow := range sourceMap {
-			if tgtRow, ok := targetMap[key]; ok {
-				changes := diffRows(srcRow, tgtRow, keyColumns)
-				if len(changes) > 0 {
-					setParts := make([]string, 0)
-					for _, ch := range changes {
-						setParts = append(setParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, ch.ColumnName, qi.colR, escapeSQLValue(ch.NewValue)))
-					}
-					whereParts := make([]string, 0)
-					for _, kc := range keyColumns {
-						whereParts = append(whereParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, kc, qi.colR, escapeSQLValue(srcRow[kc])))
-					}
-					sqlBuf.WriteString(fmt.Sprintf("UPDATE %s%s%s.%s%s%s SET %s WHERE %s;\n",
-						qi.col, schema2, qi.colR, qi.col, table, qi.colR, strings.Join(setParts, ", "), strings.Join(whereParts, " AND ")))
-				}
-			} else {
-				cols := make([]string, 0)
-				vals := make([]string, 0)
-				for k, v := range srcRow {
-					cols = append(cols, fmt.Sprintf("%s%s%s", qi.col, k, qi.colR))
-					vals = append(vals, fmt.Sprintf("'%s'", escapeSQLValue(v)))
-				}
-				sqlBuf.WriteString(fmt.Sprintf("INSERT INTO %s%s%s.%s%s%s (%s) VALUES (%s);\n",
-					qi.col, schema2, qi.colR, qi.col, table, qi.colR, strings.Join(cols, ", "), strings.Join(vals, ", ")))
-			}
-		}
-		for key, tgtRow := range targetMap {
-			if _, ok := sourceMap[key]; !ok {
-				whereParts := make([]string, 0)
-				for _, kc := range keyColumns {
-					whereParts = append(whereParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, kc, qi.colR, escapeSQLValue(tgtRow[kc])))
-				}
-				sqlBuf.WriteString(fmt.Sprintf("DELETE FROM %s%s%s.%s%s%s WHERE %s;\n",
-					qi.col, schema2, qi.colR, qi.col, table, qi.colR, strings.Join(whereParts, " AND ")))
-			}
-		}
+		fromMap, toMap, writeSchema = sourceMap, targetMap, schema2
 	} else {
-		for key, tgtRow := range targetMap {
-			if srcRow, ok := sourceMap[key]; ok {
-				changes := diffRows(tgtRow, srcRow, keyColumns)
-				if len(changes) > 0 {
-					setParts := make([]string, 0)
-					for _, ch := range changes {
-						setParts = append(setParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, ch.ColumnName, qi.colR, escapeSQLValue(ch.NewValue)))
-					}
-					whereParts := make([]string, 0)
-					for _, kc := range keyColumns {
-						whereParts = append(whereParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, kc, qi.colR, escapeSQLValue(tgtRow[kc])))
-					}
-					sqlBuf.WriteString(fmt.Sprintf("UPDATE %s%s%s.%s%s%s SET %s WHERE %s;\n",
-						qi.col, schema1, qi.colR, qi.col, table, qi.colR, strings.Join(setParts, ", "), strings.Join(whereParts, " AND ")))
-				}
-			} else {
-				cols := make([]string, 0)
-				vals := make([]string, 0)
-				for k, v := range tgtRow {
-					cols = append(cols, fmt.Sprintf("%s%s%s", qi.col, k, qi.colR))
-					vals = append(vals, fmt.Sprintf("'%s'", escapeSQLValue(v)))
-				}
-				sqlBuf.WriteString(fmt.Sprintf("INSERT INTO %s%s%s.%s%s%s (%s) VALUES (%s);\n",
-					qi.col, schema1, qi.colR, qi.col, table, qi.colR, strings.Join(cols, ", "), strings.Join(vals, ", ")))
+		fromMap, toMap, writeSchema = targetMap, sourceMap, schema1
+	}
+
+	// 新增/修改：遍历数据源行
+	for key, fromRow := range fromMap {
+		if toRow, ok := toMap[key]; ok {
+			// 目标已存在：比对差异，skip 策略下不生成 UPDATE
+			changes := diffRows(fromRow, toRow, keyColumns)
+			if len(changes) > 0 && conflictStrategy != StrategySkip {
+				sqlBuf.WriteString(buildUpdateStmt(dbType, writeSchema, table, changes, keyColumns, fromRow, qi))
+				sqlBuf.WriteString("\n")
 			}
+		} else {
+			// 目标不存在：按冲突策略生成 INSERT
+			sqlBuf.WriteString(buildInsertStmt(conflictStrategy, dbType, writeSchema, table, fromRow, keyColumns, qi))
+			sqlBuf.WriteString("\n")
 		}
-		for key, srcRow := range sourceMap {
-			if _, ok := targetMap[key]; !ok {
-				whereParts := make([]string, 0)
-				for _, kc := range keyColumns {
-					whereParts = append(whereParts, fmt.Sprintf("%s%s%s = '%s'", qi.col, kc, qi.colR, escapeSQLValue(srcRow[kc])))
-				}
-				sqlBuf.WriteString(fmt.Sprintf("DELETE FROM %s%s%s.%s%s%s WHERE %s;\n",
-					qi.col, schema1, qi.colR, qi.col, table, qi.colR, strings.Join(whereParts, " AND ")))
-			}
+	}
+	// 删除：目标多余行（不属于冲突，所有策略都生成 DELETE）
+	for key, toRow := range toMap {
+		if _, ok := fromMap[key]; !ok {
+			sqlBuf.WriteString(buildDeleteStmt(dbType, writeSchema, table, toRow, keyColumns, qi))
+			sqlBuf.WriteString("\n")
 		}
 	}
 
@@ -801,12 +760,18 @@ func buildSelectSQL(dbType, schema, table string) string {
 }
 
 func getRowCount(conn *sqlx.DB, dbType, schema, table string) int {
+	if !sanitize.IsValidIdentifier(table) {
+		return 0
+	}
 	var count int
 	switch dbType {
 	case "oracle":
-		conn.Get(&count, "SELECT COUNT(*) FROM \""+table+"\"", table)
+		conn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM \"%s\"", table))
 	default:
-		conn.Get(&count, "SELECT COUNT(*) FROM `"+schema+"`.`"+table+"`")
+		if !sanitize.IsValidIdentifier(schema) {
+			return 0
+		}
+		conn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
 	}
 	return count
 }
@@ -823,6 +788,8 @@ func CompareDataChunked(c *gin.Context) {
 	direction := c.DefaultPostForm("direction", "source_to_target")
 	generateSQLFlag := c.DefaultPostForm("generateSQL", "false")
 	phase := c.DefaultPostForm("phase", "compare")
+	// 冲突处理策略（默认 update）。生成 SQL 时按此策略产出 INSERT 语句。
+	conflictStrategy := c.DefaultPostForm("conflictStrategy", StrategyUpdate)
 
 	authorization := appctx.Ctx.GetAuthorization(c)
 	conn1 := conn.GetConn(connId1, authorization)
@@ -884,7 +851,7 @@ func CompareDataChunked(c *gin.Context) {
 	}
 
 	if phase == "out_of_range" {
-		handleOutOfRangeDeletions(c, srcConn, tgtConn, dbType, srcSchema, tgtSchema, table, keyColumns, qi, direction, generateSQLFlag, chunkSize, chunkIndex, sourceCount, targetCount, columns)
+		handleOutOfRangeDeletions(c, srcConn, tgtConn, dbType, srcSchema, tgtSchema, table, keyColumns, qi, direction, generateSQLFlag, conflictStrategy, chunkSize, chunkIndex, sourceCount, targetCount, columns)
 		return
 	}
 
@@ -934,7 +901,7 @@ func CompareDataChunked(c *gin.Context) {
 
 	var sqlStr string
 	if generateSQLFlag == "true" {
-		sqlStr = generateChunkSQL(addedRows, deletedRows, modifiedRows, keyColumns, tgtSchema, table, qi)
+		sqlStr = generateChunkSQLWithStrategy(addedRows, deletedRows, modifiedRows, keyColumns, tgtSchema, table, qi, conflictStrategy, dbType)
 	}
 
 	hasMore := chunkIndex < totalChunks-1
@@ -959,7 +926,7 @@ func CompareDataChunked(c *gin.Context) {
 	})
 }
 
-func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType, srcSchema, tgtSchema, table string, keyColumns []string, qi *quoteInfo, direction, generateSQLFlag string, chunkSize, chunkIndex, sourceCount, targetCount int, columns []DataDiffColumn) {
+func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType, srcSchema, tgtSchema, table string, keyColumns []string, qi *quoteInfo, direction, generateSQLFlag, conflictStrategy string, chunkSize, chunkIndex, sourceCount, targetCount int, columns []DataDiffColumn) {
 	if sourceCount == 0 {
 		offset := chunkIndex * chunkSize
 		var pagedSQL string
@@ -973,7 +940,7 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 		hasMore := offset+chunkSize < targetCount
 		var sqlStr string
 		if generateSQLFlag == "true" && len(allData) > 0 {
-			sqlStr = generateChunkSQL(nil, allData, nil, keyColumns, tgtSchema, table, qi)
+			sqlStr = generateChunkSQLWithStrategy(nil, allData, nil, keyColumns, tgtSchema, table, qi, conflictStrategy, dbType)
 		}
 		response.WriteOK(c, map[string]any{
 			"tableName":    table,
@@ -1051,7 +1018,7 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 
 	var sqlStr string
 	if generateSQLFlag == "true" && len(outOfRangeData) > 0 {
-		sqlStr = generateChunkSQL(nil, outOfRangeData, nil, keyColumns, tgtSchema, table, qi)
+		sqlStr = generateChunkSQLWithStrategy(nil, outOfRangeData, nil, keyColumns, tgtSchema, table, qi, conflictStrategy, dbType)
 	}
 
 	response.WriteOK(c, map[string]any{

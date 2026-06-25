@@ -58,9 +58,9 @@
     <!-- 操作按钮 -->
     <div style="display: flex; gap: 1px; margin-top: 3px; justify-content: flex-end;">
       <el-button size="small" @click="handleCancel">取消</el-button>
-      <el-button size="small" type="primary" :danger="riskLevel === 'high'" @click="handleConfirm"
+      <el-button size="small" :type="riskLevel === 'high' ? 'danger' : 'primary'" @click="handleConfirm"
         :loading="confirmLoading">
-        <span v-if="riskLevel === 'high'" style="color: #d73a49;">执行（高危）</span>
+        <span v-if="riskLevel === 'high'">执行（高危）</span>
         <span v-else>执行</span>
       </el-button>
     </div>
@@ -69,7 +69,7 @@
 
 <script setup>
 import { ElMessage } from 'element-plus'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const visible = defineModel({ default: false })
 
@@ -79,7 +79,8 @@ const {
   riskLevel,
   description,
   affectedRows,
-  tableName
+  tableName,
+  loading: parentLoading
 } = defineProps({
   sql: { type: String, default: '' },
   operationType: {
@@ -94,12 +95,14 @@ const {
   },
   description: { type: String, default: '' },
   affectedRows: { type: Number, default: undefined },
-  tableName: { type: String, default: '' }
+  tableName: { type: String, default: '' },
+  loading: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
 
-const confirmLoading = ref(false)
+const confirmLoading = computed(() => parentLoading || internalLoading.value)
+const internalLoading = ref(false)
 
 // 获取操作类型的描述
 const getOperationDescription = (type) => {
@@ -117,7 +120,15 @@ const getOperationDescription = (type) => {
 const formatSQL = (sqlText) => {
   if (!sqlText) return ''
 
-  // 关键字高亮
+  // 1. 先将字符串字面量替换为占位符，避免关键字高亮污染字符串内容
+  const stringPlaceholders = []
+  let processed = sqlText.replace(/'[^']*'/g, (match) => {
+    const placeholder = `\x00STR${stringPlaceholders.length}\x00`
+    stringPlaceholders.push(match)
+    return placeholder
+  })
+
+  // 2. 关键字高亮
   const keywords = [
     'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'INTO',
     'SET', 'VALUES', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER',
@@ -125,43 +136,40 @@ const formatSQL = (sqlText) => {
     'AS', 'AND', 'OR', 'NOT', 'IN', 'BETWEEN', 'LIKE', 'IS NULL'
   ]
 
-  let formatted = sqlText
   keywords.forEach(keyword => {
     const regex = new RegExp(`\\b${keyword}\\b`, 'gi')
-    formatted = formatted.replace(
+    processed = processed.replace(
       regex,
       `<span style="color: #d73a49; font-weight: bold;">${keyword}</span>`
     )
   })
 
-  // 字符串高亮（单引号包裹的内容）
-  formatted = formatted.replace(
-    /'[^']*'/g,
-    '<span style="color: #032f62;">$&</span>'
-  )
+  // 3. 还原字符串字面量并高亮
+  stringPlaceholders.forEach((str, i) => {
+    processed = processed.replace(`\x00STR${i}\x00`, `<span style="color: #032f62;">${escapeHtml(str)}</span>`)
+  })
 
-  return formatted
+  return processed
+}
+
+// HTML 转义
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 // 处理确认按钮点击
-const handleConfirm = async () => {
-  confirmLoading.value = true
-  try {
-    // 生成确认标记
-    const userName = getCurrentUser()
-    const timestamp = new Date().toISOString()
-    const confirmedSql = `${sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
+const handleConfirm = () => {
+  internalLoading.value = true
+  // 生成确认标记
+  const userName = getCurrentUser()
+  const timestamp = new Date().toISOString()
+  const confirmedSql = `${sql.trim()}\n\n-- CONFIRMED: ${userName} ${timestamp}`
 
-    // 调用父组件的确认回调
-    await emit('confirm', confirmedSql)
-
-    ElMessage.success('操作成功')
-  } catch (error) {
-    console.error('[SQLConfirmInline] 操作失败:', error)
-    ElMessage.error('操作失败，请稍后重试')
-  } finally {
-    confirmLoading.value = false
-  }
+  // emit 是同步的，父组件执行完成后应通过 loading prop 控制 confirmLoading
+  emit('confirm', confirmedSql)
 }
 
 // 处理取消按钮点击

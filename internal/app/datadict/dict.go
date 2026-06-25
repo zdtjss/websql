@@ -11,6 +11,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -196,15 +197,17 @@ func buildDictTable(conn *sqlx.DB, dbType, schema, table string) DictTable {
 	}
 
 	var comment string
-	conn.Get(&comment, fmt.Sprintf("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, table))
+	conn.Get(&comment, "SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?", schema, table)
 	dt.Comment = comment
 
 	var eng string
-	conn.Get(&eng, fmt.Sprintf("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, table))
+	conn.Get(&eng, "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?", schema, table)
 	dt.Engine = eng
 
 	var rowCount int64
-	conn.Get(&rowCount, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
+	if sanitize.IsValidIdentifier(schema) && sanitize.IsValidIdentifier(table) {
+		conn.Get(&rowCount, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
+	}
 	dt.Rows = rowCount
 
 	return dt
@@ -455,9 +458,12 @@ func GetDictTables(c *gin.Context) {
 
 	briefs := make([]TableBrief, 0)
 	for _, table := range tables {
+		if !sanitize.IsValidIdentifier(schema) || !sanitize.IsValidIdentifier(table) {
+			continue
+		}
 		var comment string
 		var rows int64
-		conn.Get(&comment, fmt.Sprintf("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, table))
+		conn.Get(&comment, "SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?", schema, table)
 		conn.Get(&rows, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
 		briefs = append(briefs, TableBrief{Name: table, Comment: comment, Rows: rows})
 	}

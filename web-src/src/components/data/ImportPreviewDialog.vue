@@ -133,7 +133,7 @@
 import { CircleCheck, Refresh, RefreshLeft, Upload, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { ref, watch } from 'vue'
-import http from '@/utils/httpProxy.js'
+import http from '@/api/index'
 
 const visible = defineModel({ default: false })
 const { connId, schema, tableName, dbColumns, onImportSuccess, importFormat } = defineProps({

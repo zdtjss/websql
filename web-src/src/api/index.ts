@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance } from 'axios'
-import { sanitizeError } from '@/utils/errorHandler.js'
+import { sanitizeError } from '@/utils/errorHandler'
 import { ElMessage } from 'element-plus'
 
 const env = import.meta.env

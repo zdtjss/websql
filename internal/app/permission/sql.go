@@ -3,6 +3,7 @@ package permission
 import (
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
@@ -309,8 +310,18 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 		return &TableColumnAccess{Level: AccessNone}
 	}
 
+	// 优先查决策缓存，避免重复解析权限规则（命中即返回）
+	if cached, ok := globalDecisionCache.getDecision(userPower.UserId, connId, schemaName, tableName); ok {
+		return &TableColumnAccess{
+			Level:          cached.level,
+			AllowedColumns: copyAllowedColumns(cached.allowedCols),
+		}
+	}
+
 	powerDetails := admin.FindUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
+		globalDecisionCache.setDecision(userPower.UserId, connId, schemaName, tableName,
+			&decisionCacheEntry{level: AccessNone, allowedCols: nil})
 		return &TableColumnAccess{Level: AccessNone}
 	}
 
@@ -320,6 +331,9 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 	for _, roleDetails := range byRole {
 		roleAccess := resolveRoleTableAccess(roleDetails, schemaName, tableName)
 		if roleAccess.Level == AccessFull {
+			// 命中 full 级权限，缓存并返回
+			globalDecisionCache.setDecision(userPower.UserId, connId, schemaName, tableName,
+				&decisionCacheEntry{level: AccessFull, allowedCols: nil})
 			return &TableColumnAccess{Level: AccessFull}
 		}
 		if roleAccess.Level == AccessColumn {
@@ -332,7 +346,30 @@ func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *
 		}
 	}
 
+	// 缓存决策结果（column 级保存允许列的副本，none 级保存 nil）
+	var cachedCols map[string]bool
+	if bestAccess.Level == AccessColumn {
+		cachedCols = make(map[string]bool, len(bestAccess.AllowedColumns))
+		for k, v := range bestAccess.AllowedColumns {
+			cachedCols[k] = v
+		}
+	}
+	globalDecisionCache.setDecision(userPower.UserId, connId, schemaName, tableName,
+		&decisionCacheEntry{level: bestAccess.Level, allowedCols: cachedCols})
+
 	return bestAccess
+}
+
+// copyAllowedColumns 复制缓存的允许列集合，避免外部修改污染缓存。
+func copyAllowedColumns(src map[string]bool) map[string]bool {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func GetTableAccessDowngraded(connId, schemaName, tableName, authorization string) *TableColumnAccess {
@@ -550,6 +587,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 				writeCheckDone = true
 			}
 			if !hasWritePermission {
+				log.Printf("[PermCheck] 批量写权限拒绝 - conn=%s, user=%s\n", connId, userPower.UserId)
 				return &SQLPermissionResult{
 					Allowed: false,
 					Message: "当前角色禁止修改数据，无法执行写操作",
@@ -560,6 +598,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 		// 检查读表权限
 		for _, t := range analysis.ReadTables {
 			if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
+				log.Printf("[PermCheck] 批量表权限拒绝 - conn=%s, user=%s, table=%s\n", connId, userPower.UserId, t.Name)
 				return &SQLPermissionResult{
 					Allowed:      false,
 					DeniedTables: []string{t.Name},
@@ -571,6 +610,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 		// 检查写表权限
 		for _, t := range analysis.WriteTables {
 			if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
+				log.Printf("[PermCheck] 批量表权限拒绝 - conn=%s, user=%s, table=%s\n", connId, userPower.UserId, t.Name)
 				return &SQLPermissionResult{
 					Allowed:      false,
 					DeniedTables: []string{t.Name},
@@ -591,6 +631,7 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 		if !CheckUserCanModify(authorization) {
 			result.Allowed = false
 			result.Message = "当前角色禁止修改数据，无法执行写操作"
+			log.Printf("[PermCheck] 写权限拒绝 - conn=%s, user=%s, writeTables=%v\n", connId, authorization, analysis.WriteTables)
 			return result
 		}
 	}
@@ -606,17 +647,19 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 		return result
 	}
 
-	// 一次性查询用户权限详情，避免对每个表重复查询数据库
+	// 一次性查询用户权限详情（admin 包内已做 powerCache 缓存，通常不触发 DB 查询）
 	userPower := admin.GetUserPower(authorization)
 	if userPower == nil {
 		result.Allowed = false
 		result.Message = "无权访问"
+		log.Printf("[PermCheck] 拒绝 - conn=%s, reason=用户权限为空\n", connId)
 		return result
 	}
 	powerDetails := admin.FindUserPowerDetails(userPower.UserId)
 	if len(powerDetails) == 0 {
 		result.Allowed = false
 		result.Message = "无权访问"
+		log.Printf("[PermCheck] 拒绝 - conn=%s, user=%s, reason=权限详情为空\n", connId, userPower.UserId)
 		return result
 	}
 	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
@@ -639,6 +682,7 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 
 	if !result.Allowed {
 		result.Message = fmt.Sprintf("无权访问表: %s", strings.Join(result.DeniedTables, ", "))
+		log.Printf("[PermCheck] 表权限拒绝 - conn=%s, user=%s, deniedTables=%v\n", connId, userPower.UserId, result.DeniedTables)
 		return result
 	}
 

@@ -27,6 +27,32 @@ var SQL_DIALECT = map[string]map[string]string{
 		"tableOptions":     "SELECT ENGINE,TABLE_COLLATION,TABLE_COMMENT,ROW_FORMAT,AUTO_INCREMENT,CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
 		"tableStatistics":  "SELECT TABLE_ROWS,DATA_LENGTH,INDEX_LENGTH,DATA_FREE,AVG_ROW_LENGTH,CREATE_TIME,UPDATE_TIME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
 		"listIndexes":      "SELECT INDEX_NAME,COLUMN_NAME,NON_UNIQUE,SEQ_IN_INDEX,INDEX_TYPE,NULLABLE,COMMENT,INDEX_COMMENT FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME,SEQ_IN_INDEX",
+		// listView 列出所有视图
+		"listView": "SELECT TABLE_NAME AS VIEW_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
+		// getTableDDL 获取建表语句（MySQL 用 SHOW CREATE TABLE，表名需调用方替换 {table} 占位符）
+		"getTableDDL": "SHOW CREATE TABLE `{table}`",
+		// getTableComment 获取表注释
+		"getTableComment": "SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+		// getRowCount 获取行数（InnoDB 引擎下 TABLE_ROWS 为估算值）
+		"getRowCount": "SELECT TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
+		// listProcedures 列出存储过程
+		"listProcedures": "SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME",
+		// listTriggers 列出触发器
+		"listTriggers": "SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME",
+		// listFunctions 列出函数
+		"listFunctions": "SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME",
+		// listEvents 列出事件（仅 MySQL/MariaDB 支持事件调度器）
+		"listEvents": "SELECT EVENT_NAME, EVENT_TYPE, STATUS FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME",
+		// viewDDL 获取视图定义（SHOW CREATE VIEW，name 需调用方替换 {name} 占位符；调用前必须 sanitize 校验）
+		"viewDDL": "SHOW CREATE VIEW `{name}`",
+		// procedureDDL 获取存储过程定义（SHOW CREATE PROCEDURE，name 需调用方替换 {name} 占位符）
+		"procedureDDL": "SHOW CREATE PROCEDURE `{name}`",
+		// functionDDL 获取函数定义（SHOW CREATE FUNCTION，name 需调用方替换 {name} 占位符）
+		"functionDDL": "SHOW CREATE FUNCTION `{name}`",
+		// triggerDDL 获取触发器定义（SHOW CREATE TRIGGER，name 需调用方替换 {name} 占位符）
+		"triggerDDL": "SHOW CREATE TRIGGER `{name}`",
+		// eventDDL 获取事件定义（SHOW CREATE EVENT，name 需调用方替换 {name} 占位符）
+		"eventDDL": "SHOW CREATE EVENT `{name}`",
 	},
 	"sqlite": {
 		"listSchema": "SELECT 'main' AS schema_name",
@@ -58,6 +84,22 @@ var SQL_DIALECT = map[string]map[string]string{
 			'' AS INDEX_COMMENT
 			FROM pragma_index_list(?2) AS il JOIN pragma_index_info(il.name) AS ii
 			WHERE (?1 = ?1) ORDER BY il.name, ii.seqno`,
+		// listView 列出所有视图（SQLite 通过 sqlite_master 查询 type='view' 的对象）
+		"listView": "SELECT name AS VIEW_NAME, sql AS VIEW_DEFINITION FROM sqlite_master WHERE type = 'view' AND name NOT LIKE 'sqlite_%' AND ?1 = ?1 ORDER BY name",
+		// getTableDDL 获取建表语句（SQLite 直接查询 sqlite_master.sql 字段）
+		"getTableDDL": "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+		// getTableComment 获取表注释（SQLite 不支持表注释，返回空字符串占位）
+		"getTableComment": "SELECT '' AS TABLE_COMMENT WHERE ?1 = ?1",
+		// getRowCount 获取行数（SQLite 无元数据表存储行数，需精确 COUNT，表名需调用方替换 {table} 占位符）
+		"getRowCount": "SELECT COUNT(*) AS ROW_COUNT FROM \"{table}\"",
+		// listProcedures 列出存储过程（SQLite 不支持存储过程，返回空结果集）
+		"listProcedures": "SELECT NULL AS PROCEDURE_NAME WHERE 1=0",
+		// listTriggers 列出触发器（SQLite 通过 sqlite_master 查询 type='trigger' 的对象）
+		"listTriggers": "SELECT name AS TRIGGER_NAME, tbl_name AS TABLE_NAME FROM sqlite_master WHERE type = 'trigger' AND ?1 = ?1 ORDER BY name",
+		// listFunctions 列出函数（SQLite 不支持自定义函数，返回空结果集）
+		"listFunctions": "SELECT NULL AS FUNCTION_NAME WHERE 1=0",
+		// listEvents 列出事件（SQLite 不支持事件调度器，返回空结果集）
+		"listEvents": "SELECT NULL AS EVENT_NAME WHERE 1=0",
 	},
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual order by schema_name",
@@ -78,6 +120,30 @@ var SQL_DIALECT = map[string]map[string]string{
 		"tableOptions":    "SELECT TABLE_NAME,TABLESPACE_NAME,PCT_FREE,INI_TRANS,LOGGING,COMPRESSION FROM USER_TABLES WHERE TABLE_NAME = :1",
 		"tableStatistics": "SELECT NUM_ROWS,BLOCKS,AVG_ROW_LEN,LAST_ANALYZED FROM USER_TABLES WHERE TABLE_NAME = :1",
 		"listIndexes":     "SELECT i.INDEX_NAME, ic.COLUMN_NAME, DECODE(i.UNIQUENESS,'UNIQUE',0,1) NON_UNIQUE, ic.COLUMN_POSITION SEQ_IN_INDEX, i.INDEX_TYPE INDEX_TYPE, 'YES' NULLABLE, CHR(32) COMMENTS, CHR(32) INDEX_COMMENT FROM USER_INDEXES i, USER_IND_COLUMNS ic WHERE i.INDEX_NAME = ic.INDEX_NAME AND i.TABLE_NAME = :1 ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION",
+		// listView 列出所有视图（Oracle 通过 USER_VIEWS 数据字典视图查询）
+		"listView": "SELECT VIEW_NAME, TEXT AS VIEW_DEFINITION FROM USER_VIEWS WHERE 'notexists' <> :1 ORDER BY VIEW_NAME",
+		// getTableDDL 获取建表语句（Oracle 使用 DBMS_METADATA.GET_DDL 包获取完整 DDL）
+		"getTableDDL": "SELECT DBMS_METADATA.GET_DDL('TABLE', :1) AS DDL FROM DUAL",
+		// getTableComment 获取表注释（Oracle 通过 USER_TAB_COMMENTS 查询）
+		"getTableComment": "SELECT COMMENTS FROM USER_TAB_COMMENTS WHERE TABLE_NAME = :1",
+		// getRowCount 获取行数（Oracle 通过 USER_TABLES.NUM_ROWS 获取估算值，需先执行 ANALYZE 收集统计信息）
+		"getRowCount": "SELECT NUM_ROWS FROM USER_TABLES WHERE TABLE_NAME = :1",
+		// listProcedures 列出存储过程（Oracle 通过 USER_OBJECTS 查询 OBJECT_TYPE='PROCEDURE' 的对象）
+		"listProcedures": "SELECT OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'PROCEDURE' AND 'notexists' <> :1 ORDER BY OBJECT_NAME",
+		// listTriggers 列出触发器（Oracle 通过 USER_TRIGGERS 数据字典视图查询）
+		"listTriggers": "SELECT TRIGGER_NAME, TRIGGERING_EVENT, TABLE_NAME, TRIGGER_TYPE FROM USER_TRIGGERS WHERE 'notexists' <> :1 ORDER BY TRIGGER_NAME",
+		// listFunctions 列出函数（Oracle 通过 USER_OBJECTS 查询 OBJECT_TYPE='FUNCTION' 的对象）
+		"listFunctions": "SELECT OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'FUNCTION' AND 'notexists' <> :1 ORDER BY OBJECT_NAME",
+		// listEvents 列出事件（Oracle 无 MySQL 风格的事件调度器，返回空结果集；调度任务可查 DBA_SCHEDULER_JOBS）
+		"listEvents": "SELECT NULL AS EVENT_NAME FROM DUAL WHERE 1=0",
+		// viewDDL 获取视图定义（Oracle 通过 USER_VIEWS.TEXT 查询，name 需调用方转为大写）
+		"viewDDL": "SELECT TEXT AS DDL FROM USER_VIEWS WHERE VIEW_NAME = :1",
+		// procedureDDL 获取存储过程定义（Oracle 通过 USER_SOURCE 按行聚合为完整 DDL，name 需大写）
+		"procedureDDL": "SELECT LISTAGG(TEXT, CHR(10)) WITHIN GROUP (ORDER BY LINE) AS DDL FROM USER_SOURCE WHERE TYPE = 'PROCEDURE' AND NAME = :1",
+		// functionDDL 获取函数定义（Oracle 通过 USER_SOURCE 按行聚合为完整 DDL，name 需大写）
+		"functionDDL": "SELECT LISTAGG(TEXT, CHR(10)) WITHIN GROUP (ORDER BY LINE) AS DDL FROM USER_SOURCE WHERE TYPE = 'FUNCTION' AND NAME = :1",
+		// triggerDDL 获取触发器定义（Oracle 通过 USER_TRIGGERS.TRIGGER_BODY 查询，name 需大写）
+		"triggerDDL": "SELECT TRIGGER_BODY AS DDL FROM USER_TRIGGERS WHERE TRIGGER_NAME = :1",
 	},
 }
 
@@ -286,6 +352,28 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 		}
 		return &retVal
 	},
+}
+
+// init 为 mariadb 复制 mysql 的方言定义、列转换器和值解析器。
+// MariaDB 与 MySQL 的 information_schema 完全兼容，协议层面也一致，
+// 因此方言 SQL 模板和类型处理逻辑可完全复用 MySQL 的实现。
+// 这里通过深拷贝 SQL_DIALECT["mysql"] 为独立的 mariadb map，
+// 避免运行时对 mysql map 的修改影响 mariadb；而 ConvertColHandler / ParseValHandler
+// 为函数类型不可变，可直接共享引用。
+func init() {
+	if mysqlDialect, ok := SQL_DIALECT["mysql"]; ok {
+		mariadbDialect := make(map[string]string, len(mysqlDialect))
+		for k, v := range mysqlDialect {
+			mariadbDialect[k] = v
+		}
+		SQL_DIALECT["mariadb"] = mariadbDialect
+	}
+	if fn, ok := ConvertColHandler["mysql"]; ok {
+		ConvertColHandler["mariadb"] = fn
+	}
+	if fn, ok := ParseValHandler["mysql"]; ok {
+		ParseValHandler["mariadb"] = fn
+	}
 }
 
 // fixOracleEncoding 修复 Oracle 返回的可能存在编码问题的字符串。

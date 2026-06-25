@@ -15,6 +15,9 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/safego"
+	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -47,8 +50,58 @@ func ensureDefaultBackup() {
 	})
 }
 
-// CreateBackup 创建数据库备份
+// CreateBackup 创建数据库备份（同步版本，保留以兼容旧调用）。
+// 新的 HTTP 入口请使用 CreateBackupAsync，以支持进度轮询。
 func (s *BackupService) CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
+	return s.createBackupInternal("", connId, schema, name, description, tablesStr, withData, encrypt, authorization)
+}
+
+// CreateBackupAsync 异步创建数据库备份，立即返回 taskId，实际备份在后台 goroutine 中执行。
+// 调用方可通过 GetBackupProgress(taskId) 轮询进度。
+// 进度数据在任务完成或失败后 30 秒自动清理。
+func (s *BackupService) CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) string {
+	taskId := idgen.RandomStr()
+
+	// 先写入初始进度，确保前端首次轮询能拿到数据
+	SetBackupProgress(taskId, BackupProgress{
+		TaskId:    taskId,
+		ConnId:    connId,
+		Schema:    schema,
+		Status:    "running",
+		StartedAt: time.Now().UnixMilli(),
+	})
+
+	safego.GoWithName("backup-"+taskId, func() {
+		result, err := s.createBackupInternal(taskId, connId, schema, name, description, tablesStr, withData, encrypt, authorization)
+
+		now := time.Now().UnixMilli()
+		// 读取当前进度，保留 StartedAt 和已统计的表数/字节数等字段
+		cur, _ := FetchBackupProgress(taskId)
+		cur.TaskId = taskId
+		cur.ConnId = connId
+		cur.Schema = schema
+		cur.FinishedAt = now
+		if err != nil {
+			// 失败：记录错误并标记结束
+			cur.Status = "failed"
+			cur.Error = err.Error()
+		} else {
+			// 成功：把最终结果一并写入进度，前端轮询可直接拿到
+			cur.Status = "completed"
+			cur.Result = result
+			cur.Error = ""
+		}
+		SetBackupProgress(taskId, cur)
+		// 30 秒后自动清理进度数据，避免内存泄漏
+		scheduleProgressCleanup(taskId, 30*time.Second)
+	})
+
+	return taskId
+}
+
+// createBackupInternal 执行实际的备份逻辑。
+// taskId 为空时表示同步调用（不更新进度）；非空时会在遍历表过程中实时更新进度。
+func (s *BackupService) createBackupInternal(taskId, connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
 	s.repo.EnsureBackupTable()
 
 	dbConn := conn.GetConn(connId, authorization)
@@ -63,6 +116,14 @@ func (s *BackupService) CreateBackup(connId, schema, name, description, tablesSt
 		tables = strings.Split(tablesStr, ",")
 	} else {
 		tables = getAllTables(dbConn, dbType, schema)
+	}
+
+	// 初始化进度：已知总表数，已处理 0
+	if taskId != "" {
+		if cur, ok := FetchBackupProgress(taskId); ok {
+			cur.TotalTables = len(tables)
+			SetBackupProgress(taskId, cur)
+		}
 	}
 
 	backupDir := filepath.Join("backups", connId, schema)
@@ -90,6 +151,14 @@ func (s *BackupService) CreateBackup(connId, schema, name, description, tablesSt
 			continue
 		}
 
+		// 更新进度：标记当前正在处理的表
+		if taskId != "" {
+			if cur, ok := FetchBackupProgress(taskId); ok {
+				cur.CurrentTable = table
+				SetBackupProgress(taskId, cur)
+			}
+		}
+
 		ddl := getCreateDDL(dbConn, dbType, schema, table)
 		chunk := fmt.Sprintf("\n-- ----------------------------\n")
 		chunk += fmt.Sprintf("-- Table structure for `%s`\n", table)
@@ -114,6 +183,15 @@ func (s *BackupService) CreateBackup(connId, schema, name, description, tablesSt
 			}
 		}
 		successCount++
+
+		// 更新进度：已完成表数 + 累计字节数
+		if taskId != "" {
+			if cur, ok := FetchBackupProgress(taskId); ok {
+				cur.ProcessedTables = successCount
+				cur.ExportedBytes = totalSize
+				SetBackupProgress(taskId, cur)
+			}
+		}
 	}
 
 	file.WriteString(fmt.Sprintf("\n-- Backup completed: %d tables, %d rows\n", successCount, totalSize))
@@ -216,6 +294,13 @@ func (s *BackupService) RestoreBackup(backupId, connId, authorization string) (m
 		if stmt == "" || strings.HasPrefix(stmt, "--") {
 			continue
 		}
+		// DDL 安全校验
+		if err := sqlguard.ValidateDDL(stmt); err != nil {
+			errMsg := fmt.Sprintf("安全校验失败 [%.100s]: %s", stmt, err.Error())
+			failed = append(failed, errMsg)
+			logger.PrintErrf(errMsg, nil)
+			continue
+		}
 		_, err := dbConn.Exec(stmt)
 		if err != nil {
 			errMsg := fmt.Sprintf("执行失败 [%.100s]: %s", stmt, err.Error())
@@ -264,7 +349,9 @@ func (s *BackupService) GetBackupTables(connId, schema, authorization string) (m
 	var tableCounts []map[string]any
 	for _, table := range allTables {
 		var count int
-		dbConn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
+		if sanitize.IsValidIdentifier(schema) && sanitize.IsValidIdentifier(table) {
+			dbConn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
+		}
 		tableCounts = append(tableCounts, map[string]any{
 			"table": table,
 			"rows":  count,
@@ -340,6 +427,9 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []string {
 }
 
 func getCreateDDL(conn *sqlx.DB, dbType, schema, table string) string {
+	if !sanitize.IsValidIdentifier(table) {
+		return ""
+	}
 	// 尝试 SHOW CREATE TABLE，MySQL 返回两列: Table, Create Table
 	var tableName, createDDL string
 	row := conn.QueryRow(fmt.Sprintf("SHOW CREATE TABLE `%s`", table))
@@ -357,7 +447,8 @@ func getCreateDDL(conn *sqlx.DB, dbType, schema, table string) string {
 
 // describeTable 获取表列信息，优先用 information_schema（强类型 string 扫描），避免 []byte 输出
 func describeTable(conn *sqlx.DB, dbType, schema, table string) []map[string]string {
-	if dbType == "mysql" {
+	// MariaDB 与 MySQL 一样拥有 information_schema，复用同一查询路径
+	if dbType == "mysql" || dbType == "mariadb" {
 		cols := describeTableFromInfoSchema(conn, schema, table)
 		if len(cols) > 0 {
 			return cols
@@ -468,6 +559,9 @@ func generateDDLStmt(table string, cols []map[string]string) string {
 }
 
 func exportTableData(conn *sqlx.DB, dbType, schema, table string) (string, []string, int, error) {
+	if !sanitize.IsValidIdentifier(schema) || !sanitize.IsValidIdentifier(table) {
+		return "", nil, 0, fmt.Errorf("非法的表名或 schema 名")
+	}
 	sql := fmt.Sprintf("SELECT * FROM `%s`.`%s`", schema, table)
 	rows, err := conn.Queryx(sql)
 	if err != nil {

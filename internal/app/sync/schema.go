@@ -15,6 +15,7 @@ import (
 	"websql/internal/dialect"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -862,38 +863,7 @@ func ApplySchemaDiff(c *gin.Context) {
 }
 
 func validateSchemaSQL(sql string) error {
-	upper := strings.ToUpper(strings.TrimSpace(sql))
-
-	allowedPrefixes := []string{
-		"ALTER TABLE", "CREATE INDEX", "DROP INDEX",
-	}
-	matched := false
-	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(upper, prefix) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		preview := upper
-		if len(preview) > 40 {
-			preview = preview[:40] + "..."
-		}
-		return fmt.Errorf("不允许执行的SQL类型: %s (仅允许 ALTER TABLE / CREATE INDEX / DROP INDEX)", preview)
-	}
-
-	dangerousPatterns := []string{
-		"DROP TABLE", "DROP DATABASE", "TRUNCATE",
-		"GRANT", "REVOKE", "CREATE USER", "ALTER USER", "DROP USER",
-		"SHUTDOWN", "LOAD DATA", "INTO OUTFILE", "INTO DUMPFILE",
-	}
-	for _, d := range dangerousPatterns {
-		if strings.Contains(upper, d) {
-			return fmt.Errorf("SQL包含危险操作: %s", d)
-		}
-	}
-
-	return nil
+	return sqlguard.ValidateSchemaSQL(sql)
 }
 
 func GetSyncTargets(c *gin.Context) {

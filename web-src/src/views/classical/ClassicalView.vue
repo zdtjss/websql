@@ -8,25 +8,26 @@
             <div class="sidebar-header-actions">
               <el-popover ref="searchPopoverRef" placement="bottom-start" :width="560" trigger="click" :show-arrow="false" :offset="4" popper-class="global-search-popover" @show="onSearchPopoverShow" @hide="onSearchPopoverHide">
                 <template #reference>
-                  <el-button text size="small" class="theme-toggle-btn" title="全局搜索">
+                  <!-- 图标按钮：仅图标无文字，需补充 aria-label（复用 title 的值），附快捷键提示 -->
+                  <el-button text size="small" class="theme-toggle-btn" title="全局搜索" aria-label="全局搜索数据库对象" aria-keyshortcuts="Ctrl+F">
                     <el-icon :size="14"><Search /></el-icon>
                   </el-button>
                 </template>
-                <GlobalSearchDialog :visible="searchPopoverVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
+                <GlobalSearchDialog v-model="searchPopoverVisible" :conn-id="searchConnId" :schema="searchSchema" @select="onSearchSelect" />
               </el-popover>
-              <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新">
+              <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新" aria-label="刷新数据库树">
                 <el-icon :size="14"><Refresh /></el-icon>
               </el-button>
-              <el-button text size="small" class="theme-toggle-btn" title="AI 对话" @click="openAiChat">
+              <el-button text size="small" class="theme-toggle-btn" title="AI 对话" aria-label="打开 AI 对话" @click="openAiChat">
                 <el-icon :size="14"><MagicStick /></el-icon>
               </el-button>
-              <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
+              <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'" :aria-label="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
-              <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置">
+              <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置" aria-label="系统设置">
                 <el-icon :size="14"><Setting /></el-icon>
               </el-button>
-              <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录">
+              <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录" aria-label="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
             </div>
@@ -47,25 +48,26 @@
                   <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
                   <span class="tree-node-actions">
                     <template v-if="data.type === 'conn'">
+                      <!-- 树节点图标操作：仅图标无文字，补充 aria-label 和 role/键盘支持（复用 tooltip 文本） -->
                       <el-tooltip content="服务器状态" placement="top" :show-after="400">
-                        <el-icon :size="14" class="tree-action-icon" @click.stop="viewServerStatus(node)"><Monitor /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="服务器状态" @click.stop="viewServerStatus(node)" @keyup.enter.stop="viewServerStatus(node)"><Monitor /></el-icon>
                       </el-tooltip>
                       <el-tooltip content="实时监控" placement="top" :show-after="400">
-                        <el-icon :size="14" class="tree-action-icon" @click.stop="openMonitorPanel(node)"><TrendCharts /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="实时监控" @click.stop="openMonitorPanel(node)" @keyup.enter.stop="openMonitorPanel(node)"><TrendCharts /></el-icon>
                       </el-tooltip>
                       <el-tooltip content="刷新" placement="top" :show-after="400">
-                        <el-icon :size="14" class="tree-action-icon" @click.stop="refreshTree()"><Refresh /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="刷新" @click.stop="refreshTree()" @keyup.enter.stop="refreshTree()"><Refresh /></el-icon>
                       </el-tooltip>
                     </template>
                     <template v-if="data.type === 'schema'">
                       <el-tooltip content="SQL编辑器" placement="top" :show-after="400">
-                        <el-icon :size="14" class="tree-action-icon" @click.stop="addTab(node)"><ChatLineSquare /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="打开 SQL 编辑器" @click.stop="addTab(node)" @keyup.enter.stop="addTab(node)"><ChatLineSquare /></el-icon>
                       </el-tooltip>
                       <el-tooltip content="表管理" placement="top" :show-after="400">
-                        <el-icon :size="14" class="tree-action-icon" @click.stop="openTableManager(node)"><Tickets /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="表管理" @click.stop="openTableManager(node)" @keyup.enter.stop="openTableManager(node)"><Tickets /></el-icon>
                       </el-tooltip>
                       <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
-                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多数据库工具操作"><MoreFilled /></el-icon>
                         <template #dropdown>
                           <el-dropdown-menu>
                             <el-dropdown-item command="viewSchemaObjects">⚙️ 数据库对象</el-dropdown-item>
@@ -80,7 +82,7 @@
                     </template>
                     <template v-if="data.type === 'table'">
                       <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
-                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多表操作"><MoreFilled /></el-icon>
                         <template #dropdown>
                           <el-dropdown-menu>
                             <el-dropdown-item command="viewTableInfo">ℹ️ 查看表结构</el-dropdown-item>
@@ -91,7 +93,7 @@
                     </template>
                     <template v-if="data.type === 'view'">
                       <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
-                        <el-icon :size="14" class="tree-action-icon tree-action-more"><MoreFilled /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多视图操作"><MoreFilled /></el-icon>
                         <template #dropdown>
                           <el-dropdown-menu>
                             <el-dropdown-item command="viewViewInfo">👁️ 查看视图</el-dropdown-item>
@@ -204,16 +206,11 @@
       :schema="schemaObjectsSchema"
     />
 
-    <ServerStatusPanel
-      v-model="serverStatusVisible"
-      :conn-id="serverStatusConnId"
-      :schema="serverStatusSchema"
-    />
-
-    <EnhancedMonitorPanel
-      v-model:visible="monitorPanelVisible"
+    <DatabaseMonitorPanel
+      v-model="monitorPanelVisible"
       :conn-id="monitorConnId"
       :schema="monitorSchema"
+      :initial-tab="monitorInitialTab"
     />
 
     <DataSyncDialog v-model="syncDialogVisible" :conn-id="syncConnId" :schema="syncSchema" />
@@ -249,8 +246,7 @@ import DataBrowser from '@/views/data/DataBrowser.vue'
 import SQLEditor2 from '@/views/sql-editor/SQLEditor2.vue'
 import TableManager from '@/views/data/TableManager.vue'
 import SchemaObjectsDialog from '@/components/db-tools/SchemaObjectsDialog.vue'
-import ServerStatusPanel from '@/components/db-tools/ServerStatusPanel.vue'
-import EnhancedMonitorPanel from '@/components/db-tools/EnhancedMonitorPanel.vue'
+import DatabaseMonitorPanel from '@/components/db-tools/DatabaseMonitorPanel.vue'
 import ERDiagramDialog from '@/components/db-tools/ERDiagramDialog.vue'
 import DataSyncDialog from '@/components/db-tools/DataSyncDialog.vue'
 import BackupRestoreDialog from '@/components/db-tools/BackupRestoreDialog.vue'
@@ -308,12 +304,12 @@ const viewDialogVisible = ref(false)
 const schemaObjectsVisible = ref(false)
 const schemaObjectsConnId = ref('')
 const schemaObjectsSchema = ref('')
-const serverStatusVisible = ref(false)
-const serverStatusConnId = ref('')
-const serverStatusSchema = ref('')
+// 统一的数据库监控面板状态（合并自 ServerStatusPanel + EnhancedMonitorPanel）
 const monitorPanelVisible = ref(false)
 const monitorConnId = ref('')
 const monitorSchema = ref('')
+// 打开时聚焦的 Tab：overview / sessions / performance / variables / status
+const monitorInitialTab = ref('overview')
 const syncDialogVisible = ref(false)
 const syncConnId = ref('')
 const syncSchema = ref('')
@@ -742,10 +738,12 @@ function viewSchemaObjects(node) {
 }
 
 function viewServerStatus(node) {
-  serverStatusConnId.value = node.data.id
+  monitorConnId.value = node.data.id
   const schemas = node.childNodes || []
-  serverStatusSchema.value = schemas.length > 0 ? schemas[0].data.label : ''
-  serverStatusVisible.value = true
+  monitorSchema.value = schemas.length > 0 ? schemas[0].data.label : ''
+  // 服务器状态图标：聚焦概览 Tab
+  monitorInitialTab.value = 'overview'
+  monitorPanelVisible.value = true
 }
 
 function viewERDiagram(node) {
@@ -859,6 +857,8 @@ function openMonitorPanel(node) {
   monitorConnId.value = node.data.id
   const schemas = node.childNodes || []
   monitorSchema.value = schemas.length > 0 ? schemas[0].data.label : ''
+  // 实时监控图标：聚焦性能趋势 Tab
+  monitorInitialTab.value = 'performance'
   monitorPanelVisible.value = true
 }
 
@@ -1206,8 +1206,10 @@ function onSearchSelect(obj) {
 .global-search-popover {
   padding: 12px 14px !important;
 }
-.global-search-popover .el-scrollbar {
-  border: 1px solid #ebeef5;
+/* 搜索结果容器已由 GlobalSearchDialog 内部 scoped 样式定义边框与圆角，
+   此处保留容器自适应高度所需的弹层最小宽度 */
+.global-search-popover .search-result-container {
+  border: 1px solid var(--db-border-light, #ebeef5);
   border-radius: 6px;
 }
 </style>

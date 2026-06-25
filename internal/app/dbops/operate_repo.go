@@ -34,6 +34,10 @@ type OperateRepo interface {
 	ListIndexes(dc *sqlx.DB, schema, table string) ([]map[string]any, error)
 	GetCurrentSchema(dc *sqlx.DB) string
 	GetCurrentSchemaForFat(dc *sqlx.DB) string
+	// ListObjects 列出 schema 下指定类型的数据库对象（view/procedure/function/trigger/event/table）
+	ListObjects(dc *sqlx.DB, schema, objType string) ([]map[string]any, error)
+	// GetObjectDDL 获取指定对象的 DDL 定义文本（schema/name 已由 service 层 sanitize 校验）
+	GetObjectDDL(dc *sqlx.DB, schema, name, objType string) (string, error)
 }
 
 type operateRepo struct {
@@ -359,4 +363,174 @@ func (r *operateRepo) GetCurrentSchemaForFat(dc *sqlx.DB) string {
 		schema = "main"
 	}
 	return schema
+}
+
+// objectListTmplKey 将对象类型映射到 dialect 中对应的列表查询模板 key
+func objectListTmplKey(objType string) (string, bool) {
+	switch objType {
+	case "table":
+		return "listTable", true
+	case "view":
+		return "listView", true
+	case "procedure":
+		return "listProcedures", true
+	case "function":
+		return "listFunctions", true
+	case "trigger":
+		return "listTriggers", true
+	case "event":
+		return "listEvents", true
+	}
+	return "", false
+}
+
+// objectDDLTmplKey 将对象类型映射到 dialect 中对应的 DDL 查询模板 key
+func objectDDLTmplKey(objType string) (string, bool) {
+	switch objType {
+	case "table":
+		return "getTableDDL", true
+	case "view":
+		return "viewDDL", true
+	case "procedure":
+		return "procedureDDL", true
+	case "function":
+		return "functionDDL", true
+	case "trigger":
+		return "triggerDDL", true
+	case "event":
+		return "eventDDL", true
+	}
+	return "", false
+}
+
+// ListObjects 列出 schema 下指定类型的数据库对象
+func (r *operateRepo) ListObjects(dc *sqlx.DB, schema, objType string) ([]map[string]any, error) {
+	dbType := dc.DriverName()
+	d, ok := dialect.SQL_DIALECT[dbType]
+	if !ok {
+		return nil, fmt.Errorf("不支持的数据库类型: %s", dbType)
+	}
+	tmplKey, ok := objectListTmplKey(objType)
+	if !ok {
+		return nil, fmt.Errorf("不支持的对象类型: %s", objType)
+	}
+	sqlStr, ok := d[tmplKey]
+	if !ok {
+		// 该数据库方言未定义此对象类型的查询模板（如 SQLite 无存储过程），返回空列表
+		return []map[string]any{}, nil
+	}
+
+	rows, err := dc.Queryx(sqlStr, schema)
+	if err != nil {
+		log.Printf("[ListObjects] 查询失败 - dbType=%s, objType=%s, err=%v", dbType, objType, err)
+		return nil, errors.New("查询对象列表失败")
+	}
+	defer rows.Close()
+
+	data, err := database.GetResultRows(dbType, rows)
+	if err != nil {
+		logger.PrintErrf("[ListObjects] 读取结果失败", err)
+		return nil, errors.New("读取对象列表失败")
+	}
+	if data == nil {
+		return []map[string]any{}, nil
+	}
+	return data, nil
+}
+
+// GetObjectDDL 获取指定对象的 DDL 定义文本。
+// 对于 SHOW CREATE 系列（MySQL/MariaDB），模板含 {name} 占位符，需字符串替换（name 已由 service 层 sanitize 校验）；
+// 对于参数化查询（SQLite/Oracle），使用占位符传参；Oracle 的标识符需转为大写。
+func (r *operateRepo) GetObjectDDL(dc *sqlx.DB, schema, name, objType string) (string, error) {
+	dbType := dc.DriverName()
+	d, ok := dialect.SQL_DIALECT[dbType]
+	if !ok {
+		return "", fmt.Errorf("不支持的数据库类型: %s", dbType)
+	}
+	tmplKey, ok := objectDDLTmplKey(objType)
+	if !ok {
+		return "", fmt.Errorf("不支持的对象类型: %s", objType)
+	}
+	sqlStr, ok := d[tmplKey]
+	if !ok {
+		// 该数据库方言不支持此对象类型的 DDL 获取（如 SQLite 无存储过程）
+		return "", fmt.Errorf("%s 不支持 %s", dbType, objTypeZH(objType))
+	}
+
+	var rows *sqlx.Rows
+	var err error
+	if strings.Contains(sqlStr, "{name}") || strings.Contains(sqlStr, "{table}") {
+		// SHOW CREATE 系列：name 已由 service 层通过 sanitize.ValidateIdentifier 校验为合法标识符，
+		// 此处直接替换占位符是安全的（仅允许字母/数字/下划线/$）
+		finalSQL := strings.ReplaceAll(sqlStr, "{name}", name)
+		finalSQL = strings.ReplaceAll(finalSQL, "{table}", name)
+		rows, err = dc.Queryx(finalSQL)
+	} else {
+		// 参数化查询：Oracle 标识符默认大写存储
+		arg := name
+		if dbType == "oracle" {
+			arg = strings.ToUpper(name)
+		}
+		rows, err = dc.Queryx(sqlStr, arg)
+	}
+	if err != nil {
+		log.Printf("[GetObjectDDL] 查询失败 - dbType=%s, objType=%s, name=%s, err=%v", dbType, objType, name, err)
+		return "", errors.New("查询对象定义失败")
+	}
+	defer rows.Close()
+
+	data, err := database.GetResultRows(dbType, rows)
+	if err != nil || len(data) == 0 {
+		if err != nil {
+			logger.PrintErrf("[GetObjectDDL] 读取结果失败", err)
+		}
+		return "", errors.New("未获取到对象定义")
+	}
+	return extractDDLText(data[0]), nil
+}
+
+// extractDDLText 从结果行中提取 DDL 文本。
+// 不同数据库/对象返回的列名不一致（如 "Create View"、DDL、TEXT、SQL），策略：
+// 优先取列名包含 "create" 的列；否则取所有字符串值中最长的一条作为 DDL。
+func extractDDLText(row map[string]any) string {
+	var createVal string
+	var longest string
+	for k, v := range row {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if len(s) > len(longest) {
+			longest = s
+		}
+		if createVal == "" && strings.Contains(strings.ToLower(k), "create") {
+			createVal = s
+		}
+	}
+	if createVal != "" {
+		return createVal
+	}
+	if longest != "" {
+		return longest
+	}
+	return "-- 没有可用的定义"
+}
+
+// objTypeZH 返回对象类型的中文描述，用于错误提示
+func objTypeZH(objType string) string {
+	switch objType {
+	case "table":
+		return "表"
+	case "view":
+		return "视图"
+	case "procedure":
+		return "存储过程"
+	case "function":
+		return "函数"
+	case "trigger":
+		return "触发器"
+	case "event":
+		return "事件"
+	}
+	return objType
 }

@@ -176,7 +176,7 @@
 </template>
 
 <script setup>
-import http from '@/utils/httpProxy.js'
+import http from '@/api/index'
 import { Delete, DeleteFilled, Document, Download, Edit, MoreFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -262,7 +262,7 @@ function loadTables() {
   if (!connId || !schema) return
   http.get('/listTable', { params: { connId, schema } })
     .then((resp) => {
-      tableList.value = resp.data || []
+      tableList.value = resp.data.data || []
     })
     .catch((err) => {
       console.error(err)
@@ -391,7 +391,7 @@ function submitNewTable() {
       ElMessage({ message: '建表成功', type: 'success' })
     })
     .catch(() => {
-      // error already shown by httpProxy interceptor; keep dialog open
+      // error already shown by http interceptor; keep dialog open
     })
     .finally(() => {
       newTableSubmitting.value = false

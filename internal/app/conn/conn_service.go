@@ -3,6 +3,7 @@ package conn
 import (
 	"errors"
 	"log"
+	"strings"
 	"sync"
 
 	"websql/internal/app/admin"
@@ -56,7 +57,9 @@ func (s *ConnService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 		return nil, ErrConnOpenFailed
 	}
 
-	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
+	dbSchema, dbVersion, actualDbType := getDbVersionAndSchema(db, cfg.DbType)
+	// 自动修正 dbType：用户在前端可能误选 MySQL/MariaDB，这里根据 VERSION() 实际值修正
+	cfg.DbType = actualDbType
 
 	var savedId string
 	if cfg.Id == "" {
@@ -83,22 +86,22 @@ func (s *ConnService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 	return nil, nil
 }
 
-// TestDbConn 测试数据库连接，返回版本和 schema 信息
-func (s *ConnService) TestDbConn(cfg *ConnCfg) (string, string, error) {
+// TestDbConn 测试数据库连接，返回版本、schema 和实际数据库类型信息
+func (s *ConnService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
 	dbParam := ConvertToDBParam(cfg)
 	db := database.GetConn(dbParam)
 	if db == nil {
-		return "", "", ErrConnOpenFailed
+		return "", "", "", ErrConnOpenFailed
 	}
 
 	err := db.Ping()
 	if err != nil {
 		log.Printf("[TestDbConn] 数据库连接失败 - err=%v\n", err)
-		return "", "", ErrConnPingFailed
+		return "", "", "", ErrConnPingFailed
 	}
 
-	dbSchema, dbVersion := getDbVersionAndSchema(db, cfg.DbType)
-	return dbSchema, dbVersion, nil
+	dbSchema, dbVersion, actualDbType := getDbVersionAndSchema(db, cfg.DbType)
+	return dbSchema, dbVersion, actualDbType, nil
 }
 
 // DeleteConn 删除连接配置
@@ -269,8 +272,13 @@ func ConvertToDBParam(cfg *ConnCfg) *database.DBParam {
 	return &database.DBParam{Id: cfg.Id, Name: name, DbType: cfg.DbType, User: user, Pwd: pwd, Url: url, DbSchema: dbSchema, DbVersion: dbVersion}
 }
 
-// getDbVersionAndSchema 获取数据库版本和 schema 信息
-func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
+// getDbVersionAndSchema 获取数据库版本和 schema 信息，并自动修正 dbType。
+// 对于 MySQL/MariaDB，通过 SELECT VERSION() 返回值判断真实数据库类型：
+//   - 返回值包含 "MariaDB" 则为 MariaDB
+//   - 否则视为 MySQL
+//
+// 这样即使用户在前端误选了 MySQL/MariaDB，保存时也会自动修正为正确的类型。
+func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string, string) {
 	var versionSQL string
 	var schemaSQL string
 
@@ -290,10 +298,20 @@ func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
 
 	version := ""
 	schema := ""
+	actualDbType := dbType
 
 	if err := db.Get(&version, versionSQL); err != nil {
 		log.Printf("[getDbVersionAndSchema] 获取版本失败 - dbType=%s, err=%v\n", dbType, err)
 		version = ""
+	}
+
+	// 通过 VERSION() 返回值区分 MySQL 与 MariaDB
+	if dbType == "mysql" || dbType == "mariadb" {
+		if strings.Contains(strings.ToUpper(version), "MARIADB") {
+			actualDbType = "mariadb"
+		} else {
+			actualDbType = "mysql"
+		}
 	}
 
 	if dbType == "sqlite" {
@@ -303,7 +321,7 @@ func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string) {
 		schema = ""
 	}
 
-	return schema, version
+	return schema, version, actualDbType
 }
 
 func checkPowerByParam(powerDetails []*admin.PowerDetail, param *admin.PowerCheckParam) bool {

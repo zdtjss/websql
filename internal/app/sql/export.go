@@ -17,6 +17,7 @@ import (
 	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -38,8 +39,25 @@ func ExportXlsx(c *gin.Context) {
 func queryAndWrite(c *gin.Context, table, schema string, connId string, authorization string) {
 	log.Println("正在导出: ", table)
 
+	// 标识符白名单校验，防止 SQL 注入
+	parts := strings.SplitN(table, ".", 2)
+	var safeTable string
+	if len(parts) == 2 {
+		if !sanitize.IsValidIdentifier(parts[0]) || !sanitize.IsValidIdentifier(parts[1]) {
+			response.WriteErr(c, 200, 400, "非法的表名")
+			return
+		}
+		safeTable = fmt.Sprintf("`%s`.`%s`", parts[0], parts[1])
+	} else {
+		if !sanitize.IsValidIdentifier(table) {
+			response.WriteErr(c, 200, 400, "非法的表名")
+			return
+		}
+		safeTable = fmt.Sprintf("`%s`", table)
+	}
+
 	connCtx := conn.GetConn(connId, authorization)
-	rows, err := connCtx.Query("SELECT * from " + table)
+	rows, err := connCtx.Query("SELECT * from " + safeTable)
 	if err != nil {
 		log.Printf("查询失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")

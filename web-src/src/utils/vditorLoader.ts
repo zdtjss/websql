@@ -6,19 +6,22 @@
  * 3. CSS 延迟注入
  */
 
+/** Vditor 构造函数类型（通过动态 import 的 default 导出推导，避免静态引入影响分包） */
+type VditorConstructor = typeof import('vditor').default
+
 let vditorCssLoaded = false
-let VditorClass = null
-let vditorModulePromise = null
+let VditorClass: VditorConstructor | null = null
+let vditorModulePromise: Promise<VditorConstructor> | null = null
 
 /**
  * 预加载 Vditor 模块（可在 requestIdleCallback 中调用）
  * 多次调用安全，只会触发一次实际加载
  */
-export function preloadVditor() {
+export function preloadVditor(): Promise<VditorConstructor> {
   ensureVditorCss()
   if (!vditorModulePromise) {
     vditorModulePromise = import('vditor').then(m => {
-      VditorClass = m.default || m
+      VditorClass = (m.default || m) as VditorConstructor
       return VditorClass
     })
   }
@@ -28,7 +31,7 @@ export function preloadVditor() {
 /**
  * 获取 Vditor 构造函数（如果已预加载则立即返回）
  */
-export async function loadVditorModule() {
+export async function loadVditorModule(): Promise<VditorConstructor> {
   if (VditorClass) return VditorClass
   VditorClass = await preloadVditor()
   return VditorClass
@@ -37,8 +40,8 @@ export async function loadVditorModule() {
 /**
  * 确保 Vditor CSS 已注入（仅注入一次）
  */
-export function ensureVditorCss() {
+export function ensureVditorCss(): void {
   if (vditorCssLoaded) return
   vditorCssLoaded = true
-  import('vditor/dist/index.css')
+  void import('vditor/dist/index.css')
 }

@@ -1,6 +1,26 @@
 ---
 name: export-html
 description: 生成交互式 HTML 数据分析报告。支持 Markdown 渲染、Mermaid 图表（可缩放/全屏）、代码高亮、数学公式。Agent 负责组织 Markdown 内容，调用 export_html 工具生成。当用户需要 HTML 报告或可交互文档时使用。
+version: "1.1.0"
+min_agent_version: "1.0.0"
+dependencies:
+  - type: context
+    name: connection_id
+    description: 若使用 sql 模式需已建立数据库连接
+error_hints:
+  - pattern: "syntax error"
+    hint: "Markdown 语法错误。请检查表格格式、代码块闭合、Mermaid 语法"
+    suggestion: "简化 Markdown 内容后重试"
+  - pattern: "template"
+    hint: "HTML 模板渲染失败。可能是 Markdown 中包含特殊字符"
+    suggestion: "移除 Markdown 中的 < > & 等特殊字符或用反引号包裹"
+  - pattern: "memory"
+    hint: "内存不足。可能是 Markdown 内容过大"
+    suggestion: "减少内容量或拆分为多个报告"
+command_blacklist:
+  - DROP DATABASE
+  - DROP SCHEMA
+  - SHUTDOWN
 ---
 
 # HTML 报告生成 Skill

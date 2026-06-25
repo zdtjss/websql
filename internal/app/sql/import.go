@@ -17,6 +17,7 @@ import (
 	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -236,6 +237,19 @@ func insertToDb(schema, table string, columns []string, data [][]string, tx *sql
 		return nil
 	}
 
+	// 标识符白名单校验，防止 SQL 注入
+	if !sanitize.IsValidIdentifier(schema) {
+		return errors.New("非法的 schema 名")
+	}
+	if !sanitize.IsValidIdentifier(table) {
+		return errors.New("非法的表名")
+	}
+	for _, col := range columns {
+		if !sanitize.IsValidIdentifier(col) {
+			return fmt.Errorf("非法的列名: %q", col)
+		}
+	}
+
 	colNum := len(columns)
 	sql := bytes.Buffer{}
 
@@ -292,6 +306,19 @@ func UpdateToDb(schema, table string, columns []string, data [][]string, tx *sql
 
 	if len(data) == 0 {
 		return nil
+	}
+
+	// 标识符白名单校验，防止 SQL 注入
+	if !sanitize.IsValidIdentifier(schema) {
+		return errors.New("非法的 schema 名")
+	}
+	if !sanitize.IsValidIdentifier(table) {
+		return errors.New("非法的表名")
+	}
+	for _, col := range columns {
+		if !sanitize.IsValidIdentifier(col) {
+			return fmt.Errorf("非法的列名: %q", col)
+		}
 	}
 
 	keys, err := dbops.QueryPrimaryKey(schema, table, tx)

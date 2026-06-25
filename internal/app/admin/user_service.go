@@ -263,17 +263,35 @@ func findUserPower(userId string) []string {
 
 func findUserPowerDetails(userId string) []*PowerDetail {
 	ensureDefaultUser()
-	return defaultUserRepo.FindUserPowerDetails(userId)
+	// 优先走缓存，避免每次权限检查都查询 t_power 表
+	if details, ok := powerCache.getDetails(userId); ok {
+		return details
+	}
+	details := defaultUserRepo.FindUserPowerDetails(userId)
+	powerCache.setDetails(userId, details)
+	return details
 }
 
 func FindUserPowerDetails(userId string) []*PowerDetail {
 	ensureDefaultUser()
-	return defaultUserRepo.FindUserPowerDetails(userId)
+	// 优先走缓存，避免每次权限检查都查询 t_power 表
+	if details, ok := powerCache.getDetails(userId); ok {
+		return details
+	}
+	details := defaultUserRepo.FindUserPowerDetails(userId)
+	powerCache.setDetails(userId, details)
+	return details
 }
 
 func FindUserRoles(userId string) []*Role {
 	ensureDefaultUser()
-	return defaultUserRepo.FindUserRoles(userId)
+	// 优先走缓存，与权限详情缓存共用同一 TTL 和失效机制
+	if roles, ok := powerCache.getRoles(userId); ok {
+		return roles
+	}
+	roles := defaultUserRepo.FindUserRoles(userId)
+	powerCache.setRoles(userId, roles)
+	return roles
 }
 
 func findUserRole(userIdList []any) (map[string][]*UserRole, error) {

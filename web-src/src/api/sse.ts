@@ -1,4 +1,4 @@
-import { sanitizeError } from '@/utils/errorHandler.js'
+import { sanitizeError } from '@/utils/errorHandler'
 
 export interface SSEOptions {
   url: string

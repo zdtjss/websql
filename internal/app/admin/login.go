@@ -86,6 +86,8 @@ func (c *authLocalCache) InvalidateByUserId(userId string) {
 		}
 	}
 	c.mu.Unlock()
+	// 同步清除该用户的权限详情缓存
+	powerCache.invalidateUser(userId)
 }
 
 // InvalidateAll 清除所有缓存条目（角色权限变更时调用，因为无法确定影响哪些用户）
@@ -93,7 +95,9 @@ func InvalidateAllAuthCache() {
 	authCache.mu.Lock()
 	authCache.entries = make(map[string]*authCacheEntry, 64)
 	authCache.mu.Unlock()
-	// 通知外部缓存失效（如 Permission Agent Cache）
+	// 同步清空权限详情缓存（powerCache），确保角色权限变更后立即生效
+	invalidatePowerCacheAll()
+	// 通知外部缓存失效（如 Permission Agent Cache、permission 包的决策缓存）
 	notifyPermissionChanged()
 }
 
