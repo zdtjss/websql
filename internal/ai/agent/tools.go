@@ -112,7 +112,7 @@ func GetConn(connId, userId string) (*sqlx.DB, string) {
 		return nil, ""
 	}
 	cfgList := []conn.ConnCfg{}
-	err := database.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connId)
+	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connId)
 	if err != nil || len(cfgList) == 0 {
 		return nil, ""
 	}

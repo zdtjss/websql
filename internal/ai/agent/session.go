@@ -11,7 +11,6 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"websql/internal/database"
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/safego"
 )
@@ -392,11 +391,11 @@ func (s *Session) doSave() error {
 	if ctx == "" {
 		ctx = "{}"
 	}
-	_, err = database.Mngtdb.Exec(`
+	_, err = getDB().Exec(`
 		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ? WHERE id = ?
 	`, string(data), title, ctx, time.Now(), s.ID)
 	if err != nil && dberr.IsColumnNotExist(err) {
-		_, err = database.Mngtdb.Exec(`
+		_, err = getDB().Exec(`
 			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
 		`, string(data), title, time.Now(), s.ID)
 	}
@@ -717,7 +716,7 @@ func extractUserMessagesFromSummary(content string) []string {
 // ──────────────────────────────────────────────
 
 func createSessionInDB(id, userID string) error {
-	_, err := database.Mngtdb.Exec(`
+	_, err := getDB().Exec(`
 		INSERT INTO t_ai_session (id, user_id, title, messages, created_at, updated_at)
 		VALUES (?, ?, '', '[]', ?, ?)
 	`, id, userID, time.Now(), time.Now())
@@ -756,7 +755,7 @@ func loadSessionFromDB(id string) (*Session, error) {
 
 func getSessionByID(id string) (*SessionDB, error) {
 	var session SessionDB
-	err := database.Mngtdb.Get(&session, `
+	err := getDB().Get(&session, `
 		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, COALESCE(context,'{}') as context, created_at, updated_at
 		FROM t_ai_session WHERE id = ?
 	`, id)
@@ -775,7 +774,7 @@ func getSessionByID(id string) (*SessionDB, error) {
 
 func getSessionByIDWithoutContext(id string) (*SessionDB, error) {
 	var session SessionDB
-	err := database.Mngtdb.Get(&session, `
+	err := getDB().Get(&session, `
 		SELECT id, user_id, COALESCE(title,'') as title, COALESCE(messages,'[]') as messages, '{}' as context, created_at, updated_at
 		FROM t_ai_session WHERE id = ?
 	`, id)
@@ -790,7 +789,7 @@ func getSessionByIDWithoutContext(id string) (*SessionDB, error) {
 
 func listSessionsByUserID(userID string) ([]SessionDB, error) {
 	var sessions []SessionDB
-	err := database.Mngtdb.Select(&sessions, `
+	err := getDB().Select(&sessions, `
 		SELECT id, user_id, COALESCE(title,'') as title, created_at, updated_at
 		FROM t_ai_session WHERE user_id = ? ORDER BY created_at DESC
 	`, userID)
@@ -822,7 +821,7 @@ func listSessionsByUserIDPaged(userID, keyword string, limit, offset int) ([]Ses
 		`
 		args = []any{userID, "%" + keyword + "%", limit, offset}
 	}
-	if err := database.Mngtdb.Select(&sessions, sqlStr, args...); err != nil {
+	if err := getDB().Select(&sessions, sqlStr, args...); err != nil {
 		if dberr.IsTableNotExist(err) {
 			return []SessionDB{}, nil
 		}
@@ -844,7 +843,7 @@ func countSessionsByUserID(userID, keyword string) (int, error) {
 		args = []any{userID, "%" + keyword + "%"}
 	}
 	var count int
-	if err := database.Mngtdb.Get(&count, sqlStr, args...); err != nil {
+	if err := getDB().Get(&count, sqlStr, args...); err != nil {
 		if dberr.IsTableNotExist(err) {
 			return 0, nil
 		}
@@ -854,7 +853,7 @@ func countSessionsByUserID(userID, keyword string) (int, error) {
 }
 
 func deleteSessionInDB(id string) error {
-	_, err := database.Mngtdb.Exec(`DELETE FROM t_ai_session WHERE id = ?`, id)
+	_, err := getDB().Exec(`DELETE FROM t_ai_session WHERE id = ?`, id)
 	if err != nil && dberr.IsTableNotExist(err) {
 		return nil
 	}

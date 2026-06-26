@@ -16,7 +16,7 @@
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <span v-if="searchQuery" class="er-toolbar-hint er-search-count">{{ matchedNodeIds.length }} 个匹配</span>
-      <span class="er-toolbar-hint">💡 双击表名浏览数据 | 滚轮缩放 | 拖动平移 | 字段左侧圆点拖拽连线 | 点击连线切换类型 | 选中连线 Delete 删除</span>
+      <span class="er-toolbar-hint">💡 双击表名浏览数据 | 滚轮原地缩放 | 拖动平移 | 悬停表后从字段圆点拖拽连线 | 点击连线切换类型 | 选中连线 Delete 删除</span>
       <div style="flex:1;"></div>
       <el-radio-group v-model="layoutType" size="small" @change="rebuildGraph" aria-label="布局方向">
         <el-radio-button value="TB">从上到下</el-radio-button>
@@ -544,10 +544,11 @@ async function rebuildGraph() {
     panning: { enabled: true },
     mousewheel: {
       enabled: true,
-      // 移除 modifiers，滚轮直接缩放（原地放大）；限制缩放范围避免图形消失
+      // 滚轮直接缩放，以鼠标位置为锚点原地放大/缩小，避免画布漂移
       factor: 1.1,
       minScale: 0.3,
       maxScale: 3,
+      zoomAtMousePosition: true,
     },
     selecting: {
       enabled: true,
@@ -572,6 +573,8 @@ async function rebuildGraph() {
         const c = themeColors.value
         return new Shape.Edge({
           zIndex: 0,
+          // 平滑曲线，与现有边一致，便于区分不同字段间的关系
+          connector: { name: 'smooth' },
           attrs: {
             line: {
               stroke: c.edgeColor,
@@ -606,6 +609,15 @@ async function rebuildGraph() {
   graph.use(new Keyboard())
 
   mousedownHandler = (e) => {
+    // 端口圆点 mousedown：进入"连接中"状态，临时显示所有端口圆点，便于看清可连接的目标字段
+    if (e.target.closest('.x6-port')) {
+      containerRef.value?.classList.add('connecting')
+      const onPortUp = () => {
+        containerRef.value?.classList.remove('connecting')
+        document.removeEventListener('mouseup', onPortUp)
+      }
+      document.addEventListener('mouseup', onPortUp)
+    }
     // 折叠按钮点击：优先处理，阻止冒泡以避免触发标题栏的双击逻辑
     const toggle = e.target.closest('.er-collapse-toggle')
     if (toggle) {
@@ -653,7 +665,10 @@ async function rebuildGraph() {
 
   maxZIndex = 1
 
-  // 添加节点（应用折叠状态与持久化的手动位置）
+  // 先计算布局坐标（与 graph 实例解耦，避免异步渲染下 addNode 后 setPosition 时机不对导致节点叠在原点）
+  const layoutPositions = await computeLayout()
+
+  // 添加节点（应用折叠状态、布局坐标与持久化的手动位置）
   nodes.forEach(n => {
     const isCollapsed = collapsedNodes.value.has(n.id)
     const nodeHeight = getNodeHeightByState(n, isCollapsed)
@@ -665,11 +680,15 @@ async function rebuildGraph() {
       data: { ...n, collapsed: isCollapsed },
       zIndex: 1,
     }
-    // 若存在持久化的手动位置，恢复之
+    // 手动位置优先，否则使用 dagre 布局坐标
     const manualPos = manualPositions.value.get(n.id)
     if (manualPos) {
       nodeConfig.x = manualPos.x
       nodeConfig.y = manualPos.y
+    } else if (layoutPositions.has(n.id)) {
+      const pos = layoutPositions.get(n.id)
+      nodeConfig.x = pos.x
+      nodeConfig.y = pos.y
     }
     // 展开且有字段时注册端口（每个字段一个，左侧圆点 magnet）
     if (!isCollapsed && n.columns && n.columns.length > 0) {
@@ -678,7 +697,7 @@ async function rebuildGraph() {
     graph.addNode(nodeConfig)
   })
 
-  // 添加边：连线中点显示关系类型徽标，源端圆点 + 目标端箭头
+  // 添加边：平滑曲线连接字段端口，中点显示关系类型徽标，源端圆点 + 目标端箭头
   edges.forEach(e => {
     const relType = e.relationType || '1:N'
     const relColor = relType === '1:1' ? colors.rel11 : relType === 'N:M' ? colors.relNM : colors.rel1N
@@ -691,6 +710,8 @@ async function rebuildGraph() {
       source: { cell: e.source },
       target: { cell: e.target },
       zIndex: 0,
+      // 平滑曲线，使不同字段间的关系连线更易区分（直线在多关系时易重叠难辨）
+      connector: { name: 'smooth' },
       attrs: {
         line: {
           stroke: colors.edgeColor,
@@ -715,13 +736,8 @@ async function rebuildGraph() {
     graph.addEdge(edgeConfig)
   })
 
-  // 仅在没有手动位置时执行自动布局
-  if (manualPositions.value.size === 0) {
-    await applyLayout()
-    graph.positionContent('center', { padding: 40 })
-  } else if (manualPositions.value.size < nodes.length) {
-    // 部分节点有手动位置：对剩余节点布局，避免覆盖已定位节点
-    await applyLayout(true)
+  // 存在非手动定位的节点时，将内容居中显示；全部手动定位则保持用户布局
+  if (manualPositions.value.size < nodes.length) {
     graph.positionContent('center', { padding: 40 })
   }
 
@@ -855,11 +871,15 @@ async function rebuildGraph() {
   }
 }
 
-// 执行 dagre 自动布局；preserveManual 为 true 时保留已手动定位的节点
-async function applyLayout(preserveManual = false) {
-  if (!graph) return
+// 计算所有节点的布局坐标（左上角），与 graph 实例解耦。
+// 在 addNode 之前调用，把坐标直接传给节点，避免异步渲染（表数量较多开启 async 时）
+// 下 addNode 后 setPosition 时机不对、节点停留在原点叠在一起的问题。
+// 返回 Map<id, {x, y}>；手动定位的节点也参与计算（保证 dagre 看到完整图结构），addNode 时由 manualPositions 覆盖。
+async function computeLayout() {
   const nodes = filteredNodes.value
   const edges = filteredEdges.value
+  const positions = new Map()
+  if (nodes.length === 0) return positions
   try {
     const dagreLayout = new DagreLayout({
       type: 'dagre',
@@ -867,39 +887,40 @@ async function applyLayout(preserveManual = false) {
       // 适当增加间距以减少节点重叠
       nodesep: 60,
       ranksep: 100,
-      nodeSize: (n) => [NODE_WIDTH, getNodeHeightByState(n, collapsedNodes.value.has(n.id))],
+      nodeSize: (n) => {
+        // dagre 传入的 n 是 _original（仅含 id），需回查完整节点以拿到折叠状态与字段数
+        const node = nodes.find(x => x.id === n.id) || n
+        return [NODE_WIDTH, getNodeHeightByState(node, collapsedNodes.value.has(n.id))]
+      },
     })
     await dagreLayout.execute({
       nodes: nodes.map(n => ({ id: n.id })),
       edges: edges.map(e => ({ source: e.source, target: e.target })),
     })
     dagreLayout.forEachNode((layoutNode) => {
-      // 保留手动定位的节点位置
-      if (preserveManual && manualPositions.value.has(layoutNode.id)) return
-      const node = graph.getCellById(layoutNode.id)
-      if (node) {
-        const n = nodes.find(x => x.id === layoutNode.id) || {}
-        const size = [NODE_WIDTH, getNodeHeightByState(n, collapsedNodes.value.has(layoutNode.id))]
-        const x = layoutNode.x - size[0] / 2
-        const y = layoutNode.y - size[1] / 2
-        node.setPosition(x, y, { silent: true })
-      }
+      if (layoutNode.x == null || layoutNode.y == null) return
+      const n = nodes.find(x => x.id === layoutNode.id) || {}
+      const w = NODE_WIDTH
+      const h = getNodeHeightByState(n, collapsedNodes.value.has(layoutNode.id))
+      // dagre 返回节点中心坐标，转为左上角坐标
+      positions.set(layoutNode.id, {
+        x: layoutNode.x - w / 2,
+        y: layoutNode.y - h / 2,
+      })
     })
+    dagreLayout.destroy()
   } catch (err) {
     handleError(err, 'ER图布局计算')
     // 布局失败时使用网格排列兜底
     const cols = Math.ceil(Math.sqrt(nodes.length))
     nodes.forEach((n, idx) => {
-      if (preserveManual && manualPositions.value.has(n.id)) return
       const row = Math.floor(idx / cols)
       const col = idx % cols
-      const node = graph.getCellById(n.id)
-      if (node) {
-        const nodeHeight = getNodeHeightByState(n, collapsedNodes.value.has(n.id))
-        node.setPosition({ x: col * (NODE_WIDTH + 60) + 40, y: row * (nodeHeight + 60) + 40 }, { silent: true })
-      }
+      const nodeHeight = getNodeHeightByState(n, collapsedNodes.value.has(n.id))
+      positions.set(n.id, { x: col * (NODE_WIDTH + 60) + 40, y: row * (nodeHeight + 60) + 40 })
     })
   }
+  return positions
 }
 
 // 重新布局已移除（用户要求）；如需重置可拖动节点后释放，位置自动记录
@@ -1275,5 +1296,14 @@ onBeforeUnmount(() => {
 }
 :deep(.el-input__wrapper) {
   font-size: 12px;
+}
+/* 端口连线圆点：默认隐藏，悬停节点或拖拽连线时显示，避免每个字段前都出现标记 */
+.er-canvas :deep(.x6-port-body circle) {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.er-canvas :deep(.x6-node:hover .x6-port-body circle),
+.er-canvas.connecting :deep(.x6-port-body circle) {
+  opacity: 1;
 }
 </style>

@@ -41,8 +41,13 @@
                     <span v-if="data.type === 'dir'">📁</span>
                     <span v-else-if="data.type === 'conn'">🔗</span>
                     <span v-else-if="data.type === 'schema'">🗄️</span>
+                    <span v-else-if="data.type === 'object_group'">📁</span>
                     <span v-else-if="data.type === 'table'">📋</span>
                     <span v-else-if="data.type === 'view'">👁️</span>
+                    <span v-else-if="data.type === 'procedure'">⚙️</span>
+                    <span v-else-if="data.type === 'function'">ƒ</span>
+                    <span v-else-if="data.type === 'trigger'">⚡</span>
+                    <span v-else-if="data.type === 'event'">📅</span>
                     <span v-else>📄</span>
                   </span>
                   <span class="tree-node-label" :title="data.data != null ? data.data.text : ''">{{ node.label }}</span>
@@ -70,7 +75,6 @@
                         <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多数据库工具操作"><MoreFilled /></el-icon>
                         <template #dropdown>
                           <el-dropdown-menu>
-                            <el-dropdown-item command="viewSchemaObjects">⚙️ 数据库对象</el-dropdown-item>
                             <el-dropdown-item command="viewERDiagram">🔗 ER关系图</el-dropdown-item>
                             <el-dropdown-item command="openSyncDialog">🔄 数据同步</el-dropdown-item>
                             <el-dropdown-item command="openBackupDialog">📦 备份恢复</el-dropdown-item>
@@ -87,6 +91,7 @@
                           <el-dropdown-menu>
                             <el-dropdown-item command="viewTableInfo">ℹ️ 查看表结构</el-dropdown-item>
                             <el-dropdown-item command="openDataBrowserFromNode">📄 浏览数据</el-dropdown-item>
+                            <el-dropdown-item command="viewObjectDdl" divided>📜 查看DDL</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -97,6 +102,17 @@
                         <template #dropdown>
                           <el-dropdown-menu>
                             <el-dropdown-item command="viewViewInfo">👁️ 查看视图</el-dropdown-item>
+                            <el-dropdown-item command="viewObjectDdl" divided>📜 查看DDL</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </template>
+                    <template v-if="['procedure', 'function', 'trigger', 'event'].includes(data.type)">
+                      <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
+                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" :aria-label="`更多${data.type}操作`"><MoreFilled /></el-icon>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="viewObjectDdl">📜 查看DDL</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -112,7 +128,7 @@
         <div class="main-content">
           <el-tabs v-if="!!editableTabsValue" v-model="editableTabsValue" type="card" class="main-tabs" closable
             @tab-remove="removeTab">
-            <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId">
+            <el-tab-pane v-for="item in editableTabs" :key="item.tabId" :name="item.tabId" lazy>
               <template #label>
                 <span class="tab-label" :title="item.connName ? item.connName + '/' + item.title : item.title">
                   {{ item.title }}
@@ -200,10 +216,12 @@
       </template>
     </el-dialog>
 
-    <SchemaObjectsDialog
-      v-model="schemaObjectsVisible"
-      :conn-id="schemaObjectsConnId"
-      :schema="schemaObjectsSchema"
+    <ObjectDdlDialog
+      v-model="objectDdlVisible"
+      :conn-id="objectDdlConnId"
+      :schema="objectDdlSchema"
+      :obj-type="objectDdlObjType"
+      :name="objectDdlName"
     />
 
     <DatabaseMonitorPanel
@@ -222,6 +240,7 @@
 
 <script setup>
 import { showTree } from '@/api/conn'
+import { listDbObjects } from '@/api/sql'
 import {
   loginByPassword,
   loginByToken as loginByTokenApi,
@@ -245,7 +264,7 @@ import ViewDialog from '@/components/data/ViewDialog.vue'
 import DataBrowser from '@/views/data/DataBrowser.vue'
 import SQLEditor2 from '@/views/sql-editor/SQLEditor2.vue'
 import TableManager from '@/views/data/TableManager.vue'
-import SchemaObjectsDialog from '@/components/db-tools/SchemaObjectsDialog.vue'
+import ObjectDdlDialog from '@/components/db-tools/ObjectDdlDialog.vue'
 import DatabaseMonitorPanel from '@/components/db-tools/DatabaseMonitorPanel.vue'
 import ERDiagramDialog from '@/components/db-tools/ERDiagramDialog.vue'
 import DataSyncDialog from '@/components/db-tools/DataSyncDialog.vue'
@@ -301,9 +320,11 @@ const loginRules = reactive({
 
 const tableMgntDialogVisible = ref(false)
 const viewDialogVisible = ref(false)
-const schemaObjectsVisible = ref(false)
-const schemaObjectsConnId = ref('')
-const schemaObjectsSchema = ref('')
+const objectDdlVisible = ref(false)
+const objectDdlConnId = ref('')
+const objectDdlSchema = ref('')
+const objectDdlObjType = ref('')
+const objectDdlName = ref('')
 // 统一的数据库监控面板状态（合并自 ServerStatusPanel + EnhancedMonitorPanel）
 const monitorPanelVisible = ref(false)
 const monitorConnId = ref('')
@@ -510,36 +531,185 @@ function restoreTab() {
   }
 }
 
+// 对象类型分类配置:每种类型仅在指定数据库类型下显示。
+// SQLite 不支持存储过程/函数/事件;Oracle 不支持事件;表/视图/触发器四种数据库均支持。
+// 扩展新数据库类型时,只需在此添加一行(配合后端 dialect.go 加 SQL 模板)。
+const OBJECT_GROUP_CONFIG = [
+  { objType: 'table',     label: '表',       types: ['mysql', 'mariadb', 'oracle', 'sqlite'] },
+  { objType: 'view',      label: '视图',     types: ['mysql', 'mariadb', 'oracle', 'sqlite'] },
+  { objType: 'procedure', label: '存储过程', types: ['mysql', 'mariadb', 'oracle'] },
+  { objType: 'function',  label: '函数',     types: ['mysql', 'mariadb', 'oracle'] },
+  { objType: 'trigger',   label: '触发器',   types: ['mysql', 'mariadb', 'oracle', 'sqlite'] },
+  { objType: 'event',     label: '事件',     types: ['mysql', 'mariadb'] },
+]
+
+// schema 树节点缓存:table/view 分类共享一次 showTree 请求结果,避免重复请求
+// 注意:使用普通对象而非 reactive,避免 Vue 对 Promise 的深度代理导致 then 回调异常
+const schemaTreeCache = {}
+// 标记某 schema 是否已缓存列信息到 dbSchemaProxy(供 SQL 编辑器自动补全)
+const schemaTreeCached = {}
+
+// 从后端原始行数据中按候选字段名提取值(大小写不敏感),兼容不同数据库的列名差异
+function pickField(row, keys) {
+  for (const k of keys) {
+    if (row[k] != null && row[k] !== '') return row[k]
+  }
+  const lowerKeys = keys.map(k => k.toLowerCase())
+  for (const rk of Object.keys(row)) {
+    if (lowerKeys.includes(rk.toLowerCase()) && row[rk] != null && row[rk] !== '') return row[rk]
+  }
+  return ''
+}
+
+// 将后端返回的原始行归一化为统一的字段结构,便于前端树节点渲染
+function normalizeRow(row, objType) {
+  switch (objType) {
+    case 'table':
+      return {
+        name: pickField(row, ['TABLE_NAME']),
+        type: pickField(row, ['TABLE_TYPE']),
+        comment: pickField(row, ['table_comment', 'TABLE_COMMENT']),
+      }
+    case 'view':
+      return {
+        name: pickField(row, ['VIEW_NAME', 'TABLE_NAME']),
+        definition: pickField(row, ['VIEW_DEFINITION']),
+        updatable: pickField(row, ['IS_UPDATABLE']),
+      }
+    case 'procedure':
+    case 'function':
+      return { name: pickField(row, ['ROUTINE_NAME', 'OBJECT_NAME']) }
+    case 'trigger':
+      return {
+        name: pickField(row, ['TRIGGER_NAME']),
+        tableName: pickField(row, ['EVENT_OBJECT_TABLE', 'TABLE_NAME']),
+        timing: pickField(row, ['ACTION_TIMING', 'TRIGGER_TYPE']),
+        event: pickField(row, ['EVENT_MANIPULATION', 'TRIGGERING_EVENT']),
+      }
+    case 'event':
+      return {
+        name: pickField(row, ['EVENT_NAME']),
+        type: pickField(row, ['EVENT_TYPE']),
+        status: pickField(row, ['STATUS']),
+      }
+    default:
+      return { name: pickField(row, ['NAME']) }
+  }
+}
+
 function loadTree(node, resolve) {
 
   if (node.level === 0) {
     resolve([])
     return
   }
-  if (node.data.type === 'table' || node.data.type === 'view') {
+  // 对象节点(table/view/procedure/function/trigger/event)为叶子,不再展开
+  if (['table', 'view', 'procedure', 'function', 'trigger', 'event'].includes(node.data.type)) {
     resolve([])
     return
   }
-  const conn = findConn(node)
-  const schema = node.data.type === 'table' ? node.parent?.data?.label || '' : ''
-  showTree({ connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level, schema })
-    .then((resp) => {
-      if (node.data.type === "schema") {
-        dbSchemaProxy.addTable(node.data.label, node.data.data.dbType, resp.data.data, conn.id)
-      }
-      if (resp.data.data) {
-        resolve(resp.data.data.map(e => {
-          if (e.type === "table" || e.type === "view") {
-            return Object.assign({ isLeaf: true }, e)
+  // schema 节点展开:生成分类节点(纯前端根据 dbType 决定),同时异步预加载表/列信息
+  if (node.data.type === 'schema') {
+    const dbType = (node.data.data?.dbType || '').toLowerCase()
+    const schema = node.data.label
+    const conn = findConn(node)
+    const groups = OBJECT_GROUP_CONFIG
+      .filter(g => g.types.includes(dbType))
+      .map(g => ({
+        label: g.label,
+        type: 'object_group',
+        data: { objType: g.objType, dbType, schema },
+        isLeaf: false,
+      }))
+    resolve(groups)
+    // 异步预加载表/列信息到 dbSchemaProxy(供 SQL 编辑器自动补全),
+    // 并缓存到 schemaTreeCache 供 loadObjectGroup 复用,避免重复请求。
+    // 不阻塞 resolve,不影响分类节点展示。
+    const cacheKey = (conn && conn.id ? conn.id : '') + '::' + schema
+    if (conn && conn.id && !schemaTreeCache[cacheKey]) {
+      schemaTreeCache[cacheKey] = showTree({ connId: conn.id, key: schema, type: 'schema', level: 2, schema })
+        .then(r => r.data?.data || [])
+        .then(allNodes => {
+          if (allNodes && allNodes.length && !schemaTreeCached[cacheKey]) {
+            dbSchemaProxy.addTable(schema, dbType, allNodes, conn.id)
+            schemaTreeCached[cacheKey] = true
           }
-          return e
-        }))
+          return allNodes
+        })
+        .catch(e => {
+          console.error('[ClassicalView] 预加载schema数据失败:', e)
+          // 失败时清除缓存,允许后续重试
+          delete schemaTreeCache[cacheKey]
+          return []
+        })
+    }
+    return
+  }
+  // object_group 节点展开:加载具体对象列表
+  if (node.data.type === 'object_group') {
+    loadObjectGroup(node, resolve)
+    return
+  }
+  // 其他节点(dir/conn):走原 showTree 逻辑
+  const conn = findConn(node)
+  showTree({ connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level })
+    .then((resp) => {
+      if (resp.data.data) {
+        resolve(resp.data.data)
       }
     })
     .catch((error) => {
       console.error(error);
       node.loading = false
     });
+}
+
+// 加载分类节点下的对象列表
+function loadObjectGroup(node, resolve) {
+  const conn = findConn(node)
+  const schema = node.data.data.schema
+  const objType = node.data.data.objType
+  // table/view 走 showTree(表级权限过滤,含列信息),其他走 listDbObjects(schema 级权限)
+  if (objType === 'table' || objType === 'view') {
+    const cacheKey = conn.id + '::' + schema
+    const promise = schemaTreeCache[cacheKey] || (schemaTreeCache[cacheKey] = showTree({ connId: conn.id, key: schema, type: 'schema', level: 2, schema }).then(r => r.data?.data || []))
+    promise.then(allNodes => {
+      // table 分类同时缓存列信息到 dbSchemaProxy(供 SQL 编辑器自动补全)
+      if (objType === 'table' && !schemaTreeCached[cacheKey]) {
+        dbSchemaProxy.addTable(schema, node.data.data.dbType, allNodes, conn.id)
+        schemaTreeCached[cacheKey] = true
+      }
+      const filtered = allNodes
+        .filter(e => e.type === objType)
+        .map(e => Object.assign({ isLeaf: true }, e))
+      resolve(filtered)
+    }).catch((error) => {
+      console.error(error)
+      node.loading = false
+      resolve([])
+    })
+    return
+  }
+  // procedure/function/trigger/event 走 /db/objects
+  listDbObjects({ connId: conn.id, schema, type: objType })
+    .then(resp => {
+      const rawList = resp.data?.data || []
+      const nodes = rawList.map(r => {
+        const normalized = normalizeRow(r, objType)
+        return {
+          label: normalized.name,
+          type: objType,
+          data: { ...normalized, objType },
+          isLeaf: true,
+        }
+      })
+      resolve(nodes)
+    })
+    .catch((error) => {
+      console.error(error)
+      node.loading = false
+      resolve([])
+    })
 }
 
 function findConn(node) {
@@ -552,6 +722,13 @@ function findConn(node) {
     conn = findConn(node.parent)
   }
   return conn
+}
+
+// 沿 parent 链向上查找 type === 'schema' 的祖先节点(对象节点的操作函数用其获取 schema 名)
+function findSchema(node) {
+  if (!node || node.level === 0) return null
+  if (node.data.type === 'schema') return node
+  return findSchema(node.parent)
 }
 
 async function register() {
@@ -719,22 +896,31 @@ function refreshTree() {
 
 // 查看表信息处理函数
 function viewTableInfo(node) {
+  const conn = findConn(node)
+  const schemaNode = findSchema(node)
   tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
-  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
+  tableMeta.value = { connId: conn.id, schema: schemaNode?.data.label || '', tableName: node.label }
   tableMgntDialogVisible.value = true
 }
 
 function viewViewInfo(node) {
+  const conn = findConn(node)
+  const schemaNode = findSchema(node)
   tableMgntTitle.value = node.label + (node.data.data && node.data.data.text ? "(" + node.data.data.text + ")" : '')
-  tableMeta.value = { connId: node.parent.parent.data.id, schema: node.parent.data.label, tableName: node.label }
+  tableMeta.value = { connId: conn.id, schema: schemaNode?.data.label || '', tableName: node.label }
   viewDialogVisible.value = true
 }
 
-function viewSchemaObjects(node) {
+// 查看对象 DDL:打开 ObjectDdlDialog,由组件内部调用 getObjectDDL 获取并高亮展示
+function viewObjectDdl(node) {
   const conn = findConn(node)
-  schemaObjectsConnId.value = conn.id
-  schemaObjectsSchema.value = node.data.label
-  schemaObjectsVisible.value = true
+  const schemaNode = findSchema(node)
+  objectDdlConnId.value = conn.id
+  objectDdlSchema.value = schemaNode?.data.label || ''
+  // 对象类型优先取节点 data.objType(table/view 来自 showTree 无此字段,用 node.data.type)
+  objectDdlObjType.value = node.data.data?.objType || node.data.type || ''
+  objectDdlName.value = node.label
+  objectDdlVisible.value = true
 }
 
 function viewServerStatus(node) {
@@ -812,10 +998,12 @@ function openDataBrowser({ connId, schema, tableName, dbType }) {
 }
 
 function openDataBrowserFromNode(node) {
-  const connId = node.parent.parent.data.id
-  const schema = node.parent.data.label
+  const conn = findConn(node)
+  const schemaNode = findSchema(node)
+  const connId = conn.id
+  const schema = schemaNode?.data.label || ''
   const tableName = node.label
-  const dbType = node.data.data?.dbType || dbSchemaProxy.getDbType(schema) || ''
+  const dbType = schemaNode?.data.data?.dbType || dbSchemaProxy.getDbType(schema) || ''
   openDataBrowser({ connId, schema, tableName, dbType })
 }
 
@@ -888,7 +1076,6 @@ function handleTreeDropdownAction(node, command) {
     case 'refreshNode': refreshTree(); break
     case 'viewServerStatus': viewServerStatus(node); break
     case 'openMonitorPanel': openMonitorPanel(node); break
-    case 'viewSchemaObjects': viewSchemaObjects(node); break
     case 'viewERDiagram': viewERDiagram(node); break
     case 'openSyncDialog': openSyncDialog(node); break
     case 'openBackupDialog': openBackupDialog(node); break
@@ -897,6 +1084,7 @@ function handleTreeDropdownAction(node, command) {
     case 'viewTableInfo': viewTableInfo(node); break
     case 'openDataBrowserFromNode': openDataBrowserFromNode(node); break
     case 'viewViewInfo': viewViewInfo(node); break
+    case 'viewObjectDdl': viewObjectDdl(node); break
   }
 }
 

@@ -7,7 +7,6 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
-	"websql/internal/database"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 )
@@ -28,7 +27,7 @@ func FilterConnsWithPermission(parentId string, userPower *admin.UserPower) []*c
 	}
 	appendPmsnStrict(&sql, "id", &param, userPower)
 	cfgList := []conn.ConnCfg{}
-	err := database.Mngtdb.Select(&cfgList, sql.String(), param...)
+	err := getDB().Select(&cfgList, sql.String(), param...)
 	if err != nil {
 		log.Printf("[FilterConnsWithPermission] 查询连接列表失败: %v", err)
 		return nil
@@ -151,7 +150,8 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 			case "BASE TABLE":
 				treeNode.Type = "table"
 			}
-		} else if dc.DriverName() == "oracle" {
+		} else if dc.DriverName() == "oracle" || dc.DriverName() == "sqlite" {
+			// Oracle/SQLite 的 listTable 模板返回 type 字段(table/view),统一转为小写作为节点 type
 			treeNode.Type = strings.ToLower(tableType)
 		}
 		allTables = append(allTables, treeNode)
@@ -214,7 +214,7 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 		ParentId string `db:"parent_id"`
 	}
 	connList := []connParent{}
-	err := database.Mngtdb.Select(&connList, connSQL.String(), connParam...)
+	err := getDB().Select(&connList, connSQL.String(), connParam...)
 	if err != nil {
 		log.Printf("[FilterDirTreeWithPermission] 查询连接列表失败: %v", err)
 		return nil
@@ -228,7 +228,7 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 	}
 
 	allTreeNodes := []*DirTree{}
-	database.Mngtdb.Select(&allTreeNodes, "select * from t_tree")
+	getDB().Select(&allTreeNodes, "select * from t_tree")
 	parentMap := make(map[string]string)
 	for _, node := range allTreeNodes {
 		parentMap[node.Id] = node.Parent
@@ -275,7 +275,7 @@ func findByParent(parentId string, userPower *admin.UserPower) []*conn.Tree {
 		sql.WriteString(" parent = ?")
 	}
 	treeList := []*DirTree{}
-	err := database.Mngtdb.Select(&treeList, sql.String(), param...)
+	err := getDB().Select(&treeList, sql.String(), param...)
 	if err != nil {
 		log.Printf("[findByParent] 查询目录树失败: %v", err)
 		return nil

@@ -48,7 +48,7 @@ func ShowBackupData(c *gin.Context) {
 		return
 	}
 	backupId := c.Query("backupId")
-	stmt, err := database.Mngtdb.Preparex("select data from t_history where id = ?")
+	stmt, err := getDB().Preparex("select data from t_history where id = ?")
 	logger.PrintErr(err)
 	rowsx, err2 := stmt.Query(backupId)
 	logger.PrintErr(err2)
@@ -88,7 +88,7 @@ func ListBackupData(c *gin.Context) {
 		countArgs = []any{connId}
 	}
 
-	stmt, err := database.Mngtdb.Preparex(countSQL)
+	stmt, err := getDB().Preparex(countSQL)
 	logger.PrintErr(err)
 	defer stmt.Close()
 
@@ -117,7 +117,7 @@ func ListBackupData(c *gin.Context) {
 		queryArgs = []any{connId, offset, pageSize}
 	}
 
-	stmt2, err := database.Mngtdb.Preparex(querySQL)
+	stmt2, err := getDB().Preparex(querySQL)
 	logger.PrintErr(err)
 	defer stmt2.Close()
 
@@ -125,7 +125,7 @@ func ListBackupData(c *gin.Context) {
 	logger.PrintErr(err)
 	defer rows.Close()
 
-	data, err := database.GetResultRows(database.Mngtdb.DriverName(), rows)
+	data, err := database.GetResultRows(getDB().DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("查询操作日志失败", err)
 		response.WriteErr(c, 200, 500, err.Error())
@@ -195,7 +195,7 @@ func getConnTree(roleId string) []*PermissionNode {
 	}
 
 	connList := []*ConnWithDir{}
-	err := database.Mngtdb.Select(&connList, "select c.*, t.label as parent_name from t_conn c left join t_tree t on c.parent_id = t.id order by t.label, c.name")
+	err := getDB().Select(&connList, "select c.*, t.label as parent_name from t_conn c left join t_tree t on c.parent_id = t.id order by t.label, c.name")
 	logger.PrintErr(err)
 
 	var roleConnIds map[string]bool
@@ -294,13 +294,13 @@ func getConnTree(roleId string) []*PermissionNode {
 func getRoleConnPermissions(roleId string) map[string]bool {
 	connIds := make(map[string]bool)
 	powerList := []*PowerDetail{}
-	err := database.Mngtdb.Select(&powerList, "select conn_id from t_power where role_id = ? and power_level = 'conn'", roleId)
+	err := getDB().Select(&powerList, "select conn_id from t_power where role_id = ? and power_level = 'conn'", roleId)
 	logger.PrintErr(err)
 	for _, power := range powerList {
 		connIds[power.ConnId] = true
 	}
 	schemaPowers := []*PowerDetail{}
-	err2 := database.Mngtdb.Select(&schemaPowers, "select conn_id from t_power where role_id = ? and power_level in ('schema','table','column')", roleId)
+	err2 := getDB().Select(&schemaPowers, "select conn_id from t_power where role_id = ? and power_level in ('schema','table','column')", roleId)
 	logger.PrintErr(err2)
 	for _, power := range schemaPowers {
 		connIds[power.ConnId] = true
@@ -356,7 +356,7 @@ func getSchemaTree(connId, authorization string, roleId string) []*PermissionNod
 func getRoleSchemaPermissions(roleId, connId string) map[string]bool {
 	schemas := make(map[string]bool)
 	powerList := []*PowerDetail{}
-	err := database.Mngtdb.Select(&powerList,
+	err := getDB().Select(&powerList,
 		"select schema_name from t_power where role_id = ? and conn_id = ? and power_level = 'schema'", roleId, connId)
 	logger.PrintErr(err)
 	for _, power := range powerList {
@@ -365,7 +365,7 @@ func getRoleSchemaPermissions(roleId, connId string) map[string]bool {
 		}
 	}
 	subPowers := []*PowerDetail{}
-	err2 := database.Mngtdb.Select(&subPowers,
+	err2 := getDB().Select(&subPowers,
 		"select schema_name from t_power where role_id = ? and conn_id = ? and power_level in ('table','column')", roleId, connId)
 	logger.PrintErr(err2)
 	for _, power := range subPowers {
@@ -474,7 +474,7 @@ func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool 
 
 	// 向下传播：conn级权限意味着该连接下所有schema的所有表均可访问
 	var connCount int
-	err := database.Mngtdb.Get(&connCount,
+	err := getDB().Get(&connCount,
 		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND power_level = 'conn'", roleId, connId)
 	logger.PrintErr(err)
 	if connCount > 0 {
@@ -484,7 +484,7 @@ func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool 
 
 	// 向下传播：schema级权限意味着该schema下所有表均可访问
 	var schemaCount int
-	err = database.Mngtdb.Get(&schemaCount,
+	err = getDB().Get(&schemaCount,
 		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND schema_name = ? AND power_level = 'schema'",
 		roleId, connId, schemaName)
 	logger.PrintErr(err)
@@ -495,7 +495,7 @@ func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool 
 
 	// table级权限：仅标记有权限的表
 	powerList := []*PowerDetail{}
-	err = database.Mngtdb.Select(&powerList,
+	err = getDB().Select(&powerList,
 		"select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'table'", roleId, connId, schemaName)
 	logger.PrintErr(err)
 	for _, power := range powerList {
@@ -506,7 +506,7 @@ func getRoleTablePermissions(roleId, connId, schemaName string) map[string]bool 
 
 	// column级权限也意味着对应表可访问（向上推断表可见性）
 	subPowers := []*PowerDetail{}
-	err2 := database.Mngtdb.Select(&subPowers,
+	err2 := getDB().Select(&subPowers,
 		"select table_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and power_level = 'column'", roleId, connId, schemaName)
 	logger.PrintErr(err2)
 	for _, power := range subPowers {
@@ -589,7 +589,7 @@ func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[
 
 	// 向下传播：conn级或schema级权限意味着该表所有列均可访问
 	var parentCount int
-	err := database.Mngtdb.Get(&parentCount,
+	err := getDB().Get(&parentCount,
 		`SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND power_level IN ('conn', 'schema')
 			AND (power_level = 'conn' OR schema_name = ?)`, roleId, connId, schemaName)
 	logger.PrintErr(err)
@@ -600,7 +600,7 @@ func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[
 
 	// 向下传播：table级权限意味着该表所有列均可访问
 	var tableCount int
-	err = database.Mngtdb.Get(&tableCount,
+	err = getDB().Get(&tableCount,
 		"SELECT COUNT(*) FROM t_power WHERE role_id = ? AND conn_id = ? AND schema_name = ? AND table_name = ? AND power_level = 'table'",
 		roleId, connId, schemaName, tableName)
 	logger.PrintErr(err)
@@ -611,7 +611,7 @@ func getRoleColumnPermissions(roleId, connId, schemaName, tableName string) map[
 
 	// column级权限：仅标记有权限的列
 	powerList := []*PowerDetail{}
-	err = database.Mngtdb.Select(&powerList, "select column_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'column'", roleId, connId, schemaName, tableName)
+	err = getDB().Select(&powerList, "select column_name from t_power where role_id = ? and conn_id = ? and schema_name = ? and table_name = ? and power_level = 'column'", roleId, connId, schemaName, tableName)
 	logger.PrintErr(err)
 	for _, power := range powerList {
 		if power.ColumnName != nil {
@@ -659,7 +659,7 @@ func CanUseClassicView(c *gin.Context) {
 
 	allowed := false
 	roles := []*Role{}
-	err := database.Mngtdb.Select(&roles,
+	err := getDB().Select(&roles,
 		"select r.id, r.view_classic from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", user.Id)
 	if err != nil {
 		logger.PrintErr(err)
@@ -685,7 +685,7 @@ func CanModifyData(c *gin.Context) {
 
 	allowed := false
 	roles := []*Role{}
-	err := database.Mngtdb.Select(&roles,
+	err := getDB().Select(&roles,
 		"select r.id, r.name, r.allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", user.Id)
 	if err != nil {
 		logger.PrintErr(err)
@@ -707,7 +707,7 @@ func getConnNoCheckInternal(connId string) *sqlx.DB {
 	}
 
 	cfgList := []connCfgLocal{}
-	err := database.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connId)
+	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connId)
 	if err != nil || len(cfgList) == 0 {
 		logger.PrintErr(err)
 		return nil

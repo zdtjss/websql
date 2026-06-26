@@ -1,21 +1,15 @@
 <template>
-    <div class="sql-editor-panel" @keyup.f9="exec" @keyup.ctrl.shift.f="formatSql">
+    <div class="sql-editor-panel" @keyup.f9="execSmart" @keyup.ctrl.shift.f="formatSql">
         <el-splitter layout="vertical" @resize="onResultDivResize">
 
             <div class="sql-toolbar">
                 <div class="toolbar-left">
-                    <el-button :type="exectingSql ? 'danger' : 'primary'" @click="exectingSql ? stopExec() : exec()" :title="exectingSql ? '终止执行' : 'F9'">
+                    <el-button :type="exectingSql ? 'danger' : 'primary'" @click="execSmart"
+                        :title="exectingSql ? '终止执行' : 'F9 执行选中内容或光标所在语句'">
                         <el-icon style="margin-right: 4px;">
                             <Loading v-if="exectingSql" />
                             <VideoPlay v-else />
                         </el-icon>{{ exectingSql ? '终止' : '执行' }}
-                    </el-button>
-                    <el-button type="primary" @click="executeCurrentStatement" :disabled="exectingSql"
-                        title="Alt + Enter 执行光标所在语句">
-                        <el-icon style="margin-right: 4px;">
-                            <Loading v-if="exectingSql" />
-                            <CaretRight v-else />
-                        </el-icon>执行当前
                     </el-button>
                     <el-divider direction="vertical" />
                     <el-button @click="formatSql" title="Ctrl + Shift + F">美化</el-button>
@@ -231,7 +225,7 @@ import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'v
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { ElMessage, ElLoading } from 'element-plus'
-import { ArrowDown, VideoPlay, View, Loading, CaretRight } from '@element-plus/icons-vue'
+import { ArrowDown, VideoPlay, View, Loading } from '@element-plus/icons-vue'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
@@ -739,7 +733,6 @@ function createEditor(editorContainer: any, doc: any) {
             { key: "Mod-y", run: redo, preventDefault: true },
             { key: "Mod-Shift-z", run: redo, preventDefault: true },
             { key: 'Tab', run: insertTab, preventDefault: true },
-            { key: 'Alt-Enter', run: () => { executeCurrentStatement(); return true }, preventDefault: true },
         ]),
         sqlCompartment.of(sql({
             dialect: dbSchemaProxy.getDialect(schema),
@@ -1305,6 +1298,23 @@ function getCurrentStatement(): { text: string, from: number, to: number } | nul
 
     if (!text) return null
     return { text, from, to }
+}
+
+// 统一执行入口：有选中内容时执行选中内容，否则执行光标所在语句
+function execSmart() {
+    if (exectingSql.value) {
+        stopExec()
+        return
+    }
+    const view = editorView.value
+    if (view) {
+        const { from, to } = view.state.selection.main
+        if (from !== to) {
+            exec(false, view.state.sliceDoc(from, to))
+            return
+        }
+    }
+    executeCurrentStatement()
 }
 
 // 执行光标所在的 SQL 语句
@@ -2368,6 +2378,11 @@ const dragEnd = (e: DragEvent) => {
 .el-table-v2__header-wrapper,
 .el-table-v2__header-row {
     overflow: visible !important;
+}
+
+.el-table-v2__row-cell > span {
+    padding: 3px;
+    border-radius: 3px;
 }
 
 .el-table-v2 {

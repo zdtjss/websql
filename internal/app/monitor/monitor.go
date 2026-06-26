@@ -3,13 +3,13 @@ package monitor
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"websql/internal/app/conn"
-	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/dberr"
@@ -449,6 +449,231 @@ func GetServerVariables(c *gin.Context) {
 	})
 }
 
+// ===== 完整服务器变量 / 状态指标（带方言适配 + 版本检测） =====
+
+// VarInfo 服务器变量/状态指标的统一项
+type VarInfo struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// VarListResult 服务器变量/状态指标返回结构
+type VarListResult struct {
+	Items              []VarInfo `json:"items"`
+	Count              int       `json:"count"`
+	Supported          bool      `json:"supported"`
+	UnsupportedMessage string    `json:"unsupportedMessage,omitempty"`
+	DbType             string    `json:"dbType,omitempty"`
+	Version            string    `json:"version,omitempty"`
+}
+
+// versionRe 用于从版本字符串中提取 "主版本.次版本"
+var versionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// parseMajorMinorVersion 从版本字符串中提取主、次版本号。
+// 例如 "Oracle Database 10g Release 10.2.0.5.0" → 10, 2
+// "5.5.62-log" → 5, 5；"10.4.12-MariaDB" → 10, 4
+func parseMajorMinorVersion(version string) (int, int) {
+	match := versionRe.FindStringSubmatch(version)
+	if len(match) < 3 {
+		return 0, 0
+	}
+	major, _ := strconv.Atoi(match[1])
+	minor, _ := strconv.Atoi(match[2])
+	return major, minor
+}
+
+// checkMonitorSupported 检查当前数据库版本是否支持监控功能。
+// 支持 Oracle 10g+、MySQL 5.5+、MariaDB 全线、SQLite 部分支持。
+// 返回 (supported, unsupportedMessage)。supported=false 时 unsupportedMessage 必非空。
+func checkMonitorSupported(dbType, version string) (bool, string) {
+	switch dbType {
+	case "oracle":
+		major, _ := parseMajorMinorVersion(version)
+		if major > 0 && major < 10 {
+			return false, fmt.Sprintf("当前 Oracle 版本（%s）不支持监控，需 Oracle 10g 及以上版本", version)
+		}
+	case "mysql":
+		major, minor := parseMajorMinorVersion(version)
+		if major > 0 && (major < 5 || (major == 5 && minor < 5)) {
+			return false, fmt.Sprintf("当前 MySQL 版本（%s）不支持监控，需 MySQL 5.5 及以上版本", version)
+		}
+	case "mariadb":
+		// 全线支持
+	case "sqlite":
+		// SQLite 部分支持，具体能力在各接口内返回 supported:false
+	}
+	return true, ""
+}
+
+// getConnDbVersion 从 t_conn 表读取已保存的数据库版本号。
+// 版本号在连接建立时由 getDbVersionAndSchema 写入，避免每次监控都现查版本。
+func getConnDbVersion(connId string) string {
+	if getDB() == nil || connId == "" {
+		return ""
+	}
+	var version string
+	if err := getDB().Get(&version, "SELECT db_version FROM t_conn WHERE id = ?", connId); err != nil {
+		return ""
+	}
+	return version
+}
+
+// getConnDbTypeAndVersion 从 t_conn 表读取已保存的数据库类型、schema、版本号。
+// 用于 AI 分析等需要 dbType/version 上下文但前端未传的场景，避免反复查库。
+func getConnDbTypeAndVersion(connId string) (dbType, schema, version string) {
+	if getDB() == nil || connId == "" {
+		return "", "", ""
+	}
+	type connRow struct {
+		DbType    *string `db:"db_type"`
+		DbSchema  *string `db:"db_schema"`
+		DbVersion *string `db:"db_version"`
+	}
+	var r connRow
+	if err := getDB().Get(&r, "SELECT db_type, db_schema, db_version FROM t_conn WHERE id = ?", connId); err != nil {
+		return "", "", ""
+	}
+	deref := func(p *string) string {
+		if p != nil {
+			return *p
+		}
+		return ""
+	}
+	return deref(r.DbType), deref(r.DbSchema), deref(r.DbVersion)
+}
+
+// GetAllServerVariables 返回完整的服务器变量列表，按 dbType 适配。
+// GET /monitor/variables/all?connId=xxx&scope=global|session
+//   - MySQL/MariaDB: SHOW GLOBAL/SESSION VARIABLES
+//   - Oracle 10g+: SELECT name, value FROM v$parameter
+//   - SQLite: 不支持，返回 supported:false
+func GetAllServerVariables(c *gin.Context) {
+	connId := appctx.Ctx.GetConnID(c)
+	scope := c.DefaultQuery("scope", "global")
+
+	authorization := appctx.Ctx.GetAuthorization(c)
+	conn := conn.GetConn(connId, authorization)
+	dbType := conn.DriverName()
+	version := getConnDbVersion(connId)
+
+	result := VarListResult{Items: []VarInfo{}, DbType: dbType, Version: version}
+
+	if ok, msg := checkMonitorSupported(dbType, version); !ok {
+		result.UnsupportedMessage = msg
+		response.WriteOK(c, result)
+		return
+	}
+
+	switch dbType {
+	case "mysql", "mariadb":
+		result.Supported = true
+		type varRow struct {
+			Name  string `db:"Variable_name"`
+			Value string `db:"Value"`
+		}
+		var rows []varRow
+		var err error
+		if scope == "session" {
+			err = conn.Select(&rows, "SHOW SESSION VARIABLES")
+		} else {
+			err = conn.Select(&rows, "SHOW GLOBAL VARIABLES")
+		}
+		if err != nil {
+			logger.PrintErrf("获取服务器变量失败", err)
+			response.WriteErr(c, 200, 500, "获取服务器变量失败: "+err.Error())
+			return
+		}
+		for _, r := range rows {
+			result.Items = append(result.Items, VarInfo{Name: r.Name, Value: r.Value})
+		}
+	case "oracle":
+		result.Supported = true
+		type varRow struct {
+			Name  string `db:"name"`
+			Value string `db:"value"`
+		}
+		var rows []varRow
+		// v$parameter 包含所有初始化参数（10g+），按名称排序便于前端展示
+		if err := conn.Select(&rows, "SELECT name, value FROM v$parameter ORDER BY name"); err != nil {
+			logger.PrintErrf("获取 Oracle 参数失败", err)
+			response.WriteErr(c, 200, 500, "获取 Oracle 参数失败: "+err.Error())
+			return
+		}
+		for _, r := range rows {
+			result.Items = append(result.Items, VarInfo{Name: r.Name, Value: r.Value})
+		}
+	default:
+		result.Supported = false
+		result.UnsupportedMessage = "当前数据库类型不支持查看服务器变量"
+	}
+
+	result.Count = len(result.Items)
+	response.WriteOK(c, result)
+}
+
+// GetAllServerStatus 返回完整的状态指标列表，按 dbType 适配。
+// GET /monitor/status/all?connId=xxx
+//   - MySQL/MariaDB: SHOW GLOBAL STATUS
+//   - Oracle 10g+: SELECT name, value FROM v$sysstat
+//   - SQLite: 不支持，返回 supported:false
+func GetAllServerStatus(c *gin.Context) {
+	connId := appctx.Ctx.GetConnID(c)
+
+	authorization := appctx.Ctx.GetAuthorization(c)
+	conn := conn.GetConn(connId, authorization)
+	dbType := conn.DriverName()
+	version := getConnDbVersion(connId)
+
+	result := VarListResult{Items: []VarInfo{}, DbType: dbType, Version: version}
+
+	if ok, msg := checkMonitorSupported(dbType, version); !ok {
+		result.UnsupportedMessage = msg
+		response.WriteOK(c, result)
+		return
+	}
+
+	switch dbType {
+	case "mysql", "mariadb":
+		result.Supported = true
+		type varRow struct {
+			Name  string `db:"Variable_name"`
+			Value string `db:"Value"`
+		}
+		var rows []varRow
+		if err := conn.Select(&rows, "SHOW GLOBAL STATUS"); err != nil {
+			logger.PrintErrf("获取状态指标失败", err)
+			response.WriteErr(c, 200, 500, "获取状态指标失败: "+err.Error())
+			return
+		}
+		for _, r := range rows {
+			result.Items = append(result.Items, VarInfo{Name: r.Name, Value: r.Value})
+		}
+	case "oracle":
+		result.Supported = true
+		type statRow struct {
+			Name  string `db:"name"`
+			Value string `db:"value"`
+		}
+		var rows []statRow
+		// v$sysstat 包含所有系统统计信息（10g+），按名称排序便于前端展示
+		if err := conn.Select(&rows, "SELECT name, value FROM v$sysstat ORDER BY name"); err != nil {
+			logger.PrintErrf("获取 Oracle 状态指标失败", err)
+			response.WriteErr(c, 200, 500, "获取 Oracle 状态指标失败: "+err.Error())
+			return
+		}
+		for _, r := range rows {
+			result.Items = append(result.Items, VarInfo{Name: r.Name, Value: r.Value})
+		}
+	default:
+		result.Supported = false
+		result.UnsupportedMessage = "当前数据库类型不支持查看状态指标"
+	}
+
+	result.Count = len(result.Items)
+	response.WriteOK(c, result)
+}
+
 // ===== 增强监控：InnoDB 状态 / 锁 / 慢查询 / 表统计 =====
 
 // InnoDBStatusResult InnoDB 引擎状态返回结构
@@ -517,10 +742,10 @@ func GetLocks(c *gin.Context) {
 		}
 
 		type trxRow struct {
-			TrxID      string  `db:"trx_id"`
-			ThreadID   int64   `db:"trx_mysql_thread_id"`
-			Query      *string `db:"trx_query"`
-			WaitSeconds int64  `db:"wait_seconds"`
+			TrxID       string  `db:"trx_id"`
+			ThreadID    int64   `db:"trx_mysql_thread_id"`
+			Query       *string `db:"trx_query"`
+			WaitSeconds int64   `db:"wait_seconds"`
 		}
 		var rows []trxRow
 		// 仅取 LOCK WAIT 状态事务，等待时长由 TIMESTAMPDIFF 计算
@@ -548,7 +773,7 @@ func GetLocks(c *gin.Context) {
 		}
 	} else if dbType == "oracle" {
 		type sessRow struct {
-			SID            int64   `db:"sid"`
+			SID             int64   `db:"sid"`
 			Username        *string `db:"username"`
 			Event           *string `db:"event"`
 			SecondsInWait   int64   `db:"seconds_in_wait"`
@@ -687,12 +912,12 @@ func GetSlowQueries(c *gin.Context) {
 
 // TopTableInfo 表统计信息
 type TopTableInfo struct {
-	TableName  string `json:"tableName"`
-	Engine     string `json:"engine"`
-	TableRows  int64  `json:"tableRows"`
-	DataSize   int64  `json:"dataSize"`
-	IndexSize  int64  `json:"indexSize"`
-	DataFree   int64  `json:"dataFree"`
+	TableName string `json:"tableName"`
+	Engine    string `json:"engine"`
+	TableRows int64  `json:"tableRows"`
+	DataSize  int64  `json:"dataSize"`
+	IndexSize int64  `json:"indexSize"`
+	DataFree  int64  `json:"dataFree"`
 }
 
 // GetTopTables 返回按总大小排序的 TOP N 表统计。
@@ -742,12 +967,12 @@ func GetTopTables(c *gin.Context) {
 					eng = *r.Engine
 				}
 				tables = append(tables, TopTableInfo{
-					TableName:  r.TableName,
-					Engine:     eng,
-					TableRows:  r.TableRows,
-					DataSize:   r.DataLength,
-					IndexSize:  r.IndexLength,
-					DataFree:   r.DataFree,
+					TableName: r.TableName,
+					Engine:    eng,
+					TableRows: r.TableRows,
+					DataSize:  r.DataLength,
+					IndexSize: r.IndexLength,
+					DataFree:  r.DataFree,
 				})
 			}
 		}
@@ -808,7 +1033,7 @@ func parseStrToInt(s string) int {
 // 使用 safego.GoWithName 异步执行，写入失败不影响监控 API 的正常响应。
 // connId 为空或管理库未初始化时直接跳过。
 func persistMetrics(connId string, snapshot MetricsSnapshot, dbType string) {
-	if database.Mngtdb == nil || connId == "" {
+	if getDB() == nil || connId == "" {
 		return
 	}
 	// 采集时间统一取当前时刻，保证一次快照的多个指标时间一致
@@ -836,7 +1061,7 @@ func persistMetrics(connId string, snapshot MetricsSnapshot, dbType string) {
 	safego.GoWithName("monitor-metric-write", func() {
 		insertSQL := `INSERT INTO t_monitor_metric (conn_id, metric_name, metric_value, collected_at) VALUES (?, ?, ?, ?)`
 		for _, m := range metrics {
-			if err := database.MngtdbExec(insertSQL, connId, m.name, m.value, collectedAt); err != nil {
+			if err := execWithRetry(insertSQL, connId, m.name, m.value, collectedAt); err != nil {
 				// 表不存在时静默跳过（尚未执行初始化脚本），其他错误记录日志
 				if !dberr.IsTableNotExist(err) {
 					logger.PrintErrf("监控指标写入失败: metric=%s", err, m.name)
@@ -850,13 +1075,13 @@ func persistMetrics(connId string, snapshot MetricsSnapshot, dbType string) {
 // persistSingleMetric 异步写入单个指标，用于在 GetResources 中持久化缓冲池命中率等
 // 不属于 MetricsSnapshot 的指标。
 func persistSingleMetric(connId, metricName string, value float64) {
-	if database.Mngtdb == nil || connId == "" {
+	if getDB() == nil || connId == "" {
 		return
 	}
 	collectedAt := time.Now()
 	safego.GoWithName("monitor-metric-write", func() {
 		insertSQL := `INSERT INTO t_monitor_metric (conn_id, metric_name, metric_value, collected_at) VALUES (?, ?, ?, ?)`
-		if err := database.MngtdbExec(insertSQL, connId, metricName, value, collectedAt); err != nil {
+		if err := execWithRetry(insertSQL, connId, metricName, value, collectedAt); err != nil {
 			if !dberr.IsTableNotExist(err) {
 				logger.PrintErrf("监控指标写入失败: metric=%s", err, metricName)
 			}
@@ -914,7 +1139,7 @@ func GetMetricHistory(c *gin.Context) {
 		return
 	}
 
-	if database.Mngtdb == nil {
+	if getDB() == nil {
 		response.WriteOK(c, map[string]any{"points": []metricPoint{}})
 		return
 	}
@@ -937,7 +1162,7 @@ func GetMetricHistory(c *gin.Context) {
 // queryMetricHistory 根据降采样粒度查询历史指标。
 // raw: 返回原始数据点；5min/1hour: 按时间桶聚合取平均值。
 func queryMetricHistory(connId, metric string, from, to time.Time, interval string) ([]metricPoint, error) {
-	dbType := database.Mngtdb.DriverName()
+	dbType := getDB().DriverName()
 	var query string
 	args := []any{connId, metric, from, to}
 
@@ -953,7 +1178,7 @@ func queryMetricHistory(connId, metric string, from, to time.Time, interval stri
 		query = `SELECT collected_at, metric_value FROM t_monitor_metric WHERE conn_id = ? AND metric_name = ? AND collected_at >= ? AND collected_at <= ? ORDER BY collected_at`
 	}
 
-	rows, err := database.Mngtdb.Query(query, args...)
+	rows, err := getDB().Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1023,11 +1248,11 @@ func StartMetricCleaner() {
 
 // cleanExpiredMetrics 删除 30 天前的监控指标数据
 func cleanExpiredMetrics() {
-	if database.Mngtdb == nil {
+	if getDB() == nil {
 		return
 	}
 	cutoff := time.Now().AddDate(0, 0, -metricRetentionDays)
-	result, err := database.Mngtdb.Exec("DELETE FROM t_monitor_metric WHERE collected_at < ?", cutoff)
+	result, err := getDB().Exec("DELETE FROM t_monitor_metric WHERE collected_at < ?", cutoff)
 	if err != nil {
 		// 表不存在时静默跳过
 		if !dberr.IsTableNotExist(err) {
@@ -1062,7 +1287,7 @@ func StartMetricCollector() {
 // collectAllMetrics 枚举所有连接并采集指标。
 // SQLite 无 QPS/TPS/缓冲池指标，跳过；连接失败（GetConnNoCheck 返回 nil）跳过。
 func collectAllMetrics() {
-	if database.Mngtdb == nil {
+	if getDB() == nil {
 		return
 	}
 	type connRow struct {
@@ -1070,7 +1295,7 @@ func collectAllMetrics() {
 		DbType string `db:"db_type"`
 	}
 	var list []connRow
-	if err := database.Mngtdb.Select(&list, "SELECT id, db_type FROM t_conn"); err != nil {
+	if err := getDB().Select(&list, "SELECT id, db_type FROM t_conn"); err != nil {
 		// 表不存在时静默跳过（与 cleanExpiredMetrics 一致）
 		if !dberr.IsTableNotExist(err) {
 			logger.PrintErrf("采集器查询连接列表失败", err)

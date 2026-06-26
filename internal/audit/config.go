@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"websql/internal/database"
 	"websql/internal/logger"
 )
 
@@ -20,7 +19,7 @@ func LoadAuditConfig() *AuditConfig {
 		MinRiskLevel:     "low",
 	}
 
-	if database.Mngtdb == nil {
+	if getDB() == nil {
 		return cfg
 	}
 
@@ -70,7 +69,7 @@ func SaveAuditConfigToDB(cfg *AuditConfig) {
 
 func getConfigValue(key string) string {
 	var value string
-	err := database.Mngtdb.Get(&value, "select config_value from t_system_config where config_key = ?", key)
+	err := getDB().Get(&value, "select config_value from t_system_config where config_key = ?", key)
 	if err != nil {
 		return ""
 	}
@@ -78,10 +77,11 @@ func getConfigValue(key string) string {
 }
 
 func saveConfig(key, value, remark string) {
+	db := getDB()
 	var existID string
-	err := database.Mngtdb.Get(&existID, "select id from t_system_config where config_key = ?", key)
+	err := db.Get(&existID, "select id from t_system_config where config_key = ?", key)
 	if err != nil {
-		_, err := database.Mngtdb.Exec(
+		_, err := db.Exec(
 			"insert into t_system_config (id, config_key, config_value, config_type, remark) values (?, ?, ?, ?, ?)",
 			"audit_cfg_"+key, key, value, "audit", remark)
 		if err != nil {
@@ -89,7 +89,7 @@ func saveConfig(key, value, remark string) {
 		}
 		return
 	}
-	_, err = database.Mngtdb.Exec(
+	_, err = db.Exec(
 		"update t_system_config set config_value = ?, remark = ?, update_time = datetime('now') where id = ?",
 		value, remark, existID)
 	if err != nil {

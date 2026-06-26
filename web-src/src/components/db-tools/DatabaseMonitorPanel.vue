@@ -261,35 +261,95 @@
       <!-- 4. 服务器变量：全局 / 会话变量，可搜索 -->
       <el-tab-pane label="服务器变量" name="variables">
         <div v-loading="varsLoading" :aria-busy="varsLoading" style="min-height: 200px;" role="region" aria-label="服务器变量">
-          <div class="vars-toolbar">
-            <el-radio-group v-model="varsScope" size="small" @change="onVarsScopeChange">
-              <el-radio-button label="global">全局变量</el-radio-button>
-              <el-radio-button label="session">会话变量</el-radio-button>
-            </el-radio-group>
-            <el-input v-model="varsFilter" placeholder="按变量名或值过滤" size="small" clearable style="width: 260px;" aria-label="过滤变量列表" />
-            <el-button size="small" @click="loadVariables" :loading="varsLoading" aria-label="刷新变量列表">刷新</el-button>
-          </div>
-          <el-table :data="filteredVariables" max-height="440" size="small" stripe border aria-label="服务器变量列表">
-            <el-table-column prop="name" label="变量名" min-width="220" resizable show-overflow-tooltip />
-            <el-table-column prop="value" label="值" min-width="220" resizable show-overflow-tooltip />
-          </el-table>
-          <el-empty v-if="!varsLoading && filteredVariables.length === 0" description="没有符合条件的变量" :image-size="60" />
+          <!-- 不支持提示（如 Oracle 10g 以下、SQLite），来自后端方言适配结果 -->
+          <el-alert v-if="varsUnsupported" :title="varsUnsupported" type="warning" :closable="false" show-icon />
+          <template v-else>
+            <div class="vars-toolbar">
+              <el-radio-group v-model="varsScope" size="small" @change="onVarsScopeChange">
+                <el-radio-button label="global">全局变量</el-radio-button>
+                <el-radio-button label="session">会话变量</el-radio-button>
+              </el-radio-group>
+              <el-input v-model="varsFilter" placeholder="按变量名或值过滤" size="small" clearable style="width: 260px;" aria-label="过滤变量列表" />
+              <el-button size="small" @click="loadVariables" :loading="varsLoading" aria-label="刷新变量列表">刷新</el-button>
+              <div style="flex: 1;"></div>
+              <el-button
+                size="small"
+                type="primary"
+                @click="runAIAnalyze('variables')"
+                :loading="aiAnalyzing && aiKind === 'variables'"
+                :disabled="filteredVariables.length === 0"
+                aria-label="AI 分析当前显示的变量"
+              >AI 分析</el-button>
+            </div>
+            <el-table :data="filteredVariables" max-height="440" size="small" stripe border aria-label="服务器变量列表">
+              <el-table-column prop="name" label="变量名" min-width="220" resizable show-overflow-tooltip />
+              <el-table-column prop="value" label="值" min-width="220" resizable show-overflow-tooltip />
+            </el-table>
+            <el-empty v-if="!varsLoading && filteredVariables.length === 0" description="没有符合条件的变量" :image-size="60" />
+            <!-- AI 分析结果区域（仅当前 Tab 的分析显示，切换 Tab 互不干扰） -->
+            <div v-if="aiKind === 'variables' && (aiAnalyzing || aiContent || aiError || aiThinking)" class="ai-result-section">
+              <div class="ai-result-header" @click="toggleAIExpand">
+                <span>
+                  <el-icon class="ai-arrow" :class="{ expanded: aiExpanded }"><ArrowRight /></el-icon>
+                  {{ aiAnalyzing ? 'AI 正在分析...' : 'AI 分析结果' }}
+                </span>
+                <el-button v-if="aiAnalyzing" size="small" link type="danger" @click.stop="stopAIAnalyze">停止</el-button>
+              </div>
+              <el-collapse-transition>
+                <div v-show="aiExpanded" class="ai-result-body">
+                  <el-alert v-if="aiError" :title="aiError" type="error" :closable="false" show-icon />
+                  <div v-if="aiThinking" class="ai-thinking">{{ aiThinking }}</div>
+                  <div v-if="aiContent" class="markdown-body" v-html="renderedAIContent"></div>
+                </div>
+              </el-collapse-transition>
+            </div>
+          </template>
         </div>
       </el-tab-pane>
 
       <!-- 5. 状态指标：状态计数器，可重置 -->
       <el-tab-pane label="状态指标" name="status">
         <div v-loading="statusLoading" :aria-busy="statusLoading" style="min-height: 200px;" role="region" aria-label="状态指标">
-          <div class="vars-toolbar">
-            <el-input v-model="statusFilter" placeholder="按状态名或值过滤" size="small" clearable style="width: 260px;" aria-label="过滤状态列表" />
-            <el-button size="small" @click="loadStatus" :loading="statusLoading" aria-label="刷新状态列表">刷新</el-button>
-            <el-button size="small" type="warning" @click="confirmFlushStatus" aria-label="重置状态计数器">重置状态计数器</el-button>
-          </div>
-          <el-table :data="filteredStatus" max-height="440" size="small" stripe border aria-label="状态计数器列表">
-            <el-table-column prop="name" label="状态名" min-width="240" resizable show-overflow-tooltip />
-            <el-table-column prop="value" label="值" min-width="180" resizable show-overflow-tooltip />
-          </el-table>
-          <el-empty v-if="!statusLoading && filteredStatus.length === 0" description="没有符合条件的状态" :image-size="60" />
+          <!-- 不支持提示（如 Oracle 10g 以下、SQLite） -->
+          <el-alert v-if="statusUnsupported" :title="statusUnsupported" type="warning" :closable="false" show-icon />
+          <template v-else>
+            <div class="vars-toolbar">
+              <el-input v-model="statusFilter" placeholder="按状态名或值过滤" size="small" clearable style="width: 260px;" aria-label="过滤状态列表" />
+              <el-button size="small" @click="loadStatus" :loading="statusLoading" aria-label="刷新状态列表">刷新</el-button>
+              <el-button size="small" type="warning" @click="confirmFlushStatus" aria-label="重置状态计数器">重置状态计数器</el-button>
+              <div style="flex: 1;"></div>
+              <el-button
+                size="small"
+                type="primary"
+                @click="runAIAnalyze('status')"
+                :loading="aiAnalyzing && aiKind === 'status'"
+                :disabled="filteredStatus.length === 0"
+                aria-label="AI 分析当前显示的状态指标"
+              >AI 分析</el-button>
+            </div>
+            <el-table :data="filteredStatus" max-height="440" size="small" stripe border aria-label="状态计数器列表">
+              <el-table-column prop="name" label="状态名" min-width="240" resizable show-overflow-tooltip />
+              <el-table-column prop="value" label="值" min-width="180" resizable show-overflow-tooltip />
+            </el-table>
+            <el-empty v-if="!statusLoading && filteredStatus.length === 0" description="没有符合条件的状态" :image-size="60" />
+            <!-- AI 分析结果区域 -->
+            <div v-if="aiKind === 'status' && (aiAnalyzing || aiContent || aiError || aiThinking)" class="ai-result-section">
+              <div class="ai-result-header" @click="toggleAIExpand">
+                <span>
+                  <el-icon class="ai-arrow" :class="{ expanded: aiExpanded }"><ArrowRight /></el-icon>
+                  {{ aiAnalyzing ? 'AI 正在分析...' : 'AI 分析结果' }}
+                </span>
+                <el-button v-if="aiAnalyzing" size="small" link type="danger" @click.stop="stopAIAnalyze">停止</el-button>
+              </div>
+              <el-collapse-transition>
+                <div v-show="aiExpanded" class="ai-result-body">
+                  <el-alert v-if="aiError" :title="aiError" type="error" :closable="false" show-icon />
+                  <div v-if="aiThinking" class="ai-thinking">{{ aiThinking }}</div>
+                  <div v-if="aiContent" class="markdown-body" v-html="renderedAIContent"></div>
+                </div>
+              </el-collapse-transition>
+            </div>
+          </template>
         </div>
       </el-tab-pane>
 
@@ -378,9 +438,11 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowRight } from '@element-plus/icons-vue'
 import { execSQL } from '@/api/sql'
-import { getMonitorMetrics, getMonitorResources, getMonitorHistory, getInnodbStatus, getLocks, getSlowQueries, getTopTables } from '@/api/conn'
+import { getMonitorMetrics, getMonitorResources, getMonitorHistory, getInnodbStatus, getLocks, getSlowQueries, getTopTables, getMonitorAllVariables, getMonitorAllStatus, getMonitorProcesses } from '@/api/conn'
 import { handleError } from '@/utils/errorHandler'
+import { getMarkdownRenderer } from '@/utils/lazyDeps'
 import EChart from '@/components/common/EChart.vue'
 
 // 双向绑定可见性
@@ -457,6 +519,25 @@ const topTablesList = ref([])
 const topTablesLoading = ref(false)
 const topTablesLoaded = ref(false)
 
+// 当前数据库类型与版本（由 /monitor/variables/all 等接口返回，供 AI 分析与方言判断使用）
+const dbType = ref('')
+const dbVersion = ref('')
+
+// 服务器变量 / 状态指标 Tab 的不支持提示（接口返回 supported:false 或版本不满足时填充）
+const varsUnsupported = ref('')
+const statusUnsupported = ref('')
+
+// AI 分析通用状态（"服务器变量"与"状态指标"Tab 共用一套，切换 Tab 时各自独立）
+// aiKind 标记当前分析类型：variables | status
+const aiKind = ref('variables')
+const aiAnalyzing = ref(false)
+const aiContent = ref('')
+const aiThinking = ref('')
+const aiError = ref('')
+const aiExpanded = ref(false)
+let aiAbortController = null
+let mdRenderer = null
+
 // ============ 工具函数 ============
 function formatBytes(val) {
   if (!val || val === 0) return '0 B'
@@ -487,11 +568,9 @@ function formatUptime(seconds) {
   return parts.join(' ')
 }
 
-// 通过 execSQL 执行查询，返回数据行数组
-async function execQuery(sql) {
-  const resp = await execSQL({ connId, schema, sql, maxLine: '500' })
-  return resp.data.data?.data || []
-}
+// 注：原 execQuery 辅助函数已移除。服务器变量/状态/会话列表改走带方言适配的专用
+// 监控接口（/monitor/variables/all、/monitor/status/all、/monitor/processes），
+// 不再通过 /execSQL 执行 SHOW 语句，避免在 Oracle/SQLite 上触发 ORA-00900 等错误。
 
 // ============ 概览 Tab ============
 async function loadMetrics() {
@@ -512,27 +591,56 @@ async function loadResources() {
   } catch (e) { handleError(e, '加载资源监控') }
 }
 
-// 加载服务器基础信息（运行时间、版本、字符集等），来自 SHOW STATUS / VARIABLES
+// 加载服务器基础信息（运行时间、版本、字符集等），通过带方言适配的监控接口获取。
+// MySQL/MariaDB: 从 SHOW STATUS/VARIABLES 提取；Oracle: 从 v$parameter/v$sysstat 提取对应字段；
+// 不支持的数据库（如 SQLite）跳过，serverInfo 保持为空。
 async function loadServerInfo() {
   if (!connId) return
   try {
-    const [statusRows, varsRows] = await Promise.all([
-      execQuery('SHOW STATUS'),
-      execQuery('SHOW VARIABLES'),
+    const [statusRes, varsRes] = await Promise.all([
+      getMonitorAllStatus(connId),
+      getMonitorAllVariables(connId, 'global'),
     ])
+    const statusData = statusRes.data?.data || {}
+    const varsData = varsRes.data?.data || {}
+
+    // 同步数据库类型与版本，供 AI 分析与其他方言判断复用
+    if (varsData.dbType) dbType.value = varsData.dbType
+    if (varsData.version) dbVersion.value = varsData.version
+
+    // 不支持的数据库类型：保持 serverInfo 为空，不报错
+    if (statusData.supported === false || varsData.supported === false) {
+      serverInfo.value = {}
+      return
+    }
+
     const statusMap = {}
     const varsMap = {}
-    statusRows.forEach(r => { statusMap[r.Variable_name || r.variable_name] = r.Value || r.value })
-    varsRows.forEach(r => { varsMap[r.Variable_name || r.variable_name] = r.Value || r.value })
+    ;(statusData.items || []).forEach(r => { statusMap[r.name] = r.value })
+    ;(varsData.items || []).forEach(r => { varsMap[r.name] = r.value })
 
-    const uptime = parseInt(statusMap['Uptime'] || '0')
-    serverInfo.value = {
-      '运行时间': formatUptime(uptime),
-      '数据库版本': varsMap['version'] || '-',
-      '数据目录': varsMap['datadir'] || '-',
-      '字符集': varsMap['character_set_server'] || '-',
-      '连接数(活跃/上限)': (statusMap['Threads_connected'] || '?') + ' / ' + (varsMap['max_connections'] || '?'),
-      '慢查询数': statusMap['Slow_queries'] || '0',
+    const type = varsData.dbType || dbType.value
+    if (type === 'oracle') {
+      // Oracle 字段映射：v$parameter 小写命名，无 datadir/Uptime/Slow_queries 概念。
+      // 活跃会话数已由概览的指标卡片（getMonitorMetrics）展示，此处不重复。
+      serverInfo.value = {
+        '数据库版本': varsData.version || '-',
+        '字符集': varsMap['nls_characterset'] || varsMap['nls_language'] || '-',
+        '会话/进程上限': varsMap['processes'] || varsMap['sessions'] || '-',
+        'SGA 目标': varsMap['sga_target'] || '-',
+        'PGA 聚合目标': varsMap['pga_aggregate_target'] || '-',
+      }
+    } else {
+      // MySQL / MariaDB：沿用原 SHOW STATUS/VARIABLES 字段名
+      const uptime = parseInt(statusMap['Uptime'] || '0')
+      serverInfo.value = {
+        '运行时间': formatUptime(uptime),
+        '数据库版本': varsMap['version'] || '-',
+        '数据目录': varsMap['datadir'] || '-',
+        '字符集': varsMap['character_set_server'] || '-',
+        '连接数(活跃/上限)': (statusMap['Threads_connected'] || '?') + ' / ' + (varsMap['max_connections'] || '?'),
+        '慢查询数': statusMap['Slow_queries'] || '0',
+      }
     }
   } catch (e) { handleError(e, '加载服务器信息') }
 }
@@ -562,21 +670,22 @@ watch(overviewAutoRefresh, (val) => {
 })
 
 // ============ 会话与进程 Tab ============
-// 使用 SHOW FULL PROCESSLIST，获取包含 info 的完整字段
+// 通过 /monitor/processes 接口获取（后端已做方言适配：MySQL SHOW PROCESSLIST / Oracle v$session）
 async function loadSessions() {
   if (!connId) return
   sessionLoading.value = true
   try {
-    const rows = await execQuery('SHOW FULL PROCESSLIST')
+    const res = await getMonitorProcesses(connId)
+    const rows = res.data?.data?.processes || []
     sessionList.value = rows.map(p => ({
-      id: p.Id ?? p.id,
-      user: p.User || p.user || '',
-      host: p.Host || p.host || '',
-      db: p.db || p.database || '',
-      command: p.Command || p.command || '',
-      time: p.Time ?? p.time ?? 0,
-      state: p.State || p.state || '',
-      info: p.Info || p.info || '',
+      id: p.id,
+      user: p.user || '',
+      host: p.host || '',
+      db: p.db || '',
+      command: p.command || '',
+      time: p.time ?? 0,
+      state: p.state || '',
+      info: p.info || '',
     }))
   } catch (e) { handleError(e, '加载会话列表') } finally { sessionLoading.value = false }
 }
@@ -882,16 +991,25 @@ function onTrendModeChange(mode) {
 }
 
 // ============ 服务器变量 Tab ============
+// 通过 /monitor/variables/all 获取（后端按 dbType 适配：MySQL SHOW / Oracle v$parameter）
 async function loadVariables() {
   if (!connId) return
   varsLoading.value = true
   try {
-    const sql = varsScope.value === 'global' ? 'SHOW GLOBAL VARIABLES' : 'SHOW SESSION VARIABLES'
-    const rows = await execQuery(sql)
-    varsList.value = rows.map(r => ({
-      name: r.Variable_name || r.variable_name || '',
-      value: r.Value ?? r.value ?? '',
-    }))
+    const res = await getMonitorAllVariables(connId, varsScope.value)
+    const data = res.data?.data || {}
+    if (data.dbType) dbType.value = data.dbType
+    if (data.version) dbVersion.value = data.version
+    if (data.supported === false) {
+      varsList.value = []
+      varsUnsupported.value = data.unsupportedMessage || '当前数据库不支持查看服务器变量'
+    } else {
+      varsList.value = (data.items || []).map(r => ({
+        name: r.name || '',
+        value: r.value ?? '',
+      }))
+      varsUnsupported.value = ''
+    }
   } catch (e) { handleError(e, '加载服务器变量') } finally { varsLoading.value = false }
 }
 
@@ -909,15 +1027,25 @@ const filteredVariables = computed(() => {
 })
 
 // ============ 状态指标 Tab ============
+// 通过 /monitor/status/all 获取（后端按 dbType 适配：MySQL SHOW STATUS / Oracle v$sysstat）
 async function loadStatus() {
   if (!connId) return
   statusLoading.value = true
   try {
-    const rows = await execQuery('SHOW STATUS')
-    statusList.value = rows.map(r => ({
-      name: r.Variable_name || r.variable_name || '',
-      value: r.Value ?? r.value ?? '',
-    }))
+    const res = await getMonitorAllStatus(connId)
+    const data = res.data?.data || {}
+    if (data.dbType) dbType.value = data.dbType
+    if (data.version) dbVersion.value = data.version
+    if (data.supported === false) {
+      statusList.value = []
+      statusUnsupported.value = data.unsupportedMessage || '当前数据库不支持查看状态指标'
+    } else {
+      statusList.value = (data.items || []).map(r => ({
+        name: r.name || '',
+        value: r.value ?? '',
+      }))
+      statusUnsupported.value = ''
+    }
   } catch (e) { handleError(e, '加载状态指标') } finally { statusLoading.value = false }
 }
 
@@ -947,6 +1075,140 @@ async function doFlushStatus() {
     ElMessage.success('状态计数器已重置')
     await loadStatus()
   } catch (e) { handleError(e, '重置状态') }
+}
+
+// ============ AI 分析（服务器变量 / 状态指标共用） ============
+// 初始化 Markdown 渲染器（懒加载，与 SQL 优化面板共用同一渲染器）
+async function ensureMdRenderer() {
+  if (mdRenderer) return mdRenderer
+  mdRenderer = await getMarkdownRenderer()
+  return mdRenderer
+}
+
+// AI 分析结果渲染为 HTML
+const renderedAIContent = computed(() => {
+  if (!aiContent.value || !mdRenderer) return ''
+  try {
+    return mdRenderer.render(aiContent.value)
+  } catch {
+    return aiContent.value
+  }
+})
+
+// 发起 AI 分析（SSE 流式）。
+// kind: 'variables' | 'status'，取当前 Tab 已过滤的列表作为分析数据。
+async function runAIAnalyze(kind) {
+  if (aiAnalyzing.value) return
+  const sourceList = kind === 'variables' ? filteredVariables.value : filteredStatus.value
+  if (!sourceList || sourceList.length === 0) {
+    ElMessage.warning('当前没有可分析的数据')
+    return
+  }
+
+  stopAIAnalyze()
+  aiKind.value = kind
+  aiAnalyzing.value = true
+  aiContent.value = ''
+  aiThinking.value = ''
+  aiError.value = ''
+  aiExpanded.value = true
+
+  const controller = new AbortController()
+  aiAbortController = controller
+
+  try {
+    await ensureMdRenderer()
+    const auth = sessionStorage.getItem('authentication') || ''
+    const resp = await fetch('/api/monitor/aiAnalyze', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': auth,
+      },
+      body: JSON.stringify({
+        connId,
+        kind,
+        dbType: dbType.value,
+        version: dbVersion.value,
+        data: sourceList.map(r => ({ name: r.name, value: String(r.value ?? '') })),
+      }),
+      signal: controller.signal,
+    })
+
+    // 非 SSE 响应（如 AI 未配置返回的 JSON 错误）：按 JSON 解析错误信息
+    const contentType = resp.headers.get('Content-Type') || ''
+    if (!contentType.includes('text/event-stream')) {
+      let msg = 'AI 服务请求失败 (HTTP ' + resp.status + ')'
+      try {
+        const errData = await resp.json()
+        if (errData?.msg) msg = errData.msg
+      } catch { /* ignore */ }
+      aiError.value = msg
+      return
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6).trim()
+        if (!data) continue
+
+        let chunk
+        try {
+          chunk = JSON.parse(data)
+        } catch {
+          continue
+        }
+
+        switch (chunk.type) {
+          case 'thinking':
+            aiThinking.value += chunk.content
+            break
+          case 'content':
+            aiContent.value += chunk.content
+            break
+          case 'error':
+            aiError.value = chunk.content || 'AI 处理出错'
+            break
+          case 'done':
+            break
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      aiError.value = 'AI 服务请求失败: ' + (e.message || '未知错误')
+    }
+  } finally {
+    aiAnalyzing.value = false
+    aiAbortController = null
+    // 分析完成后保持展开，让用户看到结果；无任何内容时折叠
+    if (!aiThinking.value && !aiContent.value && !aiError.value) {
+      aiExpanded.value = false
+    }
+  }
+}
+
+function stopAIAnalyze() {
+  if (aiAbortController) {
+    aiAbortController.abort()
+    aiAbortController = null
+  }
+}
+
+function toggleAIExpand() {
+  aiExpanded.value = !aiExpanded.value
 }
 
 // ============ InnoDB 状态 / 锁 / 慢查询 / 表统计 Tab ============
@@ -1008,8 +1270,8 @@ function onTabChange(name) {
       loadHistory()
     }
   }
-  else if (name === 'variables' && varsList.value.length === 0) loadVariables()
-  else if (name === 'status' && statusList.value.length === 0) loadStatus()
+  else if (name === 'variables' && varsList.value.length === 0 && !varsUnsupported.value) loadVariables()
+  else if (name === 'status' && statusList.value.length === 0 && !statusUnsupported.value) loadStatus()
   else if (name === 'innodb' && !innodbLoaded.value) loadInnodb()
   else if (name === 'locks' && !locksLoaded.value) loadLocks()
   else if (name === 'slow' && !slowLoaded.value) loadSlow()
@@ -1033,10 +1295,26 @@ function onClose() {
   sessionInterval.value = 0
   stopTrendAutoRefresh()
   trendPaused.value = false
+  // 中止可能进行中的 AI 分析
+  stopAIAnalyze()
   // 重置趋势模式为实时，清空历史数据
   trendMode.value = 'realtime'
   historyPoints.value = []
-  // 清空新增 Tab 数据，避免串连数据污染
+  // 清空所有 Tab 数据，避免下次打开残留陈旧数据
+  // （此前仅清理 innodb/locks/slow/topTables，导致 overview/sessions/variables/status
+  //   在 Oracle 等不支持的场景下仍显示上一次的数据）
+  metrics.value = null
+  resources.value = null
+  serverInfo.value = {}
+  sessionList.value = []
+  sessionFilter.value = ''
+  trendHistory.value = []
+  varsList.value = []
+  varsFilter.value = ''
+  varsUnsupported.value = ''
+  statusList.value = []
+  statusFilter.value = ''
+  statusUnsupported.value = ''
   innodbStatus.value = ''
   innodbSupported.value = false
   innodbLoaded.value = false
@@ -1046,6 +1324,15 @@ function onClose() {
   slowLoaded.value = false
   topTablesList.value = []
   topTablesLoaded.value = false
+  // 重置 AI 分析状态
+  aiContent.value = ''
+  aiThinking.value = ''
+  aiError.value = ''
+  aiAnalyzing.value = false
+  aiExpanded.value = false
+  // 重置数据库类型与版本（下次打开时由监控接口重新填充）
+  dbType.value = ''
+  dbVersion.value = ''
 }
 
 onUnmounted(() => {
@@ -1204,5 +1491,101 @@ onUnmounted(() => {
   gap: 8px;
   margin-bottom: 10px;
   flex-wrap: wrap;
+}
+
+/* AI 分析结果区域 */
+.ai-result-section {
+  margin-top: 12px;
+  border: 1px solid var(--db-card-border);
+  border-radius: 6px;
+  background: var(--db-card-bg);
+  overflow: hidden;
+}
+
+.ai-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--db-bg-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--db-text-primary);
+}
+
+.ai-arrow {
+  transition: transform 0.2s;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.ai-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.ai-result-body {
+  padding: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.ai-thinking {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--db-bg-secondary);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--db-text-tertiary);
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.ai-result-body .markdown-body {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ai-result-body .markdown-body :deep(h3) {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-result-body .markdown-body :deep(h4) {
+  margin: 8px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-result-body .markdown-body :deep(p) {
+  margin: 6px 0;
+}
+
+.ai-result-body .markdown-body :deep(ul),
+.ai-result-body .markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.ai-result-body .markdown-body :deep(code) {
+  padding: 1px 4px;
+  background: var(--db-bg-secondary);
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.ai-result-body .markdown-body :deep(pre) {
+  padding: 8px 10px;
+  background: var(--db-bg-secondary);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.ai-result-body .markdown-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
 }
 </style>

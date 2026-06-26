@@ -11,7 +11,6 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
-	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
@@ -85,7 +84,7 @@ type AIConfig struct {
 
 func GetSystemConfigByKey(key string) *SystemConfig {
 	cfg := &SystemConfig{}
-	err := database.Mngtdb.Get(cfg, "select * from t_system_config where config_key = ?", key)
+	err := getDB().Get(cfg, "select * from t_system_config where config_key = ?", key)
 	if err != nil {
 		if dberr.IsNoRows(err) {
 			return nil
@@ -106,16 +105,17 @@ func GetSystemConfigValue(key string) string {
 
 func SaveSystemConfig(cfg *SystemConfigSave) {
 	existCfg := GetSystemConfigByKey(cfg.ConfigKey)
+	db := getDB()
 
 	if existCfg == nil {
 		cfg.Id = idgen.RandomStr()
-		_, err := database.Mngtdb.Exec("insert into t_system_config (id, config_key, config_value, config_type, remark) values (?, ?, ?, ?, ?)",
+		_, err := db.Exec("insert into t_system_config (id, config_key, config_value, config_type, remark) values (?, ?, ?, ?, ?)",
 			cfg.Id, cfg.ConfigKey, cfg.ConfigValue, cfg.ConfigType, cfg.Remark)
 		if err != nil {
 			if dberr.IsUniqueConstraint(err) {
 				existCfg = GetSystemConfigByKey(cfg.ConfigKey)
 				if existCfg != nil {
-					_, err := database.Mngtdb.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
+					_, err := db.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
 						cfg.ConfigValue, cfg.ConfigType, cfg.Remark, time.Now(), existCfg.Id)
 					if err != nil {
 						log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
@@ -128,7 +128,7 @@ func SaveSystemConfig(cfg *SystemConfigSave) {
 			return
 		}
 	} else {
-		_, err := database.Mngtdb.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
+		_, err := db.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
 			cfg.ConfigValue, cfg.ConfigType, cfg.Remark, time.Now(), existCfg.Id)
 		if err != nil {
 			log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
@@ -141,9 +141,9 @@ func ListSystemConfig(configType string) []*SystemConfig {
 	var configs []*SystemConfig
 	var err error
 	if configType == "" {
-		err = database.Mngtdb.Select(&configs, "select * from t_system_config order by config_type, config_key")
+		err = getDB().Select(&configs, "select * from t_system_config order by config_type, config_key")
 	} else {
-		err = database.Mngtdb.Select(&configs, "select * from t_system_config where config_type = ? order by config_key", configType)
+		err = getDB().Select(&configs, "select * from t_system_config where config_type = ? order by config_key", configType)
 	}
 	if err != nil {
 		log.Printf("[ListSystemConfig] 查询系统配置列表失败: %v", err)
@@ -438,8 +438,8 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 				ConfigKey: "ai.selectedModelId", ConfigValue: cfg.SelectedModelId, ConfigType: "ai", Remark: "当前选中的模型ID",
 			})
 
-			if database.Mngtdb != nil {
-				database.Mngtdb.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.enableThinking')")
+			if db := getDB(); db != nil {
+				db.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.enableThinking')")
 				logger.PrintErr(errors.New("已删除旧的 AI 配置字段"))
 			}
 

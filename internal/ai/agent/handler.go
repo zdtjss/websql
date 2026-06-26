@@ -15,7 +15,6 @@ import (
 	admin "websql/internal/app/admin"
 	conn "websql/internal/app/conn"
 	system "websql/internal/app/system"
-	"websql/internal/database"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/safego"
 
@@ -428,7 +427,7 @@ func GetDBInfo(connID string) (string, string, string) {
 		return "", "", ""
 	}
 	cfgList := []conn.ConnCfg{}
-	err := database.Mngtdb.Select(&cfgList, "select * from t_conn where id = ?", connID)
+	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connID)
 	if err != nil || len(cfgList) == 0 {
 		return "", "", ""
 	}

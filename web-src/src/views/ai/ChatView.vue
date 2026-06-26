@@ -193,6 +193,9 @@
                             </div>
                           </div>
                           <div class="prompt-item-actions">
+                            <el-button text type="primary" @click.stop="handlePromptFillInput(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })" title="填入输入框">
+                              <el-icon><BottomLeft /></el-icon>
+                            </el-button>
                             <el-button text type="primary">
                               <el-icon v-if="!prompt.isShared" @click.stop="handlePromptEdit(prompt.id)" title="编辑"><Edit /></el-icon>
                             </el-button>
@@ -252,6 +255,9 @@
                             </div>
                           </div>
                           <div class="prompt-item-actions">
+                            <el-button size="small" text type="primary" @click.stop="handlePromptFillInput(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })" title="填入输入框">
+                              <el-icon><BottomLeft /></el-icon>
+                            </el-button>
                             <el-button size="small" text type="info" @click.stop="handleViewPromptDetail(prompt)" title="查看">
                               <el-icon><View /></el-icon>
                             </el-button>
@@ -295,6 +301,10 @@
                   </div>
                   <template #footer>
                     <el-button @click="promptDetailVisible = false">关闭</el-button>
+                    <el-button type="primary" @click="handleFillFromDetail">
+                      <el-icon><BottomLeft /></el-icon>
+                      填入输入框
+                    </el-button>
                     <el-button type="primary" @click="handleSendFromDetail">
                       <el-icon><Promotion /></el-icon>
                       发送给大模型
@@ -474,7 +484,6 @@
 
           <div class="input-action-row">
             <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
-
               <el-input v-model="question" type="textarea" :rows="5" placeholder="描述你想查询的内容，或使用语音录入... (Ctrl+Enter 发送)"
                 :disabled="loading" @keydown.ctrl.enter="sendMessage" class="question-input" />
             </div>
@@ -489,12 +498,6 @@
                 class="send-btn" size="default">
                 <el-icon>
                   <Promotion />
-                </el-icon>
-              </el-button>
-              <el-button v-if="lastSql" type="success" @click="insertToEditor" title="将最后生成的 SQL 加入编辑器"
-                class="insert-btn" size="default">
-                <el-icon>
-                  <DocumentAdd />
                 </el-icon>
               </el-button>
               <router-link v-if="canUseClassicView" to="/classical" class="switch-view-link" title="经典视图">
@@ -549,7 +552,7 @@ import { getSystemConfig } from '@/api/system'
 import { sanitizeError } from '@/utils/errorHandler'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
-import { ChatLineRound, Clock, Coin, CopyDocument, Delete, Document, DocumentAdd, Edit, Loading, Microphone, Moon, Plus, Promotion, RefreshRight, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { BottomLeft, ChatLineRound, Clock, Coin, CopyDocument, Delete, Document, Edit, Loading, Microphone, Moon, Plus, Promotion, RefreshRight, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -581,43 +584,53 @@ async function ensureMd() {
   mdInitPromise = (async () => {
     md = await getMarkdownRenderer(apiBase)
 
-    const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
-      return self.renderToken(tokens, idx, options)
-    }
-    md.renderer.rules.fence = function (tokens, idx, options, env, self) {
-      const token = tokens[idx]
-      const info = token.info ? token.info.trim().toLowerCase() : ''
-      if (info === 'mermaid') {
-        const source = token.content.trim()
-        const svgCache = getMermaidSvgCache()
-        const id = getNextMermaidId()
-        if (svgCache.has(source)) {
-          return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
+    // 幂等保护：getMarkdownRenderer 返回的是 lazyDeps.js 中的模块级单例，
+    // 而本组件的 md / mdInitPromise 是 <script setup> 实例级变量——每次路由
+    // 切走再回到 AI 页面，组件重新挂载，ensureMd 会在同一个共享单例上再次
+    // 注册 fence 覆盖。此时捕获到的 md.renderer.rules.fence 已是上一次被
+    // 覆盖过的版本，会被当作 defaultFenceRender 再包一层 code-block-wrapper，
+    // 导致代码块出现多层嵌套（每重挂一次多一层，复制按钮的 data-code 也相同）。
+    // 因此必须在单例自身上打标记，保证包裹逻辑只执行一次。
+    if (!md.__codeBlockWrapperApplied) {
+      const defaultFenceRender = md.renderer.rules.fence || function (tokens, idx, options, env, self) {
+        return self.renderToken(tokens, idx, options)
+      }
+      md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+        const token = tokens[idx]
+        const info = token.info ? token.info.trim().toLowerCase() : ''
+        if (info === 'mermaid') {
+          const source = token.content.trim()
+          const svgCache = getMermaidSvgCache()
+          const id = getNextMermaidId()
+          if (svgCache.has(source)) {
+            return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
+          }
+          const escaped = token.content
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+          return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
         }
-        const escaped = token.content
+        const lang = info || ''
+        const rawCode = token.content
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-        return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
+        let encodedContent = ''
+        try {
+          encodedContent = btoa(encodeURIComponent(rawCode))
+        } catch (_) {}
+        const defaultHtml = defaultFenceRender(tokens, idx, options, env, self)
+        return `<div class="code-block-wrapper">` +
+          `<div class="code-block-header">` +
+            `<span class="code-block-lang">${lang}</span>` +
+            `<button class="code-copy-btn" data-code="${encodedContent}" title="复制代码">复制</button>` +
+          `</div>` +
+          defaultHtml +
+        `</div>`
       }
-      const lang = info || ''
-      const rawCode = token.content
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-      let encodedContent = ''
-      try {
-        encodedContent = btoa(encodeURIComponent(rawCode))
-      } catch (_) {}
-      const defaultHtml = defaultFenceRender(tokens, idx, options, env, self)
-      return `<div class="code-block-wrapper">` +
-        `<div class="code-block-header">` +
-          `<span class="code-block-lang">${lang}</span>` +
-          `<button class="code-copy-btn" data-code="${encodedContent}" title="复制代码">复制</button>` +
-        `</div>` +
-        defaultHtml +
-      `</div>`
+      md.__codeBlockWrapperApplied = true
     }
 
     return md
@@ -640,7 +653,6 @@ const streamingContent = ref('')
 const streamingExecContent = ref('')
 const chatHistory = ref([])
 const sessionId = ref('')
-const lastSql = ref('')
 const msgContainer = useTemplateRef('msgContainer')
 let speechRecognition = null
 
@@ -2392,7 +2404,6 @@ async function streamChatResponse(messageContent, excelContext, options = {}) {
                 const content = streamingContent.value
                 const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
                 chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
-                if (isSql) lastSql.value = content
                 streamingContent.value = ''
               }
               // 然后再添加错误消息，确保显示在结果区域下方
@@ -2416,7 +2427,6 @@ async function streamChatResponse(messageContent, excelContext, options = {}) {
       const content = streamingContent.value
       const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(content.trim())
       chatHistory.value.push({ role: 'assistant', content, hasSql: isSql })
-      if (isSql) lastSql.value = content
       streamingContent.value = ''
     }
 
@@ -3122,9 +3132,8 @@ function clearUploadedExcel() {
   uploadedExcel.value = null
 }
 
-function handlePromptSendToAI(content, connInfo) {
-  promptPopoverVisible.value = false
-  promptEditDialogVisible.value = false
+// 将提示词内容填入输入框，并同步 schema/表选择；send 为 true 时立即发送
+function applyPromptToInput(content, connInfo, send) {
   question.value = content
   if (connInfo && connInfo.connSchemas && connInfo.connSchemas.length > 0) {
     selectedSchemas.value = connInfo.connSchemas.map(cs => cs.connId + '::' + cs.schema)
@@ -3135,13 +3144,25 @@ function handlePromptSendToAI(content, connInfo) {
       loadTableListForSchemas().then(() => {
         const availableNames = tableList.value.map(t => t.label || t.name)
         selectedTables.value = tableNames.filter(t => availableNames.includes(t))
-        nextTick(() => sendMessage())
+        if (send) nextTick(() => sendMessage())
       })
     })
   } else {
     selectedTables.value = []
-    nextTick(() => sendMessage())
+    if (send) nextTick(() => sendMessage())
   }
+}
+
+function handlePromptSendToAI(content, connInfo) {
+  promptPopoverVisible.value = false
+  promptEditDialogVisible.value = false
+  applyPromptToInput(content, connInfo, true)
+}
+
+// 仅填入输入框，不发送
+function handlePromptFillInput(content, connInfo) {
+  promptPopoverVisible.value = false
+  applyPromptToInput(content, connInfo, false)
 }
 
 function handlePromptAdd() {
@@ -3182,6 +3203,16 @@ function handleSendFromDetail() {
   }
 }
 
+function handleFillFromDetail() {
+  if (promptDetail.value) {
+    handlePromptFillInput(promptDetail.value.content, {
+      connSchemas: promptDetail.value.connSchemas,
+      tables: promptDetail.value.tables,
+    })
+    promptDetailVisible.value = false
+  }
+}
+
 function clearSession(showMsg) {
   stopGeneration()
   chatHistory.value = []
@@ -3189,7 +3220,6 @@ function clearSession(showMsg) {
   thinkingText.value = ''
   streamingContent.value = ''
   streamingExecContent.value = ''
-  lastSql.value = ''
   confirmVisible.value = false
   confirmSQL.value = ''
   pendingSQLList.value = []
@@ -3200,12 +3230,6 @@ function clearSession(showMsg) {
   if(showMsg) {
     ElMessage({ message: '已新建会话', type: 'success' })
   }
-}
-
-function insertToEditor() {
-  if (!lastSql.value) return
-  // emit('insertSql', lastSql.value.trim())
-  // emit('update:modelValue', false)
 }
 
 // --- 语音识别 ---
@@ -3531,7 +3555,6 @@ async function loadSession(id) {
           hasSql: isSql,
           collapsed: true
         })
-        if (isSql) lastSql.value = msg.content
       }
 
       // 恢复会话上下文（当时选择的 schemas 和 tables）
@@ -4364,33 +4387,6 @@ onUnmounted(() => {
   50% { opacity: 0.7; }
 }
 
-/* 加入编辑器按钮美化 - 柔和青绿 */
-.insert-btn {
-  border-radius: 8px;
-  font-weight: 500;
-  font-size: 13px;
-  padding: 8px 12px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  border: 1.5px solid #26a69a;
-  background: linear-gradient(135deg, #4db6ac 0%, #26a69a 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(77, 182, 172, 0.2);
-  min-width: 38px;
-  min-height: 38px;
-}
-
-.insert-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(77, 182, 172, 0.3);
-  background: linear-gradient(135deg, #26a69a 0%, #00897b 100%);
-  border-color: #00897b;
-}
-
-.insert-btn .el-icon {
-  margin-right: 4px;
-  font-size: 16px;
-}
-
 /* 切换视图链接 - 无下划线超链接样式 */
 .switch-view-link {
   display: inline-flex;
@@ -4767,6 +4763,11 @@ onUnmounted(() => {
   opacity: 0;
   transition: opacity 0.2s;
   flex-shrink: 0;
+}
+
+.prompt-popover-body .prompt-item-actions .el-button {
+  padding: 4px;
+  margin-left: 0 !important;
 }
 
 .prompt-popover-body .prompt-item:hover .prompt-item-actions {
@@ -5604,19 +5605,6 @@ body.mermaid-resizing * {
 [data-theme="dark"] .toolbar-btn.el-button--danger {
   background-color: rgba(243, 139, 168, 0.15);
   border-color: rgba(243, 139, 168, 0.25);
-}
-
-[data-theme="dark"] .insert-btn {
-  border-color: var(--success-color);
-  background: linear-gradient(135deg, rgba(166, 227, 161, 0.2) 0%, rgba(166, 227, 161, 0.1) 100%);
-  color: var(--success-color);
-  box-shadow: 0 2px 8px rgba(166, 227, 161, 0.12);
-}
-
-[data-theme="dark"] .insert-btn:hover {
-  background: linear-gradient(135deg, rgba(166, 227, 161, 0.3) 0%, rgba(166, 227, 161, 0.15) 100%);
-  border-color: var(--success-color);
-  box-shadow: 0 4px 12px rgba(166, 227, 161, 0.2);
 }
 
 [data-theme="dark"] .switch-view-link {

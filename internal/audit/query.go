@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/dberr"
 )
@@ -49,7 +48,7 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 
 	total := 0
 	countSQL := "SELECT COUNT(*) FROM t_audit_log" + whereClause
-	err := database.Mngtdb.Get(&total, countSQL, args...)
+	err := getDB().Get(&total, countSQL, args...)
 	if err != nil {
 		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil
@@ -71,7 +70,7 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 	dataArgs := append(args, pageSize, offset)
 
 	var logs []AuditLog
-	err = database.Mngtdb.Select(&logs, dataSQL, dataArgs...)
+	err = getDB().Select(&logs, dataSQL, dataArgs...)
 	if err != nil {
 		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil

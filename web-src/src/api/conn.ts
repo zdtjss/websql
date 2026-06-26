@@ -209,6 +209,33 @@ export function getMonitorProcesses(connId: string): Promise<AxiosResponse> {
   return http.get('/monitor/processes', { params: { connId } })
 }
 
+/** 监控 - 服务器变量/状态项 */
+export interface MonitorVarItem {
+  name: string
+  value: string
+}
+
+/** 监控 - 服务器变量/状态完整列表返回结构 */
+export interface MonitorVarListResult {
+  items: MonitorVarItem[]
+  count: number
+  supported: boolean
+  unsupportedMessage?: string
+}
+
+/** 监控 - 获取完整服务器变量列表（带方言适配），对应 GET /monitor/variables/all
+ *  scope: global | session
+ *  返回 { items, count, supported, unsupportedMessage } */
+export function getMonitorAllVariables(connId: string, scope: 'global' | 'session'): Promise<AxiosResponse<ApiResponse<MonitorVarListResult>>> {
+  return http.get('/monitor/variables/all', { params: { connId, scope } })
+}
+
+/** 监控 - 获取完整状态指标列表（带方言适配），对应 GET /monitor/status/all
+ *  返回 { items, count, supported, unsupportedMessage } */
+export function getMonitorAllStatus(connId: string): Promise<AxiosResponse<ApiResponse<MonitorVarListResult>>> {
+  return http.get('/monitor/status/all', { params: { connId } })
+}
+
 /** 监控历史指标点 */
 export interface MonitorHistoryPoint {
   timestamp: string

@@ -6,7 +6,6 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
-	"websql/internal/database"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
@@ -30,7 +29,7 @@ func DelTreeNode(c *gin.Context) {
 	if !admin.CheckAdminPower(c) {
 		return
 	}
-	database.Mngtdb.Exec("delete from t_tree where id = ?", c.PostForm("id"))
+	getDB().Exec("delete from t_tree where id = ?", c.PostForm("id"))
 	response.WriteOK(c, "")
 }
 
@@ -39,7 +38,7 @@ func ListDirTree(c *gin.Context) {
 		return
 	}
 	treeList := []*DirTree{}
-	err := database.Mngtdb.Select(&treeList, "select * from t_tree")
+	err := getDB().Select(&treeList, "select * from t_tree")
 	if err != nil {
 		log.Printf("[ListDirTree] 查询目录树失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -67,7 +66,7 @@ func ConnBaseTree(c *gin.Context) {
 	}
 
 	treeList := []*DirTree{}
-	err := database.Mngtdb.Select(&treeList, "select * from t_tree")
+	err := getDB().Select(&treeList, "select * from t_tree")
 	if err != nil {
 		log.Printf("[ConnBaseTree] 查询目录树失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -88,7 +87,7 @@ func ConnBaseTree(c *gin.Context) {
 		cfg.Children = append(cfg.Children, findChild(cfg, tree, connMap)...)
 	}
 	firstLevelConns := []*conn.ConnCfgBase{}
-	err = database.Mngtdb.Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = '' or parent_id is null)")
+	err = getDB().Select(&firstLevelConns, "select id,name,parent_id from t_conn where (parent_id = '' or parent_id is null)")
 	if err != nil {
 		log.Printf("[ConnBaseTree] 查询一级连接失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -130,7 +129,7 @@ func findChild(curNode *conn.Tree, nodes []*conn.Tree, connMap map[string][]*con
 func doTreeInsert(tree []*DirTree) {
 	planeDir := expendDirTreeAll(tree)
 
-	tx, err := database.Mngtdb.Beginx()
+	tx, err := getDB().Beginx()
 	if err != nil {
 		log.Printf("[doTreeInsert] 开启事务失败: %v", err)
 		return
@@ -178,7 +177,7 @@ func expendDirTree(p *DirTree) []*DirTree {
 
 func listConnBase() map[string][]*conn.ConnCfgBase {
 	cfgList := []*conn.ConnCfgBase{}
-	err := database.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
+	err := getDB().Select(&cfgList, "select id,name,parent_id from t_conn")
 	if err != nil {
 		log.Printf("[listConnBase] 查询连接基础列表失败: %v", err)
 		return nil
@@ -197,6 +196,6 @@ func listConnBase() map[string][]*conn.ConnCfgBase {
 
 func ListConnBaseFromDB() []*conn.ConnCfgBase {
 	cfgList := []*conn.ConnCfgBase{}
-	database.Mngtdb.Select(&cfgList, "select id,name,parent_id from t_conn")
+	getDB().Select(&cfgList, "select id,name,parent_id from t_conn")
 	return cfgList
 }

@@ -97,9 +97,10 @@ func HandleGetAuditStats(c *gin.Context) {
 		"uniqueUsers":     "SELECT COUNT(DISTINCT user_id) FROM t_audit_log",
 	}
 
+	db := getDB()
 	for key, query := range statQueries {
 		var count int
-		if err := database.Mngtdb.Get(&count, query); err == nil {
+		if err := db.Get(&count, query); err == nil {
 			stats[key] = count
 		}
 	}
@@ -109,14 +110,14 @@ func HandleGetAuditStats(c *gin.Context) {
 		Count   int    `db:"cnt" json:"count"`
 	}
 	var typeCounts []typeCount
-	err := database.Mngtdb.Select(&typeCounts,
+	err := db.Select(&typeCounts,
 		"SELECT sql_type, COUNT(*) as cnt FROM t_audit_log GROUP BY sql_type ORDER BY cnt DESC")
 	if err == nil {
 		stats["byType"] = typeCounts
 	}
 
 	var sourceCounts []typeCount
-	err = database.Mngtdb.Select(&sourceCounts,
+	err = db.Select(&sourceCounts,
 		`SELECT source as sql_type, COUNT(*) as cnt FROM t_audit_log GROUP BY source ORDER BY cnt DESC`)
 	if err == nil {
 		stats["bySource"] = sourceCounts

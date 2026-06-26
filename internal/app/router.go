@@ -35,6 +35,7 @@ import (
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 )
 
 // 不需要以/结尾
@@ -215,10 +216,14 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/monitor/resources", monitor.GetResources)
 	routerGroup.GET("/monitor/processes", monitor.GetProcesses)
 	routerGroup.GET("/monitor/variables", monitor.GetServerVariables)
+	routerGroup.GET("/monitor/variables/all", monitor.GetAllServerVariables)
+	routerGroup.GET("/monitor/status/all", monitor.GetAllServerStatus)
 	routerGroup.GET("/monitor/innodb-status", monitor.GetInnodbStatus)
 	routerGroup.GET("/monitor/locks", monitor.GetLocks)
 	routerGroup.GET("/monitor/slow-queries", monitor.GetSlowQueries)
 	routerGroup.GET("/monitor/top-tables", monitor.GetTopTables)
+	// 监控变量/状态 AI 分析（SSE 流式）
+	routerGroup.POST("/monitor/aiAnalyze", monitor.AIAnalyze)
 
 	// 全局数据库搜索
 	routerGroup.GET("/search/objects", search.SearchObjects)
@@ -242,8 +247,15 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/healthCheck", func(c *gin.Context) {
 		status := "ok"
 		dbStatus := "ok"
-		if database.Mngtdb != nil {
-			if err := database.Mngtdb.Ping(); err != nil {
+		// 优先使用容器持有的 DB；容器未构建时（如启动早期）回退到全局 database.Mngtdb
+		var db *sqlx.DB
+		if ctr := GetContainer(); ctr != nil {
+			db = ctr.Mngtdb
+		} else {
+			db = database.Mngtdb
+		}
+		if db != nil {
+			if err := db.Ping(); err != nil {
 				dbStatus = "error"
 				status = "degraded"
 			}

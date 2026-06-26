@@ -76,12 +76,16 @@ func (w *asyncHistoryWriter) consume() {
 }
 
 func (w *asyncHistoryWriter) flushBatch(batch []*historyRecord) {
-	if len(batch) == 0 || database.Mngtdb == nil {
+	if len(batch) == 0 {
+		return
+	}
+	db := getDB()
+	if db == nil {
 		return
 	}
 
 	err := database.RetryOnBusy(func() error {
-		tx, err := database.Mngtdb.Beginx()
+		tx, err := db.Beginx()
 		if err != nil {
 			return err
 		}

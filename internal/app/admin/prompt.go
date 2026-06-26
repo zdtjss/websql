@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
@@ -165,7 +164,7 @@ func PromptList(c *gin.Context) {
 	offset := (page - 1) * pageSize
 
 	userRoleIds := []string{}
-	database.Mngtdb.Select(&userRoleIds, "select role_id from t_user_role where user_id = ?", userId)
+	getDB().Select(&userRoleIds, "select role_id from t_user_role where user_id = ?", userId)
 
 	keywordCond := ""
 	if keyword != "" {
@@ -247,7 +246,7 @@ func PromptList(c *gin.Context) {
 
 	var countResult int
 	countSql = "select count(*) from (" + innerSql + ") t where 1=1" + tabCond
-	if err := database.Mngtdb.Get(&countResult, countSql, countArgs...); err != nil {
+	if err := getDB().Get(&countResult, countSql, countArgs...); err != nil {
 		log.Printf("查询提示词数量失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -258,7 +257,7 @@ func PromptList(c *gin.Context) {
 	args = append(args, pageSize, offset)
 
 	prompts := []*Prompt{}
-	if err := database.Mngtdb.Select(&prompts, pagedSql, args...); err != nil {
+	if err := getDB().Select(&prompts, pagedSql, args...); err != nil {
 		log.Printf("查询提示词列表失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -273,7 +272,7 @@ func PromptList(c *gin.Context) {
 		if p.RoleId != nil && *p.RoleId != "" {
 			p.IsRolePrompt = true
 			var roleName string
-			err := database.Mngtdb.Get(&roleName, "select name from t_role where id = ?", *p.RoleId)
+			err := getDB().Get(&roleName, "select name from t_role where id = ?", *p.RoleId)
 			if err == nil && roleName != "" {
 				p.RoleName = roleName
 			}
@@ -281,7 +280,7 @@ func PromptList(c *gin.Context) {
 		p.IsShared = p.CreatedBy != nil && *p.CreatedBy != userId
 		if p.IsShared && !p.IsRolePrompt {
 			var sharerName string
-			err := database.Mngtdb.Get(&sharerName, "select name from t_user where id = ?", *p.CreatedBy)
+			err := getDB().Get(&sharerName, "select name from t_user where id = ?", *p.CreatedBy)
 			if err == nil && sharerName != "" {
 				p.SharedByName = sharerName + " 分享"
 			} else {
@@ -309,7 +308,7 @@ func PromptListByRole(c *gin.Context) {
 	}
 
 	prompts := []*Prompt{}
-	err := database.Mngtdb.Select(&prompts,
+	err := getDB().Select(&prompts,
 		`select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at
 		from t_prompt
 		where role_id = ?
@@ -327,7 +326,7 @@ func PromptListByRole(c *gin.Context) {
 	for _, p := range prompts {
 		if p.CreatedBy != nil && *p.CreatedBy != "" {
 			var creatorName string
-			err := database.Mngtdb.Get(&creatorName, "select name from t_user where id = ?", *p.CreatedBy)
+			err := getDB().Get(&creatorName, "select name from t_user where id = ?", *p.CreatedBy)
 			if err == nil && creatorName != "" {
 				p.SharedByName = creatorName
 			}
@@ -345,7 +344,7 @@ func PromptDetail(c *gin.Context) {
 	}
 
 	prompt := &Prompt{}
-	err := database.Mngtdb.Get(prompt, "select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at from t_prompt where id = ?", id)
+	err := getDB().Get(prompt, "select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at from t_prompt where id = ?", id)
 	if err != nil {
 		log.Printf("查询提示词详情失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -353,7 +352,7 @@ func PromptDetail(c *gin.Context) {
 	}
 
 	sharedToIds := []string{}
-	database.Mngtdb.Select(&sharedToIds, "select shared_to from t_prompt_share where prompt_id = ?", id)
+	getDB().Select(&sharedToIds, "select shared_to from t_prompt_share where prompt_id = ?", id)
 	prompt.SharedUserIds = sharedToIds
 
 	if len(sharedToIds) > 0 {
@@ -362,7 +361,7 @@ func PromptDetail(c *gin.Context) {
 			Name      string `db:"name"`
 			LoginName string `db:"login_name"`
 		}{}
-		database.Mngtdb.Select(&users, "select id, name, login_name from t_user where id in (?)", sharedToIds)
+		getDB().Select(&users, "select id, name, login_name from t_user where id in (?)", sharedToIds)
 		prompt.SharedUsers = make([]SharedUser, 0, len(users))
 		for _, u := range users {
 			prompt.SharedUsers = append(prompt.SharedUsers, SharedUser{
@@ -395,7 +394,7 @@ func SavePrompt(c *gin.Context) {
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	tx, _ := database.Mngtdb.Beginx()
+	tx, _ := getDB().Beginx()
 	defer tx.Rollback()
 
 	var roleId any
@@ -470,7 +469,7 @@ func DelPrompt(c *gin.Context) {
 	}
 
 	prompt := &Prompt{}
-	err := database.Mngtdb.Get(prompt, "select id, created_by, role_id from t_prompt where id = ?", id)
+	err := getDB().Get(prompt, "select id, created_by, role_id from t_prompt where id = ?", id)
 	if err != nil {
 		response.WriteErr(c, 200, 400, "提示词不存在")
 		return
@@ -483,7 +482,7 @@ func DelPrompt(c *gin.Context) {
 		return
 	}
 
-	tx, _ := database.Mngtdb.Beginx()
+	tx, _ := getDB().Beginx()
 	defer tx.Rollback()
 
 	tx.Exec("delete from t_prompt_share where prompt_id = ?", id)

@@ -184,12 +184,16 @@ func (w *asyncWriter) consume() {
 }
 
 func (w *asyncWriter) flushBatch(batch []*AuditLog) {
-	if len(batch) == 0 || database.Mngtdb == nil {
+	if len(batch) == 0 {
+		return
+	}
+	db := getDB()
+	if db == nil {
 		return
 	}
 
 	err := database.RetryOnBusy(func() error {
-		tx, err := database.Mngtdb.Beginx()
+		tx, err := db.Beginx()
 		if err != nil {
 			return err
 		}
@@ -234,7 +238,8 @@ func StartAuditLogCleaner() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if database.Mngtdb == nil {
+			db := getDB()
+			if db == nil {
 				continue
 			}
 			svc := GetAuditService()
@@ -244,7 +249,7 @@ func StartAuditLogCleaner() {
 				continue
 			}
 			cutoff := time.Now().AddDate(0, 0, -cfg.RetentionDays)
-			result, err := database.Mngtdb.Exec("DELETE FROM t_audit_log WHERE exec_time < ?", cutoff)
+			result, err := db.Exec("DELETE FROM t_audit_log WHERE exec_time < ?", cutoff)
 			if err != nil {
 				log.Printf("[AuditCleaner] 清理过期日志失败 - err=%v\n", err)
 				continue

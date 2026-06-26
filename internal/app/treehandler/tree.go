@@ -13,7 +13,6 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
-	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/strutil"
@@ -107,7 +106,7 @@ func ListUserConnSchemasStream(c *gin.Context) {
 		DirName  *string `db:"dir_name"`
 	}
 	rows := []rawRow{}
-	err := database.Mngtdb.Select(&rows, sql.String(), param...)
+	err := getDB().Select(&rows, sql.String(), param...)
 	if err != nil {
 		return
 	}
