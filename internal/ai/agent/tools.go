@@ -333,6 +333,19 @@ func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID 
 		log.Printf("[Tool:query_data] tryAlternativeConn 拒绝：用户 SQL 未指定显式 schema，按 least-privilege 不跨连接路由 - connId=%s\n", defaultConnID)
 		return "", nil, ""
 	}
+
+	// 优化：检查 SQL 中是否引用了多个不同 schema。
+	// 如果只有一个 schema，且该 schema 属于默认连接，不触发跨连接路由。
+	// 这避免了"用户写 SELECT * FROM current_schema.table" 被误判为跨库操作的情况。
+	allSchemas := extractAllExplicitSchemasFromSQL(sql)
+	if len(allSchemas) == 1 {
+		singleSchema := allSchemas[0]
+		if singleConnID, ok := connLookup[singleSchema]; ok && singleConnID == defaultConnID {
+			log.Printf("[Tool:query_data] tryAlternativeConn 跳过：SQL 仅引用当前连接的 schema=%s，无需路由\n", singleSchema)
+			return "", nil, ""
+		}
+	}
+
 	altConnID, ok := connLookup[strings.ToUpper(schema)]
 	if !ok || altConnID == defaultConnID {
 		return "", nil, ""
@@ -351,6 +364,8 @@ func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID 
 //
 // **不**识别：
 //   - SELECT * FROM myTable（无 schema 前缀）
+//   - 别名引用 t1.column（不是 FROM/JOIN 后面紧跟的）
+//   - CTE 内部的引用（只路由最外层 schema）
 //
 // 区别于 extractSchemaFromSQL（后者可能从配置/会话中推断 schema），
 // 本函数是**纯静态**文本分析，避免误判。
@@ -366,13 +381,91 @@ func extractExplicitSchemaFromSQL(sql string) string {
 		// 第一个非空 capture group 就是 schema（capture 1/2/4 都是 schema 部分）
 		for i := 1; i < len(m); i++ {
 			if m[i] != "" {
-				// 双引号场景的 schema 在 group 2（双引号左半边）；反引号在 group 1
-				// 无引号场景的 schema 在 group 4（左半边）
-				return strings.ToUpper(m[i])
+				candidate := strings.ToUpper(m[i])
+				// 排除 SQL 内置函数和常见关键字被误识别为 schema 名
+				if isSQLFunctionOrKeyword(candidate) {
+					break // 跳过此 match，继续下一个
+				}
+				return candidate
 			}
 		}
 	}
 	return ""
+}
+
+// extractAllExplicitSchemasFromSQL 提取 SQL 中所有显式出现的 schema 前缀。
+// 与 extractExplicitSchemaFromSQL（只返回第一个）不同，本函数返回所有唯一的 schema 名。
+// 用于判断一条 SQL 是否引用了多个不同 schema，从而精确判断是否为跨库操作。
+func extractAllExplicitSchemasFromSQL(sql string) []string {
+	cleaned := sqlutil.StripSQLComments(sql)
+	re := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO)\s+(?:` +
+		"`" + `([A-Za-z_][A-Za-z0-9_]*)` + "`" + `\s*\.\s*` + "`" + `[A-Za-z_][A-Za-z0-9_]*` + "`" + `|` +
+		`"([A-Za-z_][A-Za-z0-9_]*)"\s*\.\s*"([A-Za-z_][A-Za-z0-9_]*)"` + `|` +
+		`([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*))`)
+	matches := re.FindAllStringSubmatch(cleaned, -1)
+	seen := make(map[string]bool)
+	var schemas []string
+	for _, m := range matches {
+		for i := 1; i < len(m); i++ {
+			if m[i] != "" {
+				candidate := strings.ToUpper(m[i])
+				if isSQLFunctionOrKeyword(candidate) {
+					break
+				}
+				if !seen[candidate] {
+					seen[candidate] = true
+					schemas = append(schemas, candidate)
+				}
+				break
+			}
+		}
+	}
+	return schemas
+}
+
+// isSQLFunctionOrKeyword 检查一个标识符是否是 SQL 内置函数名或关键字。
+// 这些如果出现在 "FROM func_name.something" 的位置，不应被当做 schema 前缀。
+// 典型误判场景：复杂 SQL 中的 CTE 名、系统函数等。
+func isSQLFunctionOrKeyword(name string) bool {
+	sqlFunctionsAndKeywords := map[string]bool{
+		// 聚合函数
+		"COUNT": true, "SUM": true, "AVG": true, "MIN": true, "MAX": true,
+		"GROUP_CONCAT": true, "LISTAGG": true, "STRING_AGG": true,
+		// 窗口函数
+		"ROW_NUMBER": true, "RANK": true, "DENSE_RANK": true, "NTILE": true,
+		"LAG": true, "LEAD": true, "FIRST_VALUE": true, "LAST_VALUE": true,
+		"PERCENTILE_CONT": true, "PERCENTILE_DISC": true, "CUME_DIST": true,
+		"PERCENT_RANK": true,
+		// 字符串函数
+		"CONCAT": true, "SUBSTR": true, "SUBSTRING": true, "TRIM": true,
+		"UPPER": true, "LOWER": true, "REPLACE": true, "LENGTH": true,
+		"CHAR_LENGTH": true, "INSTR": true, "LOCATE": true, "LPAD": true, "RPAD": true,
+		// 日期函数
+		"DATE": true, "DATETIME": true, "TIMESTAMP": true, "NOW": true,
+		"SYSDATE": true, "SYSTIMESTAMP": true, "DATE_FORMAT": true,
+		"DATE_ADD": true, "DATE_SUB": true, "DATEDIFF": true, "DATEADD": true,
+		"TO_DATE": true, "TO_CHAR": true, "TO_TIMESTAMP": true,
+		"YEAR": true, "MONTH": true, "DAY": true, "HOUR": true, "MINUTE": true, "SECOND": true,
+		// 数值函数
+		"ABS": true, "CEIL": true, "CEILING": true, "FLOOR": true, "ROUND": true,
+		"MOD": true, "POWER": true, "SQRT": true, "SIGN": true, "TRUNC": true,
+		// 转换函数
+		"CAST": true, "CONVERT": true, "COALESCE": true, "NVL": true, "NVL2": true,
+		"IFNULL": true, "ISNULL": true, "NULLIF": true, "DECODE": true,
+		// 条件函数
+		"IF": true, "IIF": true, "CASE": true, "WHEN": true,
+		// 系统内置 schema（不应被当做用户 schema）
+		"DUAL": true, "INFORMATION_SCHEMA": true, "SYS": true, "SYSTEM": true,
+		"MYSQL": true, "PERFORMANCE_SCHEMA": true, "PG_CATALOG": true,
+		// SQL 关键字（可能被解析器误匹配）
+		"SELECT": true, "FROM": true, "WHERE": true, "GROUP": true, "ORDER": true,
+		"HAVING": true, "LIMIT": true, "OFFSET": true, "UNION": true, "ALL": true,
+		"EXISTS": true, "NOT": true, "AND": true, "OR": true, "AS": true,
+		"SET": true, "VALUES": true, "INTO": true, "TABLE": true, "INDEX": true,
+		"LEFT": true, "RIGHT": true, "INNER": true, "OUTER": true, "CROSS": true,
+		"NATURAL": true, "ON": true, "USING": true, "LATERAL": true,
+	}
+	return sqlFunctionsAndKeywords[name]
 }
 
 func extractTableNamesFromSQL(sql string) []string {
@@ -877,189 +970,10 @@ type ImportDataOutput struct {
 
 func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx, userId string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
 	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
-		log.Printf("[Tool:import_data] fileId=%s, table=%s, mode=%s\n", input.FileID, input.TableName, input.Mode)
-		conn, _ := GetConn(connID, userId)
-		if conn == nil {
-			return nil, fmt.Errorf("db conn not found: %s", connID)
-		}
-		if input.FileID == "" {
-			return nil, errors.New("fileId is required")
-		}
-		if !isValidTableName(input.TableName) {
-			return nil, fmt.Errorf("invalid table name: %s", input.TableName)
-		}
-		mode := strings.ToLower(input.Mode)
-		if mode == "" {
-			mode = "insert"
-		}
-		upload, err := GetUploadedFile(input.FileID)
-		if err != nil {
-			return nil, err
-		}
-		// Markdown/文本文件非表格结构，不支持导入，仅支持分析
-		if upload.Type == "text" {
-			return nil, errors.New("Markdown/文本文件不支持导入数据库，仅支持内容分析")
-		}
-		tableColumns, err := getTableColumns(conn, dbType, dbSchema, input.TableName)
-		if err != nil {
-			return nil, fmt.Errorf("get columns failed for %s: %w", input.TableName, err)
-		}
-		if len(tableColumns) == 0 {
-			return nil, fmt.Errorf("table %s not found or has no columns", input.TableName)
-		}
-		finalMapping, err := buildFinalMapping(upload.Columns, tableColumns, input.Mapping)
-		if err != nil {
-			return nil, err
-		}
-		if len(finalMapping) == 0 {
-			return nil, fmt.Errorf("no columns matched for table %s", input.TableName)
-		}
-		var dbColumns []string
-		var excelIndices []int
-		for excelIdx, dbCol := range finalMapping {
-			dbColumns = append(dbColumns, dbCol)
-			excelIndices = append(excelIndices, excelIdx)
-		}
-		primaryKeys, _ := getPrimaryKeys(conn, dbType, dbSchema, input.TableName)
-		tx, err := conn.Beginx()
-		if err != nil {
-			return nil, fmt.Errorf("begin tx failed: %w", err)
-		}
-		defer tx.Rollback()
-
-		insertedRows, updatedRows := 0, 0
-
-		if mode == "insert" {
-			// 批量插入：每 200 行一批，使用 prepared statement
-			batchSize := 200
-			tableRef := quoteTableRef(dbType, dbSchema, input.TableName)
-			quotedCols := make([]string, len(dbColumns))
-			for i, col := range dbColumns {
-				quotedCols[i] = quoteIdent(dbType, col)
-			}
-			colList := strings.Join(quotedCols, ", ")
-
-			for batchStart := 0; batchStart < len(upload.Data); batchStart += batchSize {
-				batchEnd := batchStart + batchSize
-				if batchEnd > len(upload.Data) {
-					batchEnd = len(upload.Data)
-				}
-				batch := upload.Data[batchStart:batchEnd]
-
-				// 构建多行 VALUES
-				var valueParts []string
-				var allArgs []any
-				for _, excelRow := range batch {
-					row := make([]string, len(dbColumns))
-					for i, idx := range excelIndices {
-						if idx < len(excelRow) {
-							row[i] = excelRow[idx]
-						}
-					}
-					placeholders := make([]string, len(dbColumns))
-					for i := range dbColumns {
-						if dbType == "oracle" {
-							placeholders[i] = fmt.Sprintf(":%d", len(allArgs)+i+1)
-						} else {
-							placeholders[i] = "?"
-						}
-						allArgs = append(allArgs, row[i])
-					}
-					valueParts = append(valueParts, "("+strings.Join(placeholders, ", ")+")")
-				}
-
-				if dbType == "oracle" {
-					// Oracle 不支持多行 VALUES，逐行插入
-					for _, excelRow := range batch {
-						row := make([]string, len(dbColumns))
-						for i, idx := range excelIndices {
-							if idx < len(excelRow) {
-								row[i] = excelRow[idx]
-							}
-						}
-						if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-							return nil, fmt.Errorf("row %d insert failed: %w", batchStart+insertedRows+2, err)
-						}
-						insertedRows++
-					}
-				} else {
-					query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableRef, colList, strings.Join(valueParts, ", "))
-					if _, err := tx.Exec(query, allArgs...); err != nil {
-						return nil, fmt.Errorf("batch insert failed at row %d: %w", batchStart+2, err)
-					}
-					insertedRows += len(batch)
-				}
-			}
-		} else {
-			// upsert 模式：逐行处理
-			for rowNum, excelRow := range upload.Data {
-				row := make([]string, len(dbColumns))
-				for i, idx := range excelIndices {
-					if idx < len(excelRow) {
-						row[i] = excelRow[idx]
-					}
-				}
-				if len(primaryKeys) > 0 {
-					exists, err := checkRowExists(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys)
-					if err != nil {
-						return nil, fmt.Errorf("row %d check failed: %w", rowNum+2, err)
-					}
-					if exists {
-						if err := updateRow(tx, dbType, dbSchema, input.TableName, dbColumns, row, primaryKeys); err != nil {
-							return nil, fmt.Errorf("row %d update failed: %w", rowNum+2, err)
-						}
-						updatedRows++
-					} else {
-						if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-							return nil, fmt.Errorf("row %d insert failed: %w", rowNum+2, err)
-						}
-						insertedRows++
-					}
-				} else {
-					if err := insertRow(tx, dbType, dbSchema, input.TableName, dbColumns, row); err != nil {
-						return nil, fmt.Errorf("row %d insert failed: %w", rowNum+2, err)
-					}
-					insertedRows++
-				}
-			}
-		}
-
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit failed: %w", err)
-		}
-		RemoveUploadedFile(input.FileID)
-
-		if auditCtx != nil {
-			auditSQL := fmt.Sprintf("IMPORT INTO %s (%d rows, mode=%s)", input.TableName, insertedRows+updatedRows, mode)
-			audit.GetAuditService().Record(&audit.AuditEntry{
-				Source:       "agent",
-				ToolName:     "import_data",
-				SQLText:      auditSQL,
-				SQLType:      "IMPORT",
-				RiskLevel:    "medium",
-				Status:       "success",
-				ConnID:       connID,
-				SessionID:    auditCtx.SessionID,
-				UserID:       auditCtx.UserID,
-				UserName:     auditCtx.UserName,
-				AffectedRows: insertedRows + updatedRows,
-			})
-		}
-
-		var mappingDesc strings.Builder
-		for i, idx := range excelIndices {
-			if i > 0 {
-				mappingDesc.WriteString(", ")
-			}
-			fmt.Fprintf(&mappingDesc, "%s->%s", upload.Columns[idx], dbColumns[i])
-		}
-		msg := fmt.Sprintf("imported %d rows", insertedRows)
-		if updatedRows > 0 {
-			msg += fmt.Sprintf(", updated %d rows", updatedRows)
-		}
-		msg += fmt.Sprintf(". mapping: %s", mappingDesc.String())
-		log.Printf("[Tool:import_data] done - %s\n", msg)
-		return &ImportDataOutput{Message: msg, InsertedRows: insertedRows, UpdatedRows: updatedRows}, nil
+		log.Printf("[Tool:import_data] 已禁用 - 引导用户到表数据浏览页面操作。fileId=%s, table=%s\n", input.FileID, input.TableName)
+		return &ImportDataOutput{
+			Message: "数据导入功能已迁移至「表数据浏览」页面。请引导用户：在左侧树中找到目标表，右键打开「浏览数据」，使用工具栏的「导入」按钮选择 Excel/CSV/JSON 文件进行导入，支持字段映射预览和新增/更新两种模式。",
+		}, nil
 	}
 }
 

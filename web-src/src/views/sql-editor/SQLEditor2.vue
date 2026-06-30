@@ -565,7 +565,7 @@ const sqlHistoryList = ref([])
 const sqlHistorySearch = ref('')
 const sqlHistoryTotal = ref(0)
 const sqlHistoryCurrent = ref(1)
-const sqlHistoryPageSize = ref(12)
+const sqlHistoryPageSize = ref(35)
 const sqlDrawerWidth = ref(600)
 const isDraggingDrawer = ref(false)
 
@@ -715,6 +715,42 @@ watch(canModify, (can) => {
     }
 })
 
+// 语法高亮刷新调度器：防抖 + 多级延迟，确保 Lezer parser 完成后 decorations 正确更新
+let _highlightDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let _highlightFallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleHighlightRefresh() {
+    // 防抖：50ms 内多次调用只执行一次
+    if (_highlightDebounceTimer) clearTimeout(_highlightDebounceTimer)
+    if (_highlightFallbackTimer) clearTimeout(_highlightFallbackTimer)
+
+    _highlightDebounceTimer = setTimeout(() => {
+        const view = editorView.value
+        if (!view) return
+        // 第一次：同步解析语法树，预算 1000ms（覆盖大文档）
+        forceParsing(view, view.state.doc.length, 1000)
+        // 让 view 在下一帧刷新 decorations
+        requestAnimationFrame(() => {
+            if (editorView.value === view) {
+                // 触发 view 重新计算 decorations（通过最小化 dispatch）
+                view.dispatch({ effects: [] })
+            }
+        })
+        // 兜底：200ms 后再次 forceParsing，覆盖首次解析不完整的场景
+        _highlightFallbackTimer = setTimeout(() => {
+            if (editorView.value === view) {
+                forceParsing(view, view.state.doc.length, 1000)
+                // 再次触发 decoration 刷新
+                requestAnimationFrame(() => {
+                    if (editorView.value === view) {
+                        view.dispatch({ effects: [] })
+                    }
+                })
+            }
+        }, 200)
+    }, 50)
+}
+
 function createEditor(editorContainer: any, doc: any) {
     if (editorView.value) {
         editorView.value.destroy();
@@ -745,31 +781,20 @@ function createEditor(editorContainer: any, doc: any) {
         EditorView.editable.of(true),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
-        // 粘贴大量内容后主动加速语法解析，防止高亮失效
-        // CodeMirror 6 Lezer parser 是惰性增量解析，粘贴后 parser 需要时间追赶，
-        // 期间高亮缺失。这里采用三层防护：
-        // 1) domEventHandlers.paste 在 paste 事件时立即调度 forceParsing
-        // 2) updateListener 在文档任何变化时调度（覆盖输入/删除/拖拽）
-        // 3) 用 setTimeout(0) 而非 requestAnimationFrame，让解析在当前事件循环结束后
-        //    立即执行，比等下一帧更早；预算提到 500ms 覆盖大文档
-        EditorView.domEventHandlers({
-            paste: (_event, view) => {
-                setTimeout(() => {
-                    if (editorView.value === view) {
-                        forceParsing(view, view.state.doc.length, 500)
-                    }
-                }, 0)
-                return false  // 不阻止 CodeMirror 默认粘贴行为
-            }
-        }),
+        // 语法高亮恢复机制（根本解决方案）
+        // CodeMirror 6 Lezer parser 是惰性增量解析，在以下场景高亮可能丢失：
+        //   - 粘贴大量内容后 parser 跟不上
+        //   - 快速输入/删除过程中 parser 被跳过
+        //   - 编辑器失焦再获焦后 viewport 外内容未解析
+        //
+        // 解决策略：防抖 + 多级延迟 forceParsing
+        //   - docChanged 触发后 debounce 50ms（合并高频输入）
+        //   - 第一次 forceParsing 解析语法树（预算 1000ms）
+        //   - requestAnimationFrame 让 view 刷新 decorations
+        //   - 200ms 后二次 forceParsing 兜底覆盖遗漏
         EditorView.updateListener.of((update) => {
             if (update.docChanged) {
-                setTimeout(() => {
-                    const view = editorView.value
-                    if (view) {
-                        forceParsing(view, view.state.doc.length, 500)
-                    }
-                }, 0)
+                scheduleHighlightRefresh()
             }
         }),
     ]
@@ -781,13 +806,8 @@ function createEditor(editorContainer: any, doc: any) {
         state: startState,
         parent: editorContainer.value,
     });
-    // 编辑器初始化后强制解析整个文档，覆盖从 localStorage 恢复大段 SQL 的场景
-    // CodeMirror 6 默认只解析可见区域，初始 doc 较大时下方内容高亮会缺失
-    setTimeout(() => {
-        if (editorView.value) {
-            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
-        }
-    }, 0)
+    // 编辑器初始化后强制解析整个文档
+    scheduleHighlightRefresh()
 }
 
 function reconfigureSql() {
@@ -798,13 +818,8 @@ function reconfigureSql() {
             schema: <any>dbSchemaProxy.getAll(schema),
         }))
     })
-    // 重新配置 SQL 语言后强制解析，防止高亮失效
-    // 用 setTimeout(0) + 500ms 预算，比 requestAnimationFrame 更早调度
-    setTimeout(() => {
-        if (editorView.value) {
-            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
-        }
-    }, 0)
+    // 重新配置 SQL 语言后强制解析
+    scheduleHighlightRefresh()
 }
 
 function reconfigureTheme() {
@@ -816,12 +831,8 @@ function reconfigureTheme() {
             highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
         ]
     })
-    // 重新配置高亮样式后强制解析，防止高亮失效
-    setTimeout(() => {
-        if (editorView.value) {
-            forceParsing(editorView.value, editorView.value.state.doc.length, 500)
-        }
-    }, 0)
+    // 重新配置高亮样式后强制解析
+    scheduleHighlightRefresh()
 }
 //获取编辑器里的文本内容
 const getEditorDoc = (): string => {

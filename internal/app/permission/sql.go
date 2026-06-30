@@ -415,10 +415,18 @@ func ExtractTablesFromSQL(sql string) []string {
 	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
 	commaRegex := regexp.MustCompile(`\s*,\s*((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
 	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
-	cteRegex := regexp.MustCompile(`(?i)\bWITH\s+(\w+)\s+AS\s*\(`)
+	// 增强 CTE 识别：支持递归 CTE（WITH RECURSIVE name AS）和多个 CTE（name1 AS (...), name2 AS (...)）
+	cteRegex := regexp.MustCompile(`(?i)\bWITH\s+(?:RECURSIVE\s+)?(\w+)\s+(?:\([^)]*\)\s+)?AS\s*\(`)
+	cteCommaRegex := regexp.MustCompile(`(?i)\)\s*,\s*(\w+)\s+(?:\([^)]*\)\s+)?AS\s*\(`)
 
 	cteNames := make(map[string]bool)
 	for _, match := range cteRegex.FindAllStringSubmatch(sql, -1) {
+		if len(match) > 1 {
+			cteNames[strings.ToLower(match[1])] = true
+		}
+	}
+	// 提取逗号分隔的后续 CTE 名称
+	for _, match := range cteCommaRegex.FindAllStringSubmatch(sql, -1) {
 		if len(match) > 1 {
 			cteNames[strings.ToLower(match[1])] = true
 		}
@@ -427,7 +435,7 @@ func ExtractTablesFromSQL(sql string) []string {
 	for _, idx := range primaryRegex.FindAllStringSubmatchIndex(sql, -1) {
 		if len(idx) >= 4 {
 			tableName := stripBackticks(sql[idx[2]:idx[3]])
-			if !isSQLKeyword(tableName) && !cteNames[strings.ToLower(tableName)] {
+			if !isSQLKeyword(tableName) && !cteNames[strings.ToLower(tableName)] && !isSQLBuiltinSchema(tableName) {
 				tables[tableName] = true
 			}
 
@@ -449,7 +457,7 @@ func ExtractTablesFromSQL(sql string) []string {
 					break
 				}
 				commaTableName := stripBackticks(commaMatch[1])
-				if !isSQLKeyword(commaTableName) && !cteNames[strings.ToLower(commaTableName)] {
+				if !isSQLKeyword(commaTableName) && !cteNames[strings.ToLower(commaTableName)] && !isSQLBuiltinSchema(commaTableName) {
 					remainingAfterTable := trimmed[len(commaMatch[0]):]
 					if len(remainingAfterTable) == 0 || remainingAfterTable[0] != '(' {
 						tables[commaTableName] = true
@@ -474,6 +482,25 @@ func ExtractTablesFromSQL(sql string) []string {
 		result = append(result, table)
 	}
 	return result
+}
+
+// isSQLBuiltinSchema 判断是否为系统内置 schema（不需要权限检查）。
+// 避免将 information_schema.tables 等系统表引用误识别为用户表。
+func isSQLBuiltinSchema(name string) bool {
+	lower := strings.ToLower(name)
+	// 处理 schema.table 格式，只检查 schema 部分
+	if dotIdx := strings.Index(lower, "."); dotIdx >= 0 {
+		lower = lower[:dotIdx]
+	}
+	builtinSchemas := map[string]bool{
+		"information_schema": true,
+		"performance_schema": true,
+		"mysql":              true,
+		"sys":                true,
+		"pg_catalog":         true,
+		"sqlite_master":      true,
+	}
+	return builtinSchemas[lower]
 }
 
 func skipTableAlias(s string) string {

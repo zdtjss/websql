@@ -244,8 +244,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 				"请根据用户提问判断意图：\n" +
 				"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
 				"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
-				"- 明确要求导入数据库：按「数据导入流程」操作（确认目标表、字段映射、影响行数，用户确认后调用 import_data）。\n" +
-				"注意：用户未明确要求导入时，禁止调用 import_data。\n"
+				"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。禁止调用 import_data。\n" +
+				"注意：禁止调用 import_data，无论用户是否要求导入。\n"
 		}
 	}
 

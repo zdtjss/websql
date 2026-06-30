@@ -1261,19 +1261,41 @@ async function saveInlineChanges() {
       return
     }
 
-    const batchSql = sqlStatements.join('; ')
-    const params = new URLSearchParams()
-    params.append('connId', connId)
-    params.append('schema', schema)
-    params.append('sql', batchSql)
+    // 分批发送，每批最多 100 条语句，避免单次请求 SQL 过长或后端事务失败导致全部回滚
+    const batchSize = 100
+    let totalSuccess = 0
+    let totalFailed = 0
+    let lastError = ''
 
-    const resp = await http.post('/execSQL', params)
-    const respData = resp.data.data
+    for (let i = 0; i < sqlStatements.length; i += batchSize) {
+      const batch = sqlStatements.slice(i, i + batchSize)
+      const batchSql = batch.join('; ')
+      const params = new URLSearchParams()
+      params.append('connId', connId)
+      params.append('schema', schema)
+      params.append('sql', batchSql)
 
-    if (respData && respData.msg) {
-      ElMessage({ message: '保存失败，请检查数据', type: 'error' })
+      try {
+        const resp = await http.post('/execSQL', params)
+        const respData = resp.data.data
+        if (respData && respData.msg) {
+          totalFailed += batch.length
+          lastError = respData.msg
+        } else {
+          totalSuccess += batch.length
+        }
+      } catch (err) {
+        totalFailed += batch.length
+        lastError = err?.message || '请求失败'
+      }
+    }
+
+    if (totalFailed === 0) {
+      ElMessage({ message: `成功保存 ${totalSuccess} 条记录`, type: 'success' })
+    } else if (totalSuccess > 0) {
+      ElMessage({ message: `部分保存: ${totalSuccess} 成功, ${totalFailed} 失败 (${lastError})`, type: 'warning', duration: 5000 })
     } else {
-      ElMessage({ message: `成功保存 ${sqlStatements.length} 条记录`, type: 'success' })
+      ElMessage({ message: `保存失败: ${lastError}`, type: 'error', duration: 5000 })
     }
     await loadData()
   } catch (err) {
@@ -1761,10 +1783,12 @@ function handleExcelFile(file) {
   reader.onload = (e) => {
     try {
       const data = new Uint8Array(e.target.result)
-      const workbook = XLSX.read(data, { type: 'array' })
+      const workbook = XLSX.read(data, { type: 'array', raw: false, dateNF: 'yyyy-mm-dd HH:mm:ss' })
       const firstSheetName = workbook.SheetNames[0]
       const worksheet = workbook.Sheets[firstSheetName]
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+      // defval: null 确保空单元格显式返回 null 而非 undefined（避免稀疏数组导致列映射偏移）
+      // raw: false + dateNF 确保日期/数字单元格以格式化字符串返回，不会被读为空
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null })
       
       if (jsonData.length === 0) {
         ElMessage({ message: 'Excel 文件为空', type: 'warning' })

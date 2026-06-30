@@ -16,7 +16,7 @@
           />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="listConnCfg">查询</el-button>
+          <el-button type="primary" @click="searchConnCfg">查询</el-button>
           <el-button type="primary" @click="addConn">添加连接</el-button>
         </el-form-item>
       </el-form>
@@ -191,8 +191,12 @@ const listDirTreeData = () => {
   })
 }
 
-const listConnCfg = () => {
+const searchConnCfg = () => {
   pagination.value.page = 1
+  listConnCfg()
+}
+
+const listConnCfg = () => {
   listConn({
     name: connQuery.value.name,
     parentId: connQuery.value.parentId || '',

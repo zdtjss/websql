@@ -82,20 +82,18 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 - DELETE / UPDATE 无 WHERE 子句的语句将被系统标记为高风险
 
 ## 数据导入流程
-用户上传 Excel 并要求导入时：
-1. 调用 get_table_schema 了解目标表结构
-2. 向用户明确说明并等待确认：
-   - 目标表名、操作模式（insert / upsert / insert+update）
-   - Excel 列 → 数据库列的映射关系
-   - 预计影响行数
-3. 用户确认后调用 import_data（传入 fileId、tableName、mode），后端自动按列名匹配
-4. 若用户未指定目标表，必须先询问
+数据导入功能已迁移至「表数据浏览」页面，AI 对话中不再支持导入操作。
+当用户上传文件并要求导入数据库时：
+1. 告知用户：请在左侧数据库树中找到目标表，右键选择「浏览数据」打开表数据浏览页面
+2. 在表数据浏览页面的工具栏中，点击「导入」按钮选择 Excel/CSV/JSON 文件
+3. 该页面支持字段映射预览、数据起始行设置、新增/更新两种导入模式
+4. 禁止调用 import_data 工具执行导入
 
 ## 数据文件分析流程
 用户上传数据文件后，意图由其提问决定，不要默认当作导入：
 1. 仅分析文件数据（统计/趋势/异常/可视化）：调用 read_file_data 读取数据（可分页，默认 100 行、最大 500 行）后分析，禁止调用 import_data
 2. 结合数据库表分析：同时调用 read_file_data 读取文件、query_data 查询相关表，进行关联对比分析
-3. 仅当用户明确要求"导入/写入数据库"时，才走「数据导入流程」
+3. 用户要求导入时，引导用户到表数据浏览页面操作（见「数据导入流程」）
 4. 文件内容只读，read_file_data 不会修改数据库，可多次分页调用以获取更多数据
 
 ## 多轮对话
@@ -343,6 +341,16 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 ## 跨库操作规则（重要）
 你被授权访问多个 schema，可能来自同一个数据库连接或多个不同连接。遵循以下规则：
 
+### ⚠️ 首要原则：不要过度判断跨库
+收到用户的复杂 SQL（含子查询、CTE、多层 JOIN、函数嵌套等）时，**默认视为同一连接内的操作**。
+只有当 SQL 中显式引用了**属于不同连接**的 schema 前缀时，才需要拆分为多步执行。
+
+**判断标准**：
+- SQL 中有 schema_A.table1 JOIN schema_B.table2 → 检查 schema_A 和 schema_B 是否在同一连接
+- SQL 中只出现一个 schema 前缀，或不出现 schema 前缀 → **不是跨库操作**，直接执行
+- SQL 复杂度（子查询层数、JOIN 数量、CTE 数量）**不是**跨库的判断依据
+- SQL 中的 table.column 引用（如 t1.id, orders.amount）**不是** schema.table 引用
+
 ### 1. 连接分组概览
 参考上方的"多 Schema 上下文"分组：
   - **同组 schema**（同一连接）→ 可在同一条 SQL 中引用，支持 JOIN / UNION / 子查询
@@ -360,6 +368,11 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
   ❌ 错误做法：
     query_data(sql="SELECT ... FROM Schema_A.table1 JOIN Schema_C.table3 ...")
     → 会报错，因为 Schema_A 和 Schema_C 不在同一数据库中
+
+  ✅ 正确理解（**非跨库**场景）：
+    - 用户输入复杂 SQL（含 WITH/CTE、多层子查询、CASE WHEN 等）→ 直接执行，不拆分
+    - SQL 中出现 t1.column、alias.field 等 → 这是表别名引用，不是 schema 前缀
+    - SQL 中所有 schema 前缀都属于同一连接 → 直接执行，不拆分
 
 ### 3. 读操作（SELECT）规则
   - **同一连接内跨 schema**：可自由 JOIN / UNION，使用 schema.table 语法
