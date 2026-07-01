@@ -22,7 +22,14 @@ type BackupRecord struct {
 
 type BackupTables struct {
 	Table   string `json:"table"`
+	Type    string `json:"type"`
 	Checked bool   `json:"checked"`
+}
+
+// TableInfo 保存表名及其类型（"table" 或 "view"），用于备份时区分处理
+type TableInfo struct {
+	Name string
+	Type string
 }
 
 type BackupCreateRequest struct {

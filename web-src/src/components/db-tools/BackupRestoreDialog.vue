@@ -37,13 +37,15 @@
               <el-button size="small" :disabled="!filteredBackupTables.length" @click="toggleAll(true)" aria-label="全选当前过滤结果">全选</el-button>
               <el-button size="small" :disabled="!filteredBackupTables.length" @click="toggleAll(false)" aria-label="清空选择">清空</el-button>
               <!-- 已选数量动态更新，aria-live 通知屏幕阅读器 -->
-              <el-tag size="small" type="info" effect="plain" aria-live="polite">已选 {{ selectedCount }} / {{ backupTables.length }}</el-tag>
+              <el-tag size="small" type="info" effect="plain" aria-live="polite">已选 {{ selectedCount }} / {{ filteredBackupTables.length }}</el-tag>
             </div>
             <div class="table-grid" role="group" aria-label="表选择列表">
               <div v-for="t in filteredBackupTables" :key="t.table" class="table-item" :class="{ active: t.checked }"
                 role="checkbox" :aria-checked="t.checked" :aria-label="`${t.table}，${t.count || 0} 行`" tabindex="0"
                 @click="toggleTable(t)" @keyup.enter="toggleTable(t)" @keyup.space.prevent="toggleTable(t)">
                 <el-checkbox :model-value="t.checked" @change="(v) => onCheckChange(t, v)" @click.stop :aria-label="`选择表 ${t.table}`" />
+                <el-tag v-if="t.type === 'view'" size="small" type="warning" effect="plain" class="type-tag">视图</el-tag>
+                <el-tag v-else size="small" type="info" effect="plain" class="type-tag">表</el-tag>
                 <el-tooltip :content="t.table" placement="top" :show-after="300" :disabled="!needsTooltip(t.table)">
                   <span class="table-name">{{ t.table }}</span>
                 </el-tooltip>
@@ -70,6 +72,9 @@
           </div>
 
           <div v-if="backupResult" class="backup-result">
+            <el-button class="backup-result-close" type="info" size="small" text circle @click="backupResult = null" aria-label="关闭备份结果">
+              <el-icon><Close /></el-icon>
+            </el-button>
             <el-result :icon="backupResult.success ? 'success' : 'error'" :sub-title="`备份完成: ${backupResult.tables} 张表, 大小 ${formatSize(backupResult.size)}`" />
           </div>
         </el-form>
@@ -86,7 +91,7 @@
           </el-table-column>
           <el-table-column label="类型" width="80">
             <template #default="{row}">
-              <el-tag size="small">{{ row.type }}</el-tag>
+              <el-tag size="small" :type="row.type === 'partial' ? 'warning' : 'info'">{{ row.type === 'partial' ? '部分' : '全量' }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="加密" width="70">
@@ -122,7 +127,7 @@
 <script setup>
 import { ref, computed, onBeforeUnmount, useTemplateRef, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Grid, Search, VideoPlay, Loading } from '@element-plus/icons-vue'
+import { Grid, Search, VideoPlay, Loading, Close } from '@element-plus/icons-vue'
 import {
   listBackups,
   listBackupTables,
@@ -202,7 +207,7 @@ const filteredBackupTables = computed(() => {
   return backupTables.value.filter(t => t.table.toLowerCase().includes(kw))
 })
 
-const selectedCount = computed(() => backupTables.value.filter(t => t.checked).length)
+const selectedCount = computed(() => filteredBackupTables.value.filter(t => t.checked).length)
 
 function needsTooltip(name) {
   return name && name.length > 18
@@ -239,6 +244,7 @@ async function loadBackups() {
     const countMap = new Map(tableCounts.map(c => [c.table, c.rows ?? c.count ?? 0]))
     backupTables.value = tables.map(t => ({
       table: t.table,
+      type: t.type || 'table',
       checked: t.checked !== false,
       count: countMap.get(t.table) || 0
     }))
@@ -259,7 +265,13 @@ async function createBackup() {
   backupProgress.value = null
   progressStartTime = Date.now()
   try {
-    const selected = backupTables.value.filter(t => t.checked).map(t => t.table).join(',')
+    // 仅备份当前筛选结果中已勾选的表/视图
+    const selected = filteredBackupTables.value.filter(t => t.checked).map(t => t.table).join(',')
+    if (!selected) {
+      ElMessage.warning('请至少选择一个表或视图')
+      creating.value = false
+      return
+    }
     const formData = new FormData()
     formData.append('connId', connId)
     formData.append('schema', schema)
@@ -485,6 +497,12 @@ async function deleteBackup(row) {
   flex-shrink: 0;
 }
 
+.type-tag {
+  flex-shrink: 0;
+  transform: scale(0.85);
+  transform-origin: center;
+}
+
 .table-name {
   flex: 1;
   min-width: 0;
@@ -505,10 +523,17 @@ async function deleteBackup(row) {
 }
 
 .backup-result {
+  position: relative;
   margin-top: 12px;
   padding: 12px;
   background: #f5f7fa;
   border-radius: 4px;
+}
+
+.backup-result-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
 }
 
 .backup-progress {

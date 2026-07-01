@@ -108,14 +108,29 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 	dbType := dbConn.DriverName()
 
 	if name == "" {
-		name = fmt.Sprintf("%s_%s_backup_%s", connId[:8], schema, time.Now().Format("20060102_150405"))
+		name = fmt.Sprintf("%s_%s", schema, time.Now().Format("20060102150405"))
+	}
+
+	// 获取所有表及类型，构建类型查找表（用于区分表和视图）
+	allTableInfos := getAllTables(dbConn, dbType, schema)
+	typeMap := make(map[string]string, len(allTableInfos))
+	for _, ti := range allTableInfos {
+		typeMap[ti.Name] = ti.Type
 	}
 
 	var tables []string
 	if tablesStr != "" {
 		tables = strings.Split(tablesStr, ",")
 	} else {
-		tables = getAllTables(dbConn, dbType, schema)
+		for _, ti := range allTableInfos {
+			tables = append(tables, ti.Name)
+		}
+	}
+
+	// 备份类型：未指定表或选中全部表为 full，部分表为 partial
+	backupType := "full"
+	if tablesStr != "" && len(tables) < len(allTableInfos) {
+		backupType = "partial"
 	}
 
 	// 初始化进度：已知总表数，已处理 0
@@ -160,15 +175,29 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 		}
 
 		ddl := getCreateDDL(dbConn, dbType, schema, table)
+		tblType := typeMap[table]
+		isView := isViewType(tblType)
+		if isView {
+			ddl = getViewDDL(dbConn, dbType, schema, table)
+		}
 		chunk := fmt.Sprintf("\n-- ----------------------------\n")
-		chunk += fmt.Sprintf("-- Table structure for `%s`\n", table)
+		if isView {
+			chunk += fmt.Sprintf("-- View structure for `%s`\n", table)
+		} else {
+			chunk += fmt.Sprintf("-- Table structure for `%s`\n", table)
+		}
 		chunk += fmt.Sprintf("-- ----------------------------\n")
-		chunk += fmt.Sprintf("DROP TABLE IF EXISTS `%s`;\n", table)
+		if isView {
+			chunk += fmt.Sprintf("DROP VIEW IF EXISTS `%s`;\n", table)
+		} else {
+			chunk += fmt.Sprintf("DROP TABLE IF EXISTS `%s`;\n", table)
+		}
 		chunk += ddl + ";\n"
 		file.WriteString(chunk)
 		totalSize += int64(len(chunk))
 
-		if withData == "true" {
+		// 视图不导出数据（视图数据来自底层表，备份视图定义即可）
+		if withData == "true" && !isView {
 			data, _, rowCount, err := exportTableData(dbConn, dbType, schema, table)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("导出 %s 数据失败: %s", table, err.Error()))
@@ -224,7 +253,7 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 		Schema:      schema,
 		DbType:      dbType,
 		Size:        totalSize,
-		Type:        "full",
+		Type:        backupType,
 		Encrypted:   encrypt == "true",
 		CreatedAt:   time.Now().Format("2006-01-02 15:04:05"),
 		Description: description,
@@ -343,17 +372,17 @@ func (s *BackupService) GetBackupTables(connId, schema, authorization string) (m
 	allTables := getAllTables(dbConn, dbType, schema)
 	tables := make([]BackupTables, 0)
 	for _, t := range allTables {
-		tables = append(tables, BackupTables{Table: t, Checked: true})
+		tables = append(tables, BackupTables{Table: t.Name, Type: t.Type, Checked: true})
 	}
 
 	var tableCounts []map[string]any
-	for _, table := range allTables {
+	for _, t := range allTables {
 		var count int
-		if sanitize.IsValidIdentifier(schema) && sanitize.IsValidIdentifier(table) {
-			dbConn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table))
+		if sanitize.IsValidIdentifier(schema) && sanitize.IsValidIdentifier(t.Name) {
+			dbConn.Get(&count, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, t.Name))
 		}
 		tableCounts = append(tableCounts, map[string]any{
-			"table": table,
+			"table": t.Name,
 			"rows":  count,
 		})
 	}
@@ -392,12 +421,13 @@ func (s *BackupService) DownloadBackup(c *gin.Context, backupId string) error {
 
 // ===== 以下为外部数据库查询辅助函数 =====
 
-func getAllTables(conn *sqlx.DB, dbType, schema string) []string {
+// getAllTables 返回 schema 下所有表和视图的名称及类型（"table" 或 "view"）
+func getAllTables(conn *sqlx.DB, dbType, schema string) []TableInfo {
 	sqlTmpl, ok := dialect.SQL_DIALECT[dbType]["listTable"]
 	if !ok {
 		sqlTmpl = "SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = ? order by TABLE_NAME"
 	}
-	result := make([]string, 0)
+	result := make([]TableInfo, 0)
 	switch dbType {
 	case "oracle":
 		rows, err := conn.Query(sqlTmpl, "notexists")
@@ -408,7 +438,10 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []string {
 		for rows.Next() {
 			var tableName, tableType, tableComment string
 			rows.Scan(&tableName, &tableType, &tableComment)
-			result = append(result, strings.TrimSpace(tableName))
+			result = append(result, TableInfo{
+				Name: strings.TrimSpace(tableName),
+				Type: normalizeTableType(tableType),
+			})
 		}
 	default:
 		rows, err := conn.Query(sqlTmpl, schema)
@@ -419,11 +452,28 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []string {
 		for rows.Next() {
 			var tableName, tableType, tableComment string
 			rows.Scan(&tableName, &tableType, &tableComment)
-			result = append(result, strings.TrimSpace(tableName))
+			result = append(result, TableInfo{
+				Name: strings.TrimSpace(tableName),
+				Type: normalizeTableType(tableType),
+			})
 		}
 	}
-	sort.Strings(result)
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
+}
+
+// normalizeTableType 将不同数据库返回的表类型统一为 "table" 或 "view"
+func normalizeTableType(raw string) string {
+	t := strings.ToUpper(strings.TrimSpace(raw))
+	if t == "VIEW" {
+		return "view"
+	}
+	return "table"
+}
+
+// isViewType 判断类型是否为视图
+func isViewType(t string) bool {
+	return t == "view"
 }
 
 func getCreateDDL(conn *sqlx.DB, dbType, schema, table string) string {
@@ -443,6 +493,36 @@ func getCreateDDL(conn *sqlx.DB, dbType, schema, table string) string {
 	cols := describeTable(conn, dbType, schema, table)
 	logger.PrintErrf("[backup] describeTable 返回 %d 列, table=%s", nil, len(cols), table)
 	return generateDDLStmt(table, cols)
+}
+
+// getViewDDL 获取视图定义语句，适配不同数据库方言
+func getViewDDL(conn *sqlx.DB, dbType, schema, view string) string {
+	if !sanitize.IsValidIdentifier(view) {
+		return ""
+	}
+	switch dbType {
+	case "sqlite":
+		var ddl strScanner
+		row := conn.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?", view)
+		if err := row.Scan(&ddl); err == nil && ddl.Val != "" {
+			return ddl.Val
+		}
+		return ""
+	case "oracle":
+		var ddl strScanner
+		row := conn.QueryRow("SELECT TEXT FROM USER_VIEWS WHERE VIEW_NAME = :1", strings.ToUpper(view))
+		if err := row.Scan(&ddl); err == nil && ddl.Val != "" {
+			return ddl.Val
+		}
+		return ""
+	default: // mysql, mariadb — SHOW CREATE VIEW 返回 4 列: View, Create View, character_set_client, collation_connection
+		var viewName, createDDL, charset, collation strScanner
+		row := conn.QueryRow(fmt.Sprintf("SHOW CREATE VIEW `%s`", view))
+		if err := row.Scan(&viewName, &createDDL, &charset, &collation); err == nil && createDDL.Val != "" {
+			return createDDL.Val
+		}
+		return ""
+	}
 }
 
 // describeTable 获取表列信息，优先用 information_schema（强类型 string 扫描），避免 []byte 输出
