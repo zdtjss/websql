@@ -15,7 +15,7 @@
 
       <el-form-item label="Agent 工具调用">
         <el-switch v-model="config.recordAgentTools" :disabled="!config.enabled" active-text="记录" inactive-text="不记录" />
-        <span class="desc">控制是否记录 AI Agent 的 SQL 操作（query_data / exec_sql / import_data）</span>
+        <span class="desc">控制是否记录 AI Agent 的 SQL 操作（query_data / exec_sql）</span>
       </el-form-item>
 
       <el-form-item label="SQL 编辑器执行">

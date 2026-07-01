@@ -896,7 +896,7 @@ type ReadFileDataOutput struct {
 }
 
 // NewReadFileDataFunc 返回读取已上传文件数据的工具函数（只读，供 LLM 分析文件内容）。
-// 与 import_data 不同：它不会写入数据库，也不会删除暂存文件，可多次分页调用。
+// 它不会写入数据库，也不会删除暂存文件，可多次分页调用。
 // 表格类（excel/csv）按 limit/offset 分页返回行；文本类（markdown）不做数据量限制，返回全文。
 func NewReadFileDataFunc() func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
 	return func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
@@ -952,27 +952,6 @@ func NewReadFileDataFunc() func(ctx context.Context, input *ReadFileDataInput) (
 			Rows:         rows,
 			TotalRows:    total,
 			ReturnedRows: len(rows),
-		}, nil
-	}
-}
-
-type ImportDataInput struct {
-	FileID    string            `json:"fileId" jsonschema:"required"`
-	TableName string            `json:"tableName" jsonschema:"required"`
-	Mapping   map[string]string `json:"mapping"`
-	Mode      string            `json:"mode"`
-}
-type ImportDataOutput struct {
-	Message      string `json:"message"`
-	InsertedRows int    `json:"insertedRows"`
-	UpdatedRows  int    `json:"updatedRows"`
-}
-
-func NewImportDataFunc(connID, dbType, dbSchema string, auditCtx *ExecAuditCtx, userId string) func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
-	return func(ctx context.Context, input *ImportDataInput) (*ImportDataOutput, error) {
-		log.Printf("[Tool:import_data] 已禁用 - 引导用户到表数据浏览页面操作。fileId=%s, table=%s\n", input.FileID, input.TableName)
-		return &ImportDataOutput{
-			Message: "数据导入功能已迁移至「表数据浏览」页面。请引导用户：在左侧树中找到目标表，右键打开「浏览数据」，使用工具栏的「导入」按钮选择 Excel/CSV/JSON 文件进行导入，支持字段映射预览和新增/更新两种模式。",
 		}, nil
 	}
 }
@@ -1114,166 +1093,6 @@ func getTableColumns(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]strin
 		cols = append(cols, colName)
 	}
 	return cols, nil
-}
-
-func getPrimaryKeys(conn *sqlx.DB, dbType, dbSchema, tableName string) ([]string, error) {
-	var query string
-	var args []any
-	switch dbType {
-	case "mysql", "mariadb":
-		if dbSchema != "" {
-			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-			args = []any{dbSchema, tableName}
-		} else {
-			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = DATABASE() AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-			args = []any{tableName}
-		}
-	case "oracle":
-		if dbSchema != "" {
-			query = `SELECT cols.COLUMN_NAME FROM ALL_CONSTRAINTS cons JOIN ALL_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME AND cons.OWNER = cols.OWNER WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.OWNER = :1 AND cons.TABLE_NAME = :2 ORDER BY cols.POSITION`
-			args = []any{strings.ToUpper(dbSchema), strings.ToUpper(tableName)}
-		} else {
-			query = `SELECT cols.COLUMN_NAME FROM USER_CONSTRAINTS cons JOIN USER_CONS_COLUMNS cols ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.TABLE_NAME = :1 ORDER BY cols.POSITION`
-			args = []any{strings.ToUpper(tableName)}
-		}
-	case "sqlite":
-		quoted := safeQuoteTableName(tableName)
-		if quoted == "" {
-			return nil, fmt.Errorf("invalid table name: %s", tableName)
-		}
-		query = "PRAGMA table_info(" + quoted + ")"
-		rows, err := conn.Queryx(query)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var keys []string
-		for rows.Next() {
-			var cid int
-			var name, colType string
-			var notNull int
-			var dfltValue *string
-			var pk int
-			if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
-				continue
-			}
-			if pk > 0 {
-				keys = append(keys, name)
-			}
-		}
-		return keys, nil
-	default:
-		if dbSchema != "" {
-			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = ? AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-			args = []any{dbSchema, tableName}
-		} else {
-			query = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE table_schema = DATABASE() AND table_name = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
-			args = []any{tableName}
-		}
-	}
-	rows, err := conn.Queryx(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var keys []string
-	for rows.Next() {
-		var colName string
-		if err := rows.Scan(&colName); err != nil {
-			continue
-		}
-		keys = append(keys, colName)
-	}
-	return keys, nil
-}
-
-func checkRowExists(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string, row []string, primaryKeys []string) (bool, error) {
-	var whereParts []string
-	var args []any
-	argIdx := 0
-	for _, pk := range primaryKeys {
-		for i, col := range columns {
-			if strings.EqualFold(col, pk) {
-				if dbType == "oracle" {
-					argIdx++
-					whereParts = append(whereParts, fmt.Sprintf("%s = :%d", quoteIdent(dbType, pk), argIdx))
-				} else {
-					whereParts = append(whereParts, fmt.Sprintf("%s = ?", quoteIdent(dbType, pk)))
-				}
-				args = append(args, row[i])
-				break
-			}
-		}
-	}
-	if len(whereParts) == 0 {
-		return false, nil
-	}
-	tableRef := quoteTableRef(dbType, dbSchema, tableName)
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", tableRef, strings.Join(whereParts, " AND "))
-	var count int
-	err := tx.Get(&count, query, args...)
-	return count > 0, err
-}
-
-func insertRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string, row []string) error {
-	placeholders := make([]string, len(columns))
-	quotedCols := make([]string, len(columns))
-	args := make([]any, len(columns))
-	for i := range columns {
-		quotedCols[i] = quoteIdent(dbType, columns[i])
-		if dbType == "oracle" {
-			placeholders[i] = fmt.Sprintf(":%d", i+1)
-		} else {
-			placeholders[i] = "?"
-		}
-		args[i] = row[i]
-	}
-	tableRef := quoteTableRef(dbType, dbSchema, tableName)
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableRef, strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
-	_, err := tx.Exec(query, args...)
-	return err
-}
-
-func updateRow(tx *sqlx.Tx, dbType, dbSchema, tableName string, columns []string, row []string, primaryKeys []string) error {
-	pkSet := make(map[string]bool)
-	for _, pk := range primaryKeys {
-		pkSet[strings.ToUpper(pk)] = true
-	}
-	var setParts, whereParts []string
-	var setArgs, whereArgs []any
-	for i, col := range columns {
-		qCol := quoteIdent(dbType, col)
-		if pkSet[strings.ToUpper(col)] {
-			// PK 列：进 WHERE 子句
-			if dbType == "oracle" {
-				// Oracle 的 :N 占位符编号是相对于最终合并 args 切片的位置
-				// 最终 args = setArgs + whereArgs，所以 PK 位置 = len(setArgs) + 1（1-based）
-				whereParts = append(whereParts, fmt.Sprintf("%s = :%d", qCol, len(setArgs)+len(whereArgs)+1))
-			} else {
-				whereParts = append(whereParts, fmt.Sprintf("%s = ?", qCol))
-			}
-			whereArgs = append(whereArgs, row[i])
-		} else {
-			// 普通列：进 SET 子句
-			if dbType == "oracle" {
-				setParts = append(setParts, fmt.Sprintf("%s = :%d", qCol, len(setArgs)+1))
-			} else {
-				setParts = append(setParts, fmt.Sprintf("%s = ?", qCol))
-			}
-			setArgs = append(setArgs, row[i])
-		}
-	}
-	if len(setParts) == 0 {
-		return errors.New("cannot build update: no SET columns (all columns are PKs?)")
-	}
-	if len(whereParts) == 0 {
-		return errors.New("cannot build update: missing WHERE (PK column missing in data row?)")
-	}
-	args := append(setArgs, whereArgs...)
-	tableRef := quoteTableRef(dbType, dbSchema, tableName)
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s", tableRef, strings.Join(setParts, ", "), strings.Join(whereParts, " AND "))
-	_, err := tx.Exec(query, args...)
-	return err
 }
 
 // quoteIdent 根据数据库类型对标识符加引号，防止保留字冲突

@@ -173,11 +173,12 @@ watch(() => dbColumns, (newVal) => {
 
 // 初始化映射
 function initMapping() {
-  const dbCols = dbColumns || []
+  const dbCols = (dbColumns || []).filter(c => c != null)
   previewColumns.value = excelHeaders.value.map((excelCol) => {
-    const matchedDbCol = dbCols.find(dbCol => dbCol.toLowerCase() === excelCol.toLowerCase())
+    const safeExcelCol = excelCol == null ? '' : String(excelCol)
+    const matchedDbCol = dbCols.find(dbCol => String(dbCol).toLowerCase() === safeExcelCol.toLowerCase())
     return {
-      excelCol: excelCol,
+      excelCol: safeExcelCol,
       dbCol: matchedDbCol || '',
       isAutoMatched: !!matchedDbCol
     }

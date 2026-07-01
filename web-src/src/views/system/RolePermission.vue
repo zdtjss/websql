@@ -84,7 +84,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, nextTick, useTemplateRef } from 'vue'
-import { Delete, Plus } from '@element-plus/icons-vue'
+import { Delete, Plus, Close, Check, Connection, Folder, Grid, Document } from '@element-plus/icons-vue'
 import { getRoleList, saveRole, delRole, getPermissionTree } from '@/api/system'
 import { ElMessage, ElMessageBox } from 'element-plus'
 

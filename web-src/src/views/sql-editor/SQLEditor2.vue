@@ -218,7 +218,7 @@ import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark"
 import { EditorState, Compartment } from '@codemirror/state'
 import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql';
-import { syntaxHighlighting, HighlightStyle, forceParsing } from '@codemirror/language'
+import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { tags } from '@lezer/highlight'
 import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
@@ -715,42 +715,6 @@ watch(canModify, (can) => {
     }
 })
 
-// 语法高亮刷新调度器：防抖 + 多级延迟，确保 Lezer parser 完成后 decorations 正确更新
-let _highlightDebounceTimer: ReturnType<typeof setTimeout> | null = null
-let _highlightFallbackTimer: ReturnType<typeof setTimeout> | null = null
-
-function scheduleHighlightRefresh() {
-    // 防抖：50ms 内多次调用只执行一次
-    if (_highlightDebounceTimer) clearTimeout(_highlightDebounceTimer)
-    if (_highlightFallbackTimer) clearTimeout(_highlightFallbackTimer)
-
-    _highlightDebounceTimer = setTimeout(() => {
-        const view = editorView.value
-        if (!view) return
-        // 第一次：同步解析语法树，预算 1000ms（覆盖大文档）
-        forceParsing(view, view.state.doc.length, 1000)
-        // 让 view 在下一帧刷新 decorations
-        requestAnimationFrame(() => {
-            if (editorView.value === view) {
-                // 触发 view 重新计算 decorations（通过最小化 dispatch）
-                view.dispatch({ effects: [] })
-            }
-        })
-        // 兜底：200ms 后再次 forceParsing，覆盖首次解析不完整的场景
-        _highlightFallbackTimer = setTimeout(() => {
-            if (editorView.value === view) {
-                forceParsing(view, view.state.doc.length, 1000)
-                // 再次触发 decoration 刷新
-                requestAnimationFrame(() => {
-                    if (editorView.value === view) {
-                        view.dispatch({ effects: [] })
-                    }
-                })
-            }
-        }, 200)
-    }, 50)
-}
-
 function createEditor(editorContainer: any, doc: any) {
     if (editorView.value) {
         editorView.value.destroy();
@@ -781,22 +745,6 @@ function createEditor(editorContainer: any, doc: any) {
         EditorView.editable.of(true),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
-        // 语法高亮恢复机制（根本解决方案）
-        // CodeMirror 6 Lezer parser 是惰性增量解析，在以下场景高亮可能丢失：
-        //   - 粘贴大量内容后 parser 跟不上
-        //   - 快速输入/删除过程中 parser 被跳过
-        //   - 编辑器失焦再获焦后 viewport 外内容未解析
-        //
-        // 解决策略：防抖 + 多级延迟 forceParsing
-        //   - docChanged 触发后 debounce 50ms（合并高频输入）
-        //   - 第一次 forceParsing 解析语法树（预算 1000ms）
-        //   - requestAnimationFrame 让 view 刷新 decorations
-        //   - 200ms 后二次 forceParsing 兜底覆盖遗漏
-        EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-                scheduleHighlightRefresh()
-            }
-        }),
     ]
     const startState = EditorState.create({
         doc: doc,
@@ -806,8 +754,6 @@ function createEditor(editorContainer: any, doc: any) {
         state: startState,
         parent: editorContainer.value,
     });
-    // 编辑器初始化后强制解析整个文档
-    scheduleHighlightRefresh()
 }
 
 function reconfigureSql() {
@@ -818,8 +764,6 @@ function reconfigureSql() {
             schema: <any>dbSchemaProxy.getAll(schema),
         }))
     })
-    // 重新配置 SQL 语言后强制解析
-    scheduleHighlightRefresh()
 }
 
 function reconfigureTheme() {
@@ -831,8 +775,6 @@ function reconfigureTheme() {
             highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
         ]
     })
-    // 重新配置高亮样式后强制解析
-    scheduleHighlightRefresh()
 }
 //获取编辑器里的文本内容
 const getEditorDoc = (): string => {
@@ -1239,8 +1181,32 @@ function formatDuration(ms: number): string {
     return `${minutes}m ${seconds}s`
 }
 
+// SQL 语句起始关键字（不区分大小写）
+// 语句开头必须是这些关键字之一，作为语句边界识别的依据
+const SQL_STATEMENT_KEYWORDS = new Set([
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP',
+    'TRUNCATE', 'GRANT', 'REVOKE', 'COMMIT', 'ROLLBACK', 'SAVEPOINT',
+    'SET', 'SHOW', 'DESC', 'DESCRIBE', 'EXPLAIN', 'USE', 'WITH',
+    'MERGE', 'CALL', 'EXEC', 'EXECUTE', 'PREPARE', 'DEALLOCATE',
+    'LOCK', 'UNLOCK', 'OPTIMIZE', 'ANALYZE', 'CHECK', 'REFRESH',
+    'REPLACE', 'COMMENT', 'HANDLER', 'LOAD', 'FLUSH', 'RESET', 'DO',
+    'VALUES', 'START', 'RELEASE'
+])
+
+// 从 pos 读取一个完整单词并判断是否为 SQL 语句起始关键字
+function isStatementKeywordAt(doc: string, pos: number): boolean {
+    let end = pos
+    while (end < doc.length && /[A-Za-z0-9_]/.test(doc[end])) {
+        end++
+    }
+    if (end === pos) return false
+    return SQL_STATEMENT_KEYWORDS.has(doc.substring(pos, end).toUpperCase())
+}
+
 // 获取光标所在位置的 SQL 语句
-// 通过状态机扫描文档，正确处理字符串和注释中的分号
+// 语句开头必须是 SQL 关键字（SELECT/DELETE/ALTER 等，不区分大小写），
+// 语句结束于：分号、下一语句开头、或文档末尾。
+// 通过状态机扫描文档，正确处理字符串和注释中的分号与关键字。
 function getCurrentStatement(): { text: string, from: number, to: number } | null {
     const view = editorView.value
     if (!view) return null
@@ -1250,65 +1216,121 @@ function getCurrentStatement(): { text: string, from: number, to: number } | nul
 
     // 扫描状态：normal 普通、single 单引号字符串、double 双引号字符串、line 单行注释、block 块注释
     let state: 'normal' | 'single' | 'double' | 'line' | 'block' = 'normal'
-    let lastSemicolonBeforeCursor = -1  // 光标前最近的语句分隔符位置
-    let firstSemicolonAfterCursor = -1  // 光标后最近的语句分隔符位置
+    const stmtStarts: number[] = []  // 所有语句起始位置（行首关键字位置）
+    const semicolons: number[] = []  // normal 状态下的分号位置
+    let atLineStart = true  // 是否处于行首（当前行还未遇到非空白字符）
 
     for (let i = 0; i < doc.length; i++) {
         const ch = doc[i]
         const next = doc[i + 1]
 
-        // 仅在普通状态下遇到的分号才作为语句分隔符
-        if (state === 'normal' && ch === ';') {
-            if (i < cursorPos) {
-                lastSemicolonBeforeCursor = i
-            } else {
-                firstSemicolonAfterCursor = i
-                break  // 找到光标后的第一个分号即可停止扫描
-            }
+        // 换行：单行注释结束，标记下一行为行首
+        if (ch === '\n') {
+            if (state === 'line') state = 'normal'
+            atLineStart = true
+            continue
         }
 
-        switch (state) {
-            case 'normal':
-                if (ch === "'") state = 'single'
-                else if (ch === '"') state = 'double'
-                else if (ch === '-' && next === '-') state = 'line'
-                else if (ch === '/' && next === '/') state = 'line'
-                else if (ch === '/' && next === '*') state = 'block'
-                break
-            case 'single':
-                // SQL 中 '' 表示转义的单引号
-                if (ch === "'") {
-                    if (next === "'") i++
-                    else state = 'normal'
+        if (state === 'normal') {
+            // 行首检测：首个非空白字符若为 SQL 关键字，则标记为语句起始
+            if (atLineStart) {
+                if (ch === ' ' || ch === '\t' || ch === '\r') {
+                    // 行首空白，保持 atLineStart
+                } else {
+                    if (isStatementKeywordAt(doc, i)) {
+                        stmtStarts.push(i)
+                    }
+                    atLineStart = false
                 }
+            }
+
+            if (ch === ';') {
+                semicolons.push(i)
+            }
+
+            if (ch === "'") state = 'single'
+            else if (ch === '"') state = 'double'
+            else if (ch === '-' && next === '-') state = 'line'
+            else if (ch === '/' && next === '/') state = 'line'
+            else if (ch === '/' && next === '*') state = 'block'
+        } else if (state === 'single') {
+            // SQL 中 '' 表示转义的单引号
+            if (ch === "'") {
+                if (next === "'") i++
+                else state = 'normal'
+            }
+        } else if (state === 'double') {
+            // SQL 中 "" 表示转义的双引号
+            if (ch === '"') {
+                if (next === '"') i++
+                else state = 'normal'
+            }
+        } else if (state === 'block') {
+            // 块注释到 */ 结束
+            if (ch === '*' && next === '/') {
+                state = 'normal'
+                i++
+            }
+        }
+        // 'line' 状态：只有 \n 能结束（已在上方处理）
+    }
+
+    // 未识别到任何语句起始关键字：将整个文档作为一条语句
+    if (stmtStarts.length === 0) {
+        const text = doc.trim()
+        if (!text) return null
+        return { text, from: 0, to: doc.length }
+    }
+
+    // 构建每条语句的范围 [from, to)
+    // to = min(下一语句起始, 本语句后的第一个分号+1, 文档末尾)
+    const ranges: { from: number, to: number }[] = []
+    for (let i = 0; i < stmtStarts.length; i++) {
+        const from = stmtStarts[i]
+        let to = doc.length
+        if (i + 1 < stmtStarts.length) {
+            to = Math.min(to, stmtStarts[i + 1])
+        }
+        for (const sc of semicolons) {
+            if (sc >= from) {
+                to = Math.min(to, sc + 1)
                 break
-            case 'double':
-                // SQL 中 "" 表示转义的双引号
-                if (ch === '"') {
-                    if (next === '"') i++
-                    else state = 'normal'
-                }
-                break
-            case 'line':
-                // 单行注释到换行符结束
-                if (ch === '\n') state = 'normal'
-                break
-            case 'block':
-                // 块注释到 */ 结束
-                if (ch === '*' && next === '/') {
-                    state = 'normal'
-                    i++
-                }
-                break
+            }
+        }
+        ranges.push({ from, to })
+    }
+
+    // 优先：光标落在某条语句范围内 [from, to)
+    for (const r of ranges) {
+        if (cursorPos >= r.from && cursorPos < r.to) {
+            const text = doc.substring(r.from, r.to).trim()
+            if (text) return { text, from: r.from, to: r.to }
         }
     }
 
-    const from = lastSemicolonBeforeCursor + 1
-    const to = firstSemicolonAfterCursor === -1 ? doc.length : firstSemicolonAfterCursor
-    const text = doc.substring(from, to).trim()
+    // 光标在第一条语句之前（前导空白/注释）：执行第一条
+    if (cursorPos < ranges[0].from) {
+        const r = ranges[0]
+        const text = doc.substring(r.from, r.to).trim()
+        if (text) return { text, from: r.from, to: r.to }
+    }
 
-    if (!text) return null
-    return { text, from, to }
+    // 光标在最后一条语句之后：执行最后一条
+    const last = ranges[ranges.length - 1]
+    if (cursorPos >= last.to) {
+        const text = doc.substring(last.from, last.to).trim()
+        if (text) return { text, from: last.from, to: last.to }
+    }
+
+    // 光标在两条语句之间的间隙：执行下一条
+    for (const r of ranges) {
+        if (r.from > cursorPos) {
+            const text = doc.substring(r.from, r.to).trim()
+            if (text) return { text, from: r.from, to: r.to }
+        }
+    }
+
+    return null
 }
 
 // 统一执行入口：有选中内容时执行选中内容，否则执行光标所在语句
@@ -1928,14 +1950,13 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 function onKeyup(e: KeyboardEvent) {
     onEditorKeyup(e)
     if (saveTimer) clearTimeout(saveTimer)
-    // 防抖时间设为 2000ms，避免在 CodeMirror 语法解析期间阻塞主线程导致高亮失效
     saveTimer = setTimeout(() => {
         try {
             localStorage.setItem(getSqlKey(), getEditorDoc())
         } catch (e) {
             // localStorage may be full, silently ignore
         }
-    }, 2000)
+    }, 1000)
 }
 
 function onEditorKeydown(e: KeyboardEvent) {

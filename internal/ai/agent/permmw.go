@@ -37,7 +37,7 @@ func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, stat
 	if !m.Scope.AllowModify {
 		filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
 		for _, ti := range state.ToolInfos {
-			if ti.Name == "exec_sql" || ti.Name == "import_data" {
+			if ti.Name == "exec_sql" {
 				log.Printf("%s [ToolInfos] 移除写操作工具 - tool=%s\n", m.logPrefix(), ti.Name)
 				continue
 			}
@@ -88,7 +88,7 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
 			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
 			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 				return "", &PermissionError{
@@ -102,7 +102,7 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
 			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
 			return "", &PermissionError{
 				Message: "当前角色禁止修改数据，无法执行写操作",
@@ -120,8 +120,6 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
-		case "import_data":
-			return m.checkImportAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
 			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
 			m.logAllow(tCtx.Name, "skill_read_only")
@@ -144,7 +142,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
 			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
 			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 				return nil, &PermissionError{
@@ -158,7 +156,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		if !m.Scope.AllowModify && (tCtx.Name == "exec_sql" || tCtx.Name == "import_data") {
+		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
 			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
 			return nil, &PermissionError{
 				Message: "当前角色禁止修改数据，无法执行写操作",
@@ -545,49 +543,6 @@ func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, ar
 	}
 
 	m.logAllow("export", "fallback(programmatic)")
-	return endpoint(ctx, args, opts...)
-}
-
-func (m *PermissionMiddleware) checkImportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
-	var input ImportDataInput
-	if err := json.Unmarshal([]byte(args), &input); err != nil {
-		m.logDeny("import_data", "参数解析失败", nil)
-		return "", err
-	}
-
-	m.logInfo("import_data", "table=%s, mode=%s, mappingKeys=%v", input.TableName, input.Mode, func() []string {
-		keys := make([]string, 0, len(input.Mapping))
-		for k := range input.Mapping {
-			keys = append(keys, k)
-		}
-		return keys
-	}())
-
-	if input.TableName == "" {
-		m.logInfo("import_data", "无目标表名，跳过表级检查")
-		return endpoint(ctx, args, opts...)
-	}
-
-	if !m.Scope.IsTableAllowed(input.TableName) {
-		m.logDeny("import_data", "无权访问表", []string{input.TableName})
-		return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", input.TableName), Objects: []string{input.TableName}}
-	}
-
-	if m.Scope.GetTableAccessLevel(input.TableName) == "column" {
-		if len(input.Mapping) > 0 {
-			for _, dbCol := range input.Mapping {
-				if !m.Scope.IsColumnAllowed(input.TableName, dbCol) {
-					m.logDeny("import_data", "无权写入字段", []string{input.TableName + "." + dbCol})
-					return "", &PermissionError{
-						Message: fmt.Sprintf("无权写入字段 %s.%s", input.TableName, dbCol),
-						Objects: []string{input.TableName + "." + dbCol},
-					}
-				}
-			}
-		}
-	}
-
-	m.logAllow("import_data", "scope_check")
 	return endpoint(ctx, args, opts...)
 }
 

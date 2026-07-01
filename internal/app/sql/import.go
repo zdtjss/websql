@@ -138,11 +138,33 @@ func ImportXlsx(c *gin.Context) {
 		}
 	}
 
+	// 按 header 顺序预计算列映射，避免 Go map 迭代顺序不确定导致不同数据行列序错位
+	type mappedCol struct {
+		dbCol     string
+		headerIdx int
+	}
+	var mappingOrder []mappedCol
+	var columns []string
+	if len(columnMapping) > 0 {
+		for idx, h := range header {
+			if dbCol, ok := columnMapping[h]; ok {
+				mappingOrder = append(mappingOrder, mappedCol{dbCol: dbCol, headerIdx: idx})
+			}
+		}
+		if len(mappingOrder) == 0 {
+			response.WriteErr(c, http.StatusBadRequest, 500, "列映射与 Excel 表头不匹配")
+			return
+		}
+		columns = make([]string, 0, len(mappingOrder))
+		for _, m := range mappingOrder {
+			columns = append(columns, m.dbCol)
+		}
+	}
+
 	count := -1
 	maxLines := 100
 
 	totalValues := make([][]string, maxLines)
-	var columns []string
 
 	for rows.Next() {
 		count++
@@ -153,35 +175,21 @@ func ImportXlsx(c *gin.Context) {
 			return
 		}
 
-		if len(columnMapping) > 0 {
-			mappedColumns := make([]string, 0, len(columnMapping))
-			mappedValues := make([]string, 0, len(columnMapping))
-
-			for excelCol, dbCol := range columnMapping {
-				for idx, h := range header {
-					if h == excelCol {
-						mappedColumns = append(mappedColumns, dbCol)
-						if idx < len(row) {
-							mappedValues = append(mappedValues, row[idx])
-						} else {
-							mappedValues = append(mappedValues, "")
-						}
-						break
-					}
+		if len(mappingOrder) > 0 {
+			mappedValues := make([]string, 0, len(mappingOrder))
+			for _, m := range mappingOrder {
+				if m.headerIdx < len(row) {
+					mappedValues = append(mappedValues, row[m.headerIdx])
+				} else {
+					mappedValues = append(mappedValues, "")
 				}
 			}
-
-			if len(mappedColumns) > 0 {
-				columns = mappedColumns
-				row = mappedValues
-			} else {
-				continue
-			}
+			totalValues[count] = mappedValues
 		} else {
 			columns = row
+			totalValues[count] = row
 		}
 
-		totalValues[count] = row
 		if count+1 >= maxLines {
 			if strings.EqualFold(operType, "insert") {
 				if err := insertToDb(schema, table, columns, totalValues, tx); err != nil {

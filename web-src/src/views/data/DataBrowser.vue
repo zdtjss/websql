@@ -24,8 +24,6 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button size="small" type="primary" @click="openInsertDialog" :icon="Plus">新增</el-button>
-        <el-button size="small" type="success" @click="addBlankRow" :icon="Plus">添加行</el-button>
         <el-upload
           :file-list="fileList"
           :http-request="handleFileSelect"
@@ -62,25 +60,49 @@
           </el-dropdown>
       </div>
       <div class="toolbar-right" v-if="filterExpr">
-        <el-tag closable type="info" size="small" @close="filterExpr = ''; columnFilterConditions = {}; loadData()">
-          过滤中
-        </el-tag>
+        <span class="toolbar-filter-hint">
+          <el-icon :size="12"><Filter /></el-icon>
+          数据已过滤
+        </span>
       </div>
     </div>
 
+    <!-- Active filter bar -->
+    <div v-if="activeFilterTags.length > 0" class="db-filter-bar">
+      <span class="filter-bar-label">
+        <el-icon :size="13"><Filter /></el-icon>
+        过滤
+      </span>
+      <div class="filter-tags-wrap">
+        <span
+          v-for="tag in activeFilterTags"
+          :key="tag.colName"
+          class="filter-chip"
+          @click="openColumnFilterByName(tag.colName)"
+        >
+          <span class="filter-chip-col">{{ tag.colName }}</span>
+          <span class="filter-chip-expr">{{ tag.operatorLabel }} {{ tag.displayValue }}</span>
+          <span class="filter-chip-close" @click.stop="removeFilterTag(tag.colName)">×</span>
+        </span>
+      </div>
+      <span class="filter-bar-clear" @click="clearAllFilters">全部清除</span>
+    </div>
+
     <!-- Inline edit status bar -->
-    <div v-if="inlineChangeCount > 0 || newRowUids.size > 0" class="db-inline-bar">
+    <div v-if="inlineChangeCount > 0 || newRowUids.size > 0 || pendingDeleteKeys.size > 0" class="db-inline-bar">
       <span class="inline-change-hint">
         <template v-if="inlineChangeCount > 0">{{ inlineChangeCount }} 个单元格已修改</template>
-        <template v-if="inlineChangeCount > 0 && newRowUids.size > 0">，</template>
+        <template v-if="inlineChangeCount > 0 && (newRowUids.size > 0 || pendingDeleteKeys.size > 0)">，</template>
         <template v-if="newRowUids.size > 0">{{ newRowUids.size }} 行待新增</template>
+        <template v-if="newRowUids.size > 0 && pendingDeleteKeys.size > 0">，</template>
+        <template v-if="pendingDeleteKeys.size > 0">{{ pendingDeleteKeys.size }} 行待删除</template>
       </span>
       <el-button size="small" type="primary" :loading="savingInline" @click="saveInlineChanges">保存更改</el-button>
       <el-button size="small" @click="discardInlineChanges">放弃更改</el-button>
     </div>
 
     <!-- Table area -->
-    <div class="table-wrapper" style="flex: 1; overflow: hidden;" @paste="handlePaste" @keydown="onTableKeydown" @mouseup="onTableMouseUp" @mouseleave="onTableMouseUp" tabindex="0">
+    <div class="table-wrapper" style="flex: 1; overflow: hidden;" @paste="handlePaste" @keydown="onTableKeydown" @mouseup="onTableMouseUp" @mouseleave="onTableMouseUp" @contextmenu.prevent="onTableContextMenu" tabindex="0">
       <el-table
         :data="rows"
         height="100%"
@@ -107,18 +129,20 @@
               <span 
                 :title="col.comment || col.name" 
                 style="cursor: pointer;"
-                @click.stop="handleSort(col.name)"
               >
                 {{ col.name }}
               </span>
-              <el-icon
-                :size="14"
-                :style="{ cursor: 'pointer', color: isColumnFiltered(col.name) ? '#67c23a' : '#409eff' }"
-                :title="isColumnFiltered(col.name) ? '已设置过滤条件' : '设置过滤条件'"
+              <span
+                :class="['col-filter-icon', { 'col-filter-active': isColumnFiltered(col.name) }]"
+                :title="isColumnFiltered(col.name) ? '已设置过滤条件（点击编辑）' : '设置过滤条件'"
+                :data-col="col.name"
                 @click.stop="openColumnFilter(col, $event)"
               >
-                <Filter />
-              </el-icon>
+                <el-icon :size="14">
+                  <Filter />
+                </el-icon>
+                <span v-if="isColumnFiltered(col.name)" class="col-filter-dot"></span>
+              </span>
               <el-icon 
                 :size="14" 
                 style="cursor: pointer;"
@@ -131,12 +155,13 @@
           </template>
           <template #default="scope">
             <div class="inline-cell"
-              :class="{ 'cell-selected-sel': isCellInSelection(scope.$index, col.name) }"
+              :class="{ 'cell-selected-sel': isCellInSelection(scope.$index, col.name), 'cell-focused': isCellFocused(scope.$index, col.name) }"
               @mousedown="onCellMouseDown(scope.$index, col.name, $event)"
               @mousemove="onCellMouseMove(scope.$index, col.name)"
               @mouseenter="onCellMouseEnter(scope.$index, col.name)"
               @dblclick.stop="startInlineEdit(scope.row, col.name, $event)"
-              @click="activeCellIndex = scope.$index; activeColName = col.name">
+              @click="activeCellIndex = scope.$index; activeColName = col.name"
+              @contextmenu.prevent.stop="onCellContextMenu(scope.$index, col.name, $event)">
               <template v-if="isEditingCell(scope.row, col.name)">
                 <el-date-picker
                   v-if="isDateColumn(col.name)"
@@ -169,30 +194,7 @@
           </template>
         </el-table-column>
 
-        <!-- Action column -->
-        <el-table-column label="操作" width="180" fixed="right" resizable>
-          <template #default="scope">
-            <template v-if="isNewRow(scope.row)">
-              <el-button size="small" type="danger" link @click="removeNewRow(scope.row)">
-                移除
-              </el-button>
-            </template>
-            <template v-else>
-              <el-button size="small" type="primary" link @click="openEditDialog(scope.row, scope.$index)">
-                详细
-              </el-button>
-              <el-popconfirm
-                title="确定删除这条记录吗？"
-                @confirm="deleteRow(scope.row)"
-              >
-                <template #reference>
-                  <el-button size="small" type="danger" link>删除</el-button>
-                </template>
-              </el-popconfirm>
-            </template>
-            <el-button size="small" type="success" link @click="copyRow(scope.row)">复制</el-button>
-          </template>
-        </el-table-column>
+        <!-- No action column - operations moved to context menu -->
       </el-table>
     </div>
 
@@ -212,58 +214,112 @@
 
   </div>
 
+  <!-- Context menu -->
+  <Teleport to="body">
+    <div
+      v-if="contextMenuVisible"
+      class="db-context-menu"
+      :style="{ left: contextMenuPos.x + 'px', top: contextMenuPos.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <div class="ctx-item" @click="ctxCopy"><span class="ctx-icon">📋</span>复制 <span class="ctx-shortcut">Ctrl+C</span></div>
+      <div class="ctx-item" @click="ctxPaste"><span class="ctx-icon">📄</span>粘贴 <span class="ctx-shortcut">Ctrl+V</span></div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="ctxEditDetail"><span class="ctx-icon">📝</span>详细编辑</div>
+      <div class="ctx-item" @click="ctxClearCells"><span class="ctx-icon">🗑️</span>清空单元格 <span class="ctx-shortcut">Delete</span></div>
+      <div class="ctx-item" @click="ctxSetNull"><span class="ctx-icon">∅</span>设为 NULL</div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="ctxInsertRowAbove"><span class="ctx-icon">⬆️</span>上方插入行</div>
+      <div class="ctx-item" @click="ctxInsertRowBelow"><span class="ctx-icon">⬇️</span>下方插入行</div>
+      <div class="ctx-item" @click="ctxDeleteRows"><span class="ctx-icon">❌</span>删除选中行</div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="ctxFillDown" :class="{ disabled: !canFillDown }"><span class="ctx-icon">⬇️</span>向下填充 <span class="ctx-shortcut">Ctrl+D</span></div>
+      <div class="ctx-item" @click="ctxCopyRow"><span class="ctx-icon">📑</span>复制整行</div>
+      <div class="ctx-divider"></div>
+      <div class="ctx-item" @click="ctxUndo" :class="{ disabled: undoStack.length === 0 }"><span class="ctx-icon">↩️</span>撤销 <span class="ctx-shortcut">Ctrl+Z</span></div>
+      <div class="ctx-item" @click="ctxRedo" :class="{ disabled: redoStack.length === 0 }"><span class="ctx-icon">↪️</span>重做 <span class="ctx-shortcut">Ctrl+Y</span></div>
+    </div>
+  </Teleport>
+
   <!-- Column filter popover -->
   <el-popover
     ref="columnFilterPopoverRef"
     :visible="columnFilterDialogVisible"
-    placement="bottom"
-    :width="350"
+    placement="bottom-start"
+    :width="320"
     trigger="manual"
     :virtual-ref="filterTriggerRef"
     virtual-triggering
-    :title="'字段过滤 - ' + (currentColumn?.name || '')"
+    :show-arrow="true"
+    popper-class="col-filter-popper"
   >
-    <el-form label-width="60px" size="small" @click.stop>
-      <el-form-item label="操作符">
+    <div class="col-filter-popover" @click.stop>
+      <!-- Header -->
+      <div class="col-filter-header">
+        <div class="col-filter-title">
+          <span class="col-filter-name">{{ currentColumn?.name || '' }}</span>
+          <span v-if="currentColumn?.comment" class="col-filter-comment">（{{ currentColumn.comment }}）</span>
+        </div>
+        <span class="col-filter-close" @click="columnFilterDialogVisible = false">×</span>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="col-filter-quick">
+        <span class="quick-chip" @click="applyQuickEquals">= 等于</span>
+        <span class="quick-chip" @click="applyQuickFilter('IS NOT NULL')">≠ NULL</span>
+        <span class="quick-chip" @click="applyQuickFilter('IS NULL')">= NULL</span>
+        <span class="quick-chip" @click="applyQuickLike">包含</span>
+      </div>
+
+      <!-- Operator + Value -->
+      <div class="col-filter-body">
         <el-select 
           v-model="columnFilterOperator" 
           style="width: 100%;" 
-          size="small"
           @click.stop
         >
-          <el-option label="等于" value="=" />
-          <el-option label="不等于" value="!=" />
-          <el-option label="大于" value=">" />
-          <el-option label="大于等于" value=">=" />
-          <el-option label="小于" value="<" />
-          <el-option label="小于等于" value="<=" />
-          <el-option label="LIKE" value="LIKE" />
-          <el-option label="NOT LIKE" value="NOT LIKE" />
-          <el-option label="IS NULL" value="IS NULL" />
-          <el-option label="IS NOT NULL" value="IS NOT NULL" />
-          <el-option label="IN (逗号分隔)" value="IN" />
-          <el-option label="NOT IN (逗号分隔)" value="NOT IN" />
+          <el-option label="= 等于" value="=" />
+          <el-option label="≠ 不等于" value="!=" />
+          <el-option label="> 大于" value=">" />
+          <el-option label="≥ 大于等于" value=">=" />
+          <el-option label="< 小于" value="<" />
+          <el-option label="≤ 小于等于" value="<=" />
+          <el-option label="≈ LIKE" value="LIKE" />
+          <el-option label="≉ NOT LIKE" value="NOT LIKE" />
+          <el-option label="∅ IS NULL" value="IS NULL" />
+          <el-option label="✓ IS NOT NULL" value="IS NOT NULL" />
+          <el-option label="∈ IN" value="IN" />
+          <el-option label="∉ NOT IN" value="NOT IN" />
         </el-select>
-      </el-form-item>
-      <el-form-item 
-        label="值" 
-        v-if="!['IS NULL', 'IS NOT NULL'].includes(columnFilterOperator)"
-      >
+
         <el-input
+          v-if="!['IS NULL', 'IS NOT NULL'].includes(columnFilterOperator)"
+          ref="filterValueInputRef"
           v-model="columnFilterValue"
-          type="textarea"
+          :type="['IN', 'NOT IN'].includes(columnFilterOperator) ? 'textarea' : 'text'"
           :rows="2"
           :placeholder="getOperatorPlaceholder(columnFilterOperator)"
-          size="small"
+          clearable
           @click.stop
+          @keydown.enter.prevent="applyColumnFilter"
+          style="margin-top: 8px;"
         />
-      </el-form-item>
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
-        <el-button size="small" @click="clearColumnFilter">清除</el-button>
-        <el-button size="small" @click="columnFilterDialogVisible = false">取消</el-button>
-        <el-button size="small" type="primary" @click="applyColumnFilter">应用</el-button>
       </div>
-    </el-form>
+
+      <!-- Footer -->
+      <div class="col-filter-footer">
+        <span 
+          class="col-filter-clear-link" 
+          :class="{ disabled: !isColumnFiltered(currentColumn?.name) }"
+          @click="isColumnFiltered(currentColumn?.name) && clearColumnFilter()"
+        >清除</span>
+        <div class="col-filter-actions">
+          <el-button size="small" @click="columnFilterDialogVisible = false">取消</el-button>
+          <el-button size="small" type="primary" @click="applyColumnFilter">应用过滤</el-button>
+        </div>
+      </div>
+    </div>
   </el-popover>
 
   <!-- Edit dialog -->
@@ -289,7 +345,6 @@
               v-model="editRowData[col.name]"
               type="datetime"
               value-format="YYYY-MM-DDTHH:mm:ss"
-              :disabled="pkColumns.includes(col.name)"
               :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
               style="flex: 1;"
             />
@@ -298,12 +353,10 @@
               v-model="editRowData[col.name]"
               type="textarea"
               autosize
-              :disabled="pkColumns.includes(col.name)"
               :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
               style="flex: 1;"
             />
             <el-button
-              v-if="!pkColumns.includes(col.name)"
               size="small"
               :type="editRowData[col.name] === null ? 'warning' : 'default'"
               link
@@ -376,7 +429,7 @@
 <script setup>
 import { ArrowDown, ArrowUp, Download, Filter, Grid, InfoFilled, Plus, Refresh, Sort, Timer } from '@element-plus/icons-vue'
 import { ElLoading, ElMessage } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, useTemplateRef, watch } from 'vue'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '@/components/data/ImportPreviewDialog.vue'
 import http from '@/api/index'
@@ -431,6 +484,7 @@ const columnFilterOperator = ref('=')
 const columnFilterValue = ref('')
 const columnFilterPopoverRef = useTemplateRef('columnFilterPopoverRef')
 const filterTriggerRef = ref(null)
+const filterValueInputRef = ref(null)
 // 存储每个字段的过滤条件：{ fieldName: { operator, value } }
 const columnFilterConditions = ref({})
 
@@ -461,11 +515,33 @@ let _editInputSetupDone = false
 let _inputPasteHandler = null
 function _createInputPasteHandler(nativeInput) {
   return function(e) {
+    const text = e.clipboardData?.getData('text/plain')
+    if (!text) return
+
+    // Detect multi-cell paste (contains tab or newline): switch to grid paste mode
+    if (text.includes('\t') || text.split(/\r?\n/).filter(l => l).length > 1) {
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      // Determine the starting position from the currently editing cell
+      const cell = editingCell.value
+      if (!cell) return
+      const startRowIdx = rows.value.findIndex(r => getRowKey(r) === cell.rowKey)
+      const startColIdx = dataColumns.value.findIndex(c => c.name === cell.colName)
+      // Cancel inline edit first
+      cancelInlineEdit()
+      // Apply grid paste from the cell position
+      const grid = parsePasteGrid(text)
+      if (grid.length > 0) {
+        applyPasteGrid(grid, startRowIdx, startColIdx)
+      }
+      return
+    }
+
+    // Single-cell paste: insert text at cursor position within the editing input
     e.preventDefault()
     e.stopPropagation()
     e.stopImmediatePropagation()
-    const text = e.clipboardData?.getData('text/plain')
-    if (!text) return
     const start = nativeInput.selectionStart ?? editingValue.value.length
     const end = nativeInput.selectionEnd ?? start
     const val = editingValue.value
@@ -480,7 +556,6 @@ function _createInputPasteHandler(nativeInput) {
 // Paste tracking
 const activeCellIndex = ref(-1)
 const activeColName = ref('')
-const pasteSnapshot = ref(null)
 
 const inlineChangeCount = computed(() => {
   let count = 0
@@ -493,6 +568,7 @@ const inlineChangeCount = computed(() => {
 // Inline new row state
 let nextRowUid = 1
 const newRowUids = ref(new Set())  // track _rowUid values of unsaved new rows
+const pendingDeleteKeys = ref(new Set())  // track rowKeys of rows marked for deletion
 
 // Excel-style range selection state
 const selStart = ref({ row: -1, col: -1 })
@@ -524,6 +600,11 @@ function isCellInSelection(rowIdx, colName) {
          colIdx >= bounds.colMin && colIdx <= bounds.colMax
 }
 
+function isCellFocused(rowIdx, colName) {
+  if (editingCell.value) return false
+  return rowIdx === activeCellIndex.value && colName === activeColName.value
+}
+
 function cellClassFn({ rowIndex, columnIndex }) {
   const bounds = selectionBounds.value
   if (!bounds) return ''
@@ -545,11 +626,27 @@ function clearRangeSelection() {
 }
 
 function onCellMouseDown(rowIdx, colName, e) {
-  if (editingCell.value) return
+  // If editing another cell, commit the edit first and continue with selection
+  if (editingCell.value) {
+    const editingRow = editingCell.value.rowKey
+    const editingCol = editingCell.value.colName
+    const clickedKey = getRowKey(rows.value[rowIdx])
+    // Only commit if clicking a DIFFERENT cell
+    if (editingRow !== clickedKey || editingCol !== colName) {
+      commitInlineEdit()
+    } else {
+      // Clicking the same cell that's being edited — let the input handle it
+      return
+    }
+  }
   // Only respond to primary button
   if (e.button !== 0) return
   const colIdx = colNameToIndex(colName)
   if (colIdx < 0) return
+
+  // Update active cell for keyboard navigation
+  activeCellIndex.value = rowIdx
+  activeColName.value = colName
 
   // Alt+drag: native text selection within a cell
   if (e.altKey) {
@@ -630,75 +727,6 @@ function copySelectedRange() {
     navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
     ElMessage({ message: `已复制 ${lines.length} 行`, type: 'success' })
   }
-}
-
-async function pasteToSelectedRange(e) {
-  const bounds = selectionBounds.value
-  if (!bounds) return
-
-  let text = ''
-  try {
-    text = await navigator.clipboard.readText()
-  } catch {
-    try {
-      text = (e.clipboardData || window.clipboardData)?.getData('text') || ''
-    } catch { return }
-  }
-  if (!text) return
-
-  const lines = text.split(/\r?\n/)
-  if (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop()
-  }
-  const rows_data = lines.map(l => l.split('\t'))
-  if (rows_data.length === 0) return
-
-  const pasteRows = rows_data.length
-  const pasteCols = Math.max(...rows_data.map(r => r.length))
-  const availableCols = dataColumns.value.length - bounds.colMin
-
-  const neededRows = bounds.rowMin + pasteRows
-  while (rows.value.length < neededRows) {
-    addBlankRowSilent()
-  }
-
-  for (let r = 0; r < pasteRows; r++) {
-    const targetRow = rows.value[bounds.rowMin + r]
-    if (!targetRow) continue
-    const key = getRowKey(targetRow)
-    if (!changedRows.value[key]) changedRows.value[key] = {}
-
-    for (let c = 0; c < Math.min(pasteCols, availableCols); c++) {
-      const colName = dataColumns.value[bounds.colMin + c]?.name
-      if (!colName) continue
-      // \N from clipboard represents NULL
-      const rawVal = rows_data[r][c] !== undefined ? rows_data[r][c] : ''
-      const val = rawVal === '\\N' ? null : rawVal
-
-      if (isNewRow(targetRow) && pkColumns.value.includes(colName)) {
-        targetRow[colName] = val
-      }
-      // Type-aware comparison: null !== ''
-      const currentVal = targetRow[colName]
-      if (currentVal !== val && !(currentVal === null && val === '') && !(currentVal === '' && val === null)) {
-        changedRows.value[key][colName] = val
-      } else {
-        delete changedRows.value[key][colName]
-      }
-    }
-    if (Object.keys(changedRows.value[key]).length === 0) {
-      delete changedRows.value[key]
-    }
-  }
-}
-
-function addBlankRowSilent() {
-  const blank = { _rowUid: nextRowUid++ }
-  dataColumns.value.forEach(col => { blank[col.name] = '' })
-  rows.value.push(blank)
-  const key = getRowKey(blank)
-  newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
-  originalRows.value[key] = {}
 }
 
 // Insert dialog state
@@ -854,6 +882,7 @@ async function fetchData() {
   })
   changedRows.value = {}
   newRowUids.value = new Set()
+  pendingDeleteKeys.value = new Set()
   rows.value.forEach(row => {
     originalRows.value[getRowKey(row)] = { ...row }
   })
@@ -909,6 +938,7 @@ function getSortIcon(colName) {
 
 function rowClassName({ row }) {
   const key = getRowKey(row)
+  if (pendingDeleteKeys.value.has(key)) return 'row-deleted'
   if (changedRows.value[key]) return 'row-changed'
   if (isNewRow(row)) return 'row-new'
   return ''
@@ -951,7 +981,6 @@ function isCellChanged(row, colName) {
 }
 
 function startInlineEdit(row, colName, event) {
-  if (!isNewRow(row) && pkColumns.value.includes(colName)) return
   const key = getRowKey(row)
   const changed = changedRows.value[key]
   const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
@@ -984,7 +1013,8 @@ function commitInlineEdit() {
       }
     }
   } else {
-    // Value changed
+    // Value changed — push undo before modifying
+    pushUndoSnapshot()
     if (!changedRows.value[rowKey]) {
       changedRows.value[rowKey] = {}
     }
@@ -999,6 +1029,17 @@ function commitInlineEdit() {
     } else {
       changedRows.value[rowKey][colName] = newVal
     }
+  }
+
+  // Move focus to the committed cell for keyboard nav
+  const rowIdx = rows.value.findIndex(r => getRowKey(r) === rowKey)
+  const colIdx = dataColumns.value.findIndex(c => c.name === colName)
+  if (rowIdx >= 0 && colIdx >= 0) {
+    activeCellIndex.value = rowIdx
+    activeColName.value = colName
+    selStart.value = { row: rowIdx, col: colIdx }
+    selEnd.value = { row: rowIdx, col: colIdx }
+    selAnchor.value = { row: rowIdx, col: colIdx }
   }
 
   editingCell.value = null
@@ -1020,10 +1061,7 @@ function cancelInlineEdit() {
 function applyPasteGrid(grid, startRowIdx, startColIdx) {
   if (startRowIdx < 0 || startColIdx < 0) return
 
-  const snapshot = {
-    changedRows: JSON.parse(JSON.stringify(changedRows.value)),
-    restoredCells: []
-  }
+  pushUndoSnapshot()
 
   for (let ri = 0; ri < grid.length; ri++) {
     let targetRowIdx = startRowIdx + ri
@@ -1031,6 +1069,7 @@ function applyPasteGrid(grid, startRowIdx, startColIdx) {
       const blank = { _rowUid: nextRowUid++, _autoExpanded: true }
       dataColumns.value.forEach(col => { blank[col.name] = '' })
       rows.value.push(blank)
+      newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
       const key = getRowKey(blank)
       if (!originalRows.value[key]) {
         originalRows.value[key] = {}
@@ -1043,17 +1082,9 @@ function applyPasteGrid(grid, startRowIdx, startColIdx) {
       const targetColIdx = startColIdx + ci
       if (targetColIdx >= dataColumns.value.length) break
       const colName = dataColumns.value[targetColIdx].name
-      if (!isNewRow(targetRow) && pkColumns.value.includes(colName)) continue
 
       const newVal = grid[ri][ci]
       const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
-
-      const oldChanged = changedRows.value[rowKey]?.[colName]
-      snapshot.restoredCells.push({
-        rowKey,
-        colName,
-        oldVal: oldChanged !== undefined ? oldChanged : origVal
-      })
 
       // Type-aware comparison: null !== '', treat null and '' as equivalent only for "no change"
       const newIsNull = newVal === null || newVal === undefined
@@ -1076,7 +1107,6 @@ function applyPasteGrid(grid, startRowIdx, startColIdx) {
     }
   }
 
-  pasteSnapshot.value = snapshot
   activeCellIndex.value = -1
   activeColName.value = ''
 }
@@ -1090,6 +1120,9 @@ function parsePasteGrid(text) {
 }
 
 function handlePaste(event) {
+  // If a cell is being inline-edited, the paste is handled by the input's capture handler
+  if (editingCell.value) return
+
   event.preventDefault()
 
   const text = event.clipboardData?.getData('text/plain')
@@ -1157,55 +1190,558 @@ async function handleEditPaste() {
   applyPasteGrid(grid, startRowIdx, startColIdx)
 }
 
-function onTableKeydown(event) {
-  // Ctrl+Z: undo paste
-  if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
-    if (pasteSnapshot.value) {
-      event.preventDefault()
-      undoPaste()
-      return
+// ============ Context Menu ============
+const contextMenuVisible = ref(false)
+const contextMenuPos = ref({ x: 0, y: 0 })
+const contextMenuRowIdx = ref(-1)
+const contextMenuColIdx = ref(-1)
+
+const canFillDown = computed(() => {
+  const bounds = selectionBounds.value
+  return bounds && bounds.rowMin < bounds.rowMax
+})
+
+function onTableContextMenu(event) {
+  // Fallback for right-click outside of data cells (e.g. on row index or headers)
+  contextMenuPos.value = { x: event.clientX, y: event.clientY }
+  contextMenuVisible.value = true
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenu)
+    document.addEventListener('contextmenu', closeContextMenu)
+  }, 0)
+}
+
+function onCellContextMenu(rowIdx, colName, event) {
+  // Set focus to right-clicked cell if not already in selection
+  const colIdx = colNameToIndex(colName)
+  const bounds = selectionBounds.value
+  const inSelection = bounds &&
+    rowIdx >= bounds.rowMin && rowIdx <= bounds.rowMax &&
+    colIdx >= bounds.colMin && colIdx <= bounds.colMax
+
+  if (!inSelection) {
+    activeCellIndex.value = rowIdx
+    activeColName.value = colName
+    selStart.value = { row: rowIdx, col: colIdx }
+    selEnd.value = { row: rowIdx, col: colIdx }
+    selAnchor.value = { row: rowIdx, col: colIdx }
+  }
+
+  contextMenuPos.value = { x: event.clientX, y: event.clientY }
+  contextMenuVisible.value = true
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenu)
+    document.addEventListener('contextmenu', closeContextMenu)
+  }, 0)
+}
+
+function closeContextMenu() {
+  contextMenuVisible.value = false
+  document.removeEventListener('click', closeContextMenu)
+  document.removeEventListener('contextmenu', closeContextMenu)
+}
+
+function ctxCopy() {
+  closeContextMenu()
+  copySelectedRange()
+}
+
+function ctxEditDetail() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  const rowIdx = bounds ? bounds.rowMin : activeCellIndex.value
+  const row = rows.value[rowIdx]
+  if (row && !isNewRow(row)) {
+    openEditDialog(row)
+  }
+}
+
+async function ctxPaste() {
+  closeContextMenu()
+  try {
+    const text = await navigator.clipboard.readText()
+    if (!text) return
+    const bounds = selectionBounds.value
+    let startRowIdx = -1, startColIdx = -1
+    if (bounds) {
+      startRowIdx = bounds.rowMin
+      startColIdx = bounds.colMin
+    } else if (activeCellIndex.value >= 0 && activeColName.value) {
+      startRowIdx = activeCellIndex.value
+      startColIdx = dataColumns.value.findIndex(c => c.name === activeColName.value)
+    }
+    if (startRowIdx < 0 || startColIdx < 0) return
+    const grid = parsePasteGrid(text)
+    if (grid.length > 0) {
+      applyPasteGrid(grid, startRowIdx, startColIdx)
+    }
+  } catch {}
+}
+
+function ctxClearCells() {
+  closeContextMenu()
+  clearSelectedCells()
+}
+
+function ctxSetNull() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  if (!bounds) {
+    if (activeCellIndex.value >= 0 && activeColName.value) {
+      setCellValue(activeCellIndex.value, activeColName.value, null)
+    }
+    return
+  }
+  pushUndoSnapshot()
+  for (let r = bounds.rowMin; r <= bounds.rowMax; r++) {
+    for (let c = bounds.colMin; c <= bounds.colMax; c++) {
+      const row = rows.value[r]
+      if (!row) continue
+      const colName = dataColumns.value[c].name
+      const rowKey = getRowKey(row)
+      const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+      const origIsNull = origVal === null || origVal === undefined
+      if (!origIsNull) {
+        if (!changedRows.value[rowKey]) changedRows.value[rowKey] = {}
+        changedRows.value[rowKey][colName] = null
+      } else {
+        if (changedRows.value[rowKey]) {
+          delete changedRows.value[rowKey][colName]
+          if (Object.keys(changedRows.value[rowKey]).length === 0) {
+            delete changedRows.value[rowKey]
+          }
+        }
+      }
     }
   }
-  // Range selection keyboard shortcuts
-  if (editingCell.value) return
-  const bounds = selectionBounds.value
-  if (!bounds) return
+}
 
-  if (event.ctrlKey && event.key === 'c') {
-    // If user has native text selected, let the browser copy it
+function ctxInsertRowAbove() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  const idx = bounds ? bounds.rowMin : (activeCellIndex.value >= 0 ? activeCellIndex.value : rows.value.length)
+  insertBlankRowAt(idx)
+}
+
+function ctxInsertRowBelow() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  const idx = bounds ? bounds.rowMax + 1 : (activeCellIndex.value >= 0 ? activeCellIndex.value + 1 : rows.value.length)
+  insertBlankRowAt(idx)
+}
+
+function insertBlankRowAt(idx) {
+  const blank = { _rowUid: nextRowUid++ }
+  dataColumns.value.forEach(col => { blank[col.name] = '' })
+  rows.value.splice(idx, 0, blank)
+  const key = getRowKey(blank)
+  newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
+  originalRows.value[key] = {}
+}
+
+function ctxDeleteRows() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  if (!bounds) {
+    if (activeCellIndex.value >= 0) {
+      const row = rows.value[activeCellIndex.value]
+      if (row && isNewRow(row)) {
+        removeNewRow(row)
+      } else if (row) {
+        pushUndoSnapshot()
+        pendingDeleteKeys.value = new Set([...pendingDeleteKeys.value, getRowKey(row)])
+      }
+    }
+    return
+  }
+  // Delete all rows in selection
+  pushUndoSnapshot()
+  for (let r = bounds.rowMax; r >= bounds.rowMin; r--) {
+    const row = rows.value[r]
+    if (!row) continue
+    if (isNewRow(row)) {
+      removeNewRow(row)
+    } else {
+      pendingDeleteKeys.value = new Set([...pendingDeleteKeys.value, getRowKey(row)])
+    }
+  }
+}
+
+function ctxFillDown() {
+  closeContextMenu()
+  fillDown()
+}
+
+function ctxCopyRow() {
+  closeContextMenu()
+  const bounds = selectionBounds.value
+  const rowIdx = bounds ? bounds.rowMin : activeCellIndex.value
+  const row = rows.value[rowIdx]
+  if (row) copyRow(row)
+}
+
+function ctxUndo() {
+  closeContextMenu()
+  undo()
+}
+
+function ctxRedo() {
+  closeContextMenu()
+  redo()
+}
+
+function onTableKeydown(event) {
+  // Ctrl+Z / Ctrl+Y: undo/redo
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
+    event.preventDefault()
+    undo()
+    return
+  }
+  if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'Z') || (event.shiftKey && event.key === 'z'))) {
+    event.preventDefault()
+    redo()
+    return
+  }
+
+  // If inline editing, handle Tab/Enter navigation within the editor
+  if (editingCell.value) {
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const rowIdx = rows.value.findIndex(r => getRowKey(r) === editingCell.value?.rowKey)
+      const colIdx = dataColumns.value.findIndex(c => c.name === editingCell.value?.colName)
+      commitInlineEdit()
+      // Move focus to next/prev cell
+      if (event.shiftKey) {
+        navigateFocus(rowIdx, colIdx, 0, -1)
+      } else {
+        navigateFocus(rowIdx, colIdx, 0, 1)
+      }
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      const rowIdx = rows.value.findIndex(r => getRowKey(r) === editingCell.value?.rowKey)
+      const colIdx = dataColumns.value.findIndex(c => c.name === editingCell.value?.colName)
+      commitInlineEdit()
+      navigateFocus(rowIdx, colIdx, 1, 0)
+      return
+    }
+    if (event.key === 'Escape') {
+      cancelInlineEdit()
+      return
+    }
+    return
+  }
+
+  // Keyboard navigation when not editing
+  const bounds = selectionBounds.value
+  if (!bounds && activeCellIndex.value < 0) return
+
+  const currentRow = bounds ? bounds.rowMin : activeCellIndex.value
+  const currentCol = bounds ? bounds.colMin : colNameToIndex(activeColName.value)
+
+  // Arrow keys: move focus
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    event.preventDefault()
+    let dRow = 0, dCol = 0
+    if (event.key === 'ArrowUp') dRow = -1
+    else if (event.key === 'ArrowDown') dRow = 1
+    else if (event.key === 'ArrowLeft') dCol = -1
+    else if (event.key === 'ArrowRight') dCol = 1
+
+    if (event.shiftKey) {
+      // Extend selection
+      const endRow = (selEnd.value.row >= 0 ? selEnd.value.row : currentRow) + dRow
+      const endCol = (selEnd.value.col >= 0 ? selEnd.value.col : currentCol) + dCol
+      const clampedRow = Math.max(0, Math.min(rows.value.length - 1, endRow))
+      const clampedCol = Math.max(0, Math.min(dataColumns.value.length - 1, endCol))
+      if (selStart.value.row < 0) {
+        selStart.value = { row: currentRow, col: currentCol }
+        selAnchor.value = { row: currentRow, col: currentCol }
+      }
+      selEnd.value = { row: clampedRow, col: clampedCol }
+    } else {
+      navigateFocus(currentRow, currentCol, dRow, dCol)
+    }
+    return
+  }
+
+  // Tab: move to next cell
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    if (event.shiftKey) {
+      navigateFocus(currentRow, currentCol, 0, -1)
+    } else {
+      navigateFocus(currentRow, currentCol, 0, 1)
+    }
+    return
+  }
+
+  // Enter: move down (or edit if already focused)
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    if (event.shiftKey) {
+      navigateFocus(currentRow, currentCol, -1, 0)
+    } else {
+      navigateFocus(currentRow, currentCol, 1, 0)
+    }
+    return
+  }
+
+  // F2: enter edit mode on current focused cell
+  if (event.key === 'F2') {
+    event.preventDefault()
+    const row = rows.value[currentRow]
+    if (row && currentCol >= 0) {
+      startInlineEdit(row, dataColumns.value[currentCol].name)
+    }
+    return
+  }
+
+  // Delete / Backspace: clear selected cells
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    clearSelectedCells()
+    return
+  }
+
+  // Ctrl+D: fill down
+  if ((event.ctrlKey || event.metaKey) && event.key === 'd') {
+    event.preventDefault()
+    fillDown()
+    return
+  }
+
+  // Ctrl+C: copy
+  if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
     const sel = window.getSelection()
     if (sel && sel.toString().length > 0) return
     event.preventDefault()
     copySelectedRange()
+    return
+  }
+
+  // Ctrl+V: paste (handled by handlePaste via @paste)
+
+  // Direct typing: enter edit mode with the typed character (replace mode)
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
+    const row = rows.value[currentRow]
+    if (row && currentCol >= 0) {
+      const colName = dataColumns.value[currentCol].name
+      startInlineEditReplace(row, colName, event.key)
+      event.preventDefault()
+    }
+    return
   }
 }
 
-function undoPaste() {
-  const snapshot = pasteSnapshot.value
-  if (!snapshot) return
+// Navigate focus to an adjacent cell, wrapping at edges
+function navigateFocus(fromRow, fromCol, dRow, dCol) {
+  let newRow = fromRow + dRow
+  let newCol = fromCol + dCol
 
-  changedRows.value = JSON.parse(JSON.stringify(snapshot.changedRows))
+  // Wrap columns
+  if (newCol >= dataColumns.value.length) {
+    newCol = 0
+    newRow++
+  } else if (newCol < 0) {
+    newCol = dataColumns.value.length - 1
+    newRow--
+  }
 
-  for (const cell of snapshot.restoredCells) {
-    const { rowKey, colName, oldVal } = cell
-    const row = rows.value.find(r => getRowKey(r) === rowKey)
-    if (row) {
-      if (oldVal === undefined) {
-        delete row[colName]
+  // Clamp rows
+  newRow = Math.max(0, Math.min(rows.value.length - 1, newRow))
+  newCol = Math.max(0, Math.min(dataColumns.value.length - 1, newCol))
+
+  activeCellIndex.value = newRow
+  activeColName.value = dataColumns.value[newCol].name
+  selStart.value = { row: newRow, col: newCol }
+  selEnd.value = { row: newRow, col: newCol }
+  selAnchor.value = { row: newRow, col: newCol }
+}
+
+// Start inline edit in "replace" mode: the first keypress replaces cell content
+function startInlineEditReplace(row, colName, initialChar) {
+  const key = getRowKey(row)
+  const changed = changedRows.value[key]
+  const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
+  editingOriginalValue.value = currentVal
+  editingValue.value = initialChar
+  _editInputSetupDone = false
+  editingCell.value = { rowKey: key, colName }
+  // After Vue updates, position cursor at end
+  setTimeout(() => {
+    if (editInputRef) {
+      const nativeInput = editInputRef.$el?.querySelector('input')
+      if (nativeInput) {
+        nativeInput.setSelectionRange(initialChar.length, initialChar.length)
+      }
+    }
+  }, 0)
+}
+
+// Clear selected cells (Delete/Backspace)
+function clearSelectedCells() {
+  const bounds = selectionBounds.value
+  if (!bounds) {
+    // Single focused cell
+    if (activeCellIndex.value >= 0 && activeColName.value) {
+      setCellValue(activeCellIndex.value, activeColName.value, '')
+    }
+    return
+  }
+
+  pushUndoSnapshot()
+
+  for (let r = bounds.rowMin; r <= bounds.rowMax; r++) {
+    for (let c = bounds.colMin; c <= bounds.colMax; c++) {
+      const row = rows.value[r]
+      if (!row) continue
+      const colName = dataColumns.value[c].name
+      const rowKey = getRowKey(row)
+      const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+
+      // Set to empty string (or compare to original)
+      const newVal = ''
+      const origIsNull = origVal === null || origVal === undefined
+      const isChanged = !(newVal === origVal || (newVal === '' && origIsNull))
+
+      if (isChanged) {
+        if (!changedRows.value[rowKey]) changedRows.value[rowKey] = {}
+        changedRows.value[rowKey][colName] = newVal
       } else {
-        row[colName] = oldVal
+        if (changedRows.value[rowKey]) {
+          delete changedRows.value[rowKey][colName]
+          if (Object.keys(changedRows.value[rowKey]).length === 0) {
+            delete changedRows.value[rowKey]
+          }
+        }
       }
     }
   }
+}
 
-  pasteSnapshot.value = null
+// Set a single cell's value
+function setCellValue(rowIdx, colName, newVal) {
+  const row = rows.value[rowIdx]
+  if (!row) return
+  pushUndoSnapshot()
+  const rowKey = getRowKey(row)
+  const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+  const origIsNull = origVal === null || origVal === undefined
+  const isChanged = !(newVal === origVal || (newVal === '' && origIsNull) || (newVal === null && origIsNull))
+
+  if (isChanged) {
+    if (!changedRows.value[rowKey]) changedRows.value[rowKey] = {}
+    changedRows.value[rowKey][colName] = newVal
+  } else {
+    if (changedRows.value[rowKey]) {
+      delete changedRows.value[rowKey][colName]
+      if (Object.keys(changedRows.value[rowKey]).length === 0) {
+        delete changedRows.value[rowKey]
+      }
+    }
+  }
+}
+
+// Fill down (Ctrl+D): copy first row of selection to all rows below
+function fillDown() {
+  const bounds = selectionBounds.value
+  if (!bounds || bounds.rowMin === bounds.rowMax) return
+
+  pushUndoSnapshot()
+
+  for (let c = bounds.colMin; c <= bounds.colMax; c++) {
+    const colName = dataColumns.value[c].name
+    const sourceRow = rows.value[bounds.rowMin]
+    if (!sourceRow) continue
+    const sourceKey = getRowKey(sourceRow)
+    const sourceChanged = changedRows.value[sourceKey]
+    const sourceVal = sourceChanged && sourceChanged[colName] !== undefined ? sourceChanged[colName] : sourceRow[colName]
+
+    for (let r = bounds.rowMin + 1; r <= bounds.rowMax; r++) {
+      const row = rows.value[r]
+      if (!row) continue
+      const rowKey = getRowKey(row)
+      const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
+      const newVal = sourceVal ?? ''
+      const origIsNull = origVal === null || origVal === undefined
+      const newIsNull = newVal === null || newVal === undefined
+      const isChanged = !(newVal === origVal || (newIsNull && origIsNull) || (newIsNull && origVal === '') || (newVal === '' && origIsNull))
+
+      if (isChanged) {
+        if (!changedRows.value[rowKey]) changedRows.value[rowKey] = {}
+        changedRows.value[rowKey][colName] = newVal
+      } else {
+        if (changedRows.value[rowKey]) {
+          delete changedRows.value[rowKey][colName]
+          if (Object.keys(changedRows.value[rowKey]).length === 0) {
+            delete changedRows.value[rowKey]
+          }
+        }
+      }
+    }
+  }
+  ElMessage({ message: '已向下填充', type: 'success' })
+}
+
+// ============ Undo / Redo Stack ============
+const undoStack = ref([])  // Array of snapshots
+const redoStack = ref([])
+const MAX_UNDO = 50
+
+function pushUndoSnapshot() {
+  undoStack.value.push({
+    changedRows: JSON.parse(JSON.stringify(changedRows.value)),
+    newRowUids: new Set(newRowUids.value),
+    pendingDeleteKeys: new Set(pendingDeleteKeys.value),
+    rowsSnapshot: rows.value.map(r => ({ ...r })),
+  })
+  if (undoStack.value.length > MAX_UNDO) {
+    undoStack.value.shift()
+  }
+  // Clear redo stack on new action
+  redoStack.value = []
+}
+
+function undo() {
+  if (undoStack.value.length === 0) return
+  const snapshot = undoStack.value.pop()
+  // Save current state to redo stack
+  redoStack.value.push({
+    changedRows: JSON.parse(JSON.stringify(changedRows.value)),
+    newRowUids: new Set(newRowUids.value),
+    pendingDeleteKeys: new Set(pendingDeleteKeys.value),
+    rowsSnapshot: rows.value.map(r => ({ ...r })),
+  })
+  applySnapshot(snapshot)
+}
+
+function redo() {
+  if (redoStack.value.length === 0) return
+  const snapshot = redoStack.value.pop()
+  // Save current state to undo stack
+  undoStack.value.push({
+    changedRows: JSON.parse(JSON.stringify(changedRows.value)),
+    newRowUids: new Set(newRowUids.value),
+    pendingDeleteKeys: new Set(pendingDeleteKeys.value),
+    rowsSnapshot: rows.value.map(r => ({ ...r })),
+  })
+  applySnapshot(snapshot)
+}
+
+function applySnapshot(snapshot) {
+  changedRows.value = snapshot.changedRows
+  newRowUids.value = snapshot.newRowUids
+  pendingDeleteKeys.value = snapshot.pendingDeleteKeys || new Set()
+  rows.value = snapshot.rowsSnapshot
 }
 
 async function saveInlineChanges() {
   const rowKeys = Object.keys(changedRows.value)
   const newKeys = rowKeys.filter(k => k.startsWith('_new_'))
   const existingKeys = rowKeys.filter(k => !k.startsWith('_new_'))
-  if (rowKeys.length === 0 && newRowUids.value.size === 0) return
+  if (rowKeys.length === 0 && newRowUids.value.size === 0 && pendingDeleteKeys.value.size === 0) return
 
   savingInline.value = true
 
@@ -1217,15 +1753,25 @@ async function saveInlineChanges() {
       const row = rows.value.find(r => getRowKey(r) === rowKey)
       if (!row) continue
 
-      const merged = { ...row }
+      // For new rows, only INSERT columns that have been explicitly modified by the user.
+      // The initial blank row sets all columns to '', but unmodified '' should not be sent
+      // (especially for datetime/auto-increment columns with default values).
+      const merged = {}
       if (changed) {
         Object.keys(changed).forEach(k => { merged[k] = changed[k] })
       }
+      // Also include fields that were directly set on the row object (e.g. via copyRow)
+      // but only if they have non-empty values and are not already in changed
+      dataColumns.value.forEach(col => {
+        if (merged[col.name] === undefined && row[col.name] !== '' && row[col.name] !== null && row[col.name] !== undefined) {
+          merged[col.name] = row[col.name]
+        }
+      })
 
       const insertCols = dataColumns.value
         .filter(col => {
           const val = merged[col.name]
-          return val !== null && val !== undefined
+          return val !== null && val !== undefined && val !== ''
         })
       if (insertCols.length === 0) continue
 
@@ -1254,6 +1800,15 @@ async function saveInlineChanges() {
         .join(' AND ')
 
       sqlStatements.push('UPDATE ' + quoteId(tableName, effectiveDbType.value) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
+    }
+
+    // Generate DELETE statements for rows marked for deletion
+    for (const rowKey of pendingDeleteKeys.value) {
+      const orig = originalRows.value[rowKey]
+      if (!orig) continue
+      const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
+      const whereClauses = pkCols.map(k => buildWhereCondition(k, orig[k], effectiveDbType.value)).join(' AND ')
+      sqlStatements.push('DELETE FROM ' + quoteId(tableName, effectiveDbType.value) + ' WHERE ' + whereClauses)
     }
 
     if (sqlStatements.length === 0) {
@@ -1311,6 +1866,7 @@ function discardInlineChanges() {
   const uidSet = newRowUids.value
   rows.value = rows.value.filter(r => !r._rowUid || !uidSet.has(r._rowUid))
   newRowUids.value = new Set()
+  pendingDeleteKeys.value = new Set()
   // Restore original values
   changedRows.value = {}
   rows.value.forEach(row => {
@@ -1322,15 +1878,6 @@ function discardInlineChanges() {
     }
   })
   ElMessage({ message: '已放弃更改', type: 'info' })
-}
-
-function addBlankRow() {
-  const blank = { _rowUid: nextRowUid++ }
-  dataColumns.value.forEach(col => { blank[col.name] = '' })
-  rows.value.push(blank)
-  const key = getRowKey(blank)
-  newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
-  originalRows.value[key] = {}
 }
 
 function copyRow(row) {
@@ -1407,6 +1954,11 @@ function openColumnFilter(col, event) {
   }
   
   columnFilterDialogVisible.value = true
+  nextTick(() => {
+    if (filterValueInputRef.value && !['IS NULL', 'IS NOT NULL'].includes(columnFilterOperator.value)) {
+      filterValueInputRef.value.focus?.()
+    }
+  })
 }
 
 function onFilterPopoverMouseDown(e) {
@@ -1514,6 +2066,104 @@ function clearColumnFilter() {
   ElMessage({ message: '该字段过滤已清除', type: 'success' })
 }
 
+function clearAllFilters() {
+  filterExpr.value = ''
+  columnFilterConditions.value = {}
+  currentPage.value = 1
+  loadData()
+}
+
+// Computed: active filter tags for the filter bar
+const activeFilterTags = computed(() => {
+  const tags = []
+  for (const [colName, cond] of Object.entries(columnFilterConditions.value)) {
+    const opLabels = {
+      '=': '=', '!=': '≠', '>': '>', '>=': '≥',
+      '<': '<', '<=': '≤', 'LIKE': '≈', 'NOT LIKE': '≉',
+      'IS NULL': '为空', 'IS NOT NULL': '非空',
+      'IN': '∈', 'NOT IN': '∉'
+    }
+    const operatorLabel = opLabels[cond.operator] || cond.operator
+    const displayValue = cond.value
+      ? (cond.value.length > 20 ? cond.value.slice(0, 20) + '…' : cond.value)
+      : ''
+    tags.push({ colName, operatorLabel, value: cond.value, displayValue })
+  }
+  return tags
+})
+
+function removeFilterTag(colName) {
+  const quotedColName = quoteId(colName, effectiveDbType.value)
+  const conditions = filterExpr.value.split(/\s+AND\s+/i).filter(c => {
+    const trimmed = c.trim()
+    return !trimmed.startsWith(quotedColName) && 
+           !trimmed.startsWith(colName) &&
+           !trimmed.includes(quotedColName) &&
+           !trimmed.includes(colName)
+  })
+  
+  filterExpr.value = conditions.join(' AND ')
+  delete columnFilterConditions.value[colName]
+  currentPage.value = 1
+  loadData()
+}
+
+function openColumnFilterByName(colName) {
+  const col = dataColumns.value.find(c => c.name === colName)
+  if (!col) return
+  // Use the first filter icon element found for this column as trigger
+  const headerEl = document.querySelector(`.col-filter-icon[data-col="${colName}"]`)
+  if (headerEl) {
+    filterTriggerRef.value = headerEl
+  }
+  currentColumn.value = col
+  const savedCondition = columnFilterConditions.value[colName]
+  if (savedCondition) {
+    columnFilterOperator.value = savedCondition.operator
+    columnFilterValue.value = savedCondition.value
+  } else {
+    columnFilterOperator.value = '='
+    columnFilterValue.value = ''
+  }
+  columnFilterDialogVisible.value = true
+  nextTick(() => {
+    if (filterValueInputRef.value && !['IS NULL', 'IS NOT NULL'].includes(columnFilterOperator.value)) {
+      filterValueInputRef.value.focus?.()
+    }
+  })
+}
+
+function applyQuickFilter(op) {
+  columnFilterOperator.value = op
+  columnFilterValue.value = ''
+  applyColumnFilter()
+}
+
+function applyQuickEquals() {
+  columnFilterOperator.value = '='
+  columnFilterValue.value = ''
+  nextTick(() => {
+    if (filterValueInputRef.value) {
+      filterValueInputRef.value.focus?.()
+    }
+  })
+}
+
+function applyQuickLike() {
+  columnFilterOperator.value = 'LIKE'
+  columnFilterValue.value = '%%'
+  nextTick(() => {
+    if (filterValueInputRef.value) {
+      filterValueInputRef.value.focus?.()
+      // Place cursor between the two % characters
+      const input = filterValueInputRef.value.$el?.querySelector('input')
+      if (input) {
+        input.setSelectionRange(1, 1)
+      }
+    }
+  })
+}
+
 async function handleExportCommand(format) {
   if (format === 'xlsx') {
     await exportToExcel()
@@ -1614,7 +2264,7 @@ async function saveData() {
   const current = editRowData.value
 
   const changedCols = Object.keys(origin).filter(
-    key => !pkColumns.value.includes(key) && origin[key] !== current[key]
+    key => origin[key] !== current[key]
   )
 
   if (changedCols.length === 0) {
@@ -1656,14 +2306,6 @@ async function saveData() {
   } finally {
     saving.value = false
   }
-}
-
-function openInsertDialog() {
-  // Initialize all columns to empty string
-  const blank = {}
-  dataColumns.value.forEach(col => { blank[col.name] = '' })
-  insertRowData.value = blank
-  insertDialogVisible.value = true
 }
 
 async function insertData() {
@@ -1778,6 +2420,18 @@ function handleFileSelect(options) {
   }
 }
 
+// 规范化表头：将 null/undefined/空白表头替换为占位名，确保后续映射与预览不会因 null 报错
+function normalizeHeaders(headers) {
+  let unnamedIdx = 0
+  return (headers || []).map(h => {
+    if (h == null || String(h).trim() === '') {
+      unnamedIdx++
+      return `未命名_${unnamedIdx}`
+    }
+    return String(h)
+  })
+}
+
 function handleExcelFile(file) {
   const reader = new FileReader()
   reader.onload = (e) => {
@@ -1789,13 +2443,13 @@ function handleExcelFile(file) {
       // defval: null 确保空单元格显式返回 null 而非 undefined（避免稀疏数组导致列映射偏移）
       // raw: false + dateNF 确保日期/数字单元格以格式化字符串返回，不会被读为空
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null })
-      
+
       if (jsonData.length === 0) {
         ElMessage({ message: 'Excel 文件为空', type: 'warning' })
         return
       }
-      
-      const headers = jsonData[0] || []
+
+      const headers = normalizeHeaders(jsonData[0] || [])
       const dataRows = jsonData.slice(1)
       
       if (dataColumns.value && dataColumns.value.length > 0) {
@@ -1827,7 +2481,7 @@ function handleCsvFile(file) {
         ElMessage({ message: 'CSV 文件为空', type: 'warning' })
         return
       }
-      const headers = parseCsvLine(lines[0])
+      const headers = normalizeHeaders(parseCsvLine(lines[0]))
       const dataRows = lines.slice(1).map(parseCsvLine)
       
       if (dataColumns.value && dataColumns.value.length > 0) {
@@ -1897,8 +2551,9 @@ function handleJsonFile(file) {
         ElMessage({ message: 'JSON 文件应为非空数组', type: 'warning' })
         return
       }
-      const headers = Object.keys(json[0])
-      const dataRows = json.map(obj => headers.map(h => obj[h] ?? null))
+      const rawHeaders = Object.keys(json[0])
+      const headers = normalizeHeaders(rawHeaders)
+      const dataRows = json.map(obj => rawHeaders.map(h => obj[h] ?? null))
       
       if (dataColumns.value && dataColumns.value.length > 0) {
         dbColumns.value = dataColumns.value.map(col => col.name)
@@ -2010,6 +2665,88 @@ watch(
   outline: none !important;
   outline-offset: -1px;
 }
+
+/* Context menu styles (global since Teleport to body) */
+.db-context-menu {
+  position: fixed;
+  z-index: 9999;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px 0;
+  min-width: 200px;
+  font-size: 13px;
+}
+
+[data-theme="dark"] .db-context-menu {
+  background: #1e1e1e;
+  border-color: #3a3a3a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.db-context-menu .ctx-item {
+  padding: 7px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #303133;
+  transition: background 0.15s;
+}
+
+[data-theme="dark"] .db-context-menu .ctx-item {
+  color: #e0e0e0;
+}
+
+.db-context-menu .ctx-item:hover {
+  background: #f5f7fa;
+}
+
+[data-theme="dark"] .db-context-menu .ctx-item:hover {
+  background: #2a2a2a;
+}
+
+.db-context-menu .ctx-item.disabled {
+  color: #c0c4cc;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.db-context-menu .ctx-item .ctx-icon {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.db-context-menu .ctx-item .ctx-shortcut {
+  margin-left: auto;
+  color: #909399;
+  font-size: 11px;
+}
+
+.db-context-menu .ctx-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: #ebeef5;
+}
+
+[data-theme="dark"] .db-context-menu .ctx-divider {
+  background: #3a3a3a;
+}
+
+/* Filter popover popper customization */
+.col-filter-popper {
+  border-radius: 10px !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+  border: 1px solid #e8ecf0 !important;
+}
+
+[data-theme="dark"] .col-filter-popper {
+  background: #1e2433 !important;
+  border-color: #2d3748 !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
 </style>
 
 <style scoped>
@@ -2095,6 +2832,12 @@ watch(
   user-select: text;
 }
 
+.inline-cell.cell-focused {
+  /* outline: 2px solid #409eff;
+  outline-offset: -2px;
+  border-radius: 2px; */
+}
+
 .inline-cell > span {
   white-space: nowrap;
   overflow: hidden;
@@ -2112,7 +2855,7 @@ watch(
 }
 
 .empty-placeholder {
-  user-select: none;
+  /* user-select: none; */
 }
 
 .inline-edit-input {
@@ -2125,14 +2868,7 @@ watch(
 }
 
 .cell-changed {
-  background: #fff7e6;
-  padding: 2px 4px;
-  border-radius: 3px;
-  border-bottom: 1px dashed #faad14;
-}
-
-[data-theme="dark"] .cell-changed {
-  background: #3d3520;
+  /* no visual indicator - changed cells look identical to normal cells */
 }
 
 :deep(.row-new td) {
@@ -2147,5 +2883,368 @@ watch(
 
 :deep(.row-changed td) {
   border-bottom: 2px solid #faad14;
+}
+
+:deep(.row-deleted td) {
+  background-color: #fef0f0 !important;
+  text-decoration: line-through;
+  color: #f56c6c;
+}
+
+[data-theme="dark"] :deep(.row-deleted td) {
+  background-color: #2a1a1a !important;
+  color: #f89898;
+}
+
+/* Filter bar */
+.db-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: linear-gradient(to right, #f0f7ff, #f8fbff);
+  border-bottom: 1px solid #e4ecf5;
+  min-height: 36px;
+}
+
+.filter-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #5a7fa8;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.filter-tags-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  background: #fff;
+  border: 1px solid #d9e4f0;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  max-width: 220px;
+}
+
+.filter-chip:hover {
+  border-color: #a3c4e8;
+  box-shadow: 0 2px 6px rgba(64, 158, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.filter-chip-col {
+  font-weight: 600;
+  color: #2c5282;
+  white-space: nowrap;
+}
+
+.filter-chip-expr {
+  color: #6b7c93;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.filter-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  color: #a0aec0;
+  margin-left: 2px;
+  transition: all 0.15s;
+}
+
+.filter-chip-close:hover {
+  background: #fee2e2;
+  color: #e53e3e;
+}
+
+.filter-bar-clear {
+  font-size: 12px;
+  color: #909399;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.filter-bar-clear:hover {
+  color: #e53e3e;
+}
+
+/* Toolbar filter hint */
+.toolbar-filter-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #409eff;
+  background: #ecf5ff;
+  padding: 2px 10px;
+  border-radius: 10px;
+  user-select: none;
+}
+
+/* Column header filter icon */
+.col-filter-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: #c0c4cc;
+  transition: all 0.15s ease;
+}
+
+.col-filter-icon:hover {
+  color: #409eff;
+  background-color: rgba(64, 158, 255, 0.08);
+}
+
+.col-filter-icon.col-filter-active {
+  color: #409eff;
+  background-color: rgba(64, 158, 255, 0.1);
+}
+
+.col-filter-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: #f56c6c;
+  box-shadow: 0 0 0 1.5px #fff;
+}
+
+/* Filter popover */
+.col-filter-popover {
+  padding: 2px 0;
+}
+
+.col-filter-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.col-filter-title {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.col-filter-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary, #1a1a1a);
+  letter-spacing: -0.01em;
+}
+
+.col-filter-comment {
+  font-size: 11px;
+  color: #909399;
+  font-weight: normal;
+}
+
+.col-filter-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 16px;
+  color: #c0c4cc;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1;
+}
+
+.col-filter-close:hover {
+  color: #606266;
+  background: #f5f5f5;
+}
+
+.col-filter-quick {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.quick-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #5a7fa8;
+  background: #f0f7ff;
+  border: 1px solid #dbe8f4;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.quick-chip:hover {
+  color: #409eff;
+  background: #ecf5ff;
+  border-color: #b3d8ff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(64, 158, 255, 0.1);
+}
+
+.col-filter-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.col-filter-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.col-filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.col-filter-clear-link {
+  font-size: 12px;
+  color: #909399;
+  cursor: pointer;
+  transition: color 0.15s;
+  user-select: none;
+}
+
+.col-filter-clear-link:hover {
+  color: #e53e3e;
+}
+
+.col-filter-clear-link.disabled {
+  color: #dcdfe6;
+  cursor: not-allowed;
+}
+
+/* Dark mode */
+[data-theme="dark"] .db-filter-bar {
+  background: linear-gradient(to right, #1a2332, #1d2636);
+  border-bottom-color: #2d3748;
+}
+
+[data-theme="dark"] .filter-bar-label {
+  color: #7fb3d4;
+}
+
+[data-theme="dark"] .filter-chip {
+  background: #2d3748;
+  border-color: #4a5568;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .filter-chip:hover {
+  border-color: #63b3ed;
+  box-shadow: 0 2px 6px rgba(99, 179, 237, 0.15);
+}
+
+[data-theme="dark"] .filter-chip-col {
+  color: #90cdf4;
+}
+
+[data-theme="dark"] .filter-chip-expr {
+  color: #a0aec0;
+}
+
+[data-theme="dark"] .filter-chip-close:hover {
+  background: #422b2b;
+  color: #fc8181;
+}
+
+[data-theme="dark"] .filter-bar-clear:hover {
+  color: #fc8181;
+}
+
+[data-theme="dark"] .toolbar-filter-hint {
+  color: #63b3ed;
+  background: #1a2c40;
+}
+
+[data-theme="dark"] .col-filter-icon:hover {
+  background-color: rgba(99, 179, 237, 0.12);
+  color: #63b3ed;
+}
+
+[data-theme="dark"] .col-filter-icon.col-filter-active {
+  color: #63b3ed;
+  background-color: rgba(99, 179, 237, 0.1);
+}
+
+[data-theme="dark"] .col-filter-dot {
+  background-color: #fc8181;
+  box-shadow: 0 0 0 1.5px #1a202c;
+}
+
+[data-theme="dark"] .col-filter-close:hover {
+  color: #e2e8f0;
+  background: #2d3748;
+}
+
+[data-theme="dark"] .quick-chip {
+  color: #7fb3d4;
+  background: #1a2c40;
+  border-color: #2d4a5e;
+}
+
+[data-theme="dark"] .quick-chip:hover {
+  color: #90cdf4;
+  background: #1e3a52;
+  border-color: #4299e1;
+}
+
+[data-theme="dark"] .col-filter-footer {
+  border-top-color: #2d3748;
+}
+
+[data-theme="dark"] .col-filter-clear-link {
+  color: #718096;
+}
+
+[data-theme="dark"] .col-filter-clear-link:hover {
+  color: #fc8181;
+}
+
+[data-theme="dark"] .col-filter-clear-link.disabled {
+  color: #4a5568;
 }
 </style>

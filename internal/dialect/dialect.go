@@ -261,7 +261,7 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 
 var ParseValHandler = map[string]func(colType *string, val *string) *any{
 	"mysql": func(colType *string, val *string) *any {
-		if slices.Contains([]string{"float", "double", "datetime", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, *colType) && (*val) == "" {
+		if slices.Contains([]string{"float", "double", "datetime", "timestamp", "date", "decimal", "int", "bigint", "smallint", "tinyint", "bit"}, *colType) && (*val) == "" {
 			var empty any
 			return &empty
 		}
@@ -283,6 +283,9 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 				return &r
 			}
 			retVal = int64(f)
+		case "datetime", "timestamp", "date":
+			var r any = normalizeDateTimeVal(*val)
+			return &r
 		case "bit":
 			if len(*val) >= 3 && (*val)[0:2] == "b'" {
 				b, err := strconv.ParseBool((*val)[2:3])
@@ -339,7 +342,7 @@ var ParseValHandler = map[string]func(colType *string, val *string) *any{
 			}
 			retVal = f
 		case "TIMESTAMP(6)":
-			f, err := time.Parse("2006-01-02 15:04:05", *val)
+			f, err := time.Parse("2006-01-02 15:04:05", normalizeDateTimeVal(*val))
 			if err != nil {
 				logger.PrintErrf("Oracle ParseVal TIMESTAMP解析失败", err)
 				var r any = *val
@@ -399,4 +402,35 @@ func fixOracleEncoding(s string) string {
 	}
 	// 都失败了，返回原始字符串
 	return s
+}
+
+// normalizeDateTimeVal 规范化日期时间字符串，处理溢出的秒/分/小时。
+// Excel 数据生成脚本可能产生 "2026-06-12 13:39:60" 这样的非法时间，
+// time.Date 会自动进位为 "2026-06-12 13:40:00"。
+func normalizeDateTimeVal(val string) string {
+	// 先尝试直接解析，合法值原样返回（保留原始格式和精度）
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	} {
+		if _, err := time.Parse(layout, val); err == nil {
+			return val
+		}
+	}
+	// 解析失败，可能存在溢出（如秒=60），提取分量用 time.Date 规范化
+	var y, mo, d, h, mi, s int
+	if _, err := fmt.Sscanf(val, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s); err == nil {
+		t := time.Date(y, time.Month(mo), d, h, mi, s, 0, time.Local)
+		if idx := strings.Index(val, "."); idx >= 0 {
+			return t.Format("2006-01-02 15:04:05") + val[idx:]
+		}
+		return t.Format("2006-01-02 15:04:05")
+	}
+	if _, err := fmt.Sscanf(val, "%d-%d-%d", &y, &mo, &d); err == nil {
+		t := time.Date(y, time.Month(mo), d, 0, 0, 0, 0, time.Local)
+		return t.Format("2006-01-02")
+	}
+	return val
 }

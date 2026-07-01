@@ -244,8 +244,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 				"请根据用户提问判断意图：\n" +
 				"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
 				"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
-				"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。禁止调用 import_data。\n" +
-				"注意：禁止调用 import_data，无论用户是否要求导入。\n"
+				"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。\n"
 		}
 	}
 
@@ -479,11 +478,8 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 
 	if scope.AllowModify {
 		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
-		importDataTool, _ := utils.InferTool("import_data", "将用户上传的 Excel 数据导入到指定数据库表中", NewImportDataFunc(connID, dbType, dbSchema, auditCtx, scope.UserID))
-		for _, t := range []tool.BaseTool{execTool, importDataTool} {
-			if t != nil {
-				deferredTools = append(deferredTools, t)
-			}
+		if execTool != nil {
+			deferredTools = append(deferredTools, execTool)
 		}
 	}
 
