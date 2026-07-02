@@ -38,6 +38,9 @@
                     <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">
                         <el-button title="执行 SQL 文件">执行文件</el-button>
                     </el-upload>
+                    <el-button @click="refreshSchema" :loading="refreshingSchema" title="刷新表结构（更新自动补全）">
+                        <el-icon style="margin-right: 4px;"><Refresh /></el-icon>
+                    </el-button>
                 </div>
                 <div class="toolbar-right">
                     <span v-if="executionTime !== null" class="exec-time">{{ formatDuration(executionTime) }}</span>
@@ -221,11 +224,11 @@ import { sql } from '@codemirror/lang-sql';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
 import { tags } from '@lezer/highlight'
-import { ref, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
+import { ref, shallowRef, onMounted, onBeforeUnmount, watch, h, nextTick, computed } from 'vue'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { ElMessage, ElLoading } from 'element-plus'
-import { ArrowDown, VideoPlay, View, Loading } from '@element-plus/icons-vue'
+import { ArrowDown, VideoPlay, View, Loading, Refresh } from '@element-plus/icons-vue'
 import { format, type SqlLanguage } from 'sql-formatter'
 import DBExport from './DBExport.vue'
 import SqlSnippetManager from '@/components/sql-editor/SqlSnippetManager.vue'
@@ -234,6 +237,7 @@ import SQLOptimizePanel from '@/components/sql-editor/SQLOptimizePanel.vue'
 import { isCancel } from '@/api'
 import { execSQL, listBackupData, showBackupData as showBackupDataApi, type SQLResult } from '@/api/sql'
 import { canModifyData } from '@/api/auth'
+import { showTree } from '@/api/conn'
 import excel from '@/utils/excel'
 import copyToClipboard from '@/utils/copy-to-clipboard'
 import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper.ts'
@@ -300,7 +304,7 @@ const sqlAreaRef: any = ref(null)
 const maxLine = ref("15")
 const columns: any = ref([])
 const result: any = ref([])
-const editorView = ref<EditorView>()
+const editorView = shallowRef<EditorView>()
 const codemirror = ref()
 const exportDialogVisible = ref(false)
 
@@ -312,6 +316,7 @@ const snippetVisible = ref(false)
 const optimizePanelVisible = ref(false)
 const optimizeSql = ref('')
 const currentSelectTable = ref("")
+const refreshingSchema = ref(false)
 
 const canEdit = ref(false)
 const tableKeys = ref([] as string[])
@@ -736,7 +741,7 @@ function createEditor(editorContainer: any, doc: any) {
         ]),
         sqlCompartment.of(sql({
             dialect: dbSchemaProxy.getDialect(schema),
-            schema: <any>dbSchemaProxy.getAll(schema),
+            schema: JSON.parse(JSON.stringify(dbSchemaProxy.getAll(schema) || {})),
         })),
         history(),
         lineNumbers(),
@@ -744,7 +749,7 @@ function createEditor(editorContainer: any, doc: any) {
         autocompletion(),
         EditorView.editable.of(true),
         themeCompartment.of(getEditorTheme()),
-        highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
+        highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle, { fallback: true })),
     ]
     const startState = EditorState.create({
         doc: doc,
@@ -758,12 +763,33 @@ function createEditor(editorContainer: any, doc: any) {
 
 function reconfigureSql() {
     if (!editorView.value) return
+    const schemaData = dbSchemaProxy.getAll(schema)
+    // Pass a plain copy to avoid Vue reactivity proxies interfering with CodeMirror internals
+    const plainSchema = schemaData ? JSON.parse(JSON.stringify(schemaData)) : {}
     editorView.value.dispatch({
         effects: sqlCompartment.reconfigure(sql({
             dialect: dbSchemaProxy.getDialect(schema),
-            schema: <any>dbSchemaProxy.getAll(schema),
+            schema: plainSchema,
         }))
     })
+}
+
+function refreshSchema() {
+    refreshingSchema.value = true
+    showTree({ connId, key: schema, type: 'schema', level: 2, schema })
+        .then((resp) => {
+            if (resp.data.data) {
+                dbSchemaProxy.addTable(schema, effectiveDbType.value, resp.data.data, connId)
+            }
+            ElMessage({ message: '补全信息已刷新', type: 'success' })
+        })
+        .catch((err) => {
+            console.error('[SQLEditor] refreshSchema failed:', err)
+            ElMessage({ message: '刷新失败', type: 'error' })
+        })
+        .finally(() => {
+            refreshingSchema.value = false
+        })
 }
 
 function reconfigureTheme() {
@@ -772,7 +798,7 @@ function reconfigureTheme() {
     editorView.value.dispatch({
         effects: [
             themeCompartment.reconfigure(getEditorTheme()),
-            highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle)),
+            highlightCompartment.reconfigure(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle, { fallback: true })),
         ]
     })
 }
