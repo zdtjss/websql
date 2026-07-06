@@ -10,6 +10,7 @@ export interface ExecSQLParams {
   maxLine: number | string
   tableName?: string
   batch?: string
+  isFile?: string
 }
 
 /** 列信息 */
@@ -74,6 +75,9 @@ export function execSQL(params: ExecSQLParams, signal?: AbortSignal): Promise<Ax
   }
   if (params.batch !== undefined) {
     body.append('batch', params.batch)
+  }
+  if (params.isFile !== undefined) {
+    body.append('isFile', params.isFile)
   }
   const config = signal ? { signal } : undefined
   return http.post('/execSQL', body, config)

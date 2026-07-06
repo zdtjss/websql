@@ -19,8 +19,8 @@ import (
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
-	"websql/internal/pkg/sanitize"
 	"websql/internal/pkg/safego"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -68,7 +68,13 @@ func ExecSQL(c *gin.Context) {
 	startTime := time.Now()
 
 	const maxSQLLength = 1024 * 1024
-	if len(sqlStr) > maxSQLLength {
+	const maxFileSQLLength = 50 * 1024 * 1024
+	isFile := c.PostForm("isFile") == "true"
+	limit := maxSQLLength
+	if isFile {
+		limit = maxFileSQLLength
+	}
+	if len(sqlStr) > limit {
 		response.WriteErr(c, 200, 500, "SQL 语句过长，请拆分执行")
 		return
 	}
@@ -165,9 +171,11 @@ func ExecSQL(c *gin.Context) {
 	} else {
 		params := make([]any, 0)
 		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			sqlStr = page(conn.DriverName(), sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
-			params = append(params, maxLineI)
+			if maxLineI > 0 {
+				sqlStr = page(conn.DriverName(), sqlStr)
+				params = append(params, maxLineI)
+			}
 		}
 
 		var rows *sqlx.Rows
@@ -683,9 +691,11 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 		params := make([]any, 0)
 		execSQL := sqlStr
 		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			execSQL = page(conn.DriverName(), sqlStr)
 			maxLineI, _ := strconv.Atoi(maxLine)
-			params = append(params, maxLineI)
+			if maxLineI > 0 {
+				execSQL = page(conn.DriverName(), sqlStr)
+				params = append(params, maxLineI)
+			}
 		}
 
 		var rows *sqlx.Rows
@@ -788,10 +798,6 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 	sqlArr := splitSQL(sqlStr)
 	if len(sqlArr) == 0 {
 		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
-		return
-	}
-	if len(sqlArr) > 50 {
-		response.WriteErr(c, 200, 500, "批量SQL数量不能超过50条")
 		return
 	}
 

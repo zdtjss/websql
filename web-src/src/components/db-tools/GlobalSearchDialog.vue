@@ -121,9 +121,9 @@ const typeLabelMap = {
   index: '索引'
 }
 
-watch(() => visible, (val) => {
-  if (val) {
-    init()
+watch([visible, () => connId, () => schema], ([newVisible, newConnId, newSchema], [oldVisible]) => {
+  if (newVisible) {
+    init(!oldVisible)
   } else {
     cleanup()
   }
@@ -143,13 +143,16 @@ watch(keyword, (val) => {
   }, 200)
 })
 
-async function init() {
-  keyword.value = ''
-  results.value = []
-  searched.value = false
-  lastQuery.value = ''
-  totalResults.value = 0
-  searchType.value = 'table'
+async function init(freshOpen = true) {
+  // 新打开时做完整重置；已可见时仅更新过滤器
+  if (freshOpen) {
+    keyword.value = ''
+    results.value = []
+    searched.value = false
+    lastQuery.value = ''
+    totalResults.value = 0
+    searchType.value = 'table'
+  }
   filterConnId.value = ''
   filterSchema.value = ''
   schemas.value = []

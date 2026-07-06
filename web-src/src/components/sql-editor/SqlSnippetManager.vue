@@ -195,17 +195,15 @@
           <el-select v-model="formData.dbType" placeholder="选填" clearable style="width: 100%;">
             <el-option label="MySQL" value="mysql" />
             <el-option label="MariaDB" value="mariadb" />
-            <el-option label="PostgreSQL" value="postgresql" />
             <el-option label="SQLite" value="sqlite" />
             <el-option label="Oracle" value="oracle" />
-            <el-option label="SQL Server" value="sqlserver" />
           </el-select>
         </el-form-item>
-        <el-form-item label="关联连接" prop="connId">
-          <el-input v-model="formData.connId" placeholder="选填，连接 ID" />
+        <el-form-item label="关联连接">
+          <el-input :model-value="currentConnName || connId" disabled placeholder="来自当前标签页" />
         </el-form-item>
-        <el-form-item label="Schema" prop="schemaName">
-          <el-input v-model="formData.schemaName" placeholder="选填，关联 schema" />
+        <el-form-item label="Schema">
+          <el-input :model-value="schema" disabled placeholder="来自当前标签页" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -240,6 +238,17 @@ const LEGACY_STORAGE_KEY = 'websql_snippets'
 const visible = defineModel({ default: false })
 const props = defineProps({
   currentSql: { type: String, default: '' },
+  connId:     { type: String, default: '' },
+  schema:     { type: String, default: '' },
+  dbType:     { type: String, default: '' },
+  schemaPath: { type: String, default: '' },
+})
+
+// 从 schemaPath 中提取连接名称（格式：connName/schema 或仅 schema）
+const currentConnName = computed(() => {
+  if (!props.schemaPath) return ''
+  const idx = props.schemaPath.lastIndexOf('/')
+  return idx > 0 ? props.schemaPath.slice(0, idx) : ''
 })
 const emit = defineEmits(['apply'])
 
@@ -372,9 +381,9 @@ function showAddSnippet(useCurrentSql: boolean = true) {
     sqlContent: useCurrentSql ? (props.currentSql || '') : '',
     category: '',
     tagList: [],
-    dbType: '',
-    connId: '',
-    schemaName: '',
+    dbType: props.dbType || '',
+    connId: props.connId || '',
+    schemaName: props.schema || '',
   }
   tagInputVisible.value = false
   tagInputValue.value = ''
@@ -414,8 +423,8 @@ async function saveSnippet() {
         category: formData.value.category?.trim() || '',
         tags: formData.value.tagList.join(','),
         dbType: formData.value.dbType || '',
-        connId: formData.value.connId?.trim() || '',
-        schemaName: formData.value.schemaName?.trim() || '',
+        connId: props.connId?.trim() || '',
+        schemaName: props.schema?.trim() || '',
       })
       ElMessage.success(editingId.value ? '更新成功' : '收藏成功')
       editDialogVisible.value = false

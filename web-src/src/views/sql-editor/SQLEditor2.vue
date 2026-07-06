@@ -35,7 +35,7 @@
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
                     <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
-                    <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">
+                    <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">；/
                         <el-button title="执行 SQL 文件">执行文件</el-button>
                     </el-upload>
                     <el-button @click="refreshSchema" :loading="refreshingSchema" title="刷新表结构（更新自动补全）">
@@ -209,7 +209,7 @@
         </template>
     </el-dialog>
 
-    <SqlSnippetManager v-model="snippetVisible" :current-sql="getEditorDoc()" @apply="onApplySnippet" />
+    <SqlSnippetManager v-model="snippetVisible" :current-sql="getEditorDoc()" :conn-id="connId" :schema="schema" :db-type="dbType" :schema-path="schemaPath" @apply="onApplySnippet" />
 
     <SQLOptimizePanel v-model:visible="optimizePanelVisible" :conn-id="connId" :schema="schema" :sql="optimizeSql"
         :db-type="dbType" />
@@ -615,34 +615,66 @@ function onDrawerDragEnd() {
 async function handleSqlFile(options: any) {
     const file = options.file
     const text = await file.text()
-    const statements = text
-        .split(/;\s*\n|;\s*$/)
-        .map((s: string) => s.trim())
-        .filter((s: string) => s.length > 0 && !s.startsWith('--') && !s.startsWith('/*'))
 
-    if (statements.length === 0) {
+    if (!text.trim()) {
         ElMessage({ message: '文件中没有可执行的 SQL', type: 'warning' })
         return
     }
 
-    ElMessage({ message: `开始执行 ${statements.length} 条语句...`, type: 'info' })
-    let successCount = 0
-    let errorCount = 0
+    ElMessage({ message: `正在执行文件: ${file.name}...`, type: 'info' })
+    exectingSql.value = true
+    executionTime.value = null
+    sqlError.value = ''
+    columns.value = []
+    result.value = []
 
-    for (const stmt of statements) {
-        try {
-            await execSQL({ connId, schema, sql: stmt, maxLine: maxLine.value })
-            successCount++
-        } catch {
-            errorCount++
-        }
-    }
+    const startTime = performance.now()
+    abortController = new AbortController()
+    execSQL({ connId, schema, sql: text, maxLine: maxLine.value, batch: 'true', isFile: 'true' }, abortController.signal)
+        .then((resp) => {
+            executionTime.value = Math.round(performance.now() - startTime)
+            const data = resp.data.data as any
+            const results = data.results || []
+            const errorItems = results.filter((r: any) => r.status === 'error')
+            const successItems = results.filter((r: any) => r.status === 'success')
+            const rolledBackItems = results.filter((r: any) => r.status === 'rolled_back')
 
-    if (errorCount === 0) {
-        ElMessage({ message: `全部 ${successCount} 条执行成功`, type: 'success' })
-    } else {
-        ElMessage({ message: `${successCount} 成功, ${errorCount} 失败`, type: 'warning' })
-    }
+            if (errorItems.length === 0) {
+                ElMessage({ message: `全部 ${successItems.length} 条执行成功`, type: 'success' })
+                // 显示最后一条查询结果
+                const lastQuery = [...results].reverse().find((r: any) => r.type === 'query' && r.status === 'success')
+                if (lastQuery) {
+                    applyResultToUI(lastQuery)
+                } else {
+                    const lastModify = [...results].reverse().find((r: any) => r.type === 'modify' && r.status === 'success')
+                    if (lastModify) {
+                        applyResultToUI(lastModify)
+                    }
+                }
+            } else {
+                const firstError = errorItems[0]
+                const errorDetail = errorItems.length === 1
+                    ? firstError.error
+                    : `第 ${results.indexOf(firstError) + 1} 条起，共 ${errorItems.length} 条失败。首条错误: ${firstError.error}`
+                sqlError.value = errorDetail
+                ElMessage({
+                    message: `${successItems.length} 成功, ${errorItems.length} 失败${rolledBackItems.length > 0 ? ', ' + rolledBackItems.length + ' 条已回滚' : ''}`,
+                    type: 'warning',
+                    duration: 6000
+                })
+            }
+            exectingSql.value = false
+            abortController = null
+        })
+        .catch((error) => {
+            if (isCancel(error)) {
+                sqlError.value = '执行已终止'
+            } else {
+                sqlError.value = error.message || '文件执行失败'
+            }
+            exectingSql.value = false
+            abortController = null
+        })
 }
 
 function applySqlFromHistory(sql: string) {
