@@ -10,9 +10,7 @@ import (
 	"unicode"
 
 	"websql/internal/app/admin"
-	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
-	"websql/internal/app/permission"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -58,198 +56,30 @@ type BatchSQLResult struct {
 }
 
 func ExecSQL(c *gin.Context) {
-
-	connId := appctx.Ctx.GetConnID(c)
-	schema := c.PostForm("schema")
-	tableName := c.PostForm("tableName")
-	sqlStr := c.PostForm("sql")
-	maxLine := c.PostForm("maxLine")
-	sqlStr = strings.TrimSpace(sqlStr)
-	startTime := time.Now()
-
-	const maxSQLLength = 1024 * 1024
-	const maxFileSQLLength = 50 * 1024 * 1024
-	isFile := c.PostForm("isFile") == "true"
-	limit := maxSQLLength
-	if isFile {
-		limit = maxFileSQLLength
+	req := &ExecRequest{
+		ConnID:        appctx.Ctx.GetConnID(c),
+		Schema:        c.PostForm("schema"),
+		TableName:     c.PostForm("tableName"),
+		SQL:           c.PostForm("sql"),
+		MaxLine:       c.PostForm("maxLine"),
+		Batch:         c.PostForm("batch"),
+		IsFile:        c.PostForm("isFile") == "true",
+		Authorization: appctx.Ctx.GetAuthorization(c),
+		ClientIP:      c.ClientIP(),
 	}
-	if len(sqlStr) > limit {
-		response.WriteErr(c, 200, 500, "SQL 语句过长，请拆分执行")
+	if userVal, _ := c.Get("currentUser"); userVal != nil {
+		if user, ok := userVal.(*admin.User); ok {
+			req.UserID = user.Id
+			req.User = user
+		}
+	}
+
+	result, err := ensureDefaultExec().Exec(c.Request.Context(), req)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
 		return
 	}
-	if sqlStr == "" {
-		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
-		return
-	}
-
-	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	if conn == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用，请检查连接配置或稍后重试")
-		return
-	}
-	userVal, _ := c.Get("currentUser")
-	user, _ := userVal.(*admin.User)
-
-	if schema == "" {
-		switch conn.DriverName() {
-		case "mysql", "mariadb":
-			conn.Get(&schema, "SELECT DATABASE()")
-		case "oracle":
-			conn.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
-		case "sqlite":
-			schema = "main"
-		}
-	}
-
-	if strings.Contains(sqlStr, ";") {
-		for _, singleSQL := range splitSQLRespectQuotes(sqlStr) {
-			if singleSQL == "" {
-				continue
-			}
-			subAnalysis := permission.AnalyzeSQL(singleSQL, schema)
-			subResult := permission.CheckAnalysisPermission(subAnalysis, connId, authorization)
-			if !subResult.Allowed {
-				response.WriteErr(c, 200, 500, subResult.Message)
-				return
-			}
-		}
-	} else {
-		analysis := permission.AnalyzeSQL(sqlStr, schema)
-		permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
-		if !permResult.Allowed {
-			response.WriteErr(c, 200, 500, permResult.Message)
-			return
-		}
-	}
-
-	batch := c.PostForm("batch")
-	if batch == "true" {
-		execBatchSQL(c, sqlStr, conn, schema, tableName, maxLine, user, connId, authorization, startTime)
-		return
-	}
-
-	blankIdx := strings.Index(sqlStr, " ")
-	nlIdx := strings.Index(sqlStr, "\n")
-	if nlIdx == -1 {
-		nlIdx = len(sqlStr)
-	}
-
-	if checkPrefx(sqlStr, []string{"update", "delete"}) {
-		safego.GoWithName("sql-async-backup", func() {
-			asyncBackup(sqlStr, user, connId, conn)
-		})
-	} else {
-		asyncRecordHistory(sqlStr, user, connId)
-	}
-
-	sqlStr = sqlStr[0:min(blankIdx, nlIdx)] + sqlStr[min(blankIdx, nlIdx):]
-
-	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
-		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		result, err := batchExec(sqlStr, conn)
-		if err != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err.Error())
-			writeSQLError(c, err)
-			return
-		}
-		rspData.Data = result
-		totalAffected := 0
-		for _, row := range result {
-			if v, ok := row["受影响行数"]; ok {
-				switch n := v.(type) {
-				case int:
-					totalAffected += n
-				case int64:
-					totalAffected += int(n)
-				}
-			}
-		}
-		recordEditorAudit(c, user, connId, sqlStr, "success", totalAffected, startTime, "")
-		response.WriteOK(c, rspData)
-	} else {
-		params := make([]any, 0)
-		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			maxLineI, _ := strconv.Atoi(maxLine)
-			if maxLineI > 0 {
-				sqlStr = page(conn.DriverName(), sqlStr)
-				params = append(params, maxLineI)
-			}
-		}
-
-		var rows *sqlx.Rows
-		var err2 error
-
-		queryCtx, queryCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-		defer queryCancel()
-
-		if len(params) > 0 {
-			rows, err2 = conn.QueryxContext(queryCtx, sqlStr, params...)
-		} else {
-			rows, err2 = conn.QueryxContext(queryCtx, sqlStr)
-		}
-
-		if err2 != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err2.Error())
-			writeSQLError(c, err2)
-			return
-		}
-		defer rows.Close()
-
-		cts, err3 := rows.ColumnTypes()
-		if err3 != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err3.Error())
-			writeSQLError(c, err3)
-			return
-		}
-		columnList := make([]Column, len(cts))
-		columnNameList := make([]string, 0)
-
-		var realTableName, realSchema = tableName, schema
-		if strings.Contains(tableName, ".") {
-			realTableName = string(tableName[strings.Index(tableName, ".")+1:])
-			realSchema = string(tableName[0:strings.Index(tableName, ".")])
-		}
-		var keyIdx []int
-		var keys []string
-		columnMap := map[string]string{}
-
-		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
-			keys = dbops.QueryPrimaryKeyCached(connId, schema, realTableName, conn)
-			columnMap = dbops.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
-		}
-
-		for idx, val := range cts {
-			columnNameList = append(columnNameList, val.Name())
-			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName(), Comment: columnMap[val.Name()]}
-		}
-
-		if len(keys) != 0 {
-			keyIdx = database.KeyIdx(keys, columnNameList)
-		}
-
-		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
-		if dataErr != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, dataErr.Error())
-			writeSQLError(c, dataErr)
-			return
-		}
-
-		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
-
-		recordEditorAudit(c, user, connId, sqlStr, "success", len(data), startTime, "")
-		response.WriteOK(c, rspData)
-	}
-}
-
-func writeSQLError(c *gin.Context, err error) {
-	msg := err.Error()
-	msg = sanitize.RedactCredentials(msg)
-	if len(msg) > 500 {
-		msg = msg[:500] + "..."
-	}
-	response.WriteErr(c, 200, 500, msg)
+	response.WriteOK(c, result)
 }
 
 func IsAlphaNumeric(str string) bool {
@@ -447,30 +277,6 @@ func isSimpleQuery(sqlStr string) bool {
 		return false
 	}
 	return true
-}
-
-func recordEditorAudit(c *gin.Context, user *admin.User, connID, sqlStr, status string, affectedRows int, startTime time.Time, errorMsg string) {
-	if user == nil {
-		return
-	}
-	execTimeMs := int(time.Since(startTime).Milliseconds())
-	sqlType := detectSQLTypeForEditor(sqlStr)
-	riskLevel := detectRiskLevelForEditor(sqlStr)
-
-	audit.GetAuditService().Record(&audit.AuditEntry{
-		Source:       "sqleditor",
-		SQLText:      sqlStr,
-		SQLType:      sqlType,
-		RiskLevel:    riskLevel,
-		Status:       status,
-		ConnID:       connID,
-		UserID:       user.Id,
-		UserName:     user.Name,
-		ClientIP:     c.ClientIP(),
-		AffectedRows: affectedRows,
-		ExecTimeMs:   execTimeMs,
-		ErrorMsg:     errorMsg,
-	})
 }
 
 func detectSQLTypeForEditor(sql string) string {
@@ -792,102 +598,4 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 	}
 
 	return result
-}
-
-func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableName, maxLine string, user *admin.User, connId, authorization string, startTime time.Time) {
-	sqlArr := splitSQL(sqlStr)
-	if len(sqlArr) == 0 {
-		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
-		return
-	}
-
-	// 使用批量权限检查，避免重复查询用户权限数据
-	permResult := permission.CheckBatchSQLPermission(sqlArr, connId, schema, authorization)
-	if permResult != nil {
-		response.WriteErr(c, 200, 500, permResult.Message)
-		return
-	}
-
-	hasWrite := false
-	for _, singleSQL := range sqlArr {
-		if checkPrefx(singleSQL, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
-			hasWrite = true
-			break
-		}
-	}
-
-	queryCtx, queryCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-	defer queryCancel()
-
-	var tx *sqlx.Tx
-	if hasWrite {
-		var err error
-		tx, err = conn.Beginx()
-		if err != nil {
-			writeSQLError(c, err)
-			return
-		}
-		defer tx.Rollback()
-	}
-
-	results := make([]SQLResultItem, 0, len(sqlArr))
-	hasError := false
-
-	for _, singleSQL := range sqlArr {
-		item := execSingleSQLCore(singleSQL, conn, tx, schema, tableName, maxLine, user, connId, authorization, queryCtx)
-		results = append(results, *item)
-		if item.Status == "error" {
-			hasError = true
-			if hasWrite {
-				break
-			}
-		}
-	}
-
-	if hasWrite && hasError {
-		for i := range results {
-			if results[i].Status == "success" && results[i].Type == "modify" {
-				results[i].Status = "rolled_back"
-			}
-		}
-	}
-
-	if hasWrite && !hasError {
-		err := tx.Commit()
-		if err != nil {
-			writeSQLError(c, err)
-			return
-		}
-	}
-
-	totalTime := time.Since(startTime).Milliseconds()
-	batchResult := BatchSQLResult{
-		Results:   results,
-		TotalTime: totalTime,
-	}
-
-	auditStatus := "success"
-	auditAffectedRows := 0
-	auditErrorMsg := ""
-	if hasError {
-		auditStatus = "failed"
-		for i := range results {
-			if results[i].Status == "error" {
-				if results[i].AuditError != "" {
-					auditErrorMsg = results[i].AuditError
-				} else {
-					auditErrorMsg = results[i].Error
-				}
-				break
-			}
-		}
-	}
-	for i := range results {
-		if results[i].Status == "success" && results[i].Type == "modify" {
-			auditAffectedRows += int(results[i].Affected)
-		}
-	}
-	recordEditorAudit(c, user, connId, sqlStr, auditStatus, auditAffectedRows, startTime, auditErrorMsg)
-
-	response.WriteOK(c, batchResult)
 }

@@ -1,4 +1,4 @@
-import http from './index'
+import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
 import { downloadBlob } from '@/utils/exportHelper'
@@ -80,32 +80,32 @@ export interface ImportSnippetReq {
 
 /** 查询收藏列表，对应 GET /snippet/list */
 export function listSnippets(params: ListSnippetParams): Promise<AxiosResponse<ApiResponse<ListSnippetResult>>> {
-  return http.get('/snippet/list', { params })
+  return api.request<ListSnippetResult>({ method: 'GET', url: '/snippet/list', params })
 }
 
 /** 查询分类统计，对应 GET /snippet/categories */
 export function listSnippetCategories(): Promise<AxiosResponse<ApiResponse<SnippetCategoryStat[]>>> {
-  return http.get('/snippet/categories')
+  return api.request<SnippetCategoryStat[]>({ method: 'GET', url: '/snippet/categories' })
 }
 
 /** 查询全部标签，对应 GET /snippet/tags */
 export function listSnippetTags(): Promise<AxiosResponse<ApiResponse<string[]>>> {
-  return http.get('/snippet/tags')
+  return api.request<string[]>({ method: 'GET', url: '/snippet/tags' })
 }
 
 /** 新增/更新收藏，对应 POST /snippet/save */
 export function saveSnippet(params: SaveSnippetParams): Promise<AxiosResponse<ApiResponse<SqlSnippet>>> {
-  return http.post('/snippet/save', params)
+  return api.request<SqlSnippet>({ method: 'POST', url: '/snippet/save', body: params })
 }
 
 /** 删除收藏，对应 POST /snippet/delete */
 export function deleteSnippet(id: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/snippet/delete', null, { params: { id } })
+  return api.request({ method: 'POST', url: '/snippet/delete', params: { id } })
 }
 
 /** 导入收藏，对应 POST /snippet/import */
 export function importSnippets(items: SnippetExportItem[]): Promise<AxiosResponse<ApiResponse<{ count: number }>>> {
-  return http.post('/snippet/import', { items } as ImportSnippetReq)
+  return api.request<{ count: number }>({ method: 'POST', url: '/snippet/import', body: { items } as ImportSnippetReq })
 }
 
 /**
@@ -113,9 +113,8 @@ export function importSnippets(items: SnippetExportItem[]): Promise<AxiosRespons
  * 后端返回标准 {code,data} 信封，前端取出 data 后触发浏览器下载。
  */
 export async function exportSnippetsToFile(): Promise<void> {
-  const resp = await http.get<SnippetExportData | ApiResponse<SnippetExportData>>('/snippet/export')
-  // 兼容拦截器返回的响应体：标准信封在 resp.data.data，直接 blob 则在 resp.data
-  const payload = (resp as AxiosResponse<ApiResponse<SnippetExportData>>).data
+  const resp = await api.request<SnippetExportData>({ method: 'GET', url: '/snippet/export' })
+  const payload = resp.data as ApiResponse<SnippetExportData>
   const exportData = payload?.data ?? (payload as unknown as SnippetExportData)
   const json = JSON.stringify(exportData, null, 2)
   const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')

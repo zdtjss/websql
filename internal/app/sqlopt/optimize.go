@@ -4,28 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	agentv2 "websql/internal/ai/agent"
-	admin "websql/internal/app/admin"
-	"websql/internal/app/conn"
 	"websql/internal/app/system"
 	"websql/internal/config"
-	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 
-	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	toolutils "github.com/cloudwego/eino/components/tool/utils"
-	"github.com/cloudwego/eino/compose"
-	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
-	"github.com/jmoiron/sqlx"
 )
 
 type ExplainResult struct {
@@ -39,151 +31,27 @@ type ExplainColumn struct {
 	Align string `json:"align"`
 }
 
+// ExplainSQL handler 是薄包装，业务逻辑下沉到 ExplainService.Explain。
+// 仅保留协议层: gin.Context 参数提取、错误转 response。
 func ExplainSQL(c *gin.Context) {
-	connId := appctx.Ctx.GetConnID(c)
-	_ = c.PostForm("schema")
-	sqlStr := c.PostForm("sql")
-
-	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
-
-	if strings.TrimSpace(sqlStr) == "" {
-		response.WriteErr(c, 200, 500, "SQL不能为空")
-		return
+	req := &ExplainRequest{
+		ConnID:        appctx.Ctx.GetConnID(c),
+		Schema:        c.PostForm("schema"),
+		SQL:           c.PostForm("sql"),
+		Authorization: appctx.Ctx.GetAuthorization(c),
 	}
-
-	explainSQL := "EXPLAIN " + sqlStr
-	if dbType == "oracle" {
-		explainSQL = "EXPLAIN PLAN FOR " + sqlStr
-		_, execErr := conn.Exec(explainSQL)
-		if execErr != nil {
-			logger.PrintErrf("EXPLAIN失败", execErr)
-			response.WriteErr(c, 200, 500, "EXPLAIN失败: "+execErr.Error())
-			return
-		}
-		explainSQL = "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY())"
-	}
-
-	rows, err := conn.Queryx(explainSQL)
+	result, err := ensureDefaultExplain().Explain(req)
 	if err != nil {
-		logger.PrintErrf("EXPLAIN失败", err)
-		response.WriteErr(c, 200, 500, "EXPLAIN失败: "+err.Error())
+		response.WriteErr(c, 200, 500, err.Error())
 		return
 	}
-	defer rows.Close()
-
-	cols, _ := rows.Columns()
-	ctss, _ := rows.ColumnTypes()
-
-	result := &ExplainResult{
-		Columns: make([]ExplainColumn, 0),
-		Rows:    make([]map[string]any, 0),
-		Raw:     "",
-	}
-
-	for _, ct := range ctss {
-		result.Columns = append(result.Columns, ExplainColumn{
-			Name:  ct.Name(),
-			Align: "left",
-		})
-	}
-
-	var rawLines []string
-	for i := 0; i < len(cols); i++ {
-		valPtr := new(any)
-		val := valPtr
-		rawLines = append(rawLines, cols[i])
-		keep(val)
-	}
-
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		valPtrs := make([]any, len(cols))
-		for i := range vals {
-			valPtrs[i] = &vals[i]
-		}
-		rows.Scan(valPtrs...)
-		row := make(map[string]any)
-		for i, col := range cols {
-			if vals[i] != nil {
-				row[col] = vals[i]
-			}
-		}
-		result.Rows = append(result.Rows, row)
-	}
-
-	simpleLines := make([]string, 0)
-	for _, row := range result.Rows {
-		for _, col := range cols {
-			if v, ok := row[col]; ok {
-				simpleLines = append(simpleLines, fmt.Sprintf("%s=%v", col, v))
-			}
-		}
-	}
-	result.Raw = strings.Join(simpleLines, "\n")
-
 	response.WriteOK(c, result)
-}
-
-func keep(val *any) {}
-
-func execExplain(conn *sqlx.DB, dbType, sql string) (*ExplainResult, error) {
-	rows, err := conn.Queryx(sql)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	cols, _ := rows.Columns()
-	result := &ExplainResult{
-		Columns: make([]ExplainColumn, 0),
-		Rows:    make([]map[string]any, 0),
-	}
-
-	for _, col := range cols {
-		result.Columns = append(result.Columns, ExplainColumn{Name: col, Align: "left"})
-	}
-
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		valPtrs := make([]any, len(cols))
-		for i := range vals {
-			valPtrs[i] = &vals[i]
-		}
-		rows.Scan(valPtrs...)
-		row := make(map[string]any)
-		for i, col := range cols {
-			if vals[i] != nil {
-				row[col] = vals[i]
-			}
-		}
-		result.Rows = append(result.Rows, row)
-	}
-
-	var lines []string
-	for _, row := range result.Rows {
-		for _, col := range cols {
-			if v, ok := row[col]; ok {
-				lines = append(lines, fmt.Sprintf("%s=%v", col, v))
-			}
-		}
-	}
-	result.Raw = strings.Join(lines, "\n")
-	return result, nil
 }
 
 func OptimizeSQLStream(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	dbSchema := c.PostForm("schema")
 	sqlStr := c.PostForm("sql")
-
-	dbType, cfgSchema, dbVersion := agentv2.GetDBInfo(connId)
-	if dbSchema == "" {
-		dbSchema = cfgSchema
-	}
-
-	log.Printf("[OptAgent] 开始优化 - connID=%s, dbType=%s, schema=%s, sqlLen=%d\n", connId, dbType, dbSchema, len(sqlStr))
 
 	if strings.TrimSpace(sqlStr) == "" {
 		response.WriteErr(c, 200, 500, "SQL不能为空")
@@ -196,9 +64,12 @@ func OptimizeSQLStream(c *gin.Context) {
 		return
 	}
 
-	var explainResult *ExplainResult
-	if explainResultJSON := c.PostForm("explainResult"); explainResultJSON != "" {
-		json.Unmarshal([]byte(explainResultJSON), &explainResult)
+	req := &OptimizeRequest{
+		ConnID:        connId,
+		Schema:        dbSchema,
+		SQL:           sqlStr,
+		Authorization: appctx.Ctx.GetAuthorization(c),
+		ExplainResult: decodeExplainResult(c.PostForm("explainResult")),
 	}
 
 	c.Header("Content-Type", "text/event-stream")
@@ -220,7 +91,7 @@ func OptimizeSQLStream(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	flush := func(chunk agentv2.StreamChunk) {
+	emit := func(chunk StreamChunk) {
 		data, _ := json.Marshal(chunk)
 		writeSSE(string(data))
 	}
@@ -256,109 +127,10 @@ func OptimizeSQLStream(c *gin.Context) {
 		cancel()
 	})
 
-	cm, err := agentv2.BuildChatModel(ctx, aiCfg)
-	if err != nil {
-		logger.PrintErrf("创建优化Agent模型失败", err)
-		flush(agentv2.StreamChunk{Type: "error", Content: "AI 模型初始化失败: " + err.Error()})
-		flush(agentv2.StreamChunk{Type: "done"})
-		return
+	if err := ensureDefaultOptimize().Optimize(ctx, req, emit); err != nil {
+		emit(StreamChunk{Type: "error", Content: err.Error()})
 	}
-	log.Printf("[OptAgent] 模型初始化成功 - provider=%s, model=%s\n", aiCfg.Provider, aiCfg.Model)
-
-	schemas := []agentv2.SchemaRef{{ConnID: connId, Schema: dbSchema}}
-	authorization := appctx.Ctx.GetAuthorization(c)
-	var optUserId string
-	if authorization != "" {
-		if user := admin.GetUser(authorization); user != nil {
-			optUserId = user.Id
-		}
-	}
-	optTools, err := buildOptTools(connId, dbType, dbSchema, schemas, optUserId)
-	if err != nil {
-		logger.PrintErrf("创建优化Agent工具失败", err)
-		flush(agentv2.StreamChunk{Type: "error", Content: "工具初始化失败: " + err.Error()})
-		flush(agentv2.StreamChunk{Type: "done"})
-		return
-	}
-	log.Printf("[OptAgent] 工具初始化成功 - toolCount=%d\n", len(optTools))
-
-	sysPrompt := buildOptSystemPrompt(dbType, dbVersion, explainResult)
-
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "SQLOptimizer",
-		Description: "SQL 优化专家，分析 SQL 性能问题并给出优化建议",
-		Instruction: sysPrompt,
-		Model:       cm,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: optTools},
-		},
-		MaxIterations: 10,
-	})
-	if err != nil {
-		logger.PrintErrf("创建优化Agent失败", err)
-		flush(agentv2.StreamChunk{Type: "error", Content: "Agent 创建失败: " + err.Error()})
-		flush(agentv2.StreamChunk{Type: "done"})
-		return
-	}
-	log.Printf("[OptAgent] Agent 创建成功 - maxIterations=10\n")
-
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{
-		Agent:           agent,
-		EnableStreaming: true,
-	})
-
-	userPrompt := fmt.Sprintf("请分析并优化以下 SQL：\n\n```sql\n%s\n```", sqlStr)
-	messages := []adk.Message{
-		&schema.Message{Role: schema.System, Content: sysPrompt},
-		&schema.Message{Role: schema.User, Content: userPrompt},
-	}
-
-	log.Printf("[OptAgent] 开始执行 - sqlLen=%d\n", len(sqlStr))
-	iter := runner.Run(ctx, messages)
-
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event.Err != nil {
-			log.Printf("[OptAgent] 事件错误 - err=%+v\n", event.Err)
-			logger.PrintErrf("优化Agent事件错误", event.Err)
-			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理出错: " + event.Err.Error()})
-			break
-		}
-		if event.Action != nil && event.Action.Exit {
-			log.Printf("[OptAgent] Agent 执行完毕\n")
-			break
-		}
-		if event.Action != nil && event.Action.Interrupted != nil {
-			log.Printf("[OptAgent] Agent 被中断\n")
-			flush(agentv2.StreamChunk{Type: "error", Content: "AI 处理被中断，请重试"})
-			break
-		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-
-		mo := event.Output.MessageOutput
-		if mo.IsStreaming && mo.MessageStream != nil {
-			for {
-				chunk, recvErr := mo.MessageStream.Recv()
-				if recvErr != nil {
-					break
-				}
-				if chunk.ReasoningContent != "" {
-					flush(agentv2.StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
-				}
-				if chunk.Content != "" {
-					flush(agentv2.StreamChunk{Type: "content", Content: chunk.Content})
-				}
-			}
-		}
-	}
-
-	flush(agentv2.StreamChunk{Type: "done"})
-	log.Printf("[OptAgent] 优化流程结束 - connID=%s\n", connId)
+	emit(StreamChunk{Type: "done"})
 }
 
 func buildOptTools(connId, dbType, dbSchema string, schemas []agentv2.SchemaRef, userId string) ([]tool.BaseTool, error) {

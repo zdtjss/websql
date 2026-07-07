@@ -13,6 +13,10 @@ var (
 	Cfg *Config
 )
 
+// ConfigPathOverride 由桌面版入口设置，用于把 config 查找重定向到用户数据目录。
+// 留空时走默认查找逻辑（可执行文件同级或上级目录），与 HTTP 模式行为一致。
+var ConfigPathOverride string
+
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")
 	log.Printf("使用配置文件 %s", configFile)
@@ -31,7 +35,24 @@ func ReadSql(fileName string) string {
 	return string(fileData)
 }
 
+// FindFile 按优先级查找资源文件：
+//  1. ConfigPathOverride（桌面版注入的用户数据目录）
+//  2. WEBSQL_CONFIG_PATH 环境变量
+//  3. 可执行文件上级目录（HTTP 模式 zip 解压后布局）
+//  4. 可执行文件同级目录
 func FindFile(fileName string) string {
+	if ConfigPathOverride != "" {
+		candidate := filepath.Join(ConfigPathOverride, fileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if envPath := os.Getenv("WEBSQL_CONFIG_PATH"); envPath != "" {
+		candidate := filepath.Join(envPath, fileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
 	exec, err := os.Executable()
 	logutils.PanicErr(err)
 	configFile := filepath.Join(filepath.Dir(exec), "..", fileName)

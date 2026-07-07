@@ -369,3 +369,43 @@ func GetConnNoCheck(connId string) *sqlx.DB {
 	ensureDefaultConn()
 	return defaultConnService.GetConnNoCheck(connId)
 }
+
+// ===== 供 Wails binding 直接调用的包级委托函数 =====
+// 命名采用 <Method>ByService 后缀，与 snippet 包保持一致。
+// 这些函数委托到 defaultConnService，与对应 HTTP handler 共用同一份业务逻辑。
+
+// SaveConnByService 包级委托函数。
+func SaveConnByService(cfg *ConnCfg) (*ConnCfg, error) {
+	ensureDefaultConn()
+	return defaultConnService.SaveConn(cfg)
+}
+
+// TestDbConnByService 包级委托函数，返回 schema/version/type。
+func TestDbConnByService(cfg *ConnCfg) (string, string, string, error) {
+	ensureDefaultConn()
+	return defaultConnService.TestDbConn(cfg)
+}
+
+// DeleteConnByService 包级委托函数。
+func DeleteConnByService(id string) {
+	ensureDefaultConn()
+	defaultConnService.DeleteConn(id)
+}
+
+// ListConn2ByService 包级委托函数，返回列表和总数。
+func ListConn2ByService(name, parentId string, page, pageSize int) ([]ConnCfg, int, error) {
+	ensureDefaultConn()
+	return defaultConnService.ListConn2(name, parentId, page, pageSize)
+}
+
+// ListUserConnByService 包级委托函数，按用户权限返回连接列表。
+func ListUserConnByService(userPower *admin.UserPower) ([]UserConnDTO, error) {
+	ensureDefaultConn()
+	return defaultConnService.ListUserConn(userPower)
+}
+
+// ListConnBaseByService 包级委托函数，返回连接基础列表 (用于权限树)。
+func ListConnBaseByService() ([]*ConnCfgBase, error) {
+	ensureDefaultConn()
+	return defaultConnService.ListConnBase()
+}

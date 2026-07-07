@@ -1,4 +1,4 @@
-import http from './index'
+import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
 
@@ -45,5 +45,10 @@ export interface ERAnalyzeResponse {
  * skipGlobalError: AI 未配置等业务错误由调用方 handleError 统一展示，避免双弹窗
  */
 export function analyzeERRelations(params: ERAnalyzeRequest): Promise<AxiosResponse<ApiResponse<ERAnalyzeResponse>>> {
-  return http.post('/er/analyzeRelations', params, { skipGlobalError: true })
+  return api.request<ERAnalyzeResponse>({
+    method: 'POST',
+    url: '/er/analyzeRelations',
+    body: params,
+    skipGlobalError: true,
+  })
 }

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "WebSql",
+  "outputfilename": "WebSql",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build -- --mode desktop",
+  "frontend:dev:watcher": "npm run dev -- --mode desktop",
+  "frontend:dev:serverUrl": "http://localhost:5175",
+  "wailsjsdir": "./web-src/src",
+  "version": "1.0.0",
+  "go:buildtags": ["desktop"],
+  "info": {
+    "productName": "WebSql",
+    "companyName": "Nway",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 Nway",
+    "comments": "WebSQL Desktop Edition"
+  },
+  "nsisType": "multiple"
+}

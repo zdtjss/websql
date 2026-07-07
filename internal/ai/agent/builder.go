@@ -295,22 +295,27 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 }
 
 // buildAgentsMDMiddleware 创建 AgentsMD 中间件，在每次模型调用前注入 Agents.md 补充指令。
-// Agents.md 位于项目根目录，包含数据安全规范、SQL 性能规范、方言兼容性提醒等运行时指南。
-// 内容是瞬态的（不进入会话状态），不会被 summarization 压缩。
-// 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
+// Agents.md 是可选的运行时指南文件（数据安全规范、SQL 性能规范、方言兼容性提醒等），
+// 内容瞬态（不进入会话状态，不会被 summarization 压缩）。
+// 返回 nil 表示文件不存在或创建失败（非致命，Agent 仍可正常运行）。
+//
+// 创建时必须预检文件存在性：eino agentsmd 在文件加载失败（如 file not found）时
+// 不缓存"空结果"，导致同一 Run 内每次模型调用都重新加载并触发 OnLoadWarning，
+// 产生大量噪声日志。预检后仅在文件实际存在时注册中间件，从根上消除该噪声；
+// OnLoadWarning 回调保留，对运行期真实错误（@import 失败、文件被删除等）仍会报警。
 func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
-	// 解析 Agents.md 的绝对路径（相对于工作目录）
-	agentsMDPath := "Agents.md"
-	if absPath, err := filepath.Abs(agentsMDPath); err == nil {
-		agentsMDPath = absPath
+	agentsMDPath := resolveAgentsMDPath()
+	if agentsMDPath == "" {
+		log.Printf("[Agent] Agents.md 未找到，跳过 AgentsMD 中间件（非致命）\n")
+		return nil
 	}
 
 	// 使用 export.OSFilesystemBackend 作为 agentsmd.Backend（只需 Read 方法）
 	backend := export.NewOSFilesystemBackend()
 
 	mw, err := agentsmd.New(ctx, &agentsmd.Config{
-		Backend:        backend,
-		AgentsMDFiles:  []string{agentsMDPath},
+		Backend:             backend,
+		AgentsMDFiles:       []string{agentsMDPath},
 		AllAgentsMDMaxBytes: 100_000, // 100KB 上限
 		OnLoadWarning: func(filePath string, err error) {
 			log.Printf("[AgentsMD] 加载警告 - file=%s, err=%v\n", filePath, err)
@@ -323,4 +328,24 @@ func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
 
 	log.Printf("[Agent] AgentsMD 中间件已启用 - file=%s\n", agentsMDPath)
 	return mw
+}
+
+// resolveAgentsMDPath 解析 Agents.md 的绝对路径。
+// 依次在工作目录、可执行文件同目录查找；均不存在则返回空字符串。
+// 兼容两种运行形态：从源码目录 go run（工作目录即项目根），
+// 与部署形态（可执行文件与 Agents.md 同目录，工作目录可能不同）。
+func resolveAgentsMDPath() string {
+	var candidates []string
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "Agents.md"))
+	}
+	if execPath, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(execPath), "Agents.md"))
+	}
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
 }

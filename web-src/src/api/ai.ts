@@ -1,7 +1,7 @@
-import http from './index'
+import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
-import { streamSSE, type SSEStreamHandle } from './sse'
+import type { SSEStreamHandle, SSEOptions } from './sse'
 
 // 重新导出 SSE 流式工具
 export { streamSSE, type SSEStreamHandle, type SSEOptions } from './sse'
@@ -117,32 +117,32 @@ export interface SessionListParams {
 
 /** 查询提示词列表，对应 GET /promptList */
 export function getPromptList(params: PromptListParams): Promise<AxiosResponse<ApiResponse<PromptListResult>>> {
-  return http.get('/promptList', { params })
+  return api.request<PromptListResult>({ method: 'GET', url: '/promptList', params })
 }
 
 /** 删除提示词，对应 POST /delPrompt */
 export function delPrompt(id: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/delPrompt', null, { params: { id } })
+  return api.request({ method: 'POST', url: '/delPrompt', params: { id } })
 }
 
 /** 查询角色列表（提示词管理用），对应 GET /roleBaseList */
 export function getRoleBaseList(): Promise<AxiosResponse<ApiResponse<RoleBase[]>>> {
-  return http.get('/roleBaseList')
+  return api.request<RoleBase[]>({ method: 'GET', url: '/roleBaseList' })
 }
 
 /** 按角色查询提示词列表，对应 GET /promptListByRole */
 export function getPromptListByRole(roleId: string): Promise<AxiosResponse<ApiResponse<Prompt[]>>> {
-  return http.get('/promptListByRole', { params: { roleId } })
+  return api.request<Prompt[]>({ method: 'GET', url: '/promptListByRole', params: { roleId } })
 }
 
 /** 获取 AI 模型列表，对应 GET /system/config/ai/models */
 export function getAIModels(): Promise<AxiosResponse<ApiResponse<AIModelsResult>>> {
-  return http.get('/system/config/ai/models')
+  return api.request<AIModelsResult>({ method: 'GET', url: '/system/config/ai/models' })
 }
 
 /** 测试 AI 配置连通性，对应 POST /ai/config/test */
 export function testAIConfig(params: AIConfigTestParams): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/ai/config/test', params)
+  return api.request({ method: 'POST', url: '/ai/config/test', body: params })
 }
 
 /**
@@ -150,7 +150,7 @@ export function testAIConfig(params: AIConfigTestParams): Promise<AxiosResponse<
  * 基于 streamSSE 封装，返回流控制句柄
  */
 export function chatStream(params: ChatStreamParams, callbacks: ChatStreamCallbacks): SSEStreamHandle {
-  return streamSSE({
+  return api.streamSSE({
     url: '/ai/agent/chatStream',
     body: params,
     onMessage: callbacks.onMessage,
@@ -162,37 +162,35 @@ export function chatStream(params: ChatStreamParams, callbacks: ChatStreamCallba
 
 /** 查询历史会话列表，对应 GET /ai/agent/sessions */
 export function getChatSessions(params: SessionListParams): Promise<AxiosResponse<ChatSessionListResult>> {
-  return http.get('/ai/agent/sessions', { params })
+  return api.request<ChatSessionListResult>({ method: 'GET', url: '/ai/agent/sessions', params })
 }
 
 /** 删除历史会话，对应 POST /ai/agent/session/delete */
 export function deleteChatSession(sessionId: string): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/ai/agent/session/delete', null, { params: { sessionId } })
+  return api.request({ method: 'POST', url: '/ai/agent/session/delete', params: { sessionId } })
 }
 
 /** 加载历史会话详情，对应 GET /ai/agent/session */
 export function getChatSession(sessionId: string): Promise<AxiosResponse<ApiResponse<unknown>>> {
-  return http.get('/ai/agent/session', { params: { sessionId } })
+  return api.request<unknown>({ method: 'GET', url: '/ai/agent/session', params: { sessionId } })
 }
 
 /** 上传 Excel 文件，对应 POST /ai/agent/uploadExcel */
 export function uploadExcel(formData: FormData, signal?: AbortSignal): Promise<AxiosResponse<ApiResponse<unknown>>> {
-  const config = signal ? { signal } : undefined
-  return http.post('/ai/agent/uploadExcel', formData, config)
+  return api.request<unknown>({ method: 'POST', url: '/ai/agent/uploadExcel', body: formData, signal })
 }
 
 /** 预匹配 Excel 列，对应 POST /ai/agent/preMatchColumns */
 export function preMatchColumns(formData: FormData, signal?: AbortSignal): Promise<AxiosResponse<ApiResponse<unknown>>> {
-  const config = signal ? { signal } : undefined
-  return http.post('/ai/agent/preMatchColumns', formData, config)
+  return api.request<unknown>({ method: 'POST', url: '/ai/agent/preMatchColumns', body: formData, signal })
 }
 
 /** 获取提示词详情，对应 GET /promptDetail */
 export function getPromptDetail(id: string): Promise<AxiosResponse<ApiResponse<unknown>>> {
-  return http.get('/promptDetail', { params: { id } })
+  return api.request<unknown>({ method: 'GET', url: '/promptDetail', params: { id } })
 }
 
 /** 保存提示词，对应 POST /savePrompt */
 export function savePrompt(form: unknown): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/savePrompt', form)
+  return api.request({ method: 'POST', url: '/savePrompt', body: form })
 }

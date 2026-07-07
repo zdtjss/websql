@@ -252,3 +252,52 @@ func (s *SnippetService) AllTags(userId string) ([]string, error) {
 	}
 	return tags, nil
 }
+
+// ===== 包级向后兼容函数 =====
+// 这些函数被 gin handler 和 Wails binding 共同调用。
+// 命名采用 <Method>ByService 后缀,避免与现有 HTTP handler (snippet.go 中的 List/Save/Delete 等) 同名冲突。
+// 模式参考 internal/app/conn/conn_service.go 末尾的委托函数。
+// 设计目的: 业务逻辑只在 SnippetService 方法中写一处,
+//            handler 和 binding 各做薄包装调用。
+
+// ListByService 包级委托函数,供 Wails binding 直接调用。
+func ListByService(userId, keyword, category, tag string) ([]*Snippet, error) {
+	ensureDefault()
+	return defaultService.List(userId, keyword, category, tag)
+}
+
+// SaveByService 包级委托函数。
+func SaveByService(req *SnippetSave, userId string) (*Snippet, error) {
+	ensureDefault()
+	return defaultService.Save(req, userId)
+}
+
+// DeleteByService 包级委托函数。
+func DeleteByService(id, userId string) error {
+	ensureDefault()
+	return defaultService.Delete(id, userId)
+}
+
+// ExportByService 包级委托函数。
+func ExportByService(userId string) (*SnippetExportData, error) {
+	ensureDefault()
+	return defaultService.Export(userId)
+}
+
+// ImportByService 包级委托函数。
+func ImportByService(items []SnippetImportItem, userId string) (int, error) {
+	ensureDefault()
+	return defaultService.Import(items, userId)
+}
+
+// CategoriesByService 包级委托函数。
+func CategoriesByService(userId string) ([]CategoryStat, error) {
+	ensureDefault()
+	return defaultService.Categories(userId)
+}
+
+// AllTagsByService 包级委托函数。
+func AllTagsByService(userId string) ([]string, error) {
+	ensureDefault()
+	return defaultService.AllTags(userId)
+}

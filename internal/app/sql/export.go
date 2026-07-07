@@ -3,26 +3,23 @@ package sql
 import (
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"websql/internal/app/conn"
-	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
-	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
-	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xuri/excelize/v2"
 )
 
+// ExportXlsx 按表导出 XLSX。
+// handler 只负责协议层 (HTTP header、权限校验、Writer 注入)，
+// 业务逻辑下沉到 ExportService.ExportTable。
 func ExportXlsx(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	table := c.Query("table")
@@ -31,132 +28,24 @@ func ExportXlsx(c *gin.Context) {
 
 	permission.CheckTablePermission(connId, schema, table, authorization)
 
-	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	c.Header("content-disposition", "attachment;filename="+table+current+".xlsx")
-	queryAndWrite(c, schema+"."+table, schema, connId, authorization)
-}
-func queryAndWrite(c *gin.Context, table, schema string, connId string, authorization string) {
-	log.Println("正在导出: ", table)
+	c.Header("content-disposition", "attachment;filename="+table+time.Now().Format(time.DateOnly)+".xlsx")
 
-	// 标识符白名单校验，防止 SQL 注入
-	parts := strings.SplitN(table, ".", 2)
-	var safeTable string
-	if len(parts) == 2 {
-		if !sanitize.IsValidIdentifier(parts[0]) || !sanitize.IsValidIdentifier(parts[1]) {
-			response.WriteErr(c, 200, 400, "非法的表名")
-			return
-		}
-		safeTable = fmt.Sprintf("`%s`.`%s`", parts[0], parts[1])
-	} else {
-		if !sanitize.IsValidIdentifier(table) {
-			response.WriteErr(c, 200, 400, "非法的表名")
-			return
-		}
-		safeTable = fmt.Sprintf("`%s`", table)
+	req := &ExportRequest{
+		ConnID:        connId,
+		Schema:        schema,
+		Table:         table,
+		Authorization: authorization,
+		Writer:        c.Writer,
 	}
-
-	connCtx := conn.GetConn(connId, authorization)
-	rows, err := connCtx.Query("SELECT * from " + safeTable)
-	if err != nil {
-		log.Printf("查询失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+	if err := ensureDefaultExport().ExportTable(req); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
 		return
 	}
-
-	allColumns, err := rows.Columns()
-	if err != nil {
-		log.Printf("获取字段失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	columnComment := make([]string, 0)
-	columnMap := dbops.ColumnMapFiltered(table, schema, connId, authorization, connCtx)
-
-	for i := range allColumns {
-		columnComment = append(columnComment, columnMap[allColumns[i]])
-	}
-
-	cts, err := rows.ColumnTypes()
-	if err != nil {
-		log.Printf("获取字段类型失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	colTypeMap := map[string]string{}
-	for _, ct := range cts {
-		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
-	}
-
-	excel := excelize.NewFile()
-
-	defer func() {
-		if err := excel.Close(); err != nil {
-			log.Println(err)
-		}
-	}()
-
-	streamWriter, err := excel.NewStreamWriter("Sheet1")
-	if err != nil {
-		log.Printf("创建流写入器失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	var columns2 = make([]any, len(allColumns))
-	for idx := range allColumns {
-		columns2[idx] = allColumns[idx]
-	}
-	var columnComment2 = make([]any, len(columnComment))
-	for idx := range columnComment {
-		columnComment2[idx] = columnComment[idx]
-	}
-	streamWriter.SetRow("A1", columns2)
-	streamWriter.SetRow("A2", columnComment2)
-
-	values := make([]any, len(allColumns))
-	scanArgs := make([]any, len(values))
-	for i := range values {
-		scanArgs[i] = &values[i]
-	}
-
-	driverName := connCtx.DriverName()
-	count := 2
-	for rows.Next() {
-		err = rows.Scan(scanArgs...)
-		if err != nil {
-			log.Printf("扫描行失败: %v", err)
-			response.WriteErr(c, 200, 500, "操作失败")
-			return
-		}
-
-		var row = make([]any, 0, len(allColumns))
-		for i := range allColumns {
-			colType := colTypeMap[allColumns[i]]
-			row = append(row, *database.ConvertCol(&driverName, &colType, &values[i], false))
-		}
-
-		count++
-		streamWriter.SetRow("A"+strconv.Itoa(count), row)
-	}
-
-	if err = rows.Err(); err != nil {
-		log.Printf("遍历行失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-	if err := streamWriter.Flush(); err != nil {
-		log.Printf("导出excel失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-	excel.Write(c.Writer)
-	log.Println("导出完成: ", table)
-
 }
 
+// ExportXlsxBySql 按自定义 SQL 导出 XLSX。
+// handler 只负责协议层，业务逻辑下沉到 ExportService.ExportBySQL。
 func ExportXlsxBySql(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	connId := appctx.Ctx.GetConnID(c)
@@ -169,13 +58,15 @@ func ExportXlsxBySql(c *gin.Context) {
 
 	if schema == "" && connId != "" {
 		dc := conn.GetConn(connId, authorization)
-		switch dc.DriverName() {
-		case "mysql", "mariadb":
-			dc.Get(&schema, "SELECT DATABASE()")
-		case "oracle":
-			dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
-		case "sqlite":
-			schema = "main"
+		if dc != nil {
+			switch dc.DriverName() {
+			case "mysql", "mariadb":
+				dc.Get(&schema, "SELECT DATABASE()")
+			case "oracle":
+				dc.Get(&schema, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL")
+			case "sqlite":
+				schema = "main"
+			}
 		}
 	}
 
@@ -186,102 +77,24 @@ func ExportXlsxBySql(c *gin.Context) {
 		return
 	}
 
-	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
-	queryAndWriteBySql(c, sqlStr, connId, authorization)
+	c.Header("content-disposition", "attachment;filename="+filename+"-"+time.Now().Format(time.DateOnly)+".xlsx")
+
+	req := &ExportBySQLRequest{
+		ConnID:        connId,
+		Schema:        schema,
+		Filename:      filename,
+		SQL:           sqlStr,
+		Authorization: authorization,
+		Writer:        c.Writer,
+	}
+	if err := ensureDefaultExport().ExportBySQL(req); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
 }
 
-func queryAndWriteBySql(c *gin.Context, sqlStr string, connId string, authorization string) {
-	log.Println("正在导出SQL: ", sqlStr)
-
-	connCtx := conn.GetConn(connId, authorization)
-	rows, err := connCtx.Query(sqlStr)
-	if err != nil {
-		log.Printf("查询失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	columns, err := rows.Columns()
-	if err != nil {
-		log.Printf("获取字段失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	cts, err := rows.ColumnTypes()
-	if err != nil {
-		log.Printf("获取字段类型失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	colTypeMap := map[string]string{}
-	for _, ct := range cts {
-		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
-	}
-
-	excel := excelize.NewFile()
-	defer func() {
-		if err := excel.Close(); err != nil {
-			log.Println(err)
-		}
-	}()
-
-	streamWriter, err := excel.NewStreamWriter("Sheet1")
-	if err != nil {
-		log.Printf("创建流写入器失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-
-	var columns2 = make([]any, len(columns))
-	for idx := range columns {
-		columns2[idx] = columns[idx]
-	}
-	streamWriter.SetRow("A1", columns2)
-
-	values := make([]any, len(columns))
-	scanArgs := make([]any, len(values))
-	for i := range values {
-		scanArgs[i] = &values[i]
-	}
-
-	driverName := connCtx.DriverName()
-	count := 1
-	for rows.Next() {
-		err = rows.Scan(scanArgs...)
-		if err != nil {
-			log.Printf("扫描行失败: %v", err)
-			response.WriteErr(c, 200, 500, "操作失败")
-			return
-		}
-
-		var row = make([]any, 0, len(columns))
-		for i, col := range columns {
-			colType := colTypeMap[col]
-			row = append(row, *database.ConvertCol(&driverName, &colType, &values[i], false))
-		}
-
-		count++
-		streamWriter.SetRow("A"+strconv.Itoa(count), row)
-	}
-
-	if err = rows.Err(); err != nil {
-		log.Printf("遍历行失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-	if err := streamWriter.Flush(); err != nil {
-		log.Printf("导出 excel 失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
-		return
-	}
-	excel.Write(c.Writer)
-	log.Println("导出完成")
-}
-
+// handleExportDownload 是静态文件下载 (导出归档目录的复用)，与 service 抽象无关。
 func handleExportDownload(c *gin.Context) {
 	fileName := c.Param("filename")
 	if fileName == "" {

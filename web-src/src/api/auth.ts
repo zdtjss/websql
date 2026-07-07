@@ -1,12 +1,8 @@
-import http from './index'
+import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
 
-/** 通用接口响应结构 */
-export interface ApiResponse<T = unknown> {
-  code: number
-  msg?: string
-  data: T
-}
+/** 通用接口响应结构（从 adapter 重新导出，保持向后兼容） */
+export type { ApiResponse } from './adapter'
 
 /** 当前登录用户信息 */
 export interface CurrentUser {
@@ -56,10 +52,11 @@ export function loginByPassword(params: LoginByPasswordParams): Promise<AxiosRes
   body.append('name', params.name)
   body.append('password', params.password)
   body.append('loginType', 'pwd')
-  return http.post('/login', body, {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    }
+  return api.request<CurrentUser>({
+    method: 'POST',
+    url: '/login',
+    body,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 }
 
@@ -71,7 +68,11 @@ export function loginByToken(token: string): Promise<AxiosResponse<ApiResponse<C
   const body = new URLSearchParams()
   body.append('key', token)
   body.append('loginType', 'token')
-  return http.post('/login', body)
+  return api.request<CurrentUser & { authentication: string }>({
+    method: 'POST',
+    url: '/login',
+    body,
+  })
 }
 
 /**
@@ -82,16 +83,17 @@ export function loginByBio(key: string): Promise<AxiosResponse<ApiResponse<Curre
   const body = new URLSearchParams()
   body.append('key', key)
   body.append('loginType', 'bio')
-  return http.post('/login', body, {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    }
+  return api.request<CurrentUser>({
+    method: 'POST',
+    url: '/login',
+    body,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   })
 }
 
 /** 登出，对应 POST /logout */
 export function logout(): Promise<AxiosResponse<ApiResponse<string>>> {
-  return http.post('/logout')
+  return api.request<string>({ method: 'POST', url: '/logout' })
 }
 
 /**
@@ -102,7 +104,7 @@ export function changePassword(oldPassword: string, newPassword: string): Promis
   const body = new URLSearchParams()
   body.append('oldPassword', oldPassword)
   body.append('newPassword', newPassword)
-  return http.post('/changePassword', body)
+  return api.request({ method: 'POST', url: '/changePassword', body })
 }
 
 /**
@@ -112,20 +114,20 @@ export function changePassword(oldPassword: string, newPassword: string): Promis
 export function saveUserBio(bioKey: string): Promise<AxiosResponse<ApiResponse<unknown>>> {
   const body = new URLSearchParams()
   body.append('bioKey', bioKey)
-  return http.post('/saveUserBio', body)
+  return api.request({ method: 'POST', url: '/saveUserBio', body })
 }
 
 /** 获取系统模式（是否远程模式），对应 GET /sysMode */
 export function getSysMode(): Promise<AxiosResponse<unknown>> {
-  return http.get('/sysMode')
+  return api.request({ method: 'GET', url: '/sysMode' })
 }
 
 /** 检查是否可使用经典视图，对应 GET /canUseClassicView */
 export function canUseClassicView(): Promise<AxiosResponse<ApiResponse<PermissionResult>>> {
-  return http.get('/canUseClassicView')
+  return api.request<PermissionResult>({ method: 'GET', url: '/canUseClassicView' })
 }
 
 /** 检查是否可修改数据，对应 GET /canModifyData */
 export function canModifyData(): Promise<AxiosResponse<ApiResponse<PermissionResult>>> {
-  return http.get('/canModifyData')
+  return api.request<PermissionResult>({ method: 'GET', url: '/canModifyData' })
 }

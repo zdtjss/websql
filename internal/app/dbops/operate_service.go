@@ -528,3 +528,48 @@ func QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string {
 	ensureDefaultOperate()
 	return defaultOperateService.QueryPrimaryKeyCached(connId, schema, table, dc)
 }
+
+// ===== 供 Wails binding 直接调用的包级委托函数 =====
+// 命名采用 <Method>ByService 后缀，与 snippet/conn 包保持一致。
+
+// ListTableFatByService 包级委托函数，返回权限过滤后的表列表。
+func ListTableFatByService(connId, schema, authorization string) []*conn.Table {
+	ensureDefaultOperate()
+	return defaultOperateService.ListTableFat(connId, schema, authorization)
+}
+
+// GetTableOptionsByService 包级委托函数，返回表选项。
+func GetTableOptionsByService(connId, schema, table, authorization string) (map[string]any, error) {
+	ensureDefaultOperate()
+	return defaultOperateService.GetTableOptions(connId, schema, table, authorization)
+}
+
+// GetTableStatisticsByService 包级委托函数，返回表统计信息。
+func GetTableStatisticsByService(connId, schema, table, authorization string) (map[string]any, error) {
+	ensureDefaultOperate()
+	return defaultOperateService.GetTableStatistics(connId, schema, table, authorization)
+}
+
+// ListIndexesByService 包级委托函数，返回索引列表。
+func ListIndexesByService(connId, schema, table, authorization string) ([]map[string]any, error) {
+	ensureDefaultOperate()
+	return defaultOperateService.ListIndexes(connId, schema, table, authorization)
+}
+
+// ListObjectsByService 包级委托函数，返回指定类型的对象列表。
+func ListObjectsByService(connId, schema, objType, authorization string) ([]map[string]any, error) {
+	ensureDefaultOperate()
+	return defaultOperateService.ListObjects(connId, schema, objType, authorization)
+}
+
+// GetObjectDDLByService 包级委托函数，返回对象 DDL 文本。
+func GetObjectDDLByService(connId, schema, name, objType, authorization string) (string, error) {
+	ensureDefaultOperate()
+	return defaultOperateService.GetObjectDDL(connId, schema, name, objType, authorization)
+}
+
+// ListTableColumnsByServiceByService 包级委托函数 (避免与 ListTableColumns 同名冲突)。
+func ListTableColumnsByService(connIdParam, tableName, schema, authorization string) []map[string]any {
+	ensureDefaultOperate()
+	return defaultOperateService.ListTableColumns(connIdParam, tableName, schema, authorization)
+}

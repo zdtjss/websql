@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"net/http"
 
 	"websql/internal/config"
@@ -108,9 +109,11 @@ func DownloadBackup(c *gin.Context) {
 	backupId := c.Query("backupId")
 
 	ensureDefaultBackup()
-	err := defaultBackupService.DownloadBackup(c, backupId)
+	fileName, err := defaultBackupService.DownloadBackup(backupId, c.Writer)
 	if err != nil {
 		response.WriteErr(c, http.StatusNotFound, 500, err.Error())
 		return
 	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
+	c.Header("Content-Type", "application/octet-stream")
 }

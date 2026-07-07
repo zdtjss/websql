@@ -1,4 +1,4 @@
-import http from './index'
+import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
 
@@ -79,31 +79,32 @@ export function execSQL(params: ExecSQLParams, signal?: AbortSignal): Promise<Ax
   if (params.isFile !== undefined) {
     body.append('isFile', params.isFile)
   }
-  const config = signal ? { signal } : undefined
-  return http.post('/execSQL', body, config)
+  return api.request<SQLResult | BatchSQLResult>({
+    method: 'POST',
+    url: '/execSQL',
+    body,
+    signal,
+  })
 }
 
 /** 查询 SQL 执行历史，对应 GET /listBackupData */
 export function listBackupData(params: ListBackupDataParams): Promise<AxiosResponse<ApiResponse<SQLHistoryPage>>> {
-  return http.get('/listBackupData', { params })
+  return api.request<SQLHistoryPage>({ method: 'GET', url: '/listBackupData', params })
 }
 
 /** 查看备份数据详情，对应 GET /showBackupData */
 export function showBackupData(backupId: string): Promise<AxiosResponse<ApiResponse<string>>> {
-  return http.get('/showBackupData', { params: { backupId } })
+  return api.request<string>({ method: 'GET', url: '/showBackupData', params: { backupId } })
 }
 
 /** 导出表数据为 XLSX，对应 GET /exportXlsx，返回 blob */
 export function exportXlsx(params: ExportXlsxParams): Promise<AxiosResponse<Blob>> {
-  return http.get('/exportXlsx', {
-    params,
-    responseType: 'blob'
-  })
+  return api.requestBlob({ method: 'GET', url: '/exportXlsx', params })
 }
 
 /** SQL 执行计划分析，对应 POST /sqlopt/explain */
 export function explainSqlOpt(formData: FormData): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/sqlopt/explain', formData)
+  return api.request({ method: 'POST', url: '/sqlopt/explain', body: formData })
 }
 
 /** 搜索数据库对象，对应 GET /search/objects */
@@ -115,64 +116,64 @@ export interface SearchObjectsParams {
 }
 
 export function searchObjects(params: SearchObjectsParams): Promise<AxiosResponse> {
-  return http.get('/search/objects', { params })
+  return api.request({ method: 'GET', url: '/search/objects', params })
 }
 
 /** 数据字典 - 列出表，对应 GET /datadict/tables */
 export function getDatadictTables(connId: string, schema: string): Promise<AxiosResponse> {
-  return http.get('/datadict/tables', { params: { connId, schema } })
+  return api.request({ method: 'GET', url: '/datadict/tables', params: { connId, schema } })
 }
 
 /** 数据字典 - 生成字典，对应 POST /datadict/generate */
 export function generateDatadict(formData: FormData): Promise<AxiosResponse> {
-  return http.post('/datadict/generate', formData)
+  return api.request({ method: 'POST', url: '/datadict/generate', body: formData })
 }
 
 /** 数据字典 - 导出 HTML，对应 POST /datadict/export/html，返回 blob */
 export function exportDatadictHtml(formData: FormData): Promise<AxiosResponse<Blob>> {
-  return http.post('/datadict/export/html', formData, { responseType: 'blob' })
+  return api.requestBlob({ method: 'POST', url: '/datadict/export/html', body: formData })
 }
 
 /** 数据字典 - 导出 PDF，对应 POST /datadict/export/pdf，返回 blob */
 export function exportDatadictPdf(formData: FormData): Promise<AxiosResponse<Blob>> {
-  return http.post('/datadict/export/pdf', formData, { responseType: 'blob' })
+  return api.requestBlob({ method: 'POST', url: '/datadict/export/pdf', body: formData })
 }
 
 /** 备份 - 列出备份，对应 GET /backup/list */
 export function listBackups(connId: string, schema: string): Promise<AxiosResponse> {
-  return http.get('/backup/list', { params: { connId, schema } })
+  return api.request({ method: 'GET', url: '/backup/list', params: { connId, schema } })
 }
 
 /** 备份 - 列出可备份表，对应 GET /backup/tables */
 export function listBackupTables(connId: string, schema: string): Promise<AxiosResponse> {
-  return http.get('/backup/tables', { params: { connId, schema } })
+  return api.request({ method: 'GET', url: '/backup/tables', params: { connId, schema } })
 }
 
 /** 备份 - 创建备份，对应 POST /backup/create
  * 异步执行，立即返回 taskId，需配合 getBackupProgress 轮询进度 */
 export function createBackup(formData: FormData): Promise<AxiosResponse> {
-  return http.post('/backup/create', formData)
+  return api.request({ method: 'POST', url: '/backup/create', body: formData })
 }
 
 /** 备份 - 查询备份进度，对应 GET /backup/progress
  * 返回 {status, totalTables, processedTables, currentTable, exportedBytes, result?, error?} */
 export function getBackupProgress(taskId: string): Promise<AxiosResponse> {
-  return http.get('/backup/progress', { params: { taskId } })
+  return api.request({ method: 'GET', url: '/backup/progress', params: { taskId } })
 }
 
 /** 备份 - 下载备份，对应 GET /backup/download，返回 blob */
 export function downloadBackup(backupId: string): Promise<AxiosResponse<Blob>> {
-  return http.get('/backup/download', { params: { backupId }, responseType: 'blob' })
+  return api.requestBlob({ method: 'GET', url: '/backup/download', params: { backupId } })
 }
 
 /** 备份 - 恢复备份，对应 POST /backup/restore */
 export function restoreBackup(formData: FormData): Promise<AxiosResponse> {
-  return http.post('/backup/restore', formData)
+  return api.request({ method: 'POST', url: '/backup/restore', body: formData })
 }
 
 /** 备份 - 删除备份，对应 POST /backup/delete */
 export function deleteBackup(formData: FormData): Promise<AxiosResponse> {
-  return http.post('/backup/delete', formData)
+  return api.request({ method: 'POST', url: '/backup/delete', body: formData })
 }
 
 /** 数据库对象类型 */
@@ -184,7 +185,7 @@ export function listDbObjects(params: {
   schema: string
   type: DbObjectType
 }): Promise<AxiosResponse<ApiResponse<any[]>>> {
-  return http.get('/db/objects', { params })
+  return api.request<any[]>({ method: 'GET', url: '/db/objects', params })
 }
 
 /** 获取对象的 DDL 定义文本，对应 GET /db/object/ddl */
@@ -194,5 +195,5 @@ export function getObjectDDL(params: {
   type: DbObjectType
   name: string
 }): Promise<AxiosResponse<ApiResponse<string>>> {
-  return http.get('/db/object/ddl', { params })
+  return api.request<string>({ method: 'GET', url: '/db/object/ddl', params })
 }

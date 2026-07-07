@@ -2,6 +2,7 @@ package backup
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,7 +20,6 @@ import (
 	"websql/internal/pkg/sanitize"
 	"websql/internal/pkg/sqlguard"
 
-	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -393,30 +393,30 @@ func (s *BackupService) GetBackupTables(connId, schema, authorization string) (m
 	}, nil
 }
 
-// DownloadBackup 下载备份文件
-func (s *BackupService) DownloadBackup(c *gin.Context, backupId string) error {
+// DownloadBackup 把备份内容写入 writer。
+// 返回值 fileName 是建议的下载文件名 (含 .sql 后缀)，由调用方设置 HTTP 头或 BlobResult.Filename。
+func (s *BackupService) DownloadBackup(backupId string, w io.Writer) (fileName string, err error) {
 	s.repo.EnsureBackupTable()
 
 	record, err := s.repo.FindBackupById(backupId)
 	if err != nil {
-		return fmt.Errorf("备份不存在")
+		return "", fmt.Errorf("备份不存在")
 	}
 
 	content, err1 := os.ReadFile(record.FilePath)
 	if err1 != nil {
-		return fmt.Errorf("备份文件不存在")
+		return "", fmt.Errorf("备份文件不存在")
 	}
 
 	if record.Encrypted {
 		content = []byte(crypto.AESDecode(string(content)))
 	}
 
-	fileName := record.Name + ".sql"
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Length", fmt.Sprintf("%d", len(content)))
-	c.Writer.Write(content)
-	return nil
+	fileName = record.Name + ".sql"
+	if _, err := w.Write(content); err != nil {
+		return "", fmt.Errorf("写入输出流失败: %w", err)
+	}
+	return fileName, nil
 }
 
 // ===== 以下为外部数据库查询辅助函数 =====
@@ -711,4 +711,53 @@ func splitBackupSQL(content string) []string {
 		stmts = append(stmts, strings.TrimSpace(current.String()))
 	}
 	return stmts
+}
+
+// ===== 供 Wails binding 直接调用的包级委托函数 =====
+// 命名采用 <Method>ByService 后缀，与 snippet/conn/dbops 包保持一致。
+// 这些函数委托到 defaultBackupService，与对应 HTTP handler 共用同一份业务逻辑。
+
+// CreateBackupAsyncByService 异步启动备份任务，返回 taskId。
+// 调用方通过 GetBackupProgressByService(taskId) 轮询进度。
+func CreateBackupAsyncByService(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) string {
+	ensureDefaultBackup()
+	return defaultBackupService.CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization)
+}
+
+// GetBackupProgressByService 查询备份任务进度。
+// 进度不存在时返回 (nil, false)，调用方应转为 not_found 状态。
+func GetBackupProgressByService(taskId string) (any, bool) {
+	ensureDefaultBackup()
+	return FetchBackupProgress(taskId)
+}
+
+// ListBackupsByService 列出指定连接/schema 下的备份记录。
+func ListBackupsByService(connId, schema string) (map[string]any, error) {
+	ensureDefaultBackup()
+	return defaultBackupService.ListBackups(connId, schema)
+}
+
+// RestoreBackupByService 从备份恢复数据到指定连接。
+func RestoreBackupByService(backupId, connId, authorization string) (map[string]any, error) {
+	ensureDefaultBackup()
+	return defaultBackupService.RestoreBackup(backupId, connId, authorization)
+}
+
+// DeleteBackupByService 删除备份记录。
+func DeleteBackupByService(backupId string) error {
+	ensureDefaultBackup()
+	return defaultBackupService.DeleteBackup(backupId)
+}
+
+// GetBackupTablesByService 查询指定连接/schema 下的表和视图列表，供备份前选择。
+func GetBackupTablesByService(connId, schema, authorization string) (map[string]any, error) {
+	ensureDefaultBackup()
+	return defaultBackupService.GetBackupTables(connId, schema, authorization)
+}
+
+// DownloadBackupByService 把备份内容写入 writer，返回建议的下载文件名。
+// 调用方负责设置 HTTP 头 (HTTP 模式) 或构造 BlobResult (桌面模式)。
+func DownloadBackupByService(backupId string, w io.Writer) (string, error) {
+	ensureDefaultBackup()
+	return defaultBackupService.DownloadBackup(backupId, w)
 }
