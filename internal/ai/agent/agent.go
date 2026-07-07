@@ -426,7 +426,8 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 			Timeout: 30 * time.Minute,
 		}
 		if cfg.Temperature > 0 {
-			openaiCfg.Temperature = new(cfg.Temperature)
+			temp := cfg.Temperature
+			openaiCfg.Temperature = &temp
 		}
 		cm, err = openai.NewChatModel(ctx, openaiCfg)
 	default:

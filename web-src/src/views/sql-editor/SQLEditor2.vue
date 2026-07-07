@@ -35,7 +35,7 @@
                     <el-button @click="openTableManager">表管理</el-button>
                     <el-button @click="showSqlHistory">历史</el-button>
                     <el-button @click="snippetVisible = true" title="SQL 收藏夹">收藏</el-button>
-                    <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">；/
+                    <el-upload :show-file-list="false" accept=".sql" :http-request="handleSqlFile">
                         <el-button title="执行 SQL 文件">执行文件</el-button>
                     </el-upload>
                     <el-button @click="refreshSchema" :loading="refreshingSchema" title="刷新表结构（更新自动补全）">

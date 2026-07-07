@@ -30,6 +30,9 @@
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录" aria-label="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
+              <el-button v-if="loginSucc" text size="small" class="theme-toggle-btn" @click="logout" title="退出登录" aria-label="退出登录">
+                <el-icon :size="14"><SwitchButton /></el-icon>
+              </el-button>
             </div>
           </div>
           <div class="sidebar-tree">
@@ -255,7 +258,7 @@ import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
-import { MagicStick, User } from '@element-plus/icons-vue'
+import { MagicStick, SwitchButton, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { resetDefaultHomepageCache } from '@/router'
@@ -1089,7 +1092,7 @@ function handleTreeDropdownAction(node, command) {
 }
 
 function onSearchPopoverShow() {
-  searchPopoverVisible.value = true
+  // 先设置连接和 schema，再设置 visible 触发子组件 init，保证 props 就绪
   const activeTab = editableTabs.value.find(t => t.tabId === editableTabsValue.value)
   if (activeTab) {
     searchConnId.value = activeTab.connId
@@ -1098,6 +1101,7 @@ function onSearchPopoverShow() {
     searchConnId.value = ''
     searchSchema.value = ''
   }
+  searchPopoverVisible.value = true
 }
 
 function onSearchPopoverHide() {
@@ -1176,6 +1180,7 @@ function onSearchSelect(obj) {
 .sidebar-header-actions {
   display: flex;
   align-items: center;
+  gap: 2px;
 }
 
 .sidebar-user-btn {
@@ -1387,6 +1392,10 @@ function onSearchSelect(obj) {
 }
 :deep(.el-tree-node.is-current > .el-tree-node__content) {
   background-color: var(--tree-node-active);
+}
+
+.el-button+.el-button {
+  margin-left: 3px !important;
 }
 </style>
 

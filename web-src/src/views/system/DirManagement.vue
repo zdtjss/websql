@@ -7,6 +7,10 @@
           <span class="panel-header-desc">拖拽可调整目录顺序，勾选可批量选择目录</span>
         </div>
         <div class="panel-header-actions">
+          <el-button type="primary" size="small" @click="appendRootNode">
+            <el-icon><Plus /></el-icon>
+            添加根目录
+          </el-button>
           <el-button size="small" @click="checkAll">
             <el-icon><Select /></el-icon>
             全选
@@ -245,6 +249,11 @@ const appendTreeNode = (data) => {
     data.children = []
   }
   data.children.push(newChild)
+}
+
+const appendRootNode = () => {
+  const newNode = { label: "", value: "", id: generateUniqueId(), children: [] }
+  conCfgTreeData.value.push(newNode)
 }
 
 const allowDrop = (draggingNode, dropNode, type) => {
