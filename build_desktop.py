@@ -3,11 +3,12 @@
 WebSQL Desktop Build Script (Wails v3)
 Usage: python build_desktop.py [--skip-frontend]
 
-构建桌面版 WebSQL（Windows），基于 Wails v3。
-生成带图标、清单与版本信息的单实例可执行文件。
+跨平台构建桌面版 WebSQL（Windows / Linux / macOS），基于 Wails v3。
+自动识别当前平台并生成对应可执行文件；Windows 额外内嵌图标/清单/版本信息。
+单实例检测、免登录等行为由 main.go 保证，三平台一致。
 
 产物目录结构 (release-desktop/):
-  WebSQL.exe          主程序
+  WebSQL[.exe]        主程序
   config.json         配置（isRemote=false）
   nway.sqlite3.db     数据库
   favicon.ico         图标
@@ -46,6 +47,11 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, "release-desktop")
 APP_NAME = "WebSQL"
 DB_NAME = "nway.sqlite3.db"
 VERSION = datetime.now().strftime("%Y%m%d%H%M")
+
+# 平台识别：windows / linux / darwin（按当前主机，CGO 交叉编译受限，故只构建本机平台）
+PLATFORM = "windows" if sys.platform == "win32" else sys.platform
+# 可执行文件名：Windows 带 .exe，Linux/macOS 无后缀
+BINARY_NAME = APP_NAME + ".exe" if PLATFORM == "windows" else APP_NAME
 
 
 def run(cmd, cwd=None, env=None):
@@ -108,26 +114,36 @@ def create_fresh_db():
 def build_desktop():
     print("\n[4/5] 编译桌面版...")
 
-    binary_path = os.path.join(OUTPUT_DIR, APP_NAME + ".exe")
-    ldflags = f"-s -w -H windowsgui -X main.version={VERSION}"
+    binary_path = os.path.join(OUTPUT_DIR, BINARY_NAME)
+    # Windows 用 windowsgui 隐藏控制台窗口；Linux/macOS 不需要
+    if PLATFORM == "windows":
+        ldflags = f"-s -w -H windowsgui -X main.version={VERSION}"
+    else:
+        ldflags = f"-s -w -X main.version={VERSION}"
     env = {"CGO_ENABLED": "1"}
 
-    # 生成 Windows 资源（图标/清单/版本信息）为 .syso，go build 会自动链接
     syso_path = os.path.join(PROJECT_ROOT, "cmd", "desktop", "desktop.syso")
+    # 清理可能残留的上一轮 .syso，避免平台错配被 go build 误链接
     if os.path.isfile(syso_path):
         os.remove(syso_path)
-    run(
-        'wails3 generate syso -arch amd64'
-        ' -icon web-src/public/favicon.ico'
-        ' -manifest cmd/desktop/build/windows/wails.exe.manifest'
-        ' -info cmd/desktop/build/windows/info.json'
-        ' -out cmd/desktop/desktop.syso',
-        cwd=PROJECT_ROOT,
-    )
-    if not os.path.isfile(syso_path) or os.path.getsize(syso_path) == 0:
-        print("  [FAIL] 生成 .syso 资源失败，二进制将不带图标")
-        sys.exit(1)
-    print("  [OK] 已生成 desktop.syso（图标/清单/版本信息）")
+
+    if PLATFORM == "windows":
+        # 生成 Windows 资源（图标/清单/版本信息）为 .syso，go build 会自动链接
+        run(
+            'wails3 generate syso -arch amd64'
+            ' -icon web-src/public/favicon.ico'
+            ' -manifest cmd/desktop/build/windows/wails.exe.manifest'
+            ' -info cmd/desktop/build/windows/info.json'
+            ' -out cmd/desktop/desktop.syso',
+            cwd=PROJECT_ROOT,
+        )
+        if not os.path.isfile(syso_path) or os.path.getsize(syso_path) == 0:
+            print("  [FAIL] 生成 .syso 资源失败，二进制将不带图标")
+            sys.exit(1)
+        print("  [OK] 已生成 desktop.syso（图标/清单/版本信息）")
+    else:
+        # Linux/macOS 无 .syso 资源机制，窗口图标由 main.go 运行时读取 favicon.ico
+        print(f"  [SKIP] {PLATFORM} 平台无需 .syso 资源")
 
     run(
         f'go build -ldflags "{ldflags}" -o "{binary_path}" ./cmd/desktop/',
@@ -140,7 +156,7 @@ def build_desktop():
         sys.exit(1)
 
     size_mb = os.path.getsize(binary_path) / 1024 / 1024
-    print(f"  [OK] 编译完成: {APP_NAME}.exe ({size_mb:.1f} MB)")
+    print(f"  [OK] 编译完成: {BINARY_NAME} ({size_mb:.1f} MB)")
 
 
 def copy_resources():
@@ -208,10 +224,14 @@ def main():
     print("\n" + "=" * 50)
     print("  [DONE] 桌面版构建完成！")
     print("=" * 50)
+    print(f"  平台: {PLATFORM}")
     print(f"  输出目录: {OUTPUT_DIR}")
-    print(f"  可执行文件: {os.path.join(OUTPUT_DIR, APP_NAME + '.exe')}")
+    print(f"  可执行文件: {os.path.join(OUTPUT_DIR, BINARY_NAME)}")
     print()
-    print("  运行方式: 进入 release-desktop/ 目录，双击 WebSQL.exe")
+    if PLATFORM == "windows":
+        print("  运行方式: 进入 release-desktop/ 目录，双击 WebSQL.exe")
+    else:
+        print(f"  运行方式: 进入 release-desktop/ 目录，执行 ./{BINARY_NAME}")
     print()
 
 
