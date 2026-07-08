@@ -209,7 +209,7 @@ export function testOutterUser(url: string): Promise<AxiosResponse<ApiResponse>>
 }
 
 /** 查询审计日志，对应 GET /audit/logs */
-export function getAuditLogs(params: AuditLogParams): Promise<AxiosResponse<AuditLogResult>> {
+export function getAuditLogs(params: AuditLogParams): Promise<AxiosResponse<ApiResponse<AuditLogResult>>> {
   return api.request<AuditLogResult>({ method: 'GET', url: '/audit/logs', params })
 }
 

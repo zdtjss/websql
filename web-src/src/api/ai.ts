@@ -161,7 +161,7 @@ export function chatStream(params: ChatStreamParams, callbacks: ChatStreamCallba
 }
 
 /** 查询历史会话列表，对应 GET /ai/agent/sessions */
-export function getChatSessions(params: SessionListParams): Promise<AxiosResponse<ChatSessionListResult>> {
+export function getChatSessions(params: SessionListParams): Promise<AxiosResponse<ApiResponse<ChatSessionListResult>>> {
   return api.request<ChatSessionListResult>({ method: 'GET', url: '/ai/agent/sessions', params })
 }
 

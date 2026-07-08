@@ -95,15 +95,20 @@ def ssh_exec(client, cmd, check=True):
     return exit_code, out
 
 
-def create_deploy_zip(binary_path, dist_dir, skills_dir=None):
+def create_deploy_zip(binary_path, dist_dir, skills_dir=None, agents_md_path=None):
     """创建部署包 zip 文件"""
     zip_path = os.path.join(tempfile.gettempdir(), "websql-deploy.zip")
-    
+
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         # 添加二进制文件
         zipf.write(binary_path, "WebSql")
         print(f"  添加 WebSql 二进制文件")
-        
+
+        # 添加 Agents.md（运行时 AI 指南，可无需重编译修改）
+        if agents_md_path and os.path.isfile(agents_md_path):
+            zipf.write(agents_md_path, "Agents.md")
+            print(f"  添加 Agents.md")
+
         # 添加前端文件（去掉 dist 前缀）
         for root, dirs, files in os.walk(dist_dir):
             for file in files:
@@ -131,6 +136,7 @@ def main():
     dist_dir = os.path.join(web_src, "dist")
     binary_path = os.path.join(project_root, "WebSql")
     skills_dir = os.path.join(project_root, "skills")
+    agents_md_path = os.path.join(project_root, "Agents.md")
 
     print("=" * 40)
     print("  WebSQL Linux Deployment Script (Optimized)")
@@ -157,7 +163,7 @@ def main():
     # Step 2.5: 打包成 zip
     print()
     print("[2.5/4] 打包部署文件...")
-    zip_path = create_deploy_zip(binary_path, dist_dir, skills_dir)
+    zip_path = create_deploy_zip(binary_path, dist_dir, skills_dir, agents_md_path)
     zip_size = os.path.getsize(zip_path)
     print(f"  ✓ 打包完成: {zip_path} ({zip_size / 1024 / 1024:.2f} MB)")
 

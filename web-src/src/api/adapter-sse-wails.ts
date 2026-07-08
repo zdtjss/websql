@@ -1,6 +1,17 @@
 import { lookupRoute } from './route-table'
 import type { SSEOptions, SSEStreamHandle } from './sse'
 
+type WailsRuntime = typeof import('@wailsio/runtime')
+
+let _runtime: WailsRuntime | null = null
+
+async function ensureRuntime(): Promise<WailsRuntime> {
+  if (!_runtime) {
+    _runtime = await import('@wailsio/runtime')
+  }
+  return _runtime
+}
+
 function getAuthHeader(): string {
   return sessionStorage.getItem('authentication') || ''
 }
@@ -9,15 +20,6 @@ export function wailsSSEStream(options: SSEOptions): SSEStreamHandle {
   const route = lookupRoute(options.url)
   if (!route) {
     options.onError?.(new Error(`桌面模式不支持的路由: ${options.url}`))
-    return {
-      signal: new AbortController().signal,
-      abort: () => {},
-    }
-  }
-
-  const app = window.go?.desktop?.App
-  if (!app?.StartStream || !app?.CancelStream) {
-    options.onError?.(new Error('Wails runtime 未就绪'))
     return {
       signal: new AbortController().signal,
       abort: () => {},
@@ -39,44 +41,44 @@ export function wailsSSEStream(options: SSEOptions): SSEStreamHandle {
   const doneEvent = `sse:${sessionId}:done`
   const errorEvent = `sse:${sessionId}:error`
 
-  const onEvent = (window as any).runtime?.EventsOn as
-    | ((name: string, cb: (...args: any[]) => void) => void)
-    | undefined
-
-  const offEvent = (window as any).runtime?.EventsOff as
-    | ((name: string, ...cb: Array<(...args: any[]) => void>) => void)
-    | undefined
-
-  const dataCb = (data: string) => {
+  const dataCb = (event: { data?: unknown }) => {
+    const data = event.data
     if (data === '[DONE]') {
       options.onDone?.()
       return
     }
-    options.onMessage(data)
+    options.onMessage(typeof data === 'string' ? data : JSON.stringify(data))
   }
-  const doneCb = () => options.onDone?.()
-  const errorCb = (err: string) => options.onError?.(new Error(err))
+  const doneCb = (_event?: unknown) => options.onDone?.()
+  const errorCb = (event: { data?: unknown }) =>
+    options.onError?.(new Error(typeof event.data === 'string' ? event.data : 'SSE 错误'))
 
-  onEvent?.(eventName, dataCb)
-  onEvent?.(doneEvent, doneCb)
-  onEvent?.(errorEvent, errorCb)
+  const cancels: Array<() => void> = []
+  let cleanedUp = false
 
   const cleanup = () => {
-    offEvent?.(eventName, dataCb)
-    offEvent?.(doneEvent, doneCb)
-    offEvent?.(errorEvent, errorCb)
+    if (cleanedUp) return
+    cleanedUp = true
+    cancels.forEach((cancel) => cancel())
+    cancels.length = 0
   }
 
-  void app
-    .StartStream({
-      sessionId,
-      module: route.module,
-      method: route.method,
-      authorization: getAuthHeader(),
-      body: options.body,
-      params: options.url.includes('?')
-        ? Object.fromEntries(new URLSearchParams(options.url.split('?')[1]))
-        : undefined,
+  void ensureRuntime()
+    .then((runtime) => {
+      cancels.push(runtime.Events.On(eventName, dataCb))
+      cancels.push(runtime.Events.On(doneEvent, doneCb))
+      cancels.push(runtime.Events.On(errorEvent, errorCb))
+
+      return runtime.Call.ByName('main.DesktopApp.StartStream', {
+        sessionId,
+        module: route.module,
+        method: route.method,
+        authorization: getAuthHeader(),
+        body: options.body,
+        params: options.url.includes('?')
+          ? Object.fromEntries(new URLSearchParams(options.url.split('?')[1]))
+          : undefined,
+      })
     })
     .catch((err) => {
       cleanup()
@@ -84,16 +86,20 @@ export function wailsSSEStream(options: SSEOptions): SSEStreamHandle {
     })
 
   controller.signal.addEventListener('abort', () => {
-    void app.CancelStream?.(sessionId).catch(() => {})
-    cleanup()
+    void ensureRuntime()
+      .then((runtime) => runtime.Call.ByName('main.DesktopApp.CancelStream', sessionId))
+      .catch(() => {})
+      .finally(cleanup)
   })
 
   return {
     signal: controller.signal,
     abort: () => {
       controller.abort()
-      void app.CancelStream?.(sessionId).catch(() => {})
-      cleanup()
+      void ensureRuntime()
+        .then((runtime) => runtime.Call.ByName('main.DesktopApp.CancelStream', sessionId))
+        .catch(() => {})
+        .finally(cleanup)
     },
   }
 }

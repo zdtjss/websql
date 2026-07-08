@@ -417,7 +417,7 @@ func CreateExcelChart(sheet, chartType, chartTitle string, series []excelize.Cha
 			PrintObject:     boolPtr(true),
 			LockAspectRatio: true,
 		},
-		Title: titleRuns,
+		Title: excelize.ChartTitle{Paragraph: titleRuns},
 		Legend: excelize.ChartLegend{
 			Position:      "bottom",
 			ShowLegendKey: false,

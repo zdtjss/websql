@@ -5,11 +5,8 @@ package main
 import (
 	"log"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
 func main() {
@@ -22,38 +19,33 @@ func main() {
 	container := initDesktopContainer()
 	defer container.Close()
 
-	desktopApp := NewDesktopApp(container)
+	ns := notifications.New()
+	desktopApp := NewDesktopApp(container, ns)
 
-	err := wails.Run(&options.App{
+	app := application.New(application.Options{
+		Name:        "WebSql",
+		Description: "数据库管理工具桌面版",
+		Icon:        trayIconBytes,
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(frontendAssets),
+		},
+		Services: []application.Service{
+			application.NewService(desktopApp),
+			application.NewService(ns),
+		},
+	})
+
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "WebSql",
 		Width:     1280,
 		Height:    800,
 		MinWidth:  1024,
 		MinHeight: 700,
-		AssetServer: &assetserver.Options{
-			Assets: frontendAssets,
-		},
-		OnStartup:  desktopApp.OnStartup,
-		OnShutdown: desktopApp.OnShutdown,
-		Bind: []interface{}{
-			desktopApp,
-		},
-		Windows: &windows.Options{
-			WebviewIsTransparent: false,
-			WindowIsTranslucent:  false,
-			Theme:                windows.SystemDefault,
-		},
-		Mac: &mac.Options{
-			TitleBar:             mac.TitleBarDefault(),
-			WebviewIsTransparent: true,
-			WindowIsTranslucent:  false,
-			About: &mac.AboutInfo{
-				Title:   "WebSql",
-				Message: "数据库管理工具桌面版",
-			},
-		},
 	})
-	if err != nil {
-		log.Fatalf("[Desktop] Wails 启动失败: %v", err)
+
+	setupTray(app)
+
+	if err := app.Run(); err != nil {
+		log.Fatalf("[Desktop] Wails v3 启动失败: %v", err)
 	}
 }

@@ -41,7 +41,7 @@ export function useLogin(): UseLoginResult {
       const resp = await loginByPassword({ name, password })
       if (resp.data.code !== 200) {
         error.value = resp.data.msg || '登录失败'
-        ElMessage.error(error.value)
+        ElMessage.error(error.value ?? '操作失败')
         return null
       }
       const token = (resp.headers as AxiosHeaders).get('authentication') as string
@@ -63,7 +63,7 @@ export function useLogin(): UseLoginResult {
       const resp = await loginByTokenApi(token)
       if (resp.data.code !== 200) {
         error.value = resp.data.msg || '登录失败'
-        ElMessage.error(error.value)
+        ElMessage.error(error.value ?? '操作失败')
         return null
       }
       const data = resp.data.data
@@ -91,7 +91,7 @@ export function useLogin(): UseLoginResult {
       const resp = await loginByBioApi(authentication.id)
       if (resp.data.code !== 200) {
         error.value = resp.data.msg || '登录失败'
-        ElMessage.error(error.value)
+        ElMessage.error(error.value ?? '操作失败')
         return null
       }
       const token = (resp.headers as AxiosHeaders).get('authentication') as string

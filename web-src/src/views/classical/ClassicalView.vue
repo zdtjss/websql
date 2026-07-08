@@ -24,13 +24,13 @@
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'" :aria-label="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
-              <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置" aria-label="系统设置">
+              <el-button v-if="currentUser.isAdmin || !isRemote" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置" aria-label="系统设置">
                 <el-icon :size="14"><Setting /></el-icon>
               </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录" aria-label="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
-              <el-button v-if="loginSucc" text size="small" class="theme-toggle-btn" @click="logout" title="退出登录" aria-label="退出登录">
+              <el-button v-if="loginSucc && isRemote" text size="small" class="theme-toggle-btn" @click="logout" title="退出登录" aria-label="退出登录">
                 <el-icon :size="14"><SwitchButton /></el-icon>
               </el-button>
             </div>

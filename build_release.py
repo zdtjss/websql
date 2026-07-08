@@ -26,6 +26,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_SRC_DIR = os.path.join(PROJECT_ROOT, "web-src")
 DIST_DIR = os.path.join(WEB_SRC_DIR, "dist")
 SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
+AGENTS_MD_FILE = os.path.join(PROJECT_ROOT, "Agents.md")
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
 SQLITE_INIT_SQL = os.path.join(PROJECT_ROOT, "sqlite3-init.sql")
 MYSQL_INIT_SQL = os.path.join(PROJECT_ROOT, "mysql-init.sql")
@@ -46,10 +47,9 @@ EXCLUDE_DIRS = {"__pycache__", ".git", "node_modules"}
 
 STARTUP_BAT_CONTENT = "\n".join([
     "@ECHO OFF",
-    '%1 start mshta vbscript:createobject("wscript.shell").run("""%~0"" ::",0)(window.close)&&exit',
     'cd /d "%~dp0"',
     "tskill WebSql >nul 2>&1",
-    'start /b "" WebSql.exe',
+    'start "" /min WebSql.exe',
 ]) + "\n"
 
 STARTUP_SH_CONTENT = """\
@@ -179,6 +179,9 @@ def create_package(target, binary_path, db_path):
                     file_path = os.path.join(root, f)
                     arcname = os.path.join("skills", os.path.relpath(file_path, SKILLS_DIR))
                     zipf.write(file_path, arcname)
+
+        if os.path.isfile(AGENTS_MD_FILE):
+            zipf.write(AGENTS_MD_FILE, "Agents.md")
 
         if os.path.isfile(CONFIG_FILE):
             zipf.write(CONFIG_FILE, "config.json")

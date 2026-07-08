@@ -5,22 +5,15 @@ import { lookupRoute } from './route-table'
 import { wailsSSEStream } from './adapter-sse-wails'
 import type { SSEOptions, SSEStreamHandle } from './sse'
 
-declare global {
-  interface Window {
-    go?: {
-      desktop?: {
-        App?: {
-          Invoke?: (req: unknown) => Promise<unknown>
-          InvokeBlob?: (req: unknown) => Promise<{ path: string; filename: string; mime: string }>
-          StartStream?: (req: unknown) => Promise<void>
-          CancelStream?: (sessionId: string) => Promise<void>
-          OpenFileDialog?: (filters?: unknown) => Promise<string>
-          SaveFileDialog?: (filename?: string) => Promise<string>
-          WriteFile?: (path: string, data: unknown) => Promise<void>
-        }
-      }
-    }
+type WailsRuntime = typeof import('@wailsio/runtime')
+
+let _runtime: WailsRuntime | null = null
+
+async function ensureRuntime(): Promise<WailsRuntime> {
+  if (!_runtime) {
+    _runtime = await import('@wailsio/runtime')
   }
+  return _runtime
 }
 
 function getAuthHeader(): string {
@@ -53,11 +46,7 @@ async function invokeWails<T>(config: RequestConfig): Promise<AxiosResponse<ApiR
     throw new Error(`桌面模式不支持的路由: ${config.url}`)
   }
 
-  const app = window.go?.desktop?.App
-  if (!app?.Invoke) {
-    throw new Error('Wails runtime 未就绪')
-  }
-
+  const runtime = await ensureRuntime()
   const req: WailsInvokeRequest = {
     module: route.module,
     method: route.method,
@@ -66,8 +55,8 @@ async function invokeWails<T>(config: RequestConfig): Promise<AxiosResponse<ApiR
     body: config.body,
   }
 
-  const raw = await app.Invoke(req)
-  const result = (raw as ApiResponse<T>) ?? { code: 500, msg: '空响应' }
+  const raw = (await runtime.Call.ByName('main.DesktopApp.Invoke', req)) as ApiResponse<T>
+  const result = raw ?? { code: 500, msg: '空响应' }
   return buildAxiosResponse<ApiResponse<T>>(result)
 }
 
@@ -77,11 +66,7 @@ async function invokeWailsBlob(config: RequestConfig): Promise<AxiosResponse<Blo
     throw new Error(`桌面模式不支持的路由: ${config.url}`)
   }
 
-  const app = window.go?.desktop?.App
-  if (!app?.InvokeBlob || !app?.SaveFileDialog) {
-    throw new Error('Wails runtime 未就绪')
-  }
-
+  const runtime = await ensureRuntime()
   const req: WailsInvokeRequest = {
     module: route.module,
     method: route.method,
@@ -90,14 +75,14 @@ async function invokeWailsBlob(config: RequestConfig): Promise<AxiosResponse<Blo
     body: config.body,
   }
 
-  const result = await app.InvokeBlob(req)
-  const savePath = await app.SaveFileDialog(result.filename)
+  const result = (await runtime.Call.ByName('main.DesktopApp.InvokeBlob', req)) as {
+    path: string
+    filename: string
+    mime: string
+  }
+  const savePath = (await runtime.Call.ByName('main.DesktopApp.SaveFileDialog', result.filename)) as string
   if (savePath) {
-    const fileData = (await app.Invoke({
-      module: 'fileio',
-      method: 'ReadFile',
-      params: { path: result.path },
-    })) as { data: number[] }
+    const fileData = (await runtime.Call.ByName('main.DesktopApp.ReadFile', { path: result.path })) as { data: number[] }
     const bytes = new Uint8Array(fileData.data ?? [])
     const blob = new Blob([bytes], { type: result.mime })
     return buildAxiosResponse<Blob>(blob)

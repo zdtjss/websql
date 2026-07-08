@@ -518,7 +518,7 @@
               <component :is="currentTheme === 'light' ? Moon : Sunny" />
             </el-icon>
           </el-button>
-          <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
+          <el-button v-if="currentUser.isAdmin || !isRemote" circle size="small" @click="openSystemManagement" title="系统管理">
             <el-icon>
               <Setting />
             </el-icon>
@@ -3674,7 +3674,7 @@ onMounted(() => {
       })
     }
   })
-  if (loginSucc.value) {
+  if (loginSucc.value || !isRemote.value) {
     checkClassicViewPermission()
   }
   document.addEventListener('keydown', handleEscKey)

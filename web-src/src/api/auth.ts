@@ -1,5 +1,6 @@
 import { api } from './adapter'
 import type { AxiosResponse } from 'axios'
+import type { ApiResponse } from './adapter'
 
 /** 通用接口响应结构（从 adapter 重新导出，保持向后兼容） */
 export type { ApiResponse } from './adapter'
