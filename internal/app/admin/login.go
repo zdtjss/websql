@@ -245,3 +245,38 @@ func isUserAdmin(userId string) bool {
 func formatStoreKey(key string) string {
 	return fmt.Sprintf("USER:POWER:%s", key)
 }
+
+// FormatStoreKey 导出版本，供 app 包本地模式自动登录使用
+func FormatStoreKey(key string) string {
+	return formatStoreKey(key)
+}
+
+// LocalAutoToken 本地/桌面模式自动登录使用的固定 token。
+// 定义于 admin 包（底层），供 app 包与 middleware 复用，避免魔法字符串。
+const LocalAutoToken = "LOCAL_AUTO_SESSION_TOKEN"
+
+// EnsureLocalSession 重新查询 local 用户并把会话注入缓存（store）。
+// 用于：
+//   - 本地/桌面模式启动初始化（app.EnsureLocalUser 委托调用）
+//   - 本地会话过期后的自愈（middleware 在 401 前调用）
+//
+// 返回 true 表示会话已成功注入。仅应在 !IsRemote 模式下调用。
+func EnsureLocalSession() bool {
+	db := getDB()
+	if db == nil {
+		return false
+	}
+
+	var user User
+	err := db.Get(&user, "SELECT id, login_name, name, pwd, bio FROM t_user WHERE login_name = 'local'")
+	if err != nil || user.Id == "" {
+		return false
+	}
+
+	power := findUserPower(user.Id)
+	userPower := UserPower{UserId: user.Id, Power: power}
+	store.Add(formatStoreKey(LocalAutoToken), userPower)
+	user.Pwd = ""
+	store.Add(formatStoreKey(LocalAutoToken+"_user"), user)
+	return true
+}

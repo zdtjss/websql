@@ -76,6 +76,9 @@ func main() {
 	container := app.NewContainer()
 	defer container.Close()
 
+	// 本地模式自动登录 local 用户
+	app.EnsureLocalUser()
+
 	// https 默认端口 443
 	if *isHttps && *port == "80" {
 		*port = "443"

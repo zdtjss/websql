@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS t_user (
 -- 管理员id一定是 825683877312860160 密码是 1
 INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860160', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
 
+-- local 用户，用于本地/桌面模式自动登录，密码是 1，属于 admin 角色
+INSERT INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860161', 'local', 'local', '7e2e1f2e1eb71a6f7915a96201237ff0','');
+
 CREATE TABLE IF NOT EXISTS t_user_role (
 	id TEXT PRIMARY KEY,
 	user_id TEXT,
@@ -54,6 +57,9 @@ CREATE TABLE IF NOT EXISTS t_user_role (
 );
 
 INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('825683877367386112', '825683877312860160', '825683877266722816');
+
+-- local 用户绑定 admin 角色
+INSERT INTO "t_user_role" ("id", "user_id", "role_id") VALUES ('825683877367386113', '825683877312860161', '825683877266722816');
 
 CREATE INDEX IF NOT EXISTS idx_t_user_role_user_id ON t_user_role(user_id);
 CREATE INDEX IF NOT EXISTS idx_t_user_role_role_id ON t_user_role(role_id);

@@ -241,7 +241,15 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/snippet/tags", snippet.Tags)
 
 	routerGroup.GET("/sysMode", func(c *gin.Context) {
-		jsonutil.WriteJson(c.Writer, map[string]bool{"isRemote": config.Cfg.IsRemote})
+		localMode := !config.Cfg.IsRemote || config.Cfg.IsDesktop
+		resp := map[string]any{
+			"isRemote":  config.Cfg.IsRemote,
+			"isDesktop": config.Cfg.IsDesktop,
+		}
+		if localMode {
+			resp["localToken"] = LocalAutoToken
+		}
+		jsonutil.WriteJson(c.Writer, resp)
 	})
 
 	routerGroup.GET("/healthCheck", func(c *gin.Context) {

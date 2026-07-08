@@ -1,0 +1,18 @@
+{
+  "fixed": {
+    "file_version": "1.0.0.0",
+    "product_version": "1.0.0.0"
+  },
+  "info": {
+    "0409": {
+      "CompanyName": "WebSQL",
+      "FileDescription": "WebSQL Desktop - AI 驱动的数据库管理工具",
+      "FileVersion": "1.0.0.0",
+      "InternalName": "WebSQL",
+      "LegalCopyright": "Copyright (c) 2024 WebSQL",
+      "OriginalFilename": "WebSQL.exe",
+      "ProductName": "WebSQL Desktop",
+      "ProductVersion": "1.0.0.0"
+    }
+  }
+}

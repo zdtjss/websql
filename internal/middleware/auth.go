@@ -20,6 +20,12 @@ func getTokenFromRequest(c *gin.Context) string {
 	return authorization
 }
 
+// isLocalMode 本地/桌面模式判定：IsDesktop 为权威判据，即使 IsRemote 误为 true，
+// 桌面模式也强制走本地免登录。避免配置覆盖类 bug 再次导致弹登录框。
+func isLocalMode() bool {
+	return config.Cfg != nil && (!config.Cfg.IsRemote || config.Cfg.IsDesktop)
+}
+
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
@@ -47,6 +53,11 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		authorization := getTokenFromRequest(c)
 
+		// 本地/桌面模式：如果请求没有携带 token，自动使用本地固定 token（兜底初始化时序竞争）
+		if authorization == "" && isLocalMode() {
+			authorization = admin.LocalAutoToken
+		}
+
 		if authorization == "" {
 			c.Abort()
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -57,6 +68,13 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		user, userPower := admin.GetCachedUserAndPower(authorization)
+		// 本地/桌面模式自愈：本地会话可能因长时间空闲超过 store TTL 而失效，
+		// 此时重新注入 local 会话后再取一次，避免桌面模式偶发 401。
+		if (user == nil || user.Id == "") && isLocalMode() && authorization == admin.LocalAutoToken {
+			if admin.EnsureLocalSession() {
+				user, userPower = admin.GetCachedUserAndPower(authorization)
+			}
+		}
 		if user == nil || user.Id == "" {
 			c.Abort()
 			c.JSON(http.StatusUnauthorized, gin.H{

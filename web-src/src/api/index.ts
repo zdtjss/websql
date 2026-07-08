@@ -42,6 +42,10 @@ http.interceptors.response.use(
     }
     const { code, msg } = response.data
     if (code === 401) {
+      // 本地/桌面模式不触发登录过期
+      if (sessionStorage.getItem("isRemote") !== "true") {
+        return response
+      }
       const isLoginExpired = !!sessionStorage.getItem('authentication')
       sessionStorage.removeItem('authentication')
       sessionStorage.removeItem('currentUser')
@@ -71,6 +75,10 @@ http.interceptors.response.use(
       const status = error.response.status
 
       if (status === 401) {
+        // 本地/桌面模式不触发登录过期
+        if (sessionStorage.getItem("isRemote") !== "true") {
+          return Promise.reject(error)
+        }
         const isLoginExpired = !!sessionStorage.getItem('authentication')
         const msg = error.response.data?.msg || '登录已过期，请重新登录'
         sessionStorage.removeItem('authentication')

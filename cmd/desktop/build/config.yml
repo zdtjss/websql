@@ -1,0 +1,10 @@
+name: WebSQL
+outputfilename: WebSQL
+author:
+  name: WebSQL Team
+info:
+  companyName: WebSQL
+  productName: WebSQL
+  productVersion: "1.0.0"
+  copyright: "Copyright (c) 2024 WebSQL"
+  comments: "AI 驱动的数据库管理工具"

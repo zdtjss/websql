@@ -2,10 +2,11 @@ package config
 
 import (
 	"encoding/json"
-	logutils "websql/internal/logger"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	logutils "websql/internal/logger"
 )
 
 var (
@@ -22,6 +23,50 @@ func ReadConfig() *Config {
 	err = json.Unmarshal(fileData, &config)
 	logutils.PanicErr(err)
 	return &config
+}
+
+// TryReadConfig 与 ReadConfig 等价但找不到配置文件时返回 error 而非 panic。
+// 用于桌面 dev 模式等可执行文件与 config.json 不在同一目录层级的场景。
+func TryReadConfig() (*Config, error) {
+	configFile, err := TryFindFile("config.json")
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("使用配置文件 %s", configFile)
+	fileData, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	if err := json.Unmarshal(fileData, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// TryFindFile 与 FindFile 等价但查找失败返回 error 而非 panic。
+// 相比 FindFile 额外查找可执行文件目录下的 bin/ 子目录与当前工作目录，
+// 以兼容桌面 dev 模式（二进制位于 cmd/desktop/，而 config.json 位于 cmd/desktop/bin/）。
+func TryFindFile(fileName string) (string, error) {
+	exec, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	execDir := filepath.Dir(exec)
+	candidates := []string{
+		filepath.Join(execDir, "..", fileName), // 生产模式：exe 在 bin/，config 在父目录
+		filepath.Join(execDir, fileName),       // exe 同级
+		filepath.Join(execDir, "bin", fileName), // dev 模式：exe 在 cmd/desktop/，config 在 bin/
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, fileName)) // 工作目录
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("配置文件 %s 未找到（已查找: %v）", fileName, candidates)
 }
 
 func ReadSql(fileName string) string {
@@ -47,7 +92,9 @@ func FindFile(fileName string) string {
 type Config struct {
 	// true：远程模式，有严格的权限管理；false 本地模式，没有权限管?
 	IsRemote bool `json:"isRemote"`
-	DB struct {
+	// true：桌面模式（Wails），由桌面入口设置
+	IsDesktop bool `json:"-"`
+	DB        struct {
 		DriverName     string `json:"type"`
 		DataSourceName string `json:"dsn"`
 		MaxOpenConns   int    `json:"maxOpenConns"`
@@ -70,7 +117,7 @@ type Config struct {
 		// 留空时回退到内置默认密钥（仅用于兼容存量数据，不安全，生产环境务必配置）。
 		AESKey string `json:"aesKey"`
 	} `json:"security"`
-	AI         struct {
+	AI struct {
 		Provider       string  `json:"provider"`
 		BaseURL        string  `json:"baseUrl"`
 		Model          string  `json:"model"`

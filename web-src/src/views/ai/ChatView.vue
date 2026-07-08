@@ -500,7 +500,7 @@
                   <Promotion />
                 </el-icon>
               </el-button>
-              <router-link v-if="canUseClassicView" to="/classical" class="switch-view-link" title="经典视图">
+              <router-link v-if="canUseClassicView || !isRemote" to="/classical" class="switch-view-link" title="经典视图">
                 <el-icon>
                   <Switch />
                 </el-icon>
@@ -528,7 +528,7 @@
               <User />
             </el-icon>
           </el-button>
-          <el-button v-else circle size="small" @click="logout" title="退出登录">
+          <el-button v-if="loginSucc && isRemote" circle size="small" @click="logout" title="退出登录">
             <el-icon>
               <SwitchButton />
             </el-icon>
@@ -922,7 +922,7 @@ async function loadConnList() {
     })
 
     if (!resp.ok) {
-      if (resp.status === 401) {
+      if (resp.status === 401 && isRemote.value) {
         handleSessionExpired()
         return
       }
@@ -3305,6 +3305,11 @@ function showLoginDialog() {
 }
 
 function handleSessionExpired() {
+  // 桌面/本地模式：会话过期时静默重试本地登录，绝不弹登录框（后端中间件亦会自愈）
+  if (!isRemote.value || sessionStorage.getItem('isDesktop') === 'true') {
+    getSysModel()
+    return
+  }
   loginSucc.value = false
   canUseClassicView.value = false
   sessionStorage.removeItem('authentication')
@@ -3364,13 +3369,24 @@ function openSystemManagement() {
 }
 
 function getSysModel() {
-  getSysMode().then((resp) => {
-    isRemote.value = resp.data?.isRemote ?? resp.data?.data?.isRemote ?? false
+  return getSysMode().then((resp) => {
+    const data = resp.data?.data ?? resp.data ?? {}
+    isRemote.value = data.isRemote ?? false
     sessionStorage.setItem("isRemote", isRemote.value.toString())
-    if (!loginSucc.value && isRemote.value) {
+    // 桌面/本地模式标记
+    const isDesktop = data.isDesktop ?? false
+    sessionStorage.setItem("isDesktop", isDesktop.toString())
+    // 本地/桌面模式自动登录（isDesktop 为权威判据，即使 isRemote 误为 true 也静默登录）
+    if ((isDesktop || !isRemote.value) && data.localToken && !loginSucc.value) {
+      sessionStorage.setItem("authentication", data.localToken)
+      currentUser.value = { id: "local", name: "local", isAdmin: true }
+      sessionStorage.setItem("currentUser", JSON.stringify(currentUser.value))
+      loginSucc.value = true
+      canUseClassicView.value = true
+    } else if (!loginSucc.value && isRemote.value && !isDesktop) {
       loginDialogVisible.value = true
     }
-  })
+  }).catch(() => {})
 }
 
 // --- 历史会话管理 ---
@@ -3650,14 +3666,15 @@ watch(msgContainer, (newEl, oldEl) => {
   }
 }, { flush: 'post' })
 
-onMounted(() => {
+onMounted(async () => {
   const { initTheme } = useTheme()
   initTheme()
   initHeavyDeps()
   preloadHeavyDeps()
   setupMermaidObserver()
   setSendToAIHandler(handlePromptSendToAI)
-  getSysModel()
+  // 先获取系统模式并完成自动登录（本地/桌面模式），再发后续请求
+  await getSysModel()
   loadModelList()
   loadConnList().then(() => {
     if (loginSucc.value || !isRemote.value) {

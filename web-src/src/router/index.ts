@@ -63,6 +63,10 @@ async function getDefaultHomepage(): Promise<string> {
 }
 
 async function checkClassicViewPermission(): Promise<boolean> {
+  // 本地/桌面模式直接允许
+  if (sessionStorage.getItem("isRemote") !== "true") {
+    return true
+  }
   try {
     const auth = sessionStorage.getItem('authentication') || ''
     const apiBase = import.meta.env.VITE_API_URL || ''

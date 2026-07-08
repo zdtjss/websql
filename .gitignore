@@ -34,3 +34,9 @@ nway.sqlite3**.db**
 
 node_modules/
 .idea/modules.xml
+
+# Desktop build artifacts
+cmd/desktop/frontend/
+cmd/desktop/bin/
+cmd/desktop/*.syso
+release-desktop/

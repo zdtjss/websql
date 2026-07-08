@@ -650,6 +650,12 @@ func UserPermissions(c *gin.Context) {
 }
 
 func CanUseClassicView(c *gin.Context) {
+	// 本地/桌面模式直接允许
+	if !config.Cfg.IsRemote {
+		response.WriteOK(c, gin.H{"allowed": true})
+		return
+	}
+
 	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
 	if user == nil {
@@ -676,6 +682,12 @@ func CanUseClassicView(c *gin.Context) {
 }
 
 func CanModifyData(c *gin.Context) {
+	// 本地/桌面模式直接允许
+	if !config.Cfg.IsRemote {
+		response.WriteOK(c, gin.H{"allowed": true})
+		return
+	}
+
 	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
 	if user == nil {

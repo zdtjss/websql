@@ -261,6 +261,11 @@ func findUserPower(userId string) []string {
 	return defaultUserRepo.FindUserPower(userId)
 }
 
+// FindUserPower 导出版本，供 app 包本地模式自动登录使用
+func FindUserPower(userId string) []string {
+	return findUserPower(userId)
+}
+
 func findUserPowerDetails(userId string) []*PowerDetail {
 	ensureDefaultUser()
 	// 优先走缓存，避免每次权限检查都查询 t_power 表

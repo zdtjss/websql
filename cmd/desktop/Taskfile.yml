@@ -1,0 +1,89 @@
+version: '3'
+
+vars:
+  APP_NAME: "WebSQL"
+  BIN_DIR: "bin"
+  VERSIONINFO_DIR: "build/windows"
+  FRONTEND_DIR: "../../web-src"
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  install:frontend:deps:
+    dir: "{{.FRONTEND_DIR}}"
+    cmds:
+      - npm install
+    sources:
+      - package.json
+    generates:
+      - node_modules/.package-lock.json
+
+  build:frontend:
+    dir: "{{.FRONTEND_DIR}}"
+    deps:
+      - install:frontend:deps
+    cmds:
+      - npm run build
+    sources:
+      - src/**/*
+      - index.html
+      - vite.config.ts
+    generates:
+      - dist/**/*
+
+  copy:frontend:
+    deps:
+      - build:frontend
+    cmds:
+      - cmd: powershell -Command "if (Test-Path frontend) { Remove-Item -Recurse -Force frontend }"
+      - cmd: powershell -Command "Copy-Item -Recurse '{{.FRONTEND_DIR}}/dist' 'frontend'"
+    sources:
+      - "{{.FRONTEND_DIR}}/dist/**/*"
+    generates:
+      - frontend/**/*
+
+  generate:icons:
+    cmds:
+      - wails3 generate icons -input ../../web-src/public/favicon.ico -output build
+    sources:
+      - ../../web-src/public/favicon.ico
+
+  generate:syso:
+    dir: .
+    cmds:
+      - wails3 generate syso -arch amd64 -icon ../../web-src/public/favicon.ico -manifest build/windows/wails.exe.manifest -info build/windows/info.json -out desktop.syso
+    sources:
+      - build/windows/info.json
+      - build/windows/wails.exe.manifest
+    generates:
+      - desktop.syso
+
+  build:
+    deps:
+      - copy:frontend
+      - generate:syso
+    cmds:
+      - go build -ldflags="-s -w -H windowsgui" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .
+    env:
+      CGO_ENABLED: "1"
+
+  build:debug:
+    deps:
+      - copy:frontend
+      - generate:syso
+    cmds:
+      - go build -gcflags=all="-N -l" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .
+    env:
+      CGO_ENABLED: "1"
+
+  dev:
+    cmds:
+      - wails3 dev
+
+  package:
+    deps:
+      - build
+    cmds:
+      - echo "Package complete. Binary at {{.BIN_DIR}}/{{.APP_NAME}}.exe"

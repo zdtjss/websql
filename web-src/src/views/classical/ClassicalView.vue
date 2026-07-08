@@ -30,7 +30,7 @@
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录" aria-label="登录">
                 <el-icon :size="14"><User /></el-icon>
               </el-button>
-              <el-button v-if="loginSucc" text size="small" class="theme-toggle-btn" @click="logout" title="退出登录" aria-label="退出登录">
+              <el-button v-if="loginSucc && isRemote" text size="small" class="theme-toggle-btn" @click="logout" title="退出登录" aria-label="退出登录">
                 <el-icon :size="14"><SwitchButton /></el-icon>
               </el-button>
             </div>
@@ -423,11 +423,10 @@ function submitChangePassword() {
 
 const { currentTheme, toggleTheme, initTheme } = useTheme()
 
-onMounted(() => {
+onMounted(async () => {
   initTheme()
-  if (sessionStorage.getItem("isRemote") === null) {
-    getSysModel()
-  }
+  // 始终刷新系统模式（幂等）：bootstrap 已在挂载前写入 sessionStorage，此处作兜底刷新
+  await getSysModel()
   if (!treeLoading.value) {
     refreshTree()
   }
@@ -451,6 +450,11 @@ onMounted(() => {
 
   // 监听会话过期事件
   window.addEventListener('session-expired', (e) => {
+    // 桌面/本地模式：静默重试本地登录，不弹框（后端中间件亦会自愈）
+    if (!isRemote.value || sessionStorage.getItem('isDesktop') === 'true') {
+      getSysModel()
+      return
+    }
     const msg = e.detail?.message
     if (msg) {
       ElMessage.warning(msg)
@@ -872,12 +876,21 @@ function logout() {
 }
 
 function getSysModel() {
-  getSysMode().then((resp) => {
-    isRemote.value = resp.data.data.isRemote
-    if (!loginSucc.value && isRemote.value) {
+  return getSysMode().then((resp) => {
+    const data = resp.data?.data ?? resp.data ?? {}
+    isRemote.value = data.isRemote ?? false
+    sessionStorage.setItem("isRemote", isRemote.value.toString())
+    const isDesktop = data.isDesktop ?? false
+    sessionStorage.setItem("isDesktop", isDesktop.toString())
+    if ((isDesktop || !isRemote.value) && data.localToken && !loginSucc.value) {
+      sessionStorage.setItem("authentication", data.localToken)
+      currentUser.value = { id: "local", name: "local", isAdmin: true }
+      sessionStorage.setItem("currentUser", JSON.stringify(currentUser.value))
+      loginSucc.value = true
+    } else if (!loginSucc.value && isRemote.value && !isDesktop) {
       toLogin()
     }
-  })
+  }).catch(() => {})
 }
 
 function refreshNode() {
