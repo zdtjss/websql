@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"websql/internal/app/conn"
-	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
@@ -491,8 +490,4 @@ func clampStrLen(maxLen int, s string) int {
 		return maxLen
 	}
 	return len(s)
-}
-
-func init() {
-	_ = config.Cfg
 }

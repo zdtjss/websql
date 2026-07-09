@@ -145,7 +145,7 @@ func (s *ConnService) ListUserConn(userPower *admin.UserPower) ([]UserConnDTO, e
 
 // FilterTablesByPermission 按权限过滤表列表
 func (s *ConnService) FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return tables
 	}
 	if userPower == nil || len(userPower.Power) == 0 {
@@ -178,7 +178,7 @@ func (s *ConnService) FilterTablesByPermission(tables []*Table, connId, schema s
 // GetConn 获取数据库连接（带权限校验）
 func (s *ConnService) GetConn(id string, authorization string) *sqlx.DB {
 	userPower := admin.GetUserPower(authorization)
-	if config.Cfg.IsRemote {
+	if config.Get().IsRemote {
 		if !admin.CheckConnAccess(userPower, id) {
 			logger.PrintErrf("无权访问连接: %s", nil, id)
 			return nil

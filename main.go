@@ -21,6 +21,8 @@ import (
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/https"
+	logutils "websql/internal/logger"
+	"websql/internal/migration"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
 
@@ -43,9 +45,11 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 
+	// 日志按天轮转，最早初始化，确保后续所有日志都落盘到轮转文件
+	logutils.Init("./logs", "websql", 7)
+
 	port = flag.String("port", "80", "")
 	isHttps = flag.Bool("https", false, "")
-	initSqlFile := flag.String("sql", "", "")
 	flag.Parse()
 
 	router.MaxMultipartMemory = 30 * 1024 * 1024
@@ -53,8 +57,9 @@ func main() {
 
 	database.InitMngtDbConn()
 
-	if *initSqlFile != "" {
-		database.InitDB(*initSqlFile)
+	// SQLite 管理库自动迁移；MySQL/MariaDB 管理库跳过，由系统管理员手动升级
+	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, os.DirFS("./migrations/sqlite")); err != nil {
+		log.Fatalf("[Main] 管理库迁移失败: %v", err)
 	}
 
 	// 从数据库加载系统配置（覆盖配置文件中的配置）
@@ -68,8 +73,8 @@ func main() {
 	// 启动后台指标采集任务（每 60 秒采集一次，供历史趋势查询）
 	monitor.StartMetricCollector()
 
-	if config.Cfg.IsRemote && strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
-		store.InitRedis()
+	if config.Get().IsRemote && strings.TrimSpace(config.Get().Redis.Addr) != "" {
+		store.InitRedis(config.Get())
 	}
 
 	// 构建应用依赖容器（聚合已有全局变量，供后续 Handler/Service 使用）

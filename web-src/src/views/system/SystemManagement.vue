@@ -3,7 +3,7 @@
     <!-- 浮动返回按钮：便捷美观，桌面/网页模式通用 -->
     <el-tooltip content="返回上一页" placement="right" :show-after="300">
       <button class="back-fab" @click="goBack" aria-label="返回上一页">
-        <el-icon :size="18"><ArrowLeft /></el-icon>
+        <el-icon :size="16"><ArrowLeft /></el-icon>
       </button>
     </el-tooltip>
     <!-- 主内容区 -->

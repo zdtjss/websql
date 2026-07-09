@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { MySQL, PLSQL, StandardSQL } from '@codemirror/lang-sql'
+import { useStorage } from '@/composables/useStorage'
 
 interface ColumnInfo {
     label: string
@@ -22,6 +23,7 @@ interface SchemaEntry {
 type SchemaProxy = Record<string, SchemaEntry>
 
 export const useDbSchemaStore = defineStore('dbSchema', () => {
+    const storage = useStorage()
     const callback = ref<((property: string) => void)[]>([])
     const schemaProxy = ref<SchemaProxy>(
         new Proxy(JSON.parse(localStorage.getItem("go-web-sql-dbSchemaProxy") || "{}") as SchemaProxy, {
@@ -58,7 +60,7 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
         })
         schemaProxy.value[schema] = { tables: tableObj, dbType: dbType, connId: connId }
         try {
-            localStorage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(schemaProxy.value))
+            storage.setItem("go-web-sql-dbSchemaProxy", JSON.stringify(schemaProxy.value))
         } catch (e) {
             console.warn('dbSchema cache save failed', e)
         }
@@ -107,7 +109,7 @@ export const useDbSchemaStore = defineStore('dbSchema', () => {
     }
 
     function cleanCache() {
-        localStorage.removeItem("go-web-sql-dbSchemaProxy")
+        storage.removeItem("go-web-sql-dbSchemaProxy")
     }
 
     return {

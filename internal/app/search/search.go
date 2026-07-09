@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"websql/internal/app/conn"
-	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
@@ -502,8 +501,4 @@ func parseSearchInt(s string) int {
 		return 50
 	}
 	return n
-}
-
-func init() {
-	_ = config.Cfg
 }

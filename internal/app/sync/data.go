@@ -110,7 +110,7 @@ func CompareData(c *gin.Context) {
 	}
 
 	// 权限校验：检查用户对源表和目标表的读权限
-	if config.Cfg.IsRemote {
+	if config.Get().IsRemote {
 		permission.CheckTablePermission(connId1, schema1, table, authorization)
 		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
@@ -496,7 +496,7 @@ func ApplyDataSync(c *gin.Context) {
 	}
 
 	// 权限校验：对每条 SQL 做表级/列级权限检查
-	if config.Cfg.IsRemote {
+	if config.Get().IsRemote {
 		// 检查用户是否有写权限
 		if !permission.CheckUserCanModify(authorization) {
 			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行同步操作"})
@@ -653,7 +653,7 @@ func GenerateSyncSQL(c *gin.Context) {
 	}
 
 	// 权限校验
-	if config.Cfg.IsRemote {
+	if config.Get().IsRemote {
 		permission.CheckTablePermission(connId1, schema1, table, authorization)
 		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
@@ -1203,8 +1203,4 @@ func generateChunkSQL(addedRows []map[string]any, deletedRows []map[string]any, 
 			qi.col, tgtSchema, qi.colR, qi.col, table, qi.colR, strings.Join(whereParts, " AND ")))
 	}
 	return sqlBuf.String()
-}
-
-func init() {
-	_ = config.Cfg
 }

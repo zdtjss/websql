@@ -44,6 +44,14 @@ tasks:
     generates:
       - frontend/**/*
 
+  copy:migrations:
+    cmds:
+      - cmd: powershell -Command "if (!(Test-Path 'migrations/sqlite')) { New-Item -ItemType Directory -Path 'migrations/sqlite' -Force | Out-Null }; Copy-Item -Force '../../migrations/sqlite/*.sql' 'migrations/sqlite/'"
+    sources:
+      - ../../migrations/sqlite/*.sql
+    generates:
+      - migrations/sqlite/*.sql
+
   generate:icons:
     cmds:
       - wails3 generate icons -input ../../web-src/public/favicon.ico -output build
@@ -63,6 +71,7 @@ tasks:
   build:
     deps:
       - copy:frontend
+      - copy:migrations
       - generate:syso
     cmds:
       - go build -ldflags="-s -w -H windowsgui" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .
@@ -72,6 +81,7 @@ tasks:
   build:debug:
     deps:
       - copy:frontend
+      - copy:migrations
       - generate:syso
     cmds:
       - go build -gcflags=all="-N -l" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .

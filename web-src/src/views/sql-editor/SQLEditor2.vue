@@ -238,6 +238,7 @@ import { isCancel } from '@/api'
 import { execSQL, listBackupData, showBackupData as showBackupDataApi, type SQLResult } from '@/api/sql'
 import { canModifyData } from '@/api/auth'
 import { showTree } from '@/api/conn'
+import { useStorage } from '@/composables/useStorage'
 import excel from '@/utils/excel'
 import copyToClipboard from '@/utils/copy-to-clipboard'
 import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper.ts'
@@ -245,6 +246,7 @@ import { exportToCsv, exportToJson } from '@/utils/exportHelper.ts'
 import { useTheme } from '@/utils/useTheme.ts'
 
 const { currentTheme } = useTheme()
+const storage = useStorage()
 
 const lightEditorTheme = EditorView.theme({
     '&': { backgroundColor: '#ffffff', color: '#303133' },
@@ -2010,7 +2012,7 @@ function onKeyup(e: KeyboardEvent) {
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
         try {
-            localStorage.setItem(getSqlKey(), getEditorDoc())
+            storage.setItem(getSqlKey(), getEditorDoc())
         } catch (e) {
             // localStorage may be full, silently ignore
         }

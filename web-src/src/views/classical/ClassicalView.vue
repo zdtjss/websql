@@ -24,7 +24,7 @@
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'" :aria-label="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
               </el-button>
-              <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置" aria-label="系统设置">
+              <el-button v-if="currentUser.isAdmin || !isRemote" text size="small" class="theme-toggle-btn" @click="openSystemManagement" title="系统设置" aria-label="系统设置">
                 <el-icon :size="14"><Setting /></el-icon>
               </el-button>
               <el-button v-if="!loginSucc && showLoginBtn && isRemote" text size="small" class="sidebar-refresh-btn" @click="toLogin" title="登录" aria-label="登录">
@@ -255,7 +255,9 @@ import {
 } from '@/api/auth'
 import { getSystemConfig } from '@/api/system'
 import { useDbSchemaStore } from '@/stores/dbSchema'
+import { useStorage } from '@/composables/useStorage'
 const dbSchemaProxy = useDbSchemaStore()
+const storage = useStorage()
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { MagicStick, SwitchButton, User } from '@element-plus/icons-vue'
@@ -389,7 +391,7 @@ function navigateAfterLogin() {
   getSystemConfig().then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       const homepage = resp.data.data.defaultHomepage
-      localStorage.setItem('defaultHomepage', homepage)
+      storage.setItem('defaultHomepage', homepage)
       const currentPath = router.currentRoute.value.path
       if (homepage === 'classical' && currentPath !== '/classical') {
         router.push('/classical')
@@ -423,10 +425,11 @@ function submitChangePassword() {
 
 const { currentTheme, toggleTheme, initTheme } = useTheme()
 
-onMounted(async () => {
+onMounted(() => {
   initTheme()
-  // 始终刷新系统模式（幂等）：bootstrap 已在挂载前写入 sessionStorage，此处作兜底刷新
-  await getSysModel()
+  if (sessionStorage.getItem("isRemote") === null) {
+    getSysModel()
+  }
   if (!treeLoading.value) {
     refreshTree()
   }
@@ -450,11 +453,6 @@ onMounted(async () => {
 
   // 监听会话过期事件
   window.addEventListener('session-expired', (e) => {
-    // 桌面/本地模式：静默重试本地登录，不弹框（后端中间件亦会自愈）
-    if (!isRemote.value || sessionStorage.getItem('isDesktop') === 'true') {
-      getSysModel()
-      return
-    }
     const msg = e.detail?.message
     if (msg) {
       ElMessage.warning(msg)
@@ -529,11 +527,11 @@ const removeTab = (targetName) => {
 function restoreTab() {
   const waitStoredTabs = JSON.parse(JSON.stringify(editableTabs.value))
   waitStoredTabs.forEach(tab => { tab.component = null; delete tab.loading })
-  localStorage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
-  localStorage.setItem("editableTabsValue", editableTabsValue.value)
+  storage.setItem("editableTabs", JSON.stringify(waitStoredTabs))
+  storage.setItem("editableTabsValue", editableTabsValue.value)
   if (editableTabs.value.length == 0) {
-    localStorage.removeItem("editableTabs")
-    localStorage.removeItem("editableTabsValue")
+    storage.removeItem("editableTabs")
+    storage.removeItem("editableTabsValue")
     dbSchemaProxy.cleanCache()
   }
 }
@@ -756,7 +754,7 @@ async function register() {
 
   const parsed = parsers.parseRegistration(registration)
 
-  window.localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
+  storage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
   saveUserBioApi(parsed.credential.id).then((resp) => {
     if (resp.data.code == 200) {
@@ -876,21 +874,12 @@ function logout() {
 }
 
 function getSysModel() {
-  return getSysMode().then((resp) => {
-    const data = resp.data?.data ?? resp.data ?? {}
-    isRemote.value = data.isRemote ?? false
-    sessionStorage.setItem("isRemote", isRemote.value.toString())
-    const isDesktop = data.isDesktop ?? false
-    sessionStorage.setItem("isDesktop", isDesktop.toString())
-    if ((isDesktop || !isRemote.value) && data.localToken && !loginSucc.value) {
-      sessionStorage.setItem("authentication", data.localToken)
-      currentUser.value = { id: "local", name: "local", isAdmin: true }
-      sessionStorage.setItem("currentUser", JSON.stringify(currentUser.value))
-      loginSucc.value = true
-    } else if (!loginSucc.value && isRemote.value && !isDesktop) {
+  getSysMode().then((resp) => {
+    isRemote.value = resp.data.data.isRemote
+    if (!loginSucc.value && isRemote.value) {
       toLogin()
     }
-  }).catch(() => {})
+  })
 }
 
 function refreshNode() {

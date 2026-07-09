@@ -46,6 +46,8 @@ func NewContainer() *Container {
 	}
 
 	db := database.Mngtdb
+	// 将活跃配置注入到 config 包，供所有包通过 config.Get() 访问。
+	config.SetActive(config.Cfg)
 	// 注入到各业务包；未调用时各包 getDB() 回退到全局 database.Mngtdb（向后兼容）。
 	// 顺序无依赖：各包 injectedDB 为独立包级变量。
 	audit.Init(db)
@@ -58,7 +60,7 @@ func NewContainer() *Container {
 	agent.Init(db)
 
 	c := &Container{
-		Config:       config.Cfg,
+		Config:       config.Get(),
 		Mngtdb:       db,
 		AuditService: audit.GetAuditService(),
 	}

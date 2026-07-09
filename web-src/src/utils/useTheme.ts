@@ -1,8 +1,10 @@
 import { ref } from 'vue'
+import { useStorage } from '@/composables/useStorage'
 
 const THEME_KEY = 'websql_theme'
 type Theme = 'light' | 'dark'
 
+const storage = useStorage()
 const currentTheme = ref<Theme>((localStorage.getItem(THEME_KEY) as Theme) || 'light')
 
 function applyTheme(theme: Theme) {
@@ -13,7 +15,7 @@ function applyTheme(theme: Theme) {
     document.documentElement.classList.remove('dark')
   }
   currentTheme.value = theme
-  localStorage.setItem(THEME_KEY, theme)
+  storage.setItem(THEME_KEY, theme)
 }
 
 function toggleTheme() {

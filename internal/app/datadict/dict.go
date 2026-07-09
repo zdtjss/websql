@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"websql/internal/app/conn"
-	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
@@ -541,8 +540,4 @@ func sliceContainsStr(slice []string, s string) bool {
 		}
 	}
 	return false
-}
-
-func init() {
-	_ = config.Cfg
 }

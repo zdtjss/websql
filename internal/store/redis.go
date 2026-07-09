@@ -2,8 +2,9 @@ package store
 
 import (
 	"context"
-	"websql/internal/config"
 	"log"
+
+	"websql/internal/config"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -11,11 +12,11 @@ import (
 var RDB *redis.Client
 var ctx = context.Background()
 
-func InitRedis() {
+func InitRedis(cfg *config.Config) {
 	RDB = redis.NewClient(&redis.Options{
-		Addr:     config.Cfg.Redis.Addr,
-		Password: config.Cfg.Redis.Password,
-		DB:       config.Cfg.Redis.DB,
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
 	})
 	err := RDB.Ping(ctx).Err()
 	if err == nil {

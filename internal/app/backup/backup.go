@@ -3,16 +3,11 @@ package backup
 import (
 	"net/http"
 
-	"websql/internal/config"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
-
-func init() {
-	_ = config.Cfg
-}
 
 func CreateBackup(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)

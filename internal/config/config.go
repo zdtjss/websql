@@ -10,9 +10,23 @@ import (
 )
 
 var (
-	// Deprecated: 使用 Container，将在阶段 4 移除
+	// Deprecated: 使用 Get()，将在阶段 4 移除
 	Cfg *Config
+
+	// activeCfg 由 Container 通过 SetActive 注入，为 nil 时 Get() 回退到 Cfg。
+	activeCfg *Config
 )
+
+// SetActive 由 Container 在启动阶段调用，设置全局活跃配置。
+func SetActive(cfg *Config) { activeCfg = cfg }
+
+// Get 返回活跃配置。优先返回 Container 注入的实例，未注入时回退到 Cfg（迁移期兼容）。
+func Get() *Config {
+	if activeCfg != nil {
+		return activeCfg
+	}
+	return Cfg
+}
 
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")
@@ -23,6 +37,15 @@ func ReadConfig() *Config {
 	err = json.Unmarshal(fileData, &config)
 	logutils.PanicErr(err)
 	return &config
+}
+
+// ParseFromBytes 从字节切片解析配置，供桌面版从 //go:embed 内嵌的配置加载。
+func ParseFromBytes(data []byte) (*Config, error) {
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
 }
 
 // TryReadConfig 与 ReadConfig 等价但找不到配置文件时返回 error 而非 panic。
@@ -107,6 +130,7 @@ type Config struct {
 		DB       int    `json:"db"`
 	} `json:"redis"`
 	Https struct {
+		Enable       bool   `json:"enable"`
 		Organization string `json:"organization"`
 		CommonName   string `json:"commonName"`
 	} `json:"https"`

@@ -32,7 +32,7 @@ func checkPowerForRole(roleDetails []*PowerDetail, param *PowerCheckParam) bool 
 }
 
 func CheckPower(userPower *UserPower, param *PowerCheckParam) bool {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return true
 	}
 
@@ -52,7 +52,7 @@ func CheckPower(userPower *UserPower, param *PowerCheckParam) bool {
 }
 
 func CheckConnAccessByUserId(userId, connId string) bool {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return true
 	}
 	connIds := findUserPower(userId)
@@ -65,7 +65,8 @@ func CheckConnAccessByUserId(userId, connId string) bool {
 }
 
 func CheckConnAccess(userPower *UserPower, connId string) bool {
-	if config.Cfg == nil || !config.Cfg.IsRemote {
+	cfg := config.Get()
+	if cfg == nil || !cfg.IsRemote {
 		return true
 	}
 
@@ -83,7 +84,7 @@ func CheckConnAccess(userPower *UserPower, connId string) bool {
 }
 
 func AppendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return
 	}
 	powerCount := len(userPower.Power)
@@ -108,7 +109,7 @@ func checkSchemaAccessForRole(roleDetails []*PowerDetail, schemaName string) boo
 }
 
 func CheckSchemaAccess(connId, schemaName, authorization string) {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return
 	}
 
@@ -137,7 +138,7 @@ func checkTableAccessForRole(roleDetails []*PowerDetail, schemaName, tableName s
 }
 
 func CheckTableAccess(connId, schemaName, tableName, authorization string) {
-	if !config.Cfg.IsRemote {
+	if !config.Get().IsRemote {
 		return
 	}
 

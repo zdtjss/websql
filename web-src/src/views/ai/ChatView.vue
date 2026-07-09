@@ -500,7 +500,7 @@
                   <Promotion />
                 </el-icon>
               </el-button>
-              <router-link v-if="canUseClassicView || !isRemote" to="/classical" class="switch-view-link" title="经典视图">
+              <router-link v-if="canUseClassicView" to="/classical" class="switch-view-link" title="经典视图">
                 <el-icon>
                   <Switch />
                 </el-icon>
@@ -518,7 +518,7 @@
               <component :is="currentTheme === 'light' ? Moon : Sunny" />
             </el-icon>
           </el-button>
-          <el-button v-if="(currentUser.isAdmin || !isRemote) && loginSucc" circle size="small" @click="openSystemManagement" title="系统管理">
+          <el-button v-if="currentUser.isAdmin || !isRemote" circle size="small" @click="openSystemManagement" title="系统管理">
             <el-icon>
               <Setting />
             </el-icon>
@@ -528,7 +528,7 @@
               <User />
             </el-icon>
           </el-button>
-          <el-button v-if="loginSucc && isRemote" circle size="small" @click="logout" title="退出登录">
+          <el-button v-else-if="loginSucc && isRemote" circle size="small" @click="logout" title="退出登录">
             <el-icon>
               <SwitchButton />
             </el-icon>
@@ -552,6 +552,7 @@ import { getSystemConfig } from '@/api/system'
 import { sanitizeError } from '@/utils/errorHandler'
 import { analyzeSQL } from '@/utils/sqlRiskAssessment'
 import { useTheme } from '@/utils/useTheme'
+import { useStorage } from '@/composables/useStorage'
 import { BottomLeft, ChatLineRound, Clock, Coin, CopyDocument, Delete, Document, Edit, Loading, Microphone, Moon, Plus, Promotion, RefreshRight, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMarkdownRenderer, getMermaid, getNextMermaidId, getHljs, preloadHeavyDeps, switchMermaidTheme, getMermaidSvgCache, clearMermaidSvgCache } from '@/utils/lazyDeps'
@@ -561,6 +562,7 @@ import { useRoute, useRouter } from 'vue-router'
 const route = useRoute()
 
 const { currentTheme, toggleTheme } = useTheme()
+const storage = useStorage()
 
 watch(currentTheme, async (theme) => {
   await switchMermaidTheme(theme === 'dark' ? 'dark' : 'default')
@@ -922,7 +924,7 @@ async function loadConnList() {
     })
 
     if (!resp.ok) {
-      if (resp.status === 401 && isRemote.value) {
+      if (resp.status === 401) {
         handleSessionExpired()
         return
       }
@@ -2474,6 +2476,8 @@ async function streamChatResponse(messageContent, excelContext, options = {}) {
     loading.value = false
     abortController.value = null
     retryingMsg.value = null
+    // 桌面模式：回复完成时闪烁任务栏图标（窗口未激活时才闪，获焦自动停止；web 模式 no-op）
+    window.Flash?.()
     // 流结束后渲染 mermaid 图表
     scrollToBottom()
     doRenderMermaidBlocks()
@@ -3305,11 +3309,6 @@ function showLoginDialog() {
 }
 
 function handleSessionExpired() {
-  // 桌面/本地模式：会话过期时静默重试本地登录，绝不弹登录框（后端中间件亦会自愈）
-  if (!isRemote.value || sessionStorage.getItem('isDesktop') === 'true') {
-    getSysModel()
-    return
-  }
   loginSucc.value = false
   canUseClassicView.value = false
   sessionStorage.removeItem('authentication')
@@ -3353,7 +3352,7 @@ function checkClassicViewPermission() {
   })
   getSystemConfig().then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
-      localStorage.setItem('defaultHomepage', resp.data.data.defaultHomepage)
+      storage.setItem('defaultHomepage', resp.data.data.defaultHomepage)
     }
   }).catch(() => {})
 }
@@ -3369,24 +3368,13 @@ function openSystemManagement() {
 }
 
 function getSysModel() {
-  return getSysMode().then((resp) => {
-    const data = resp.data?.data ?? resp.data ?? {}
-    isRemote.value = data.isRemote ?? false
+  getSysMode().then((resp) => {
+    isRemote.value = resp.data?.isRemote ?? resp.data?.data?.isRemote ?? false
     sessionStorage.setItem("isRemote", isRemote.value.toString())
-    // 桌面/本地模式标记
-    const isDesktop = data.isDesktop ?? false
-    sessionStorage.setItem("isDesktop", isDesktop.toString())
-    // 本地/桌面模式自动登录（isDesktop 为权威判据，即使 isRemote 误为 true 也静默登录）
-    if ((isDesktop || !isRemote.value) && data.localToken && !loginSucc.value) {
-      sessionStorage.setItem("authentication", data.localToken)
-      currentUser.value = { id: "local", name: "local", isAdmin: true }
-      sessionStorage.setItem("currentUser", JSON.stringify(currentUser.value))
-      loginSucc.value = true
-      canUseClassicView.value = true
-    } else if (!loginSucc.value && isRemote.value && !isDesktop) {
+    if (!loginSucc.value && isRemote.value) {
       loginDialogVisible.value = true
     }
-  }).catch(() => {})
+  })
 }
 
 // --- 历史会话管理 ---
@@ -3666,15 +3654,14 @@ watch(msgContainer, (newEl, oldEl) => {
   }
 }, { flush: 'post' })
 
-onMounted(async () => {
+onMounted(() => {
   const { initTheme } = useTheme()
   initTheme()
   initHeavyDeps()
   preloadHeavyDeps()
   setupMermaidObserver()
   setSendToAIHandler(handlePromptSendToAI)
-  // 先获取系统模式并完成自动登录（本地/桌面模式），再发后续请求
-  await getSysModel()
+  getSysModel()
   loadModelList()
   loadConnList().then(() => {
     if (loginSucc.value || !isRemote.value) {
@@ -3691,7 +3678,7 @@ onMounted(async () => {
       })
     }
   })
-  if (loginSucc.value) {
+  if (loginSucc.value || !isRemote.value) {
     checkClassicViewPermission()
   }
   document.addEventListener('keydown', handleEscKey)

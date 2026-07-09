@@ -88,8 +88,8 @@ func generateKeyPair(validFor time.Duration) (rawCert, rawKey []byte, err error)
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{config.Cfg.Https.Organization},
-			CommonName:   config.Cfg.Https.CommonName,
+			Organization: []string{config.Get().Https.Organization},
+			CommonName:   config.Get().Https.CommonName,
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,

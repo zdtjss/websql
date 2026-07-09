@@ -23,7 +23,8 @@ func getTokenFromRequest(c *gin.Context) string {
 // isLocalMode 本地/桌面模式判定：IsDesktop 为权威判据，即使 IsRemote 误为 true，
 // 桌面模式也强制走本地免登录。避免配置覆盖类 bug 再次导致弹登录框。
 func isLocalMode() bool {
-	return config.Cfg != nil && (!config.Cfg.IsRemote || config.Cfg.IsDesktop)
+	cfg := config.Get()
+	return cfg != nil && (!cfg.IsRemote || cfg.IsDesktop)
 }
 
 func AuthMiddleware() gin.HandlerFunc {
@@ -93,11 +94,12 @@ func AuthMiddleware() gin.HandlerFunc {
 
 func HostCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := config.Get()
 		// 本地模式（IsRemote=false）时检查 IP 白名单：
 		// 本系统基于浏览器访问，局域网内任何人可通过网络访问，需要 IP 校验防止未授权使用
-		if !config.Cfg.IsRemote {
+		if !cfg.IsRemote {
 			clientIP := c.ClientIP()
-			if len(config.Cfg.AllowedIP) > 0 && !slices.Contains(config.Cfg.AllowedIP, clientIP) {
+			if len(cfg.AllowedIP) > 0 && !slices.Contains(cfg.AllowedIP, clientIP) {
 				c.Writer.Write([]byte("<div style=\"text-align: center;font-size: xxx-large;\">非法 IP</div>"))
 				c.Header("content-type", "text/html; charset=utf-8")
 				log.Println("非法 IP:" + clientIP)

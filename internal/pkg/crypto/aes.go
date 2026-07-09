@@ -29,12 +29,13 @@ var (
 	aesKey     []byte
 )
 
-// getAESKey 懒加载 AES 密钥：优先从 config.Cfg.Security.AESKey 读取（base64 解码），
+// getAESKey 懒加载 AES 密钥：优先从注入配置的 Security.AESKey 读取（base64 解码），
 // 缺失或非法时回退到默认密钥并打印告警。
 func getAESKey() []byte {
 	aesKeyOnce.Do(func() {
-		if config.Cfg != nil && config.Cfg.Security.AESKey != "" {
-			if k, err := base64.StdEncoding.DecodeString(config.Cfg.Security.AESKey); err == nil && (len(k) == 16 || len(k) == 24 || len(k) == 32) {
+		cfg := config.Get()
+		if cfg != nil && cfg.Security.AESKey != "" {
+			if k, err := base64.StdEncoding.DecodeString(cfg.Security.AESKey); err == nil && (len(k) == 16 || len(k) == 24 || len(k) == 32) {
 				aesKey = k
 				return
 			}

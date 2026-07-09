@@ -213,7 +213,7 @@ func DryRunSync(c *gin.Context) {
 	}
 
 	// 权限校验
-	if config.Cfg.IsRemote {
+	if config.Get().IsRemote {
 		permission.CheckTablePermission(connId1, schema1, table, authorization)
 		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
@@ -754,7 +754,7 @@ func RollbackSync(c *gin.Context) {
 	}
 
 	// 权限校验：回滚等同于写操作
-	if config.Cfg.IsRemote && !permission.CheckUserCanModify(authorization) {
+	if config.Get().IsRemote && !permission.CheckUserCanModify(authorization) {
 		response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行回滚"})
 		return
 	}
@@ -1074,9 +1074,4 @@ func recordRollbackAudit(c *gin.Context, sessionId string, log *RollbackLog, exe
 		ClientIP:     c.ClientIP(),
 		AffectedRows: executed,
 	})
-}
-
-// init 确保 config 已加载（与其他文件保持一致）。
-func init() {
-	_ = config.Cfg
 }

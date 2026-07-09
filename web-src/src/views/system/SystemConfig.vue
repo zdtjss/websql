@@ -221,10 +221,12 @@ import { Check, Coin, Connection, Delete, Edit, HomeFilled, Link, Lock, Monitor,
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useStorage } from '@/composables/useStorage'
 
 const emit = defineEmits(['config-saved'])
 const router = useRouter()
 const currentUser = inject('currentUser')
+const storage = useStorage()
 
 const bioLocalStorageKey = "nway_websql_bio_credential_id"
 const bioSupported = ref(false)
@@ -349,7 +351,7 @@ const saveAllConfig = () => {
     defaultHomepage: systemConfig.value.defaultHomepage
   }).then(() => {
     ElMessage.success("保存成功")
-    localStorage.setItem('defaultHomepage', systemConfig.value.defaultHomepage)
+    storage.setItem('defaultHomepage', systemConfig.value.defaultHomepage)
     emit('config-saved', systemConfig.value)
   }).finally(() => {
     savingAll.value = false
@@ -513,7 +515,7 @@ const registerBio = async () => {
 
   const parsed = parsers.parseRegistration(registration)
 
-  localStorage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
+  storage.setItem(bioLocalStorageKey, JSON.stringify({ id: parsed.credential.id, transports: parsed.credential.transports }))
 
   saveUserBio(parsed.credential.id).then((resp) => {
     if (resp.data.code == 200) {
@@ -532,7 +534,7 @@ const registerBio = async () => {
 }
 
 const removeBio = () => {
-  localStorage.removeItem(bioLocalStorageKey)
+  storage.removeItem(bioLocalStorageKey)
   ElMessage.success("删除成功")
   checkBioRegistered()
 }

@@ -65,7 +65,7 @@ func (s *UserService) FindByToken(token string) (*User, error) {
 		return user, nil
 	}
 
-	cfg := config.Cfg
+	cfg := config.Get()
 	req, err := http.NewRequest("GET", cfg.OutterUser, nil)
 	if err != nil {
 		return nil, err

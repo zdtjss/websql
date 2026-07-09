@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useStorage } from '@/composables/useStorage'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -30,6 +31,8 @@ const router = createRouter({
   routes
 })
 
+const storage = useStorage()
+
 let cachedDefaultHomepage: string | null = null
 
 export function resetDefaultHomepageCache() {
@@ -53,12 +56,12 @@ async function getDefaultHomepage(): Promise<string> {
       const data = await resp.json()
       const homepage = data.data?.defaultHomepage || 'ai'
       cachedDefaultHomepage = homepage
-      localStorage.setItem('defaultHomepage', homepage)
+      storage.setItem('defaultHomepage', homepage)
       return homepage
     }
   } catch { /* ignore */ }
   cachedDefaultHomepage = 'ai'
-  localStorage.setItem('defaultHomepage', 'ai')
+  storage.setItem('defaultHomepage', 'ai')
   return 'ai'
 }
 

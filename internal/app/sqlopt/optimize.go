@@ -13,7 +13,6 @@ import (
 	admin "websql/internal/app/admin"
 	"websql/internal/app/conn"
 	"websql/internal/app/system"
-	"websql/internal/config"
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
@@ -447,8 +446,4 @@ func buildOptSystemPrompt(dbType, dbVersion string, explainResult *ExplainResult
 	}
 
 	return sb.String()
-}
-
-func init() {
-	_ = config.Cfg
 }

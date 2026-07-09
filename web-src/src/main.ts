@@ -5,9 +5,27 @@ import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import App from './App.vue'
 import router from './router'
+import { restoreFromBackend } from './composables/useStorage'
 
 import './assets/main.css'
 import './styles/db-tools.css'
+
+// 桌面模式任务栏闪烁：AI 回复完成时由 ChatView 调用 window.Flash()，经 /desktop/flash
+// 端点触发 Wails 内置 WebviewWindow.Flash 使任务栏图标闪烁。非桌面模式静默 no-op。
+declare global {
+  interface Window {
+    Flash?: () => void
+  }
+}
+window.Flash = () => {
+  try {
+    if (sessionStorage.getItem('isDesktop') !== 'true') return
+    const apiBase = import.meta.env.VITE_API_URL || ''
+    void fetch(apiBase + '/desktop/flash', { method: 'POST' })
+  } catch {
+    // 静默：闪烁失败不应影响业务
+  }
+}
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -35,6 +53,8 @@ async function bootstrap() {
     if ((isDesktop || !isRemote) && data.localToken) {
       sessionStorage.setItem('authentication', data.localToken)
       sessionStorage.setItem('currentUser', JSON.stringify({ id: 'local', name: 'local', isAdmin: true }))
+      // 登录态就绪后从后端恢复用户级存储，确保 localStorage 在 app.mount 前完成填充
+      await restoreFromBackend()
     }
   } catch {
     // 静默降级：交由各视图 getSysModel 兜底

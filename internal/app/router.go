@@ -23,6 +23,7 @@ import (
 	"websql/internal/app/snippet"
 	"websql/internal/app/sql"
 	"websql/internal/app/sqlopt"
+	"websql/internal/app/storage"
 	syncdb "websql/internal/app/sync"
 	"websql/internal/app/system"
 	tree "websql/internal/app/treehandler"
@@ -50,15 +51,36 @@ var proxyHttpClient = &http.Client{
 	},
 }
 
+// embeddedAssetsFS 非空时，/assets/* 和 SPA index.html 从此嵌入式文件系统服务，
+// 否则回退到磁盘 ./static/ 目录。由桌面版入口通过 SetEmbeddedAssets 设置。
+var (
+	embeddedAssetsFS  http.FileSystem
+	embeddedIndexHTML []byte
+)
+
+// SetEmbeddedAssets 配置嵌入式前端资源，供桌面版打包使用。
+// assetsFS 应指向 static/assets 子目录，indexHTML 为 index.html 内容。
+func SetEmbeddedAssets(assetsFS http.FileSystem, indexHTML []byte) {
+	embeddedAssetsFS = assetsFS
+	embeddedIndexHTML = indexHTML
+}
+
 func MainRegister(router *gin.Engine) {
 
-	router.Use(gzip.Gzip(gzip.DefaultCompression,
-		gzip.WithExcludedPaths([]string{"/assets/"}),
-		gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
-	))
+	localMode := !config.Get().IsRemote || config.Get().IsDesktop
+
+	if !localMode {
+		router.Use(gzip.Gzip(gzip.DefaultCompression,
+			gzip.WithExcludedPaths([]string{"/assets/"}),
+			gzip.WithExcludedExtensions([]string{".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip"}),
+		))
+	}
+
 	router.Use(middleware.CustomRecovery())
-	router.Use(middleware.LoginRateLimitMiddleware())
-	router.Use(middleware.APIRateLimitMiddleware())
+	if !localMode {
+		router.Use(middleware.LoginRateLimitMiddleware())
+		router.Use(middleware.APIRateLimitMiddleware())
+	}
 	router.Use(middleware.CircuitBreakerMiddleware())
 	router.Use(middleware.AuthMiddleware())
 	router.Use(ContextMiddleware())
@@ -240,11 +262,18 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/snippet/categories", snippet.Categories)
 	routerGroup.GET("/snippet/tags", snippet.Tags)
 
+	// 用户级 KV 存储：持久化前端 localStorage 数据，解决桌面模式重启后丢失问题
+	routerGroup.GET("/storage/list", storage.List)
+	routerGroup.GET("/storage/get", storage.Get)
+	routerGroup.POST("/storage/save", storage.Save)
+	routerGroup.POST("/storage/delete", storage.Delete)
+
 	routerGroup.GET("/sysMode", func(c *gin.Context) {
-		localMode := !config.Cfg.IsRemote || config.Cfg.IsDesktop
+		cfg := config.Get()
+		localMode := !cfg.IsRemote || cfg.IsDesktop
 		resp := map[string]any{
-			"isRemote":  config.Cfg.IsRemote,
-			"isDesktop": config.Cfg.IsDesktop,
+			"isRemote":  cfg.IsRemote,
+			"isDesktop": cfg.IsDesktop,
 		}
 		if localMode {
 			resp["localToken"] = LocalAutoToken
@@ -276,10 +305,18 @@ func MainRegister(router *gin.Engine) {
 
 	routerGroup.Any("/ext/", proxy)
 
-	router.Static("/assets", "./static/assets")
+	if embeddedAssetsFS != nil {
+		router.StaticFS("/assets", embeddedAssetsFS)
+	} else {
+		router.Static("/assets", "./static/assets")
+	}
 
 	// 3. 所有未匹配路由都返回 index.html（SPA 支持）
 	router.NoRoute(func(c *gin.Context) {
+		if embeddedIndexHTML != nil {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", embeddedIndexHTML)
+			return
+		}
 		c.File("./static/index.html")
 	})
 

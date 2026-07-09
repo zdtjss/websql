@@ -19,7 +19,7 @@ nway.pem
 .vscode/
 nway.s3db
 web-src/package-lock.json
-static/
+/static/
 web-src/auto-imports.d.ts
 web-src/components.d.ts
 exports/
@@ -39,4 +39,8 @@ node_modules/
 cmd/desktop/frontend/
 cmd/desktop/bin/
 cmd/desktop/*.syso
+cmd/desktop/static/*
+!cmd/desktop/static/.gitkeep
 release-desktop/
+
+web-src/static

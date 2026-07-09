@@ -26,8 +26,10 @@ import { client, server } from '@passwordless-id/webauthn'
 import { reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { resetDefaultHomepageCache } from '@/router'
+import { useStorage, restoreFromBackend } from '@/composables/useStorage'
 
 const router = useRouter()
+const storage = useStorage()
 
 const dialogVisible = defineModel({ default: false })
 
@@ -65,7 +67,7 @@ function navigateAfterLogin() {
   http.get('/system/config/all/get').then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       const homepage = resp.data.data.defaultHomepage
-      localStorage.setItem('defaultHomepage', homepage)
+      storage.setItem('defaultHomepage', homepage)
       const currentPath = router.currentRoute.value.path
       if (homepage === 'classical' && currentPath !== '/classical') {
         router.push('/classical')
@@ -99,7 +101,7 @@ function login() {
         dialogVisible.value = false
         emit('login-success', resp.data.data)
         ElMessage('登陆成功')
-        navigateAfterLogin()
+        restoreFromBackend().then(navigateAfterLogin)
       }).catch(() => {
       }).finally(() => {
         logining.value = false

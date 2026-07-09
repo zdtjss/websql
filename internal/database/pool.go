@@ -44,22 +44,22 @@ func InitMngtDbConn() {
 	if config.Cfg == nil {
 		config.Cfg = config.ReadConfig()
 	}
-	sqlxDb, err := sqlx.Connect(config.Cfg.DB.DriverName, config.Cfg.DB.DataSourceName)
+	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, config.Get().DB.DataSourceName)
 	if err != nil {
 		panic(err)
 	}
-	if config.Cfg.DB.DriverName == "sqlite" {
+	if config.Get().DB.DriverName == "sqlite" {
 		sqlxDb.SetMaxOpenConns(10)
 		sqlxDb.SetMaxIdleConns(3)
 		sqlxDb.SetConnMaxLifetime(0)
 		sqlxDb.SetConnMaxIdleTime(5 * time.Minute)
 		initSQLitePragma(sqlxDb)
 	} else {
-		mngtMaxOpen := config.Cfg.DB.MaxOpenConns
+		mngtMaxOpen := config.Get().DB.MaxOpenConns
 		if mngtMaxOpen <= 0 {
 			mngtMaxOpen = 20
 		}
-		mngtMaxIdle := config.Cfg.DB.MaxIdleConns
+		mngtMaxIdle := config.Get().DB.MaxIdleConns
 		if mngtMaxIdle <= 0 {
 			mngtMaxIdle = 10
 		}
@@ -101,17 +101,18 @@ func GetConn(param *DBParam) *sqlx.DB {
 		log.Printf("连接数据库失败 - err=%v, param=%+v\n", err, param)
 		return nil
 	}
+	dbCfg := config.Get().DB
 	maxOpen := 50
-	if config.Cfg.DB.MaxOpenConns > 0 {
-		maxOpen = config.Cfg.DB.MaxOpenConns
+	if dbCfg.MaxOpenConns > 0 {
+		maxOpen = dbCfg.MaxOpenConns
 	}
 	maxIdle := 25
-	if config.Cfg.DB.MaxIdleConns > 0 {
-		maxIdle = config.Cfg.DB.MaxIdleConns
+	if dbCfg.MaxIdleConns > 0 {
+		maxIdle = dbCfg.MaxIdleConns
 	}
 	connMaxLife := 10 * time.Minute
-	if config.Cfg.DB.ConnMaxLifeMin > 0 {
-		connMaxLife = time.Duration(config.Cfg.DB.ConnMaxLifeMin) * time.Minute
+	if dbCfg.ConnMaxLifeMin > 0 {
+		connMaxLife = time.Duration(dbCfg.ConnMaxLifeMin) * time.Minute
 	}
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxIdle)
@@ -277,20 +278,20 @@ func LoadConfigFromDB() {
 		return
 	}
 
-	loadSystemConfigValue("system.outterUser", &config.Cfg.OutterUser)
-	loadSystemConfigValue("system.allowedIP", &config.Cfg.AllowedIP)
-	loadSystemConfigValue("ai.provider", &config.Cfg.AI.Provider)
-	loadSystemConfigValue("ai.baseUrl", &config.Cfg.AI.BaseURL)
-	loadSystemConfigValue("ai.model", &config.Cfg.AI.Model)
-	loadSystemConfigValue("ai.apiKey", &config.Cfg.AI.ApiKey)
+	loadSystemConfigValue("system.outterUser", &config.Get().OutterUser)
+	loadSystemConfigValue("system.allowedIP", &config.Get().AllowedIP)
+	loadSystemConfigValue("ai.provider", &config.Get().AI.Provider)
+	loadSystemConfigValue("ai.baseUrl", &config.Get().AI.BaseURL)
+	loadSystemConfigValue("ai.model", &config.Get().AI.Model)
+	loadSystemConfigValue("ai.apiKey", &config.Get().AI.ApiKey)
 
-	loadSystemConfigValue("system.redisAddr", &config.Cfg.Redis.Addr)
-	loadSystemConfigValue("system.redisPassword", &config.Cfg.Redis.Password)
+	loadSystemConfigValue("system.redisAddr", &config.Get().Redis.Addr)
+	loadSystemConfigValue("system.redisPassword", &config.Get().Redis.Password)
 	var redisDBStr string
 	loadSystemConfigValue("system.redisDB", &redisDBStr)
 	if redisDBStr != "" {
 		if dbVal, err := strconv.Atoi(redisDBStr); err == nil {
-			config.Cfg.Redis.DB = dbVal
+			config.Get().Redis.DB = dbVal
 		}
 	}
 }

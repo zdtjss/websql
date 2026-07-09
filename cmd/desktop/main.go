@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -19,6 +21,8 @@ import (
 	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
+	logutils "websql/internal/logger"
+	"websql/internal/migration"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
 
@@ -37,27 +41,30 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 
-	// 桌面模式加载配置：优先读取 config.json，找不到时回退到内置默认本地配置，
-	// 避免 dev 模式（二进制与 config.json 不在同一目录）启动即 panic。
-	if cfg, err := config.TryReadConfig(); err == nil {
-		config.Cfg = cfg
-	} else {
-		log.Printf("[Desktop] 未找到 config.json，使用默认本地配置: %v", err)
-		config.Cfg = &config.Config{}
-		config.Cfg.DB.DriverName = "sqlite"
-		config.Cfg.DB.DataSourceName = "./nway.sqlite3.db"
-		config.Cfg.DB.MaxOpenConns = 10
-		config.Cfg.DB.MaxIdleConns = 3
+	// 日志按天轮转，落盘到 %APPDATA%/WebSQL/logs/，与 WebView2 UserDataPath 约定一致；
+	// 非 Windows（APPDATA 为空）回退到 ./logs。
+	logDir := filepath.Join(os.Getenv("APPDATA"), "WebSQL", "logs")
+	if os.Getenv("APPDATA") == "" {
+		logDir = "./logs"
 	}
-	// 桌面模式强制本地：免登录、不走远程权限体系
-	config.Cfg.IsRemote = false
-	config.Cfg.IsDesktop = true
+	logutils.Init(logDir, "websql", 7)
 
-	// 加载图标（找不到时忽略，不阻塞启动）
-	var iconData []byte
-	if iconPath, err := config.TryFindFile("favicon.ico"); err == nil {
-		iconData, _ = os.ReadFile(iconPath)
+	// 桌面模式：从内嵌的 config.desktop.json 加载配置（isRemote=false, https.enable=false）
+	cfg, err := config.ParseFromBytes(configData)
+	if err != nil {
+		log.Fatalf("[Desktop] 解析内嵌配置失败: %v", err)
 	}
+	config.Cfg = cfg
+	config.SetActive(cfg)
+	// 桌面模式强制本地：免登录、不走远程权限体系
+	cfg.IsRemote = false
+	cfg.IsDesktop = true
+
+	// 从内嵌前端资源加载窗口图标（找不到时忽略，不阻塞启动）
+	iconData, _ := staticFS.ReadFile("static/favicon.ico")
+
+	// 配置嵌入式前端资源：/assets/* 和 index.html 从 embed.FS 服务，无需磁盘文件
+	setupEmbeddedAssets()
 
 	// 单实例检测：必须先于后端初始化，避免第二个实例重复初始化数据库与端口
 	// 命中已运行实例时，本进程在此直接退出，并通知已运行实例显示窗口
@@ -83,21 +90,41 @@ func main() {
 	router.MaxMultipartMemory = 30 * 1024 * 1024
 	app.MainRegister(router)
 
+	// 桌面专属：任务栏闪烁端点。前端在 AI 回复完成后调用 window.Flash() 经此触发，
+	// 由 Wails 内置 WebviewWindow.Flash 使任务栏图标闪烁（窗口未激活时才闪，获焦后自动停止）。
+	// mainWindow 在下方 NewWithOptions 后赋值，此闭包按引用捕获，调用时读取最新值。
+	router.Group("api").POST("/desktop/flash", func(c *gin.Context) {
+		if mainWindow != nil {
+			mainWindow.Flash(true)
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
 	database.InitMngtDbConn()
+
+	// 执行管理库迁移：全新库执行 baseline，存量库自动标记基线并仅运行增量迁移
+	migrationSub, err := fs.Sub(migrationFS, "migrations/sqlite")
+	if err != nil {
+		log.Fatalf("[Desktop] 提取嵌入迁移脚本失败: %v", err)
+	}
+	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, migrationSub); err != nil {
+		log.Fatalf("[Desktop] 管理库迁移失败: %v", err)
+	}
+
 	database.LoadConfigFromDB()
 
 	// 二次断言桌面标志：LoadConfigFromDB 不会改 IsRemote/IsDesktop，但此处防御性重置，
-	// 确保后续中间件/路由读到的 config.Cfg 一定是桌面本地模式。
-	config.Cfg.IsRemote = false
-	config.Cfg.IsDesktop = true
+	// 确保后续中间件/路由读到的配置一定是桌面本地模式。
+	cfg.IsRemote = false
+	cfg.IsDesktop = true
 
 	audit.GetAuditService()
 	audit.StartAuditLogCleaner()
 	monitor.StartMetricCleaner()
 	monitor.StartMetricCollector()
 
-	if strings.TrimSpace(config.Cfg.Redis.Addr) != "" {
-		store.InitRedis()
+	if strings.TrimSpace(config.Get().Redis.Addr) != "" {
+		store.InitRedis(config.Get())
 	}
 
 	container := app.NewContainer()
@@ -117,7 +144,7 @@ func main() {
 
 	server := &http.Server{
 		Handler:        router,
-		ReadTimeout:    30 * time.Second,
+		ReadTimeout:    5 * time.Minute,
 		WriteTimeout:   0,
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
@@ -177,6 +204,22 @@ func waitForServer(url string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	log.Println("警告: 内部 HTTP 服务启动超时")
+}
+
+// setupEmbeddedAssets 从内嵌的 staticFS 中提取 assets 子目录和 index.html，
+// 通过 app.SetEmbeddedAssets 注入路由，使前端资源完全从可执行文件内服务。
+func setupEmbeddedAssets() {
+	assetsSub, err := fs.Sub(staticFS, "static/assets")
+	if err != nil {
+		log.Printf("[Desktop] 内嵌 assets 目录不可用: %v，回退到磁盘模式", err)
+		return
+	}
+	indexHTML, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		log.Printf("[Desktop] 内嵌 index.html 不可用: %v，回退到磁盘模式", err)
+		return
+	}
+	app.SetEmbeddedAssets(http.FS(assetsSub), indexHTML)
 }
 
 // 注册关闭信号（备用，Wails 通常处理退出）

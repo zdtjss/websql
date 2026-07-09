@@ -286,8 +286,9 @@ func SaveAllowedIPToDB(ips []string) {
 }
 
 func LoadSystemConfigToMemory() {
-	config.Cfg.OutterUser = GetOutterUserFromDB()
-	config.Cfg.AllowedIP = GetAllowedIPFromDB()
+	cfg := config.Get()
+	cfg.OutterUser = GetOutterUserFromDB()
+	cfg.AllowedIP = GetAllowedIPFromDB()
 
 	selectedId := GetSystemConfigValue("ai.selectedModelId")
 	if selectedId != "" {
@@ -298,10 +299,10 @@ func LoadSystemConfigToMemory() {
 			if err == nil {
 				for _, m := range modelList {
 					if m.Id == selectedId {
-						config.Cfg.AI.Provider = m.Provider
-						config.Cfg.AI.BaseURL = m.BaseURL
-						config.Cfg.AI.Model = m.Model
-						config.Cfg.AI.ApiKey = m.ApiKey
+						cfg.AI.Provider = m.Provider
+						cfg.AI.BaseURL = m.BaseURL
+						cfg.AI.Model = m.Model
+						cfg.AI.ApiKey = m.ApiKey
 						return
 					}
 				}
@@ -314,10 +315,10 @@ func LoadSystemConfigToMemory() {
 		var modelList []AIModelItem
 		err := json.Unmarshal([]byte(modelListJSON), &modelList)
 		if err == nil && len(modelList) > 0 {
-			config.Cfg.AI.Provider = modelList[0].Provider
-			config.Cfg.AI.BaseURL = modelList[0].BaseURL
-			config.Cfg.AI.Model = modelList[0].Model
-			config.Cfg.AI.ApiKey = modelList[0].ApiKey
+			cfg.AI.Provider = modelList[0].Provider
+			cfg.AI.BaseURL = modelList[0].BaseURL
+			cfg.AI.Model = modelList[0].Model
+			cfg.AI.ApiKey = modelList[0].ApiKey
 		}
 	}
 }

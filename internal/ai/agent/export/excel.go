@@ -9,16 +9,16 @@ import (
 )
 
 const (
-	ExcelPrimaryColor   = "#1A237E"
-	ExcelAccentColor    = "#00BCD4"
-	ExcelSuccessColor   = "#4CAF50"
-	ExcelWarningColor   = "#FF9800"
-	ExcelDangerColor    = "#F44336"
-	ExcelLightBgColor   = "#F5F7FA"
-	ExcelDarkTextColor  = "#212121"
+	ExcelPrimaryColor    = "#1A237E"
+	ExcelAccentColor     = "#00BCD4"
+	ExcelSuccessColor    = "#4CAF50"
+	ExcelWarningColor    = "#FF9800"
+	ExcelDangerColor     = "#F44336"
+	ExcelLightBgColor    = "#F5F7FA"
+	ExcelDarkTextColor   = "#212121"
 	ExcelMediumTextColor = "#616161"
-	ExcelLightTextColor = "#757575"
-	ExcelBorderColor    = "#E0E0E0"
+	ExcelLightTextColor  = "#757575"
+	ExcelBorderColor     = "#E0E0E0"
 )
 
 func excelPrimaryFill() excelize.Fill {
@@ -401,13 +401,6 @@ func ExcelChartTypeToNative(t string) excelize.ChartType {
 }
 
 func CreateExcelChart(sheet, chartType, chartTitle string, series []excelize.ChartSeries, cell string) *excelize.Chart {
-	titleRuns := []excelize.RichTextRun{
-		{
-			Text: chartTitle,
-			Font: &excelize.Font{Size: 16, Bold: true, Color: ExcelPrimaryColor, Family: yaHeiFont},
-		},
-	}
-
 	chart := &excelize.Chart{
 		Type:   ExcelChartTypeToNative(chartType),
 		Series: series,
@@ -417,13 +410,20 @@ func CreateExcelChart(sheet, chartType, chartTitle string, series []excelize.Cha
 			PrintObject:     boolPtr(true),
 			LockAspectRatio: true,
 		},
-		Title: titleRuns,
+		Title: excelize.ChartTitle{
+			Paragraph: []excelize.RichTextRun{
+				{
+					Text: chartTitle,
+					Font: &excelize.Font{Size: 16, Bold: true, Color: ExcelPrimaryColor, Family: yaHeiFont},
+				},
+			},
+		},
 		Legend: excelize.ChartLegend{
 			Position:      "bottom",
 			ShowLegendKey: false,
 		},
 		PlotArea: excelize.ChartPlotArea{
-			ShowVal: true,
+			ShowVal:     true,
 			ShowCatName: true,
 			ShowSerName: len(series) > 1,
 		},

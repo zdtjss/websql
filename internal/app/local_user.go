@@ -15,11 +15,15 @@ const LocalAutoToken = admin.LocalAutoToken
 // EnsureLocalUser 在本地/桌面模式下确保 local 用户存在，并注入会话。
 // 会话注入部分委托给 admin.EnsureLocalSession（同时供 middleware 自愈复用）。
 func EnsureLocalUser() {
-	if config.Cfg.IsRemote {
+	cfg := config.Get()
+	if cfg.IsRemote {
 		return
 	}
 
 	db := database.Mngtdb
+	if ctr := GetContainer(); ctr != nil && ctr.Mngtdb != nil {
+		db = ctr.Mngtdb
+	}
 	if db == nil {
 		log.Println("[LocalUser] 数据库未初始化，跳过")
 		return

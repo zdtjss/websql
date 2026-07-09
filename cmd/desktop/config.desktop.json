@@ -1,0 +1,14 @@
+{
+  "isRemote": false,
+  "db": {
+    "type": "sqlite",
+    "dsn": "./nway.sqlite3.db",
+    "maxOpenConns": 10,
+    "maxIdleConns": 3
+  },
+  "https": {
+    "enable": false,
+    "organization": "Nway",
+    "commonName": "websql.nway.com"
+  }
+}
