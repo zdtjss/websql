@@ -549,7 +549,7 @@ onMounted(() => {
 <style scoped>
 .system-config {
   padding: 20px;
-  max-height: calc(100vh - 150px);
+  max-height: calc(100vh - 95px);
   overflow-y: auto;
 }
 

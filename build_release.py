@@ -27,8 +27,8 @@ WEB_SRC_DIR = os.path.join(PROJECT_ROOT, "web-src")
 DIST_DIR = os.path.join(WEB_SRC_DIR, "dist")
 SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "config.json")
-SQLITE_INIT_SQL = os.path.join(PROJECT_ROOT, "sqlite3-init.sql")
-MYSQL_INIT_SQL = os.path.join(PROJECT_ROOT, "mysql-init.sql")
+SQLITE_FULL_SQL = os.path.join(PROJECT_ROOT, "migrations", "full", "sqlite_full.sql")
+MYSQL_FULL_SQL = os.path.join(PROJECT_ROOT, "migrations", "full", "mysql_full.sql")
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "release")
 
 APP_NAME = "WebSql"
@@ -87,8 +87,8 @@ def build_frontend():
 
 def create_fresh_db():
     print("\n[2/4] 创建全新数据库...")
-    if not os.path.isfile(SQLITE_INIT_SQL):
-        print(f"  [FAIL] 未找到 {SQLITE_INIT_SQL}")
+    if not os.path.isfile(SQLITE_FULL_SQL):
+        print(f"  [FAIL] 未找到 {SQLITE_FULL_SQL}")
         sys.exit(1)
 
     tmp_dir = tempfile.mkdtemp(prefix="websql_build_")
@@ -98,7 +98,7 @@ def create_fresh_db():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
 
-    with open(SQLITE_INIT_SQL, "r", encoding="utf-8") as f:
+    with open(SQLITE_FULL_SQL, "r", encoding="utf-8") as f:
         sql_script = f.read()
 
     conn.executescript(sql_script)
@@ -130,7 +130,7 @@ def compile_go(target):
         "GOARCH": goarch,
     }
 
-    ldflags = f"-s -w -X main.version={VERSION}"
+    ldflags = f"-s -w -X internal/version.Version={VERSION}"
 
     print(f"  编译 {goos}/{goarch}...")
     run(f"go build -ldflags \"{ldflags}\" -o {binary_name} main.go", cwd=PROJECT_ROOT, env=env)
@@ -159,10 +159,10 @@ def create_package(target, binary_path, db_path):
 
         zipf.write(db_path, DB_NAME)
 
-        if os.path.isfile(SQLITE_INIT_SQL):
-            zipf.write(SQLITE_INIT_SQL, "sqlite3-init.sql")
-        if os.path.isfile(MYSQL_INIT_SQL):
-            zipf.write(MYSQL_INIT_SQL, "mysql-init.sql")
+        if os.path.isfile(SQLITE_FULL_SQL):
+            zipf.write(SQLITE_FULL_SQL, "migrations/full/sqlite_full.sql")
+        if os.path.isfile(MYSQL_FULL_SQL):
+            zipf.write(MYSQL_FULL_SQL, "migrations/full/mysql_full.sql")
 
         if os.path.isdir(DIST_DIR):
             for root, dirs, files in os.walk(DIST_DIR):

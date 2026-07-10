@@ -37,6 +37,7 @@ node_modules/
 
 # Desktop build artifacts
 cmd/desktop/frontend/
+cmd/desktop/migrations/
 cmd/desktop/bin/
 cmd/desktop/*.syso
 cmd/desktop/static/*

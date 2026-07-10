@@ -7,11 +7,23 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
+	"websql/internal/config"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 )
 
+// isLocalMode 本地/桌面模式判定，与 middleware 保持一致：
+// IsDesktop 为权威判据，即使 IsRemote 误为 true 也走本地免权限。
+func isLocalMode() bool {
+	return config.IsLocalMode()
+}
+
 func FilterConnsWithPermission(parentId string, userPower *admin.UserPower) []*conn.Tree {
+	// 本地/桌面模式：跳过权限过滤，返回所有连接
+	if isLocalMode() {
+		return filterConnsAll(parentId)
+	}
+
 	if userPower == nil || len(userPower.Power) == 0 {
 		return []*conn.Tree{}
 	}
@@ -33,6 +45,34 @@ func FilterConnsWithPermission(parentId string, userPower *admin.UserPower) []*c
 		return nil
 	}
 
+	tree := make([]*conn.Tree, 0, len(cfgList))
+	for _, cfg := range cfgList {
+		label := ""
+		if cfg.Name != nil {
+			label = *cfg.Name
+		}
+		tree = append(tree, &conn.Tree{Label: label, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_CONN})
+	}
+	return tree
+}
+
+// filterConnsAll 无权限过滤，直接按 parentId 查询所有连接（本地/桌面模式使用）
+func filterConnsAll(parentId string) []*conn.Tree {
+	param := []any{}
+	sql := bytes.Buffer{}
+	sql.WriteString("select * from t_conn")
+	if strings.EqualFold(parentId, "noneParent") {
+		sql.WriteString(" where (parent_id = '' or parent_id is null)")
+	} else if parentId != "" {
+		param = append(param, parentId)
+		sql.WriteString(" where parent_id = ?")
+	}
+	cfgList := []conn.ConnCfg{}
+	err := getDB().Select(&cfgList, sql.String(), param...)
+	if err != nil {
+		log.Printf("[filterConnsAll] 查询连接列表失败: %v", err)
+		return nil
+	}
 	tree := make([]*conn.Tree, 0, len(cfgList))
 	for _, cfg := range cfgList {
 		label := ""
@@ -72,6 +112,11 @@ func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 	for row.Next() {
 		row.Scan(&schemaName)
 		allSchemas = append(allSchemas, &conn.Tree{Label: schemaName, Type: conn.TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
+	}
+
+	// 本地/桌面模式：跳过权限过滤，返回所有 schema
+	if isLocalMode() {
+		return allSchemas
 	}
 
 	userPower := admin.GetUserPower(authorization)
@@ -157,6 +202,11 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 		allTables = append(allTables, treeNode)
 	}
 
+	// 本地/桌面模式：跳过权限过滤，返回所有表
+	if isLocalMode() {
+		return allTables
+	}
+
 	userPower := admin.GetUserPower(authorization)
 	if userPower == nil || len(userPower.Power) == 0 {
 		return []*conn.Tree{}
@@ -197,6 +247,11 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 
 	allDirs := findByParent(parentId, userPower)
 	if len(allDirs) == 0 {
+		return allDirs
+	}
+
+	// 本地/桌面模式：跳过权限过滤，返回所有目录
+	if isLocalMode() {
 		return allDirs
 	}
 

@@ -36,7 +36,7 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		UserID:            userId,
 		ConnID:            connId,
 		SchemaName:        firstNonEmpty(schemaNames),
-		IsRemote:          config.Get().IsRemote,
+		IsRemote:          !config.IsLocalMode(),
 		FullAccessSchemas: make(map[string]bool),
 		AllowedTables:     make(map[string]bool),
 		AllowedColumns:    make(map[string]map[string]bool),
@@ -151,6 +151,9 @@ func (s *PermissionScope) SkipChecks() bool {
 }
 
 func (s *PermissionScope) HasAnyAccess() bool {
+	if !s.IsRemote {
+		return true
+	}
 	return s.HasFullConnAccess || len(s.FullAccessSchemas) > 0 || len(s.AllowedTables) > 0 || len(s.AllowedColumns) > 0
 }
 

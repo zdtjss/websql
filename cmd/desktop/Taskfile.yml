@@ -5,6 +5,8 @@ vars:
   BIN_DIR: "bin"
   VERSIONINFO_DIR: "build/windows"
   FRONTEND_DIR: "../../web-src"
+  VERSION:
+    sh: date +%Y%m%d%H%M%S
 
 tasks:
   default:
@@ -47,10 +49,13 @@ tasks:
   copy:migrations:
     cmds:
       - cmd: powershell -Command "if (!(Test-Path 'migrations/sqlite')) { New-Item -ItemType Directory -Path 'migrations/sqlite' -Force | Out-Null }; Copy-Item -Force '../../migrations/sqlite/*.sql' 'migrations/sqlite/'"
+      - cmd: powershell -Command "if (!(Test-Path 'migrations/full')) { New-Item -ItemType Directory -Path 'migrations/full' -Force | Out-Null }; Copy-Item -Force '../../migrations/full/sqlite_full.sql' 'migrations/full/'"
     sources:
       - ../../migrations/sqlite/*.sql
+      - ../../migrations/full/sqlite_full.sql
     generates:
       - migrations/sqlite/*.sql
+      - migrations/full/sqlite_full.sql
 
   generate:icons:
     cmds:
@@ -74,7 +79,7 @@ tasks:
       - copy:migrations
       - generate:syso
     cmds:
-      - go build -ldflags="-s -w -H windowsgui" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .
+      - go build -ldflags="-s -w -H windowsgui -X internal/version.Version={{.VERSION}}" -o {{.BIN_DIR}}/{{.APP_NAME}}.exe .
     env:
       CGO_ENABLED: "1"
 

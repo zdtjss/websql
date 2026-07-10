@@ -28,30 +28,8 @@ func NewSnippetRepo(db *sqlx.DB) SnippetRepo {
 	return &snippetRepo{db: db}
 }
 
-// EnsureTable 在管理库中创建 t_sql_snippet 表（若不存在）。
-// 使用 MySQL/SQLite 兼容的 DDL，作为对 init SQL 文件的安全兜底，
-// 保证已部署实例在未执行迁移脚本时也能自动建表。
+// EnsureTable 建表由迁移系统（migrations/sqlite/0001_baseline.sql）统一管理，此处保留空实现以兼容接口。
 func (r *snippetRepo) EnsureTable() error {
-	ddl := `CREATE TABLE IF NOT EXISTS t_sql_snippet (
-  id VARCHAR(64) PRIMARY KEY,
-  user_id VARCHAR(64),
-  title VARCHAR(255) NOT NULL,
-  description TEXT,
-  sql_content TEXT NOT NULL,
-  category VARCHAR(100),
-  tags VARCHAR(500),
-  db_type VARCHAR(50),
-  conn_id VARCHAR(64),
-  schema_name VARCHAR(100),
-  created_at DATETIME,
-  updated_at DATETIME
-)`
-	if _, err := r.db.Exec(ddl); err != nil {
-		return err
-	}
-	// 创建索引（已存在时忽略错误，兼容 MySQL 与 SQLite）
-	r.db.Exec("CREATE INDEX idx_snippet_user_id ON t_sql_snippet(user_id)")
-	r.db.Exec("CREATE INDEX idx_snippet_category ON t_sql_snippet(category)")
 	return nil
 }
 

@@ -32,7 +32,7 @@ func checkPowerForRole(roleDetails []*PowerDetail, param *PowerCheckParam) bool 
 }
 
 func CheckPower(userPower *UserPower, param *PowerCheckParam) bool {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return true
 	}
 
@@ -52,7 +52,7 @@ func CheckPower(userPower *UserPower, param *PowerCheckParam) bool {
 }
 
 func CheckConnAccessByUserId(userId, connId string) bool {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return true
 	}
 	connIds := findUserPower(userId)
@@ -65,8 +65,7 @@ func CheckConnAccessByUserId(userId, connId string) bool {
 }
 
 func CheckConnAccess(userPower *UserPower, connId string) bool {
-	cfg := config.Get()
-	if cfg == nil || !cfg.IsRemote {
+	if config.IsLocalMode() {
 		return true
 	}
 
@@ -84,7 +83,7 @@ func CheckConnAccess(userPower *UserPower, connId string) bool {
 }
 
 func AppendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPower) {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return
 	}
 	powerCount := len(userPower.Power)
@@ -109,7 +108,7 @@ func checkSchemaAccessForRole(roleDetails []*PowerDetail, schemaName string) boo
 }
 
 func CheckSchemaAccess(connId, schemaName, authorization string) {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return
 	}
 
@@ -138,7 +137,7 @@ func checkTableAccessForRole(roleDetails []*PowerDetail, schemaName, tableName s
 }
 
 func CheckTableAccess(connId, schemaName, tableName, authorization string) {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return
 	}
 

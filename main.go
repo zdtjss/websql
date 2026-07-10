@@ -25,6 +25,7 @@ import (
 	"websql/internal/migration"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
+	"websql/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,13 +54,38 @@ func main() {
 	flag.Parse()
 
 	router.MaxMultipartMemory = 30 * 1024 * 1024
-	app.MainRegister(router)
 
 	database.InitMngtDbConn()
 
+	app.MainRegister(router)
+
+	// 检测程序升级：对比数据库中记录的旧版本与当前二进制版本
+	prevVer, _ := migration.GetPreviousAppVersion(database.Mngtdb)
+	if prevVer != "" && prevVer != version.Version {
+		log.Printf("[Main] 检测到程序升级: %s → %s", prevVer, version.Version)
+	} else if prevVer == "" {
+		log.Printf("[Main] 首次运行 (version=%s)", version.Version)
+	}
+
 	// SQLite 管理库自动迁移；MySQL/MariaDB 管理库跳过，由系统管理员手动升级
-	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, os.DirFS("./migrations/sqlite")); err != nil {
+	// 全新库时优先使用全量脚本快速建库
+	fullSQL, _ := os.ReadFile("./migrations/full/sqlite_full.sql")
+	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, os.DirFS("./migrations/sqlite"), string(fullSQL)); err != nil {
 		log.Fatalf("[Main] 管理库迁移失败: %v", err)
+	}
+
+	// 校验 DB schema 版本是否满足要求
+	if v, _ := migration.GetLatestAppliedVersion(database.Mngtdb); v != "" && v < version.RequiredMigrationVersion {
+		driverName := config.Get().DB.DriverName
+		if driverName == "mysql" || driverName == "mariadb" {
+			log.Fatalf("[Main] DB schema 版本 %s 低于要求 %s，请手动执行增量迁移脚本", v, version.RequiredMigrationVersion)
+		}
+		log.Printf("[Main] 警告: DB schema 版本 %s 低于要求 %s", v, version.RequiredMigrationVersion)
+	}
+
+	// 持久化当前程序版本号，供下次启动对比
+	if err := migration.RecordAppVersion(database.Mngtdb, version.Version); err != nil {
+		log.Printf("[Main] 记录程序版本失败: %v", err)
 	}
 
 	// 从数据库加载系统配置（覆盖配置文件中的配置）

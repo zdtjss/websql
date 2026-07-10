@@ -301,7 +301,7 @@ func resolveRoleTableAccess(roleDetails []*admin.PowerDetail, schemaName, tableN
 }
 
 func GetTableColumnAccess(connId, schemaName, tableName, authorization string) *TableColumnAccess {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return &TableColumnAccess{Level: AccessFull}
 	}
 
@@ -381,7 +381,7 @@ func GetTableAccessDowngraded(connId, schemaName, tableName, authorization strin
 }
 
 func CheckTablePermission(connId, schemaName, tableName, authorization string) {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return
 	}
 	admin.CheckSchemaAccess(connId, schemaName, authorization)
@@ -389,7 +389,7 @@ func CheckTablePermission(connId, schemaName, tableName, authorization string) {
 }
 
 func CheckTableWritePermission(connId string, schemaName string, tableName string, columns []string, authorization string) {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return
 	}
 	CheckTablePermission(connId, schemaName, tableName, authorization)
@@ -561,7 +561,7 @@ type SQLPermissionResult struct {
 }
 
 func CheckUserCanModify(authorization string) bool {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return true
 	}
 	user := admin.GetUser(authorization)
@@ -585,7 +585,7 @@ func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPe
 // CheckBatchSQLPermission 批量检查多条 SQL 的权限，内部只查询一次用户权限数据
 // 返回第一个不允许的结果，如果全部允许则返回 nil
 func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization string) *SQLPermissionResult {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return nil
 	}
 
@@ -670,7 +670,7 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 	// 和 FilterResultColumns 实现），因为 Agent 模式有 AI 辅助的语义理解和双重防线。
 	// 因此，经典模式下列级权限统一降级为表级权限（参见 GetTableAccessDowngraded）。
 
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return result
 	}
 

@@ -15,8 +15,7 @@ const LocalAutoToken = admin.LocalAutoToken
 // EnsureLocalUser 在本地/桌面模式下确保 local 用户存在，并注入会话。
 // 会话注入部分委托给 admin.EnsureLocalSession（同时供 middleware 自愈复用）。
 func EnsureLocalUser() {
-	cfg := config.Get()
-	if cfg.IsRemote {
+	if !config.IsLocalMode() {
 		return
 	}
 

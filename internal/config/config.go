@@ -28,6 +28,13 @@ func Get() *Config {
 	return Cfg
 }
 
+// IsLocalMode 本地/桌面模式判定：IsDesktop 为权威判据，即使 IsRemote 误为 true，
+// 桌面模式也强制走本地免权限。供所有权限检查统一使用，避免散落在各处的判断逻辑不一致。
+func IsLocalMode() bool {
+	cfg := Get()
+	return cfg != nil && (!cfg.IsRemote || cfg.IsDesktop)
+}
+
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")
 	log.Printf("使用配置文件 %s", configFile)
@@ -77,8 +84,8 @@ func TryFindFile(fileName string) (string, error) {
 	}
 	execDir := filepath.Dir(exec)
 	candidates := []string{
-		filepath.Join(execDir, "..", fileName), // 生产模式：exe 在 bin/，config 在父目录
-		filepath.Join(execDir, fileName),       // exe 同级
+		filepath.Join(execDir, "..", fileName),  // 生产模式：exe 在 bin/，config 在父目录
+		filepath.Join(execDir, fileName),        // exe 同级
 		filepath.Join(execDir, "bin", fileName), // dev 模式：exe 在 cmd/desktop/，config 在 bin/
 	}
 	if wd, err := os.Getwd(); err == nil {

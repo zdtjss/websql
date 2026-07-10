@@ -217,7 +217,7 @@ func GetUser(authorization string) *User {
 }
 
 func CheckAdminPower(c *gin.Context) bool {
-	if !config.Get().IsRemote {
+	if config.IsLocalMode() {
 		return true
 	}
 	authorization := appctx.Ctx.GetAuthorization(c)

@@ -31,11 +31,11 @@ import (
 // 数据同步在遇到目标已存在主键/唯一键时的处理方式。
 // 不同数据库类型支持的策略不同（见 SupportedConflictStrategies）。
 const (
-	StrategyUpdate      = "update"      // 更新冲突记录（默认）：MySQL 用 INSERT...ON DUPLICATE KEY UPDATE
-	StrategySkip        = "skip"        // 跳过冲突记录：目标已存在则不处理（INSERT 用 IGNORE，UPDATE 不生成）
+	StrategyUpdate       = "update"        // 更新冲突记录（默认）：MySQL 用 INSERT...ON DUPLICATE KEY UPDATE
+	StrategySkip         = "skip"          // 跳过冲突记录：目标已存在则不处理（INSERT 用 IGNORE，UPDATE 不生成）
 	StrategyInsertIgnore = "insert_ignore" // MySQL 专用：INSERT IGNORE INTO
-	StrategyReplace     = "replace"     // MySQL 专用：REPLACE INTO
-	StrategyFail        = "fail"        // 普通 INSERT，遇到主键冲突立即停止
+	StrategyReplace      = "replace"       // MySQL 专用：REPLACE INTO
+	StrategyFail         = "fail"          // 普通 INSERT，遇到主键冲突立即停止
 )
 
 // SupportedConflictStrategies 返回指定数据库类型可用的冲突策略列表。
@@ -173,12 +173,12 @@ func generateChunkSQLWithStrategy(addedRows []map[string]any, deletedRows []map[
 
 // DryRunTableReport 单张表的试运行报告。
 type DryRunTableReport struct {
-	TableName  string         `json:"tableName"`
-	TotalSource int           `json:"totalSource"`
-	TotalTarget int           `json:"totalTarget"`
+	TableName       string         `json:"tableName"`
+	TotalSource     int            `json:"totalSource"`
+	TotalTarget     int            `json:"totalTarget"`
 	OperationCounts map[string]int `json:"operationCounts"` // INSERT/UPDATE/DELETE/CONFLICT
-	Samples    []DryRunSample `json:"samples"`
-	Conflicts  []ModifiedRow  `json:"conflicts"` // 前 10 条潜在冲突
+	Samples         []DryRunSample `json:"samples"`
+	Conflicts       []ModifiedRow  `json:"conflicts"` // 前 10 条潜在冲突
 }
 
 // DryRunSample 单个操作类型的预览。
@@ -213,7 +213,7 @@ func DryRunSync(c *gin.Context) {
 	}
 
 	// 权限校验
-	if config.Get().IsRemote {
+	if !config.IsLocalMode() {
 		permission.CheckTablePermission(connId1, schema1, table, authorization)
 		permission.CheckTablePermission(connId2, schema2, table, authorization)
 	}
@@ -372,14 +372,14 @@ const rollbackLogTTL = 30 * time.Minute
 
 // RollbackLog 一次同步会话的回滚日志。
 type RollbackLog struct {
-	mu          sync.Mutex
-	SessionId   string
-	ConnId      string   // 目标连接 ID（回滚时使用）
-	Schema      string   // 目标 schema
-	DBType      string   // 目标数据库类型
-	UndoSQLs    []string // 撤销 SQL（按执行顺序；回滚时逆序执行）
+	mu           sync.Mutex
+	SessionId    string
+	ConnId       string   // 目标连接 ID（回滚时使用）
+	Schema       string   // 目标 schema
+	DBType       string   // 目标数据库类型
+	UndoSQLs     []string // 撤销 SQL（按执行顺序；回滚时逆序执行）
 	OriginalSQLs []string // 原始 SQL（用于审计/展示）
-	CreatedAt   time.Time
+	CreatedAt    time.Time
 }
 
 var rollbackStore sync.Map
@@ -418,12 +418,12 @@ func getOrCreateRollbackLog(sessionId, connId, schema, dbType string) *RollbackL
 		return v.(*RollbackLog)
 	}
 	log := &RollbackLog{
-		SessionId:   sessionId,
-		ConnId:      connId,
-		Schema:      schema,
-		DBType:      dbType,
-		CreatedAt:   time.Now(),
-		UndoSQLs:    make([]string, 0),
+		SessionId:    sessionId,
+		ConnId:       connId,
+		Schema:       schema,
+		DBType:       dbType,
+		CreatedAt:    time.Now(),
+		UndoSQLs:     make([]string, 0),
 		OriginalSQLs: make([]string, 0),
 	}
 	actual, loaded := rollbackStore.LoadOrStore(sessionId, log)
@@ -667,7 +667,7 @@ func splitTopLevel(s string, sep byte) []string {
 	return parts
 }
 
-// splitSQLValues 切分 SQL VALUES 列表，正确处理单引号字符串与转义 ''。
+// splitSQLValues 切分 SQL VALUES 列表，正确处理单引号字符串与转义 ”。
 func splitSQLValues(s string) []string {
 	var parts []string
 	var cur strings.Builder
@@ -720,14 +720,14 @@ func GetRollbackLog(c *gin.Context) {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 	response.WriteOK(c, map[string]any{
-		"sessionId":   log.SessionId,
-		"connId":      log.ConnId,
-		"schema":      log.Schema,
-		"undoCount":   len(log.UndoSQLs),
-		"undoSQLs":    log.UndoSQLs,
+		"sessionId":    log.SessionId,
+		"connId":       log.ConnId,
+		"schema":       log.Schema,
+		"undoCount":    len(log.UndoSQLs),
+		"undoSQLs":     log.UndoSQLs,
 		"originalSQLs": log.OriginalSQLs,
-		"createdAt":   log.CreatedAt.Format("2006-01-02 15:04:05"),
-		"expiresIn":   int((rollbackLogTTL - time.Since(log.CreatedAt)).Seconds()),
+		"createdAt":    log.CreatedAt.Format("2006-01-02 15:04:05"),
+		"expiresIn":    int((rollbackLogTTL - time.Since(log.CreatedAt)).Seconds()),
 	})
 }
 
@@ -754,7 +754,7 @@ func RollbackSync(c *gin.Context) {
 	}
 
 	// 权限校验：回滚等同于写操作
-	if config.Get().IsRemote && !permission.CheckUserCanModify(authorization) {
+	if !config.IsLocalMode() && !permission.CheckUserCanModify(authorization) {
 		response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行回滚"})
 		return
 	}
@@ -831,18 +831,18 @@ func RollbackSync(c *gin.Context) {
 
 // SyncReportInput 报告输入。
 type SyncReportInput struct {
-	Format           string             `json:"format"` // html | csv
-	SyncMode         string             `json:"syncMode"`
-	Direction        string             `json:"direction"`
-	ConflictStrategy string             `json:"conflictStrategy"`
-	Source           ReportEndpoint     `json:"source"`
-	Target           ReportEndpoint     `json:"target"`
-	Table            string             `json:"table"`
-	Results          []ReportTableStat  `json:"results"`
-	Errors           []string           `json:"errors"`
-	StartedAt        string             `json:"startedAt"`
-	DurationMs       int64              `json:"durationMs"`
-	DryRun           bool               `json:"dryRun"`
+	Format           string            `json:"format"` // html | csv
+	SyncMode         string            `json:"syncMode"`
+	Direction        string            `json:"direction"`
+	ConflictStrategy string            `json:"conflictStrategy"`
+	Source           ReportEndpoint    `json:"source"`
+	Target           ReportEndpoint    `json:"target"`
+	Table            string            `json:"table"`
+	Results          []ReportTableStat `json:"results"`
+	Errors           []string          `json:"errors"`
+	StartedAt        string            `json:"startedAt"`
+	DurationMs       int64             `json:"durationMs"`
+	DryRun           bool              `json:"dryRun"`
 }
 
 // ReportEndpoint 报告中的连接端点信息。

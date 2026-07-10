@@ -33,6 +33,7 @@ import (
 	"websql/internal/middleware"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/safego"
+	"websql/internal/version"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -67,7 +68,7 @@ func SetEmbeddedAssets(assetsFS http.FileSystem, indexHTML []byte) {
 
 func MainRegister(router *gin.Engine) {
 
-	localMode := !config.Get().IsRemote || config.Get().IsDesktop
+	localMode := config.IsLocalMode()
 
 	if !localMode {
 		router.Use(gzip.Gzip(gzip.DefaultCompression,
@@ -298,9 +299,10 @@ func MainRegister(router *gin.Engine) {
 			}
 		}
 		jsonutil.WriteJson(c.Writer, gin.H{
-			"status": status,
-			"db":     dbStatus,
-		})
+				"status":  status,
+				"db":      dbStatus,
+				"version": version.Version,
+			})
 	})
 
 	routerGroup.Any("/ext/", proxy)

@@ -771,7 +771,7 @@ func ApplySchemaDiff(c *gin.Context) {
 	user, _ := userVal.(*admin.User)
 
 	// 权限校验：检查用户是否有写权限
-	if config.Get().IsRemote {
+	if !config.IsLocalMode() {
 		if !permission.CheckUserCanModify(authorization) {
 			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行 Schema 变更"})
 			return

@@ -468,7 +468,6 @@
             <div class="table-selector-container model-selector-container">
               <div class="selector-header">
                 <label class="table-selector-label" style="padding-top: 2px;">AI 模型</label>
-                <span v-if="selectedModel" class="selector-badge ready">{{ selectedModelName }}</span>
               </div>
               <el-select v-model="selectedModel" filterable placeholder="选择模型..." class="modern-select">
                 <el-option v-for="model in aiModelList" :key="model.id"
@@ -1114,14 +1113,6 @@ function loadModelList() {
     modelLoading.value = false
   })
 }
-
-const selectedModelName = computed(() => {
-  if (!selectedModel.value || aiModelList.value.length === 0) return ''
-  const model = aiModelList.value.find(m => m.id === selectedModel.value)
-  return model ? model.model : ''
-})
-
-
 
 // 历史会话相关
 const sessionHistoryVisible = ref(false)

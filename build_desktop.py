@@ -31,6 +31,7 @@
   - v3 通过 wails.json 的 go.buildtags 自动应用构建标签
   - v3 的 NSIS/DMG 打包通过 `wails3 package` 或 Taskfile 实现
 """
+from datetime import datetime
 import argparse
 import os
 import shutil
@@ -133,15 +134,35 @@ def copy_syso_to_desktop():
         print("[WARN] 未找到 wails.exe.syso，可执行文件将无 Windows 图标")
 
 
-def copy_init_sql_to_desktop():
-    """将 sqlite3-init.sql 复制到 cmd/desktop/ 供 //go:embed 嵌入。"""
-    src_sql = os.path.join(PROJECT_ROOT, "sqlite3-init.sql")
-    if os.path.isfile(src_sql):
-        shutil.copy2(src_sql, os.path.join(DESKTOP_DIR, "sqlite3-init.sql"))
-        print("[OK] 已复制 sqlite3-init.sql 到 cmd/desktop/")
-    else:
-        print("[FAIL] 未找到 sqlite3-init.sql")
+def copy_migrations_to_desktop():
+    """将 migrations/sqlite/ 和 migrations/full/ 复制到 cmd/desktop/ 供 //go:embed 嵌入。"""
+    # 复制增量迁移脚本
+    src_dir = os.path.join(PROJECT_ROOT, "migrations", "sqlite")
+    dst_dir = os.path.join(DESKTOP_DIR, "migrations", "sqlite")
+    if not os.path.isdir(src_dir):
+        print(f"[FAIL] 未找到迁移脚本目录: {src_dir}")
         sys.exit(1)
+    os.makedirs(dst_dir, exist_ok=True)
+    for f in os.listdir(dst_dir):
+        os.remove(os.path.join(dst_dir, f))
+    for f in os.listdir(src_dir):
+        if f.endswith(".sql"):
+            shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+    print(f"[OK] 已复制增量迁移脚本到 {dst_dir}")
+
+    # 复制全量初始化脚本
+    full_src_dir = os.path.join(PROJECT_ROOT, "migrations", "full")
+    full_dst_dir = os.path.join(DESKTOP_DIR, "migrations", "full")
+    if not os.path.isdir(full_src_dir):
+        print(f"[FAIL] 未找到全量脚本目录: {full_src_dir}")
+        sys.exit(1)
+    os.makedirs(full_dst_dir, exist_ok=True)
+    for f in os.listdir(full_dst_dir):
+        os.remove(os.path.join(full_dst_dir, f))
+    for f in os.listdir(full_src_dir):
+        if f.endswith(".sql"):
+            shutil.copy2(os.path.join(full_src_dir, f), os.path.join(full_dst_dir, f))
+    print(f"[OK] 已复制全量初始化脚本到 {full_dst_dir}")
 
 
 def build_go():
@@ -150,13 +171,14 @@ def build_go():
     os.makedirs(bin_dir, exist_ok=True)
     ext = ".exe" if sys.platform == "win32" else ""
     output = os.path.join(bin_dir, f"WebSQL{ext}")
-    ldflags = "-H=windowsgui" if sys.platform == "win32" else ""
-    cmd = f"go build -tags=desktop -o \"{output}\""
-    if ldflags:
-        cmd += f" -ldflags \"{ldflags}\""
-    cmd += " ./cmd/desktop/"
+    version = datetime.now().strftime("%Y%m%d%H%M%S")
+    ldflags_parts = [f"-X internal/version.Version={version}"]
+    if sys.platform == "win32":
+        ldflags_parts.append("-H=windowsgui")
+    ldflags = " ".join(ldflags_parts)
+    cmd = f"go build -tags=desktop -o \"{output}\" -ldflags \"{ldflags}\" ./cmd/desktop/"
     run(cmd, cwd=PROJECT_ROOT)
-    print(f"[Build] 二进制产物: {output}")
+    print(f"[Build] 二进制产物: {output} (version={version})")
 
 
 def build(skip_frontend, package):
@@ -173,7 +195,7 @@ def build(skip_frontend, package):
             sys.exit(1)
 
     copy_syso_to_desktop()
-    copy_init_sql_to_desktop()
+    copy_migrations_to_desktop()
 
     if package:
         print("\n[Build] 调用 wails3 build 完成完整构建与打包...")

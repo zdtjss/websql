@@ -1,8 +1,6 @@
 package backup
 
 import (
-	"sync"
-
 	"github.com/jmoiron/sqlx"
 )
 
@@ -25,42 +23,9 @@ func NewBackupRepo(db *sqlx.DB) BackupRepo {
 	return &backupRepo{db: db}
 }
 
-var migrateOnce sync.Once
-
+// EnsureBackupTable 建表由迁移系统（migrations/sqlite/0001_baseline.sql）统一管理，
+// name 列的增量迁移由 0002_backup_add_name_col.sql 处理，此处保留空实现以兼容接口。
 func (r *backupRepo) EnsureBackupTable() {
-	migrateOnce.Do(func() {
-		if r.db == nil {
-			return
-		}
-		var hasNameCol bool
-		row := r.db.QueryRow("SELECT COUNT(*) > 0 FROM pragma_table_info('t_backup') WHERE name='name'")
-		if err := row.Scan(&hasNameCol); err != nil {
-			var colCount int
-			row2 := r.db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_name='t_backup' AND column_name='name'")
-			if err2 := row2.Scan(&colCount); err2 != nil {
-				return
-			}
-			hasNameCol = colCount > 0
-		}
-		if hasNameCol {
-			return
-		}
-		r.db.Exec("DROP TABLE IF EXISTS t_backup")
-		r.db.Exec(`CREATE TABLE t_backup (
-			id TEXT PRIMARY KEY,
-			name TEXT,
-			conn_id TEXT,
-			schema_name TEXT,
-			db_type TEXT,
-			size_bytes INTEGER DEFAULT 0,
-			backup_type TEXT DEFAULT 'full',
-			encrypted INTEGER DEFAULT 0,
-			created_at TEXT,
-			description TEXT,
-			status TEXT DEFAULT 'completed',
-			file_path TEXT
-		)`)
-	})
 }
 
 func (r *backupRepo) InsertBackupRecord(record *BackupRecord) error {

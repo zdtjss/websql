@@ -8,11 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"syscall"
 	"time"
 
 	app "websql/internal/app"
@@ -25,12 +23,11 @@ import (
 	"websql/internal/migration"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
+	"websql/internal/version"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
-
-var version = "dev"
 
 func main() {
 	defer func() {
@@ -39,13 +36,23 @@ func main() {
 		}
 	}()
 
+	// 在最早阶段创建 Job Object（KILL_ON_JOB_CLOSE），确保主进程退出时
+	// 所有子进程（msedgewebview2.exe 等）被操作系统强制终止，避免残留。
+	// 必须先于 WebView2 创建子进程执行。
+	setupJobObject()
+
 	gin.SetMode(gin.ReleaseMode)
 
-	// 日志按天轮转，落盘到 %APPDATA%/WebSQL/logs/，与 WebView2 UserDataPath 约定一致；
-	// 非 Windows（APPDATA 为空）回退到 ./logs。
-	logDir := filepath.Join(os.Getenv("APPDATA"), "WebSQL", "logs")
-	if os.Getenv("APPDATA") == "" {
+	// 桌面版日志目录：优先使用 exe 同目录的 logs/，便于用户查看；
+	// exe 同目录无写权限时回退到 %APPDATA%/WebSQL/logs/。
+	var logDir string
+	if exePath, err := os.Executable(); err == nil {
+		logDir = filepath.Join(filepath.Dir(exePath), "logs")
+	} else {
 		logDir = "./logs"
+	}
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		logDir = filepath.Join(os.Getenv("APPDATA"), "WebSQL", "logs")
 	}
 	logutils.Init(logDir, "websql", 7)
 
@@ -102,13 +109,31 @@ func main() {
 
 	database.InitMngtDbConn()
 
-	// 执行管理库迁移：全新库执行 baseline，存量库自动标记基线并仅运行增量迁移
+	// 检测程序升级：对比数据库中记录的旧版本与当前二进制版本
+	prevVer, _ := migration.GetPreviousAppVersion(database.Mngtdb)
+	if prevVer != "" && prevVer != version.Version {
+		log.Printf("[Desktop] 检测到程序升级: %s → %s", prevVer, version.Version)
+	} else if prevVer == "" {
+		log.Printf("[Desktop] 首次运行 (version=%s)", version.Version)
+	}
+
+	// 执行管理库迁移：全新库使用全量脚本快速建库，存量库自动标记基线并仅运行增量迁移
 	migrationSub, err := fs.Sub(migrationFS, "migrations/sqlite")
 	if err != nil {
 		log.Fatalf("[Desktop] 提取嵌入迁移脚本失败: %v", err)
 	}
-	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, migrationSub); err != nil {
+	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, migrationSub, string(fullInitSQL)); err != nil {
 		log.Fatalf("[Desktop] 管理库迁移失败: %v", err)
+	}
+
+	// 校验 DB schema 版本是否满足要求
+	if v, _ := migration.GetLatestAppliedVersion(database.Mngtdb); v != "" && v < version.RequiredMigrationVersion {
+		log.Printf("[Desktop] 警告: DB schema 版本 %s 低于要求 %s", v, version.RequiredMigrationVersion)
+	}
+
+	// 持久化当前程序版本号，供下次启动对比
+	if err := migration.RecordAppVersion(database.Mngtdb, version.Version); err != nil {
+		log.Printf("[Desktop] 记录程序版本失败: %v", err)
 	}
 
 	database.LoadConfigFromDB()
@@ -220,14 +245,4 @@ func setupEmbeddedAssets() {
 		return
 	}
 	app.SetEmbeddedAssets(http.FS(assetsSub), indexHTML)
-}
-
-// 注册关闭信号（备用，Wails 通常处理退出）
-func init() {
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-		<-c
-		os.Exit(0)
-	}()
 }

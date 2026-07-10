@@ -23,8 +23,7 @@ func getTokenFromRequest(c *gin.Context) string {
 // isLocalMode 本地/桌面模式判定：IsDesktop 为权威判据，即使 IsRemote 误为 true，
 // 桌面模式也强制走本地免登录。避免配置覆盖类 bug 再次导致弹登录框。
 func isLocalMode() bool {
-	cfg := config.Get()
-	return cfg != nil && (!cfg.IsRemote || cfg.IsDesktop)
+	return config.IsLocalMode()
 }
 
 func AuthMiddleware() gin.HandlerFunc {
