@@ -443,6 +443,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	hideWindow(cmd)
 
 	// 安全措施：设置环境变量
 	// PYTHONIOENCODING：统一 UTF-8 编码，避免 Windows GBK 编码问题

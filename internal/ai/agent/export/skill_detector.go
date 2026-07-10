@@ -137,6 +137,7 @@ func getPythonVersion() string {
 	verCtx, verCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer verCancel()
 	cmd := exec.CommandContext(verCtx, pythonPath, "--version")
+	hideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err == nil {
 		return strings.TrimSpace(string(output))
 	}
@@ -154,6 +155,7 @@ func detectPython() {
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, path, "--version")
+		hideWindow(cmd)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			continue

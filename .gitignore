@@ -44,4 +44,8 @@ cmd/desktop/static/*
 !cmd/desktop/static/.gitkeep
 release-desktop/
 
+# Release packages
+dist-pack/
+.release-staging/
+
 web-src/static

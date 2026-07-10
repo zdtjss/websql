@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"embed"
 	"flag"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +31,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+//go:embed migrations/sqlite/*.sql
+var migrationFS embed.FS
+
+//go:embed migrations/full/sqlite_full.sql
+var fullInitSQL []byte
 
 var (
 	port    *string
@@ -69,8 +77,8 @@ func main() {
 
 	// SQLite 管理库自动迁移；MySQL/MariaDB 管理库跳过，由系统管理员手动升级
 	// 全新库时优先使用全量脚本快速建库
-	fullSQL, _ := os.ReadFile("./migrations/full/sqlite_full.sql")
-	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, os.DirFS("./migrations/sqlite"), string(fullSQL)); err != nil {
+	migrationSubFS, _ := fs.Sub(migrationFS, "migrations/sqlite")
+	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, migrationSubFS, string(fullInitSQL)); err != nil {
 		log.Fatalf("[Main] 管理库迁移失败: %v", err)
 	}
 
