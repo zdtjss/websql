@@ -2,6 +2,7 @@ package search
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -74,7 +75,10 @@ func SearchObjects(c *gin.Context) {
 				defer rows.Close()
 				for rows.Next() {
 					var tableName, tableType, comment string
-					rows.Scan(&tableName, &tableType, &comment)
+					if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+						log.Printf("扫描行失败: %v", err)
+						continue
+					}
 					if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
 						results = append(results, ObjectSearchResult{
 							Type:       "table",
@@ -93,7 +97,10 @@ func SearchObjects(c *gin.Context) {
 				defer rows.Close()
 				for rows.Next() {
 					var tableName, tableType, comment string
-					rows.Scan(&tableName, &tableType, &comment)
+					if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+						log.Printf("扫描行失败: %v", err)
+						continue
+					}
 					if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
 						results = append(results, ObjectSearchResult{
 							Type:       "table",
@@ -118,7 +125,10 @@ func SearchObjects(c *gin.Context) {
 				defer rows.Close()
 				for rows.Next() {
 					var tableName, colName, comment string
-					rows.Scan(&tableName, &colName, &comment)
+					if err := rows.Scan(&tableName, &colName, &comment); err != nil {
+						log.Printf("扫描行失败: %v", err)
+						continue
+					}
 					if matchName(colName, lowerKeyword) || matchStr(comment, lowerKeyword) {
 						results = append(results, ObjectSearchResult{
 							Type:       "column",
@@ -138,7 +148,10 @@ func SearchObjects(c *gin.Context) {
 				defer rows.Close()
 				for rows.Next() {
 					var tableName, colName, comment string
-					rows.Scan(&tableName, &colName, &comment)
+					if err := rows.Scan(&tableName, &colName, &comment); err != nil {
+						log.Printf("扫描行失败: %v", err)
+						continue
+					}
 					results = append(results, ObjectSearchResult{
 						Type:       "column",
 						Schema:     schema,
@@ -159,7 +172,10 @@ func SearchObjects(c *gin.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var tableName, idxName string
-				rows.Scan(&tableName, &idxName)
+				if err := rows.Scan(&tableName, &idxName); err != nil {
+					log.Printf("扫描行失败: %v", err)
+					continue
+				}
 				if matchName(idxName, lowerKeyword) {
 					results = append(results, ObjectSearchResult{
 						Type:       "index",
@@ -181,7 +197,10 @@ func SearchObjects(c *gin.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var viewName string
-				rows.Scan(&viewName)
+				if err := rows.Scan(&viewName); err != nil {
+					log.Printf("扫描行失败: %v", err)
+					continue
+				}
 				results = append(results, ObjectSearchResult{
 					Type:       "view",
 					Schema:     schema,
@@ -289,7 +308,10 @@ func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) 
 	var textCols []string
 	for cols.Next() {
 		var colName string
-		cols.Scan(&colName)
+		if err := cols.Scan(&colName); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		if sanitize.IsValidIdentifier(colName) {
 			textCols = append(textCols, colName)
 		}
@@ -353,7 +375,10 @@ func SearchAll(c *gin.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var tableName, tableType, comment string
-				rows.Scan(&tableName, &tableType, &comment)
+				if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+					log.Printf("扫描行失败: %v", err)
+					continue
+				}
 				if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
 					objectResults = append(objectResults, ObjectSearchResult{
 						Type:       "table",
@@ -372,7 +397,10 @@ func SearchAll(c *gin.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var tableName, tableType, comment string
-				rows.Scan(&tableName, &tableType, &comment)
+				if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+					log.Printf("扫描行失败: %v", err)
+					continue
+				}
 				if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
 					objectResults = append(objectResults, ObjectSearchResult{
 						Type:       "table",
@@ -393,7 +421,10 @@ func SearchAll(c *gin.Context) {
 		defer colRows.Close()
 		for colRows.Next() {
 			var tableName, colName, comment string
-			colRows.Scan(&tableName, &colName, &comment)
+			if err := colRows.Scan(&tableName, &colName, &comment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			objectResults = append(objectResults, ObjectSearchResult{
 				Type:       "column",
 				Schema:     schema,
@@ -455,7 +486,10 @@ func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	default:
@@ -466,7 +500,10 @@ func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	}

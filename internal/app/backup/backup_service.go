@@ -6,15 +6,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"websql/internal/app/conn"
-	"websql/internal/database"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/lazyinit"
 	"websql/internal/pkg/safego"
 	"websql/internal/pkg/sanitize"
 	"websql/internal/pkg/sqlguard"
@@ -24,42 +23,44 @@ import (
 )
 
 // BackupService 封装备份相关的业务逻辑：文件 I/O、外部数据库查询、加密等
-type BackupService struct {
+type BackupService interface {
+	CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error)
+	CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) string
+	RestoreBackup(backupId, connId, authorization string) (map[string]any, error)
+	ListBackups(connId, schema string) (map[string]any, error)
+	DeleteBackup(backupId string) error
+	GetBackupTables(connId, schema, authorization string) (map[string]any, error)
+	DownloadBackup(c *gin.Context, backupId string) error
+}
+
+type backupService struct {
 	repo BackupRepo
 }
 
 // NewBackupService 创建 BackupService 实例
-func NewBackupService(repo BackupRepo) *BackupService {
-	return &BackupService{repo: repo}
+func NewBackupService(repo BackupRepo) BackupService {
+	return &backupService{repo: repo}
 }
 
-// 默认实例，保持对包级别函数的向后兼容
-// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
-// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
-var (
-	defaultBackupRepo    BackupRepo
-	defaultBackupService *BackupService
-	defaultBackupOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultBackup = &lazyinit.Holder[BackupService]{}
 
-// ensureDefaultBackup 初始化默认的 BackupRepo 和 BackupService
-func ensureDefaultBackup() {
-	defaultBackupOnce.Do(func() {
-		defaultBackupRepo = NewBackupRepo(database.Mngtdb)
-		defaultBackupService = NewBackupService(defaultBackupRepo)
+func getDefaultBackup() BackupService {
+	return defaultBackup.Get(func() BackupService {
+		return NewBackupService(NewBackupRepo(getDB()))
 	})
 }
 
 // CreateBackup 创建数据库备份（同步版本，保留以兼容旧调用）。
 // 新的 HTTP 入口请使用 CreateBackupAsync，以支持进度轮询。
-func (s *BackupService) CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
+func (s *backupService) CreateBackup(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
 	return s.createBackupInternal("", connId, schema, name, description, tablesStr, withData, encrypt, authorization)
 }
 
 // CreateBackupAsync 异步创建数据库备份，立即返回 taskId，实际备份在后台 goroutine 中执行。
 // 调用方可通过 GetBackupProgress(taskId) 轮询进度。
 // 进度数据在任务完成或失败后 30 秒自动清理。
-func (s *BackupService) CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) string {
+func (s *backupService) CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization string) string {
 	taskId := idgen.RandomStr()
 
 	// 先写入初始进度，确保前端首次轮询能拿到数据
@@ -101,7 +102,7 @@ func (s *BackupService) CreateBackupAsync(connId, schema, name, description, tab
 
 // createBackupInternal 执行实际的备份逻辑。
 // taskId 为空时表示同步调用（不更新进度）；非空时会在遍历表过程中实时更新进度。
-func (s *BackupService) createBackupInternal(taskId, connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
+func (s *backupService) createBackupInternal(taskId, connId, schema, name, description, tablesStr, withData, encrypt, authorization string) (map[string]any, error) {
 	s.repo.EnsureBackupTable()
 
 	dbConn := conn.GetConn(connId, authorization)
@@ -144,7 +145,8 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 	backupDir := filepath.Join("backups", connId, schema)
 	os.MkdirAll(backupDir, 0755)
 
-	filePath := filepath.Join(backupDir, name+".sql")
+	safeName := sanitize.SanitizeFileName(name, "backup_"+time.Now().Format("20060102_150405"))
+	filePath := filepath.Join(backupDir, safeName+".sql")
 	file, err := os.Create(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("创建备份文件失败: %s", err.Error())
@@ -225,23 +227,17 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 
 	file.WriteString(fmt.Sprintf("\n-- Backup completed: %d tables, %d rows\n", successCount, totalSize))
 
-	var content []byte
-	readContent, readErr := os.ReadFile(filePath)
-	if readErr != nil {
-		content = make([]byte, 0)
-	} else {
-		content = readContent
-		limit := 1000000
-		if len(content) > limit {
-			content = content[:limit]
-		}
-	}
-
 	if encrypt == "true" {
-		encryptedContent := crypto.AESEncode(string(content))
-		err3 := os.WriteFile(filePath, []byte(encryptedContent), 0644)
-		if err3 != nil {
-			return nil, fmt.Errorf("加密备份文件失败: %s", err3.Error())
+		fullContent, readErr := os.ReadFile(filePath)
+		if readErr != nil {
+			return nil, fmt.Errorf("读取备份文件失败: %s", readErr.Error())
+		}
+		encryptedContent, encErr := crypto.AESEncode(string(fullContent))
+		if encErr != nil {
+			return nil, fmt.Errorf("加密备份文件失败: %s", encErr.Error())
+		}
+		if err := os.WriteFile(filePath, []byte(encryptedContent), 0644); err != nil {
+			return nil, fmt.Errorf("加密备份文件写入失败: %s", err.Error())
 		}
 	}
 
@@ -279,7 +275,7 @@ func (s *BackupService) createBackupInternal(taskId, connId, schema, name, descr
 }
 
 // ListBackups 查询备份列表
-func (s *BackupService) ListBackups(connId, schema string) (map[string]any, error) {
+func (s *backupService) ListBackups(connId, schema string) (map[string]any, error) {
 	s.repo.EnsureBackupTable()
 
 	records, err := s.repo.FindBackups(connId, schema)
@@ -294,7 +290,7 @@ func (s *BackupService) ListBackups(connId, schema string) (map[string]any, erro
 }
 
 // RestoreBackup 从备份恢复数据库
-func (s *BackupService) RestoreBackup(backupId, connId, authorization string) (map[string]any, error) {
+func (s *backupService) RestoreBackup(backupId, connId, authorization string) (map[string]any, error) {
 	s.repo.EnsureBackupTable()
 
 	dbConn := conn.GetConn(connId, authorization)
@@ -311,7 +307,11 @@ func (s *BackupService) RestoreBackup(backupId, connId, authorization string) (m
 
 	sqlContent := string(content)
 	if record.Encrypted {
-		sqlContent = crypto.AESDecode(sqlContent)
+		decoded, decErr := crypto.AESDecode(sqlContent)
+		if decErr != nil {
+			return nil, fmt.Errorf("备份文件解密失败: %s", decErr.Error())
+		}
+		sqlContent = decoded
 	}
 
 	statements := splitBackupSQL(sqlContent)
@@ -323,12 +323,21 @@ func (s *BackupService) RestoreBackup(backupId, connId, authorization string) (m
 		if stmt == "" || strings.HasPrefix(stmt, "--") {
 			continue
 		}
-		// DDL 安全校验
-		if err := sqlguard.ValidateDDL(stmt); err != nil {
-			errMsg := fmt.Sprintf("安全校验失败 [%.100s]: %s", stmt, err.Error())
-			failed = append(failed, errMsg)
-			logger.PrintErrf(errMsg, nil)
-			continue
+		// 安全校验：DML 走 ValidateDML，DDL 走 ValidateDDL
+		if sqlguard.IsDML(stmt) {
+			if err := sqlguard.ValidateDML(stmt); err != nil {
+				errMsg := fmt.Sprintf("DML 安全校验失败 [%.100s]: %s", stmt, err.Error())
+				failed = append(failed, errMsg)
+				logger.PrintErrf(errMsg, nil)
+				continue
+			}
+		} else {
+			if err := sqlguard.ValidateDDL(stmt); err != nil {
+				errMsg := fmt.Sprintf("DDL 安全校验失败 [%.100s]: %s", stmt, err.Error())
+				failed = append(failed, errMsg)
+				logger.PrintErrf(errMsg, nil)
+				continue
+			}
 		}
 		_, err := dbConn.Exec(stmt)
 		if err != nil {
@@ -349,7 +358,7 @@ func (s *BackupService) RestoreBackup(backupId, connId, authorization string) (m
 }
 
 // DeleteBackup 删除备份记录及文件
-func (s *BackupService) DeleteBackup(backupId string) error {
+func (s *backupService) DeleteBackup(backupId string) error {
 	s.repo.EnsureBackupTable()
 
 	record, err := s.repo.FindBackupById(backupId)
@@ -365,7 +374,7 @@ func (s *BackupService) DeleteBackup(backupId string) error {
 }
 
 // GetBackupTables 获取可备份的表列表
-func (s *BackupService) GetBackupTables(connId, schema, authorization string) (map[string]any, error) {
+func (s *backupService) GetBackupTables(connId, schema, authorization string) (map[string]any, error) {
 	dbConn := conn.GetConn(connId, authorization)
 	dbType := dbConn.DriverName()
 
@@ -394,7 +403,7 @@ func (s *BackupService) GetBackupTables(connId, schema, authorization string) (m
 }
 
 // DownloadBackup 下载备份文件
-func (s *BackupService) DownloadBackup(c *gin.Context, backupId string) error {
+func (s *backupService) DownloadBackup(c *gin.Context, backupId string) error {
 	s.repo.EnsureBackupTable()
 
 	record, err := s.repo.FindBackupById(backupId)
@@ -408,7 +417,11 @@ func (s *BackupService) DownloadBackup(c *gin.Context, backupId string) error {
 	}
 
 	if record.Encrypted {
-		content = []byte(crypto.AESDecode(string(content)))
+		decoded, decErr := crypto.AESDecode(string(content))
+		if decErr != nil {
+			return fmt.Errorf("备份文件解密失败: %s", decErr.Error())
+		}
+		content = []byte(decoded)
 	}
 
 	fileName := record.Name + ".sql"
@@ -437,7 +450,9 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []TableInfo {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				continue
+			}
 			result = append(result, TableInfo{
 				Name: strings.TrimSpace(tableName),
 				Type: normalizeTableType(tableType),
@@ -451,7 +466,9 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []TableInfo {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				continue
+			}
 			result = append(result, TableInfo{
 				Name: strings.TrimSpace(tableName),
 				Type: normalizeTableType(tableType),
@@ -687,28 +704,72 @@ func exportTableData(conn *sqlx.DB, dbType, schema, table string) (string, []str
 	return buf.String(), columns, rowCount, nil
 }
 
+// splitBackupSQL 将备份 SQL 按语句分割，正确处理引号内分号和注释。
 func splitBackupSQL(content string) []string {
-	stmts := make([]string, 0)
-	current := &strings.Builder{}
-	lines := strings.Split(content, "\n")
+	var stmts []string
+	var buf strings.Builder
+	i, n := 0, len(content)
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
-			if current.Len() > 0 {
-				current.WriteString("\n")
+	for i < n {
+		ch := content[i]
+
+		switch {
+		// 单行注释 -- ...（跳到行尾，不纳入输出）
+		case ch == '-' && i+1 < n && content[i+1] == '-':
+			i += 2
+			for i < n && content[i] != '\n' {
+				i++
 			}
-			continue
-		}
-		current.WriteString(trimmed)
-		current.WriteString(" ")
-		if strings.HasSuffix(trimmed, ";") {
-			stmts = append(stmts, strings.TrimSpace(current.String()))
-			current.Reset()
+
+		// 块注释 /* ... */（跳过，不纳入输出）
+		case ch == '/' && i+1 < n && content[i+1] == '*':
+			i += 2
+			for i+1 < n && !(content[i] == '*' && content[i+1] == '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2
+			} else {
+				i = n
+			}
+
+		// 引号字符串：'...' / "..." / `...`，处理双引号转义（'' / "" / ``）
+		case ch == '\'' || ch == '"' || ch == '`':
+			quote := ch
+			buf.WriteByte(ch)
+			i++
+			for i < n {
+				buf.WriteByte(content[i])
+				if content[i] == quote {
+					i++
+					if i < n && content[i] == quote {
+						buf.WriteByte(content[i])
+						i++
+						continue
+					}
+					break
+				}
+				i++
+			}
+
+		// 语句分隔符
+		case ch == ';':
+			stmt := strings.TrimSpace(buf.String())
+			if stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+			buf.Reset()
+			i++
+
+		default:
+			buf.WriteByte(ch)
+			i++
 		}
 	}
-	if current.Len() > 0 {
-		stmts = append(stmts, strings.TrimSpace(current.String()))
+
+	stmt := strings.TrimSpace(buf.String())
+	if stmt != "" {
+		stmts = append(stmts, stmt)
 	}
 	return stmts
 }

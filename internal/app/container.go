@@ -6,9 +6,14 @@ import (
 	"websql/internal/config"
 	"websql/internal/database"
 	admin "websql/internal/app/admin"
+	"websql/internal/app/backup"
+	"websql/internal/app/conn"
+	"websql/internal/app/dbops"
 	"websql/internal/app/monitor"
 	"websql/internal/app/permission"
+	"websql/internal/app/snippet"
 	sqlapp "websql/internal/app/sql"
+	"websql/internal/app/storage"
 	"websql/internal/app/system"
 	tree "websql/internal/app/treehandler"
 
@@ -38,16 +43,16 @@ func GetContainer() *Container {
 // 并将管理库 *sqlx.DB 注入到尚未完成 repo 分层迁移的包，
 // 使其 getDB() 返回注入实例而非已废弃的 database.Mngtdb 全局变量。
 func NewContainer() *Container {
-	if config.Cfg == nil {
-		config.Cfg = config.ReadConfig()
+	cfg := config.Get()
+	if cfg == nil {
+		cfg = config.ReadConfig()
 	}
+	config.SetActive(cfg)
 	if database.Mngtdb == nil {
 		database.InitMngtDbConn()
 	}
 
 	db := database.Mngtdb
-	// 将活跃配置注入到 config 包，供所有包通过 config.Get() 访问。
-	config.SetActive(config.Cfg)
 	// 注入到各业务包；未调用时各包 getDB() 回退到全局 database.Mngtdb（向后兼容）。
 	// 顺序无依赖：各包 injectedDB 为独立包级变量。
 	audit.Init(db)
@@ -58,6 +63,11 @@ func NewContainer() *Container {
 	monitor.Init(db)
 	sqlapp.Init(db)
 	agent.Init(db)
+	conn.Init(db)
+	backup.Init(db)
+	dbops.Init(db)
+	snippet.Init(db)
+	storage.Init(db)
 
 	c := &Container{
 		Config:       config.Get(),

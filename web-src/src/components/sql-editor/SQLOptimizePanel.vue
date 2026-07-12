@@ -107,6 +107,7 @@ import { ElMessage } from 'element-plus'
 import { Loading, ArrowRight } from '@element-plus/icons-vue'
 import { getMarkdownRenderer, getHljs } from '@/utils/lazyDeps'
 import { useTheme } from '@/utils/useTheme'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
 import { explainSqlOpt } from '@/api/sql'
 
 let md = null
@@ -221,7 +222,7 @@ const renderedMarkdown = computed(() => {
     return inner
   })
 
-  let rendered = md.render(processed)
+  let rendered = sanitizeHtml(md.render(processed))
   rendered = addCopyButtonsToCodeBlocks(rendered)
   return rendered
 })

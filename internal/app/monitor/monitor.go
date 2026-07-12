@@ -366,7 +366,10 @@ func GetProcesses(c *gin.Context) {
 			for i := range vals {
 				valPtrs[i] = &vals[i]
 			}
-			rows.Scan(valPtrs...)
+			if err := rows.Scan(valPtrs...); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 
 			p := ProcessInfo{}
 			for i, col := range cols {
@@ -401,7 +404,10 @@ func GetProcesses(c *gin.Context) {
 			defer rows.Close()
 			for rows.Next() {
 				var sid, serial, username, status, machine, program string
-				rows.Scan(&sid, &serial, &username, &status, &machine, &program)
+				if err := rows.Scan(&sid, &serial, &username, &status, &machine, &program); err != nil {
+					log.Printf("扫描行失败: %v", err)
+					continue
+				}
 				processes = append(processes, ProcessInfo{
 					Id:      parseStrToInt(sid),
 					User:    username,

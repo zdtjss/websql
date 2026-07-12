@@ -110,7 +110,10 @@ func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 	}
 	allSchemas := make([]*conn.Tree, 0)
 	for row.Next() {
-		row.Scan(&schemaName)
+		if err := row.Scan(&schemaName); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		allSchemas = append(allSchemas, &conn.Tree{Label: schemaName, Type: conn.TREE_NODE_TYPE_SCHEMA, Data: map[string]any{"dbType": dc.DriverName()}})
 	}
 
@@ -164,7 +167,10 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
 		columnComment = ""
-		row.Scan(&tableName2, &columnName, &columnComment)
+		if err := row.Scan(&tableName2, &columnName, &columnComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": columnComment})
 	}
 
@@ -186,7 +192,10 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 	logger.PrintErr(err)
 	allTables := make([]*conn.Tree, 0)
 	for row.Next() {
-		row.Scan(&tableName, &tableType, &tableComment)
+		if err := row.Scan(&tableName, &tableType, &tableComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		treeNode := &conn.Tree{Label: tableName, Data: map[string]any{"text": tableComment, "columns": grouped[tableName]}, Type: conn.TREE_NODE_TYPE_TABLE}
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
 			switch tableType {

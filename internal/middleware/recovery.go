@@ -2,10 +2,9 @@ package middleware
 
 import (
 	"log"
-	"net/http"
 	"runtime/debug"
 
-	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,17 +19,13 @@ func CustomRecovery() gin.HandlerFunc {
 
 			c.Abort()
 
-			msg := "系统内部错误，请稍后重试"
 			if err, ok := recovered.(error); ok {
-				msg = sanitize.SanitizeError(err)
+				response.WriteErr(c, 200, 500, err.Error())
 			} else if s, ok := recovered.(string); ok {
-				msg = sanitize.SanitizeErrMsg(s)
+				response.WriteErr(c, 200, 500, s)
+			} else {
+				response.WriteInternalErr(c, "")
 			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"code": 500,
-				"msg":  msg,
-			})
 		}
 	})
 }

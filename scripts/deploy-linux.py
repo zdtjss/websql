@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 WebSQL Linux Cross-Compile and Deploy Script (Optimized)
-Usage: python deploy-linux.py [--host user@ip] [--path /opt/WebSQL2] [--password xxx]
+Usage: python scripts/deploy-linux.py [--host user@ip] [--path /opt/WebSQL2] [--password xxx]
 
 密码优先级: 命令行参数 > 环境变量 DEPLOY_PASSWORD > 交互输入
 """
@@ -126,7 +126,7 @@ def create_deploy_zip(binary_path, dist_dir, skills_dir=None):
 
 def main():
     args = parse_args()
-    project_root = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     web_src = os.path.join(project_root, "web-src")
     dist_dir = os.path.join(web_src, "dist")
     binary_path = os.path.join(project_root, "WebSql")

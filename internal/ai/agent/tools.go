@@ -125,7 +125,12 @@ func GetConn(connId, userId string) (*sqlx.DB, string) {
 	}
 	pwd := ""
 	if cfg.Pwd != nil && cfg.DbType != "sqlite" {
-		pwd = crypto.AESDecode(*cfg.Pwd)
+		decoded, decErr := crypto.AESDecode(*cfg.Pwd)
+		if decErr != nil {
+			logger.PrintErrf("连接密码解密失败: %s", decErr, cfg.Id)
+		} else {
+			pwd = decoded
+		}
 	}
 	conn := database.GetConn(&database.DBParam{
 		Id: cfg.Id, Name: deref(cfg.Name), DbType: cfg.DbType,

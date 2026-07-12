@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"time"
 
 	agent "websql/internal/ai/agent"
 	system "websql/internal/app/system"
+	"websql/internal/pkg/response"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
@@ -38,29 +40,29 @@ func HandleSaveConfig(c *gin.Context) {
 	var cfg system.AIConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		log.Printf("[AI] 参数解析失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "参数解析失败"})
+		response.WriteErr(c, http.StatusOK, 500, "参数解析失败")
 		return
 	}
 	if err := SaveAIConfig(cfg); err != nil {
 		log.Printf("[AI] 保存配置失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "保存配置失败"})
+		response.WriteErr(c, http.StatusOK, 500, "保存配置失败")
 		return
 	}
-	c.JSON(200, gin.H{"code": 200, "data": "保存成功"})
+	response.WriteOK(c, "保存成功")
 }
 
 func HandleGetConfig(c *gin.Context) {
 	cfg, err := GetAIConfig()
 	if err != nil {
 		log.Printf("[AI] 获取配置失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "获取配置失败"})
+		response.WriteErr(c, http.StatusOK, 500, "获取配置失败")
 		return
 	}
 	if cfg == nil {
-		c.JSON(200, gin.H{"code": 200, "data": nil})
+		response.WriteOK(c, nil)
 		return
 	}
-	c.JSON(200, gin.H{"code": 200, "data": cfg})
+	response.WriteOK(c, cfg)
 }
 
 // HandleTestConfig 使用 Eino 组件测试 AI 连接，与 Agent 实际运行路径一致
@@ -68,11 +70,11 @@ func HandleTestConfig(c *gin.Context) {
 	var cfg system.AIConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		log.Printf("[AI] 参数解析失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "参数解析失败"})
+		response.WriteErr(c, http.StatusOK, 500, "参数解析失败")
 		return
 	}
 	if cfg.Provider == "" || cfg.BaseURL == "" || cfg.Model == "" {
-		c.JSON(200, gin.H{"code": 500, "msg": "请填写完整的 AI 配置（provider、baseUrl、model）"})
+		response.WriteErr(c, http.StatusOK, 500, "请填写完整的 AI 配置（provider、baseUrl、model）")
 		return
 	}
 
@@ -83,7 +85,7 @@ func HandleTestConfig(c *gin.Context) {
 	cm, err := agent.BuildChatModel(ctx, &cfg)
 	if err != nil {
 		log.Printf("[AI] 创建模型失败 - err=%v\n", err)
-		c.JSON(200, gin.H{"code": 500, "msg": "创建模型失败：" + err.Error()})
+		response.WriteErrf(c, http.StatusOK, 500, "创建模型失败：%v", err)
 		return
 	}
 
@@ -100,8 +102,8 @@ func HandleTestConfig(c *gin.Context) {
 				break
 			}
 		}
-		c.JSON(200, gin.H{"code": 500, "msg": "连接测试失败：" + rootErr.Error()})
+		response.WriteErrf(c, http.StatusOK, 500, "连接测试失败：%v", rootErr)
 		return
 	}
-	c.JSON(200, gin.H{"code": 200, "msg": "连接成功"})
+	response.WriteOK(c, "连接成功")
 }

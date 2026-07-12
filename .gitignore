@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+*.syso
 
 # Test binary, built with `go test -c`
 *.test
@@ -11,29 +12,49 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Dependency directories (remove the comment below to include it)
+# Dependency directories (remove the comment below to include)
 # vendor/
 go.sum
+
+# Secrets / certificates
 nway.key
 nway.pem
-.vscode/
-nway.s3db
-web-src/package-lock.json
-/static/
-web-src/auto-imports.d.ts
-web-src/components.d.ts
-exports/
-__pycache__/
-data/
-docs/
-release/
 
+# IDE
+.vscode/
 .idea/
 
-nway.sqlite3**.db**
+# Database files
+*.db
+*.db-shm
+*.db-wal
+nway.s3db
 
-node_modules/
-.idea/modules.xml
+# Logs
+*.log
+logs/
+
+# Runtime data
+data/
+exports/
+backups/
+screenshots/
+__pycache__/
+
+# Build / release artifacts
+/static/
+release/
+dist-pack/
+.release-staging/
+build/
+.dbg/
+.kiro/
+
+# Frontend generated
+web-src/package-lock.json
+web-src/auto-imports.d.ts
+web-src/components.d.ts
+web-src/static
 
 # Desktop build artifacts
 cmd/desktop/frontend/
@@ -44,8 +65,4 @@ cmd/desktop/static/*
 !cmd/desktop/static/.gitkeep
 release-desktop/
 
-# Release packages
-dist-pack/
-.release-staging/
-
-web-src/static
+node_modules/

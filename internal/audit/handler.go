@@ -29,11 +29,12 @@ func Init(db *sqlx.DB) {
 }
 
 // getDB 返回注入的 DB，未注入时回退到全局 database.Mngtdb。
+// Deprecated: 仅为兼容未调用 Init 的场景，后续应移除回退
 func getDB() *sqlx.DB {
 	if injectedDB != nil {
 		return injectedDB
 	}
-	return database.Mngtdb
+	return database.Mngtdb // Deprecated: 回退兼容
 }
 
 func HandleGetAuditLogs(c *gin.Context) {

@@ -6,14 +6,14 @@ WebSQL Web 版跨平台打包脚本
 每个平台生成一个独立可运行的 zip 压缩包。
 
 用法:
-  python build_release.py                          # 交互式选择平台
-  python build_release.py --platform windows       # 仅打包 Windows
-  python build_release.py --platform linux         # 仅打包 Linux
-  python build_release.py --platform macos         # 仅打包 macOS (amd64+arm64)
-  python build_release.py --platform all           # 打包全部平台
-  python build_release.py --skip-frontend          # 跳过前端构建
-  python build_release.py --skip-build             # 跳过 Go 编译（使用已有二进制）
-  python build_release.py --skip-db                # 跳过全新数据库创建
+  python scripts/build_release.py                          # 交互式选择平台
+  python scripts/build_release.py --platform windows       # 仅打包 Windows
+  python scripts/build_release.py --platform linux         # 仅打包 Linux
+  python scripts/build_release.py --platform macos         # 仅打包 macOS (amd64+arm64)
+  python scripts/build_release.py --platform all           # 打包全部平台
+  python scripts/build_release.py --skip-frontend          # 跳过前端构建
+  python scripts/build_release.py --skip-build             # 跳过 Go 编译（使用已有二进制）
+  python scripts/build_release.py --skip-db                # 跳过全新数据库创建
 
 产物:
   dist-pack/websql-web-{platform}.zip — 可独立发行、运行的 zip 包
@@ -36,7 +36,7 @@ if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_PACK_DIR = os.path.join(PROJECT_ROOT, "dist-pack")
 WEB_SRC_DIR = os.path.join(PROJECT_ROOT, "web-src")
 DIST_DIR = os.path.join(WEB_SRC_DIR, "dist")

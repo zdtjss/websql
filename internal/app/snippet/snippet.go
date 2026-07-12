@@ -16,7 +16,6 @@ func List(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
 	keyword := c.Query("keyword")
 	category := c.Query("category")
 	tag := c.Query("tag")
@@ -24,7 +23,7 @@ func List(c *gin.Context) {
 	if category == "all" {
 		category = ""
 	}
-	list, err := defaultService.List(userId, keyword, category, tag)
+	list, err := getDefaultSnippet().List(userId, keyword, category, tag)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -43,13 +42,12 @@ func Save(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
 	req := &SnippetSave{}
 	if err := jsonutil.UnmarshalJson(c.Request.Body, req); err != nil {
 		response.WriteErr(c, 200, 400, "请求参数解析失败")
 		return
 	}
-	sn, err := defaultService.Save(req, userId)
+	sn, err := getDefaultSnippet().Save(req, userId)
 	if err != nil {
 		switch err {
 		case ErrTitleRequired, ErrSqlRequired:
@@ -72,13 +70,12 @@ func Delete(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
 	id := c.Query("id")
 	if id == "" {
 		response.WriteErr(c, 200, 400, "缺少 id 参数")
 		return
 	}
-	if err := defaultService.Delete(id, userId); err != nil {
+	if err := getDefaultSnippet().Delete(id, userId); err != nil {
 		response.WriteErr(c, 200, 400, err.Error())
 		return
 	}
@@ -93,8 +90,7 @@ func Export(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
-	data, err := defaultService.Export(userId)
+	data, err := getDefaultSnippet().Export(userId)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -110,13 +106,12 @@ func Import(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
 	req := &SnippetImportReq{}
 	if err := jsonutil.UnmarshalJson(c.Request.Body, req); err != nil {
 		response.WriteErr(c, 200, 400, "请求参数解析失败")
 		return
 	}
-	count, err := defaultService.Import(req.Items, userId)
+	count, err := getDefaultSnippet().Import(req.Items, userId)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -132,8 +127,7 @@ func Categories(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
-	cats, err := defaultService.Categories(userId)
+	cats, err := getDefaultSnippet().Categories(userId)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -149,8 +143,7 @@ func Tags(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
-	tags, err := defaultService.AllTags(userId)
+	tags, err := getDefaultSnippet().AllTags(userId)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return

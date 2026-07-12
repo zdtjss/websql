@@ -2,12 +2,12 @@ package middleware
 
 import (
 	"log"
-	"net/http"
 	"slices"
 	"strings"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
@@ -60,10 +60,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		if authorization == "" {
 			c.Abort()
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code": 401,
-				"msg":  "未授权访问，请先登录",
-			})
+			response.WriteAuthErr(c, "未授权访问，请先登录")
 			return
 		}
 
@@ -77,10 +74,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 		if user == nil || user.Id == "" {
 			c.Abort()
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code": 401,
-				"msg":  "登录已过期，请重新登录",
-			})
+			response.WriteAuthErr(c, "登录已过期，请重新登录")
 			return
 		}
 

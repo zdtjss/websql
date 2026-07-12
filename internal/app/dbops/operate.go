@@ -12,8 +12,7 @@ func ListTableFat(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	connIdVal := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
-	ensureDefaultOperate()
-	filteredTables := defaultOperateService.ListTableFat(connIdVal, schema, authorization)
+	filteredTables := getDefaultOperate().ListTableFat(connIdVal, schema, authorization)
 	response.WriteOK(c, filteredTables)
 }
 
@@ -21,8 +20,7 @@ func TableOptions(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	param := conn.ColumnsQuery{}
 	c.ShouldBindJSON(&param)
-	ensureDefaultOperate()
-	data, err := defaultOperateService.GetTableOptions(param.ConnId, param.Schema, param.TableName, authorization)
+	data, err := getDefaultOperate().GetTableOptions(param.ConnId, param.Schema, param.TableName, authorization)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -34,8 +32,7 @@ func TableStatistics(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	param := conn.ColumnsQuery{}
 	c.ShouldBindJSON(&param)
-	ensureDefaultOperate()
-	data, err := defaultOperateService.GetTableStatistics(param.ConnId, param.Schema, param.TableName, authorization)
+	data, err := getDefaultOperate().GetTableStatistics(param.ConnId, param.Schema, param.TableName, authorization)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -47,8 +44,7 @@ func ListIndexes(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	param := conn.ColumnsQuery{}
 	c.ShouldBindJSON(&param)
-	ensureDefaultOperate()
-	data, err := defaultOperateService.ListIndexes(param.ConnId, param.Schema, param.TableName, authorization)
+	data, err := getDefaultOperate().ListIndexes(param.ConnId, param.Schema, param.TableName, authorization)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -63,8 +59,7 @@ func ListObjects(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 	objType := c.DefaultQuery("type", "view")
-	ensureDefaultOperate()
-	data, err := defaultOperateService.ListObjects(connId, schema, objType, authorization)
+	data, err := getDefaultOperate().ListObjects(connId, schema, objType, authorization)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -80,8 +75,7 @@ func GetObjectDDL(c *gin.Context) {
 	schema := c.Query("schema")
 	name := c.Query("name")
 	objType := c.DefaultQuery("type", "view")
-	ensureDefaultOperate()
-	ddl, err := defaultOperateService.GetObjectDDL(connId, schema, name, objType, authorization)
+	ddl, err := getDefaultOperate().GetObjectDDL(connId, schema, name, objType, authorization)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return

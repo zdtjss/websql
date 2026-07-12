@@ -173,20 +173,24 @@ func startServer(server *http.Server, isHttps *bool, port *string) {
 
 // 启动状态监听
 func listenStartStatus() {
-	for {
-		time.Sleep(time.Millisecond)
-		// 注意，使用InsecureSkipVerify: true 来跳过证书验证，否则总是请求失败
-		client := &http.Client{Transport: &http.Transport{
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
-		}}
-		protocol := "http"
-		if *isHttps {
-			protocol = "https"
-		}
-		r, _ := client.Get(protocol + "://localhost:" + *port + "/api/healthCheck")
-		if r != nil {
+		},
+	}
+	protocol := "http"
+	if *isHttps {
+		protocol = "https"
+	}
+	url := protocol + "://localhost:" + *port + "/api/healthCheck"
+
+	for {
+		time.Sleep(200 * time.Millisecond)
+		r, err := client.Get(url)
+		if err == nil && r != nil {
 			r.Body.Close()
 			log.Println("==================== 系统已启动完成，端口：" + *port + " ，https：" + strconv.FormatBool(*isHttps) + " ====================")
 			runtime.Goexit()

@@ -20,9 +20,8 @@ func CreateBackup(c *gin.Context) {
 	_ = c.DefaultPostForm("compress", "false")
 	authorization := appctx.Ctx.GetAuthorization(c)
 
-	ensureDefaultBackup()
 	// 异步执行备份，立即返回 taskId 供前端轮询进度
-	taskId := defaultBackupService.CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization)
+	taskId := getDefaultBackup().CreateBackupAsync(connId, schema, name, description, tablesStr, withData, encrypt, authorization)
 	response.WriteOK(c, map[string]any{
 		"taskId": taskId,
 		"status": "running",
@@ -33,7 +32,6 @@ func CreateBackup(c *gin.Context) {
 func GetBackupProgress(c *gin.Context) {
 	taskId := c.Query("taskId")
 
-	ensureDefaultBackup()
 	progress, ok := FetchBackupProgress(taskId)
 	if !ok {
 		// 进度不存在（已被清理或 taskId 非法），返回 not_found 状态
@@ -50,8 +48,7 @@ func ListBackups(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
-	ensureDefaultBackup()
-	result, err := defaultBackupService.ListBackups(connId, schema)
+	result, err := getDefaultBackup().ListBackups(connId, schema)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
 		return
@@ -64,8 +61,7 @@ func RestoreBackup(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	authorization := appctx.Ctx.GetAuthorization(c)
 
-	ensureDefaultBackup()
-	result, err := defaultBackupService.RestoreBackup(backupId, connId, authorization)
+	result, err := getDefaultBackup().RestoreBackup(backupId, connId, authorization)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 400, err.Error())
 		return
@@ -76,8 +72,7 @@ func RestoreBackup(c *gin.Context) {
 func DeleteBackup(c *gin.Context) {
 	backupId := c.PostForm("backupId")
 
-	ensureDefaultBackup()
-	err := defaultBackupService.DeleteBackup(backupId)
+	err := getDefaultBackup().DeleteBackup(backupId)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
 		return
@@ -90,8 +85,7 @@ func GetBackupTables(c *gin.Context) {
 	schema := c.Query("schema")
 	authorization := appctx.Ctx.GetAuthorization(c)
 
-	ensureDefaultBackup()
-	result, err := defaultBackupService.GetBackupTables(connId, schema, authorization)
+	result, err := getDefaultBackup().GetBackupTables(connId, schema, authorization)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, err.Error())
 		return
@@ -102,8 +96,7 @@ func GetBackupTables(c *gin.Context) {
 func DownloadBackup(c *gin.Context) {
 	backupId := c.Query("backupId")
 
-	ensureDefaultBackup()
-	err := defaultBackupService.DownloadBackup(c, backupId)
+	err := getDefaultBackup().DownloadBackup(c, backupId)
 	if err != nil {
 		response.WriteErr(c, http.StatusNotFound, 500, err.Error())
 		return

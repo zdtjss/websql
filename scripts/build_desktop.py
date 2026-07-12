@@ -12,13 +12,13 @@
   - Linux: libgtk-3-dev libwebkit2gtk-4.1-dev
 
 用法:
-  python build_desktop.py                          # 交互式选择平台 + 完整构建
-  python build_desktop.py --platform windows       # 构建 Windows 桌面版
-  python build_desktop.py --platform macos-amd64   # 构建 macOS amd64 桌面版
-  python build_desktop.py --platform linux         # 构建 Linux 桌面版
-  python build_desktop.py --skip-frontend          # 跳过前端构建
-  python build_desktop.py --package                # 调用 wails3 build 完成构建与打包
-  python build_desktop.py --check                  # 仅检查环境
+  python scripts/build_desktop.py                          # 交互式选择平台 + 完整构建
+  python scripts/build_desktop.py --platform windows       # 构建 Windows 桌面版
+  python scripts/build_desktop.py --platform macos-amd64   # 构建 macOS amd64 桌面版
+  python scripts/build_desktop.py --platform linux         # 构建 Linux 桌面版
+  python scripts/build_desktop.py --skip-frontend          # 跳过前端构建
+  python scripts/build_desktop.py --package                # 调用 wails3 build 完成构建与打包
+  python scripts/build_desktop.py --check                  # 仅检查环境
 
 产物:
   dist-pack/websql-desktop-{platform}.zip  — 可独立发行、运行的 zip 包
@@ -36,7 +36,7 @@ import subprocess
 import sys
 import zipfile
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_PACK_DIR = os.path.join(PROJECT_ROOT, "dist-pack")
 WAILS3_CLI = "wails3"
 DESKTOP_DIR = os.path.join(PROJECT_ROOT, "cmd", "desktop")

@@ -7,14 +7,14 @@ setlocal enabledelayedexpansion
 ::  产物: dist-pack/websql-web-{platform}.zip
 ::
 ::  用法:
-::    release.bat              — 交互式选择目标平台
-::    release.bat windows      — 仅打包 Windows 版
-::    release.bat linux        — 仅打包 Linux 版
-::    release.bat macos        — 仅打包 macOS 版
-::    release.bat all          — 打包全部平台
+::    scripts\release.bat              — 交互式选择目标平台
+::    scripts\release.bat windows      — 仅打包 Windows 版
+::    scripts\release.bat linux        — 仅打包 Linux 版
+::    scripts\release.bat macos        — 仅打包 macOS 版
+::    scripts\release.bat all          — 打包全部平台
 :: ═══════════════════════════════════════════════════════
 
-set PROJECT_ROOT=%~dp0
+for %%I in ("%~dp0..") do set PROJECT_ROOT=%%~fI\
 set DIST_PACK=%PROJECT_ROOT%dist-pack
 set WEB_SRC=%PROJECT_ROOT%web-src
 set MIGRATIONS_DIR=%PROJECT_ROOT%migrations

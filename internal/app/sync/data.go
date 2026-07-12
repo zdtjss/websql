@@ -346,7 +346,15 @@ func diffRows(source, target map[string]any, keyColumns []string) []FieldChange 
 
 func getKeyColumns(conn *sqlx.DB, dbType, schema, table string, explicitKeys string) []string {
 	if explicitKeys != "" {
-		return strings.Split(explicitKeys, ",")
+		rawKeys := strings.Split(explicitKeys, ",")
+		validated := make([]string, 0, len(rawKeys))
+		for _, k := range rawKeys {
+			k = strings.TrimSpace(k)
+			if sanitize.IsValidIdentifier(k) {
+				validated = append(validated, k)
+			}
+		}
+		return validated
 	}
 
 	var rows *sqlx.Rows
@@ -366,7 +374,10 @@ func getKeyColumns(conn *sqlx.DB, dbType, schema, table string, explicitKeys str
 	keys := make([]string, 0)
 	for rows.Next() {
 		var col string
-		rows.Scan(&col)
+		if err := rows.Scan(&col); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		keys = append(keys, strings.TrimSpace(col))
 	}
 	return keys
@@ -389,14 +400,21 @@ func getTableColumnsDetail(conn *sqlx.DB, dbType, schema, table string) []DataDi
 	columns := make([]DataDiffColumn, 0)
 	for rows.Next() {
 		var col DataDiffColumn
-		rows.Scan(&col.Name, &col.Type, &col.Comment)
+		if err := rows.Scan(&col.Name, &col.Type, &col.Comment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		columns = append(columns, col)
 	}
 	return columns
 }
 
 func queryAllData(conn *sqlx.DB, dbType string, sql string) []map[string]any {
-	rows, err := conn.Queryx(sql)
+	return queryAllDataWithArgs(conn, dbType, sql)
+}
+
+func queryAllDataWithArgs(conn *sqlx.DB, dbType string, sql string, args ...any) []map[string]any {
+	rows, err := conn.Queryx(sql, args...)
 	if err != nil {
 		logger.PrintErrf("数据查询失败", err)
 		return nil
@@ -435,6 +453,8 @@ func findCommonColumns(data1, data2 []map[string]any) []string {
 	return common
 }
 
+// escapeSQLValue 手动转义 SQL 值，仅用于 generateChunkSQL 生成展示给用户的 SQL 文本。
+// Deprecated: 服务端查询应使用参数化查询（? 占位符 + args），不要用于构造执行的 SQL。
 func escapeSQLValue(v any) string {
 	if v == nil {
 		return "NULL"
@@ -535,7 +555,13 @@ func ApplyDataSync(c *gin.Context) {
 		// 仅对成功执行的语句保留撤销 SQL，失败语句不记录。
 		var undo string
 		if recordUndo {
-			undo = generateUndoSQL(s, dbConn, dbType)
+			var undoErr error
+			undo, undoErr = generateUndoSQL(s, dbConn, dbType)
+			if undoErr != nil {
+				// 撤销 SQL 生成失败：跳过该语句，避免无法回滚的数据被提交
+				errors = append(errors, fmt.Sprintf("回滚SQL生成失败，已跳过: %s - %s", s[:minStr(80, s)], undoErr.Error()))
+				continue
+			}
 		}
 		result, err := tx.Exec(s)
 		if err != nil {
@@ -558,10 +584,14 @@ func ApplyDataSync(c *gin.Context) {
 
 	committed := false
 	if len(errors) > 0 {
-		tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			log.Printf("[ApplyDataSync] 事务回滚失败: %v", rbErr)
+		}
 	} else {
 		if err := tx.Commit(); err == nil {
 			committed = true
+		} else {
+			log.Printf("[ApplyDataSync] 事务提交失败: %v", err)
 		}
 	}
 
@@ -966,11 +996,22 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 	maxKey := getLastKey(srcConn, dbType, srcSchema, table, keyColumns, qi)
 
 	var whereParts []string
+	var whereArgs []any
 	if minKey != nil {
-		whereParts = append(whereParts, fmt.Sprintf("(%s) < (%s)", buildKeyColsTuple(keyColumns, qi), buildKeyValueTuple(keyColumns, minKey, qi)))
+		placeholders := make([]string, len(keyColumns))
+		for i, col := range keyColumns {
+			placeholders[i] = "?"
+			whereArgs = append(whereArgs, minKey[col])
+		}
+		whereParts = append(whereParts, fmt.Sprintf("(%s) < (%s)", buildKeyColsTuple(keyColumns, qi), strings.Join(placeholders, ", ")))
 	}
 	if maxKey != nil {
-		whereParts = append(whereParts, fmt.Sprintf("(%s) > (%s)", buildKeyColsTuple(keyColumns, qi), buildKeyValueTuple(keyColumns, maxKey, qi)))
+		placeholders := make([]string, len(keyColumns))
+		for i, col := range keyColumns {
+			placeholders[i] = "?"
+			whereArgs = append(whereArgs, maxKey[col])
+		}
+		whereParts = append(whereParts, fmt.Sprintf("(%s) > (%s)", buildKeyColsTuple(keyColumns, qi), strings.Join(placeholders, ", ")))
 	}
 
 	if len(whereParts) == 0 {
@@ -1005,14 +1046,14 @@ func handleOutOfRangeDeletions(c *gin.Context, srcConn, tgtConn *sqlx.DB, dbType
 		pagedSQL = fmt.Sprintf("SELECT * FROM `%s`.`%s` WHERE %s ORDER BY %s LIMIT %d OFFSET %d", tgtSchema, table, whereClause, buildKeyOrderBy(keyColumns, qi), chunkSize, offset)
 	}
 
-	outOfRangeData := queryAllData(tgtConn, dbType, pagedSQL)
+	outOfRangeData := queryAllDataWithArgs(tgtConn, dbType, pagedSQL, whereArgs...)
 
 	var outOfRangeCount int
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", tgtSchema, table, whereClause)
 	if dbType == "oracle" {
 		countSQL = fmt.Sprintf("SELECT COUNT(*) FROM \"%s\" WHERE %s", table, whereClause)
 	}
-	tgtConn.Get(&outOfRangeCount, countSQL)
+	tgtConn.Get(&outOfRangeCount, countSQL, whereArgs...)
 
 	hasMore := offset+chunkSize < outOfRangeCount
 
@@ -1094,7 +1135,7 @@ func getLastKey(conn *sqlx.DB, dbType, schema, table string, keyColumns []string
 }
 
 func queryKeyRangeData(conn *sqlx.DB, dbType, schema, table string, keyColumns []string, startKey, endKey map[string]any, qi *quoteInfo) []map[string]any {
-	whereClause := buildKeyRangeWhere(keyColumns, startKey, endKey, qi)
+	whereClause, args := buildKeyRangeWhere(keyColumns, startKey, endKey, qi)
 	orderBy := buildKeyOrderBy(keyColumns, qi)
 	var sql string
 	switch dbType {
@@ -1111,31 +1152,44 @@ func queryKeyRangeData(conn *sqlx.DB, dbType, schema, table string, keyColumns [
 			sql = fmt.Sprintf("SELECT * FROM `%s`.`%s` ORDER BY %s", schema, table, orderBy)
 		}
 	}
-	return queryAllData(conn, dbType, sql)
+	return queryAllDataWithArgs(conn, dbType, sql, args...)
 }
 
-func buildKeyRangeWhere(keyColumns []string, startKey, endKey map[string]any, qi *quoteInfo) string {
+func buildKeyRangeWhere(keyColumns []string, startKey, endKey map[string]any, qi *quoteInfo) (string, []any) {
 	if startKey == nil && endKey == nil {
-		return ""
+		return "", nil
 	}
 	var conditions []string
+	var args []any
 	if startKey != nil {
 		if len(keyColumns) == 1 {
 			col := keyColumns[0]
-			conditions = append(conditions, fmt.Sprintf("%s%s%s >= '%s'", qi.col, col, qi.colR, escapeSQLValue(startKey[col])))
+			conditions = append(conditions, fmt.Sprintf("%s%s%s >= ?", qi.col, col, qi.colR))
+			args = append(args, startKey[col])
 		} else {
-			conditions = append(conditions, fmt.Sprintf("(%s) >= (%s)", buildKeyColsTuple(keyColumns, qi), buildKeyValueTuple(keyColumns, startKey, qi)))
+			placeholders := make([]string, len(keyColumns))
+			for i, col := range keyColumns {
+				placeholders[i] = "?"
+				args = append(args, startKey[col])
+			}
+			conditions = append(conditions, fmt.Sprintf("(%s) >= (%s)", buildKeyColsTuple(keyColumns, qi), strings.Join(placeholders, ", ")))
 		}
 	}
 	if endKey != nil {
 		if len(keyColumns) == 1 {
 			col := keyColumns[0]
-			conditions = append(conditions, fmt.Sprintf("%s%s%s < '%s'", qi.col, col, qi.colR, escapeSQLValue(endKey[col])))
+			conditions = append(conditions, fmt.Sprintf("%s%s%s < ?", qi.col, col, qi.colR))
+			args = append(args, endKey[col])
 		} else {
-			conditions = append(conditions, fmt.Sprintf("(%s) < (%s)", buildKeyColsTuple(keyColumns, qi), buildKeyValueTuple(keyColumns, endKey, qi)))
+			placeholders := make([]string, len(keyColumns))
+			for i, col := range keyColumns {
+				placeholders[i] = "?"
+				args = append(args, endKey[col])
+			}
+			conditions = append(conditions, fmt.Sprintf("(%s) < (%s)", buildKeyColsTuple(keyColumns, qi), strings.Join(placeholders, ", ")))
 		}
 	}
-	return strings.Join(conditions, " AND ")
+	return strings.Join(conditions, " AND "), args
 }
 
 func buildKeyOrderBy(keyColumns []string, qi *quoteInfo) string {
@@ -1158,14 +1212,6 @@ func buildKeyColsTuple(keyColumns []string, qi *quoteInfo) string {
 	parts := make([]string, len(keyColumns))
 	for i, col := range keyColumns {
 		parts[i] = fmt.Sprintf("%s%s%s", qi.col, col, qi.colR)
-	}
-	return strings.Join(parts, ", ")
-}
-
-func buildKeyValueTuple(keyColumns []string, keyValues map[string]any, qi *quoteInfo) string {
-	parts := make([]string, len(keyColumns))
-	for i, col := range keyColumns {
-		parts[i] = fmt.Sprintf("'%s'", escapeSQLValue(keyValues[col]))
 	}
 	return strings.Join(parts, ", ")
 }
