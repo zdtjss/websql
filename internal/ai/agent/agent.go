@@ -107,8 +107,8 @@ const (
 	defaultContextTokens = 128000
 )
 
-// 全局 CheckPointStore（单实例共享）
-var globalCheckPointStore = newAutoCheckPointStore()
+// 全局 CheckPointStore（单实例共享），使用内存存储 + 15 分钟 TTL
+var globalCheckPointStore = NewInMemoryCheckPointStore()
 
 // SQLAgent 是工厂缓存中**共享**的实例，可能同时被多个 RunStream 调用。
 //

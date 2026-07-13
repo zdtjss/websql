@@ -155,8 +155,9 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
       if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
 
       const data = await resp.json()
-      sessionList.value = data.sessions || []
-      sessionListTotal.value = data.total || 0
+      const result = data.data || {}
+      sessionList.value = result.sessions || []
+      sessionListTotal.value = result.total || 0
     } catch (e) {
       console.error('[ChatHistory] 加载历史会话失败:', e)
       ElMessage({ message: '加载历史会话失败', type: 'error' })
@@ -243,12 +244,13 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
       if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
 
       const data = await resp.json()
-      if (data.session) {
+      const sessionData = data.data?.session
+      if (sessionData) {
         // 清空当前会话所有状态
         resetCurrentSession()
 
-        sessionId.value = data.session.id
-        for (const msg of data.session.messages) {
+        sessionId.value = sessionData.id
+        for (const msg of sessionData.messages) {
           const contentStr = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '')
           const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(contentStr.trim())
           chatHistory.value.push({
@@ -260,7 +262,7 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
         }
 
         // 恢复会话上下文（当时选择的 schemas 和 tables）
-        const ctx = data.session.context
+        const ctx = sessionData.context
         if (ctx && ctx.schemas && ctx.schemas.length > 0) {
           const schemaValues = ctx.schemas
             .filter((s: { connId?: string; schema?: string }) => s.connId && s.schema)

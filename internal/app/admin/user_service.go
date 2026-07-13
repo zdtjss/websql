@@ -216,7 +216,7 @@ func (s *userService) ChangePassword(userId, oldPwd, newPwd string) error {
 // InitUser 初始化默认管理员账户
 func (s *userService) InitUser() error {
 	userId := idgen.RandomStr()
-	hashedPwd, err := HashPassword("admin123")
+	hashedPwd, err := HashPassword("Nway@12345")
 	if err != nil {
 		return err
 	}

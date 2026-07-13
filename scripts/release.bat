@@ -131,7 +131,7 @@ copy /Y "%MIGRATIONS_DIR%\full\*.sql" "%S%\migrations\full\" >nul 2>&1
 copy /Y "%PROJECT_ROOT%config.json" "%S%\" >nul 2>&1
 
 :: 复制数据库迁移工具
-copy /Y "%PROJECT_ROOT%db_migrate.py" "%S%\" >nul 2>&1
+copy /Y "%PROJECT_ROOT%scripts\db_migrate.py" "%S%\" >nul 2>&1
 
 :: 复制 skills 目录
 if exist "%PROJECT_ROOT%skills" (

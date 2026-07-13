@@ -47,8 +47,8 @@ create table if not exists t_user (
 	bio varchar(512)
 );
 
--- 管理员id一定是 825683877312860160 密码是 1
-INSERT IGNORE INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860160', 'admin', '管理员', '7e2e1f2e1eb71a6f7915a96201237ff0','');
+-- 管理员id一定是 825683877312860160 密码是 Nway@12345
+INSERT IGNORE INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860160', 'admin', '管理员', '9c122652077a13080ab640b549cc64d0','');
 
 -- local 用户，用于本地/桌面模式自动登录，密码是 1，属于 admin 角色
 INSERT IGNORE INTO "t_user" ("id", "login_name", "name", "pwd","bio") VALUES ('825683877312860161', 'local', 'local', '7e2e1f2e1eb71a6f7915a96201237ff0','');

@@ -95,3 +95,11 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLElement | null>(null)
 defineExpose({ containerRef })
 </script>
+
+<style scoped>
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 0;
+}
+</style>

@@ -116,7 +116,7 @@ function handleExecFile(opts: any): Promise<void> {
 .sql-toolbar .toolbar-left {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
 }
 
 .sql-toolbar .toolbar-right {
@@ -133,7 +133,7 @@ function handleExecFile(opts: any): Promise<void> {
 }
 
 .sql-toolbar .el-divider--vertical {
-    margin: 0 4px;
+    margin: 0;
     height: 16px;
 }
 

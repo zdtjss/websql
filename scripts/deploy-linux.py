@@ -210,7 +210,7 @@ def main():
         # 9. 数据库表结构自动对比与升级
         print("  同步数据库表结构...")
         local_sql = os.path.join(project_root, "migrations", "full", "sqlite_full.sql")
-        local_migrate = os.path.join(project_root, "db_migrate.py")
+        local_migrate = os.path.join(project_root, "scripts", "db_migrate.py")
         if os.path.exists(local_sql):
             remote_sql = f"/tmp/websql-init-{os.getpid()}.sql"
             remote_migrate = f"/tmp/websql-migrate-{os.getpid()}.py"

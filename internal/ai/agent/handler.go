@@ -364,7 +364,7 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 		}
 		metas = append(metas, SessionMeta{ID: sess.ID, Title: title, CreatedAt: sess.CreatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"sessions": metas,
 		"total":    total,
 		"page":     page,
@@ -389,7 +389,7 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		response.WriteErr(c, http.StatusInternalServerError, 500, "获取会话详情失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session": detail})
+	response.WriteOK(c, gin.H{"session": detail})
 }
 
 // HandleCancelAgent 主动取消正在运行的 Agent（Eino v0.9 Agent Cancel）
@@ -401,7 +401,7 @@ func (h *Handler) HandleCancelAgent(c *gin.Context) {
 	}
 	// 通过 session 的 cancel 机制触发取消
 	h.sessions.Cancel(sessionID)
-	c.JSON(http.StatusOK, gin.H{"message": "已发送取消请求"})
+	response.WriteOK(c, gin.H{"message": "已发送取消请求"})
 }
 
 func (h *Handler) HandleDeleteSession(c *gin.Context) {
@@ -420,7 +420,7 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		response.WriteErr(c, http.StatusInternalServerError, 500, "删除会话失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
+	response.WriteOK(c, gin.H{"message": "会话已删除"})
 }
 
 func GetDBInfo(connID string) (string, string, string) {

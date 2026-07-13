@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="session-history-body">
     <!-- 搜索框 -->
     <div class="session-search-box">
@@ -123,3 +123,117 @@ const pageSizeRef = computed({
   set: (v: number) => emit('update:page-size', v),
 })
 </script>
+
+<style scoped>
+/* ========== 历史会话项样式 ========== */
+.session-history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+}
+
+.session-search-box {
+  flex-shrink: 0;
+}
+
+.session-list-scroll {
+  max-height: 400px;
+  overflow-y: auto;
+  min-height: 60px;
+}
+
+.session-pagination {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.session-pagination :deep(.el-pager li),
+.session-pagination :deep(.btn-prev),
+.session-pagination :deep(.btn-next) {
+  background: transparent !important;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.session-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent-color) 0%, var(--text-secondary) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.session-item:hover {
+  border-color: var(--border-secondary);
+  background: var(--bg-hover);
+}
+
+.session-item:hover::before {
+  opacity: 0.8;
+}
+
+.session-content {
+  flex: 1;
+  cursor: pointer;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.session-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.3s ease;
+}
+
+.session-item:hover .session-title {
+  color: var(--accent-color);
+}
+
+.session-time {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+
+.session-time .el-icon {
+  font-size: 12px;
+}
+
+.session-actions {
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 1;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateX(0);
+}
+
+
+</style>

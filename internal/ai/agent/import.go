@@ -212,7 +212,7 @@ func HandleUploadExcel(c *gin.Context) {
 			CharCount: charCount,
 		})
 		log.Printf("[Upload] Markdown 已暂存 - id=%s, name=%s, chars=%d\n", fileID, fileHeader.Filename, charCount)
-		c.JSON(http.StatusOK, gin.H{
+		response.WriteOK(c, gin.H{
 			"fileId":      fileID,
 			"fileName":    fileHeader.Filename,
 			"fileType":    string(ft),
@@ -270,7 +270,7 @@ func HandleUploadExcel(c *gin.Context) {
 	log.Printf("[Upload] 表格文件已暂存 - id=%s, name=%s, type=%s, columns=%v, rows=%d\n",
 		fileID, fileHeader.Filename, ft, columns, totalRows)
 
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"fileId":    fileID,
 		"fileName":  fileHeader.Filename,
 		"fileType":  string(ft),
@@ -381,7 +381,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"matches":      matches,
 		"matchedCount": len(mapping),
 		"totalExcel":   len(meta.Columns),
