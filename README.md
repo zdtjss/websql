@@ -234,9 +234,9 @@ mysql -u root -p < mysql-init.sql
 go install github.com/wailsapp/wails/v3/cmd/wails3@latest
 
 # 构建桌面版（必须在目标平台运行，Wails 依赖 CGO）
-python build_desktop.py                          # 交互式选择平台
-python build_desktop.py --platform windows       # 构建 Windows 桌面版
-python build_desktop.py --platform linux         # 构建 Linux 桌面版
+python scripts/build_desktop.py                          # 交互式选择平台
+python scripts/build_desktop.py --platform windows       # 构建 Windows 桌面版
+python scripts/build_desktop.py --platform linux         # 构建 Linux 桌面版
 
 # 产物：dist-pack/websql-desktop-{platform}.zip
 ```
@@ -252,12 +252,12 @@ docker run -d -p 443:443 -v ./data:/app/data websql
 
 ```bash
 # Windows
-release.bat
+scripts\release.bat
 
 # Linux / macOS
-python deploy-linux.py pack                        # 默认 linux-amd64
-python deploy-linux.py pack --platform macos-arm64 # 指定平台
-python deploy-linux.py pack --platform all         # 全部平台
+python scripts/deploy-linux.py pack                        # 默认 linux-amd64
+python scripts/deploy-linux.py pack --platform macos-arm64 # 指定平台
+python scripts/deploy-linux.py pack --platform all         # 全部平台
 
 # 产物：dist-pack/websql-web-{platform}.zip
 ```

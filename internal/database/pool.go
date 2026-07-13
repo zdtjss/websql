@@ -41,8 +41,8 @@ var (
 
 func InitMngtDbConn() {
 	// 仅在调用方未预先加载配置时才读取，避免覆盖桌面入口已设置的 IsRemote/IsDesktop 标志。
-	if config.Cfg == nil {
-		config.Cfg = config.ReadConfig()
+	if config.Get() == nil {
+		config.SetActive(config.ReadConfig())
 	}
 	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, config.Get().DB.DataSourceName)
 	if err != nil {

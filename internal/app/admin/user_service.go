@@ -14,53 +14,69 @@ import (
 	"time"
 
 	"websql/internal/config"
-	"websql/internal/database"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/lazyinit"
 	"websql/internal/pkg/safego"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 // UserService 封装用户相关的业务逻辑：密码哈希、校验、审计记录等
-type UserService struct {
+type UserService interface {
+	FindByLoginName(loginName string) (*User, error)
+	FindByBio(bioKey string) (*User, error)
+	FindByToken(token string) (*User, error)
+	FindUserBase(loginName, key string) ([]*SharedUser, error)
+	FindUser(roleId, name, loginName, key string, userIdList []string) ([]*User, error)
+	Save(user *User, currentUserId, currentUserName string) error
+	SaveUserBio(userId, bioKey string) error
+	ChangePassword(userId, oldPwd, newPwd string) error
+	InitUser() error
+	Delete(id string) error
+}
+
+type userService struct {
 	repo UserRepo
 }
 
 // NewUserService 创建 UserService 实例
-func NewUserService(repo UserRepo) *UserService {
-	return &UserService{repo: repo}
+func NewUserService(repo UserRepo) UserService {
+	return &userService{repo: repo}
 }
 
-// 默认实例，保持对包级别函数的向后兼容
-// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
-// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+// user 包需两个 Holder：部分包级函数直接访问 repo（FindUserPower 等），
+// 另一些通过 service 委托。
 var (
-	defaultUserRepo    UserRepo
-	defaultUserService *UserService
-	defaultUserOnce    sync.Once
+	defaultUserRepoHolder = &lazyinit.Holder[UserRepo]{}
+	defaultUserSvcHolder  = &lazyinit.Holder[UserService]{}
 )
 
-// ensureDefaultUser 初始化默认的 UserRepo 和 UserService
-func ensureDefaultUser() {
-	defaultUserOnce.Do(func() {
-		defaultUserRepo = NewUserRepo(database.Mngtdb)
-		defaultUserService = NewUserService(defaultUserRepo)
+func getDefaultUserRepo() UserRepo {
+	return defaultUserRepoHolder.Get(func() UserRepo {
+		return NewUserRepo(getDB())
+	})
+}
+
+func getDefaultUserService() UserService {
+	return defaultUserSvcHolder.Get(func() UserService {
+		return NewUserService(getDefaultUserRepo())
 	})
 }
 
 // FindByLoginName 按登录名查询用户
-func (s *UserService) FindByLoginName(loginName string) (*User, error) {
+func (s *userService) FindByLoginName(loginName string) (*User, error) {
 	return s.repo.FindByLoginName(loginName)
 }
 
 // FindByBio 按指纹/面容信息查询用户
-func (s *UserService) FindByBio(bioKey string) (*User, error) {
+func (s *userService) FindByBio(bioKey string) (*User, error) {
 	return s.repo.FindByBio(Md5sum(bioKey))
 }
 
 // FindByToken 通过外部 token 服务校验并返回本地用户
-func (s *UserService) FindByToken(token string) (*User, error) {
+func (s *userService) FindByToken(token string) (*User, error) {
 	if user, ok := tokenCache.get(token); ok {
 		return user, nil
 	}
@@ -109,12 +125,12 @@ func (s *UserService) FindByToken(token string) (*User, error) {
 }
 
 // FindUserBase 查询用户基础信息列表
-func (s *UserService) FindUserBase(loginName, key string) ([]*SharedUser, error) {
+func (s *userService) FindUserBase(loginName, key string) ([]*SharedUser, error) {
 	return s.repo.FindUserBaseList(loginName, key)
 }
 
 // FindUser 查询用户列表并填充角色信息
-func (s *UserService) FindUser(roleId, name, loginName, key string, userIdList []string) ([]*User, error) {
+func (s *userService) FindUser(roleId, name, loginName, key string, userIdList []string) ([]*User, error) {
 	userList, err := s.repo.FindUserList(roleId, name, loginName, key, userIdList)
 	if err != nil {
 		return nil, err
@@ -144,7 +160,7 @@ func (s *UserService) FindUser(roleId, name, loginName, key string, userIdList [
 }
 
 // Save 保存用户，包含密码哈希、校验与审计记录
-func (s *UserService) Save(user *User, currentUserId, currentUserName string) error {
+func (s *userService) Save(user *User, currentUserId, currentUserName string) error {
 	if err := s.repo.CheckUserExist(user); err != nil {
 		return err
 	}
@@ -177,12 +193,12 @@ func (s *UserService) Save(user *User, currentUserId, currentUserName string) er
 }
 
 // SaveUserBio 保存用户指纹/面容信息
-func (s *UserService) SaveUserBio(userId, bioKey string) error {
+func (s *userService) SaveUserBio(userId, bioKey string) error {
 	return s.repo.SaveUserBio(userId, Md5sum(bioKey))
 }
 
 // ChangePassword 修改密码，包含旧密码校验
-func (s *UserService) ChangePassword(userId, oldPwd, newPwd string) error {
+func (s *userService) ChangePassword(userId, oldPwd, newPwd string) error {
 	currentPwd, err := s.repo.GetPassword(userId)
 	if err != nil {
 		return errors.New("用户信息异常")
@@ -198,9 +214,9 @@ func (s *UserService) ChangePassword(userId, oldPwd, newPwd string) error {
 }
 
 // InitUser 初始化默认管理员账户
-func (s *UserService) InitUser() error {
+func (s *userService) InitUser() error {
 	userId := idgen.RandomStr()
-	hashedPwd, err := HashPassword("admin123")
+	hashedPwd, err := HashPassword("Nway@12345")
 	if err != nil {
 		return err
 	}
@@ -208,7 +224,7 @@ func (s *UserService) InitUser() error {
 }
 
 // Delete 删除用户
-func (s *UserService) Delete(id string) error {
+func (s *userService) Delete(id string) error {
 	return s.repo.Delete(id)
 }
 
@@ -239,26 +255,22 @@ func Md5sum(s string) string {
 
 // ===== 向后兼容的包级别委托函数 =====
 // 这些函数被 admin 包内其他文件（login.go / exports.go / misc.go）或外部包调用，
-// 保持原有签名不变，委托到 defaultUserService / defaultUserRepo。
+// 保持原有签名不变，委托到 getDefaultUserService() / getDefaultUserRepo()。
 
 func findByLoginName(loginName string) (*User, error) {
-	ensureDefaultUser()
-	return defaultUserService.FindByLoginName(loginName)
+	return getDefaultUserService().FindByLoginName(loginName)
 }
 
 func findByBio(bioKey string) (*User, error) {
-	ensureDefaultUser()
-	return defaultUserService.FindByBio(bioKey)
+	return getDefaultUserService().FindByBio(bioKey)
 }
 
 func findByToken(token string) (*User, error) {
-	ensureDefaultUser()
-	return defaultUserService.FindByToken(token)
+	return getDefaultUserService().FindByToken(token)
 }
 
 func findUserPower(userId string) []string {
-	ensureDefaultUser()
-	return defaultUserRepo.FindUserPower(userId)
+	return getDefaultUserRepo().FindUserPower(userId)
 }
 
 // FindUserPower 导出版本，供 app 包本地模式自动登录使用
@@ -267,41 +279,37 @@ func FindUserPower(userId string) []string {
 }
 
 func findUserPowerDetails(userId string) []*PowerDetail {
-	ensureDefaultUser()
 	// 优先走缓存，避免每次权限检查都查询 t_power 表
 	if details, ok := powerCache.getDetails(userId); ok {
 		return details
 	}
-	details := defaultUserRepo.FindUserPowerDetails(userId)
+	details := getDefaultUserRepo().FindUserPowerDetails(userId)
 	powerCache.setDetails(userId, details)
 	return details
 }
 
 func FindUserPowerDetails(userId string) []*PowerDetail {
-	ensureDefaultUser()
 	// 优先走缓存，避免每次权限检查都查询 t_power 表
 	if details, ok := powerCache.getDetails(userId); ok {
 		return details
 	}
-	details := defaultUserRepo.FindUserPowerDetails(userId)
+	details := getDefaultUserRepo().FindUserPowerDetails(userId)
 	powerCache.setDetails(userId, details)
 	return details
 }
 
 func FindUserRoles(userId string) []*Role {
-	ensureDefaultUser()
 	// 优先走缓存，与权限详情缓存共用同一 TTL 和失效机制
 	if roles, ok := powerCache.getRoles(userId); ok {
 		return roles
 	}
-	roles := defaultUserRepo.FindUserRoles(userId)
+	roles := getDefaultUserRepo().FindUserRoles(userId)
 	powerCache.setRoles(userId, roles)
 	return roles
 }
 
 func findUserRole(userIdList []any) (map[string][]*UserRole, error) {
-	ensureDefaultUser()
-	return defaultUserRepo.FindUserRole(userIdList)
+	return getDefaultUserRepo().FindUserRole(userIdList)
 }
 
 // ===== token 缓存（findByToken 使用） =====

@@ -4,33 +4,20 @@ import (
 	"time"
 
 	"websql/internal/database"
+	"websql/internal/pkg/dbaccess"
 
 	"github.com/jmoiron/sqlx"
 )
 
-// injectedDB 由 DI 容器通过 Init 注入；为 nil 时回退到全局 database.Mngtdb（向后兼容）。
-var injectedDB *sqlx.DB
+var holder = &dbaccess.Holder{}
 
-// Init 由 app 容器在启动阶段调用，将管理库 *sqlx.DB 注入到 monitor 包。
-// 不调用也能工作——getDB 会回退到全局 database.Mngtdb。
-func Init(db *sqlx.DB) {
-	injectedDB = db
-}
+func Init(db *sqlx.DB) { holder.Init(db) }
 
-// getDB 返回注入的 DB，未注入时回退到全局 database.Mngtdb。
-func getDB() *sqlx.DB {
-	if injectedDB != nil {
-		return injectedDB
-	}
-	return database.Mngtdb
-}
+func getDB() *sqlx.DB { return holder.Get() }
 
-// execWithRetry 在管理库上执行写操作，对 SQLITE_BUSY/死锁等可重试错误自动退避重试。
-// 替代 database.MngtdbExec（基于已废弃全局变量的辅助函数），使 monitor 包不再间接依赖 database.Mngtdb。
 func execWithRetry(query string, args ...any) error {
 	return database.RetryOnBusy(func() error {
 		_, err := getDB().Exec(query, args...)
 		return err
 	}, 3, 50*time.Millisecond)
 }
-

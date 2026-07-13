@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -54,7 +55,9 @@ func ShowBackupData(c *gin.Context) {
 	logger.PrintErr(err2)
 	var backupData any
 	if rowsx.Next() {
-		rowsx.Scan(&backupData)
+		if err := rowsx.Scan(&backupData); err != nil {
+			log.Printf("扫描行失败: %v", err)
+		}
 	}
 	response.WriteOK(c, backupData)
 }
@@ -329,7 +332,10 @@ func getSchemaTree(connId, authorization string, roleId string) []*PermissionNod
 
 	nodes := make([]*PermissionNode, 0)
 	for row.Next() {
-		row.Scan(&schemaName)
+		if err := row.Scan(&schemaName); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		checked := false
 		if roleId != "" {
 			checked = roleSchemaMap[schemaName]
@@ -407,7 +413,10 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
 		columnComment = ""
-		row.Scan(&tableName, &columnName, &columnComment)
+		if err := row.Scan(&tableName, &columnName, &columnComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": columnComment})
 	}
 
@@ -430,7 +439,10 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 
 	nodes := make([]*PermissionNode, 0)
 	for row.Next() {
-		row.Scan(&tableName, &tableType, &tableComment)
+		if err := row.Scan(&tableName, &tableType, &tableComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		nodeType := "table"
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
 			switch tableType {
@@ -554,7 +566,10 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 
 	nodes := make([]*PermissionNode, 0)
 	for row.Next() {
-		row.Scan(&columnName, &columnComment)
+		if err := row.Scan(&columnName, &columnComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		checked := false
 		if roleId != "" && roleColumnMap != nil {
 			checked = roleColumnMap[tableName]["__all__"] || roleColumnMap[tableName][columnName]
@@ -727,7 +742,12 @@ func getConnNoCheckInternal(connId string) *sqlx.DB {
 
 	pwd := ""
 	if cfgList[0].Pwd != nil {
-		pwd = crypto.AESDecode(*cfgList[0].Pwd)
+		decoded, decErr := crypto.AESDecode(*cfgList[0].Pwd)
+		if decErr != nil {
+			logger.PrintErrf("连接密码解密失败: %s", decErr, connId)
+		} else {
+			pwd = decoded
+		}
 	}
 
 	name := ""

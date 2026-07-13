@@ -3,7 +3,7 @@ package audit
 import (
 	"strconv"
 
-	"websql/internal/database"
+	"websql/internal/pkg/dbaccess"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
 
@@ -19,22 +19,11 @@ func SetAdminChecker(fn func(*gin.Context)) {
 	adminChecker = fn
 }
 
-// injectedDB 由 DI 容器通过 Init 注入；为 nil 时回退到全局 database.Mngtdb（向后兼容）。
-var injectedDB *sqlx.DB
+var holder = &dbaccess.Holder{}
 
-// Init 由 app 容器在启动阶段调用，将管理库 *sqlx.DB 注入到 audit 包。
-// 不调用也能工作——handler 会回退到全局 database.Mngtdb。
-func Init(db *sqlx.DB) {
-	injectedDB = db
-}
+func Init(db *sqlx.DB) { holder.Init(db) }
 
-// getDB 返回注入的 DB，未注入时回退到全局 database.Mngtdb。
-func getDB() *sqlx.DB {
-	if injectedDB != nil {
-		return injectedDB
-	}
-	return database.Mngtdb
-}
+func getDB() *sqlx.DB { return holder.Get() }
 
 func HandleGetAuditLogs(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))

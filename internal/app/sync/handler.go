@@ -18,6 +18,7 @@ import (
 	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
+	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
@@ -500,7 +501,7 @@ func normalizeSQL(s string) string {
 }
 
 // generateUndoSQL 为单条 SQL 生成撤销 SQL。dbConn 用于 UPDATE/DELETE 前 SELECT 旧数据。
-// 解析失败或无法生成时返回 "-- " 注释行（执行时跳过）。
+// 解析失败或无法生成时返回 error，调用方应跳过该语句的执行并记录警告。
 //
 // 设计说明：
 //   - SQL 字符串来自前端用户确认，可能被修改，因此无法依赖 dry-run 阶段的上下文
@@ -508,10 +509,10 @@ func normalizeSQL(s string) string {
 //   - 对 UPDATE/DELETE：先用 WHERE 子句 SELECT 旧数据，再生成 INSERT
 //   - 正则只解析我们自己生成的格式（buildInsertStmt 等），格式可控
 //   - 用 normalizeSQL 压缩空白，容忍多空格/换行，提高健壮性
-func generateUndoSQL(stmt string, dbConn *sqlx.DB, dbType string) string {
+func generateUndoSQL(stmt string, dbConn *sqlx.DB, dbType string) (string, error) {
 	stmt = strings.TrimSpace(stmt)
 	if stmt == "" {
-		return ""
+		return "", nil
 	}
 	normalized := normalizeSQL(stmt)
 	upper := strings.ToUpper(normalized)
@@ -524,15 +525,15 @@ func generateUndoSQL(stmt string, dbConn *sqlx.DB, dbType string) string {
 	case strings.HasPrefix(upper, "DELETE"):
 		return undoForUpdateOrDelete(normalized, dbType, dbConn, "DELETE")
 	}
-	return fmt.Sprintf("-- 无法自动生成撤销SQL: %s", truncate(stmt, 80))
+	return "", fmt.Errorf("无法自动生成撤销SQL: %s", truncate(stmt, 80))
 }
 
 // undoForInsert 解析 INSERT 语句，生成等价 DELETE（按所有列值定位插入行）。
 // 使用统一正则 insertRe，同时支持 MySQL 反引号和 Oracle 双引号风格。
-func undoForInsert(stmt, dbType string) string {
+func undoForInsert(stmt, dbType string) (string, error) {
 	m := insertRe.FindStringSubmatch(stmt)
 	if m == nil {
-		return fmt.Sprintf("-- 无法解析INSERT，需人工回滚: %s", truncate(stmt, 80))
+		return "", fmt.Errorf("无法解析INSERT，需人工回滚: %s", truncate(stmt, 80))
 	}
 	// insertRe 捕获组布局：
 	// [0]=full [1]=op
@@ -546,7 +547,7 @@ func undoForInsert(stmt, dbType string) string {
 	cols := splitTopLevel(colsRaw, ',')
 	vals := splitSQLValues(valsRaw)
 	if len(cols) == 0 || len(cols) != len(vals) {
-		return fmt.Sprintf("-- INSERT列数与值数不匹配，需人工回滚: %s", truncate(stmt, 80))
+		return "", fmt.Errorf("INSERT列数与值数不匹配，需人工回滚: %s", truncate(stmt, 80))
 	}
 
 	qi := newQuoteInfo(dbType)
@@ -561,19 +562,19 @@ func undoForInsert(stmt, dbType string) string {
 	// 生成 DELETE，表名引用风格与 dbType 一致（schema/table 用相同引号）
 	if schema != "" {
 		return fmt.Sprintf("DELETE FROM %s%s%s.%s%s%s WHERE %s;",
-			qi.col, schema, qi.colR, qi.col, table, qi.colR, whereClause)
+			qi.col, schema, qi.colR, qi.col, table, qi.colR, whereClause), nil
 	}
-	return fmt.Sprintf("DELETE FROM %s%s%s WHERE %s;", qi.col, table, qi.colR, whereClause)
+	return fmt.Sprintf("DELETE FROM %s%s%s WHERE %s;", qi.col, table, qi.colR, whereClause), nil
 }
 
 // undoForUpdateOrDelete 对 UPDATE/DELETE 先 SELECT 旧数据，再生成反向 INSERT。
 // 使用统一正则 updateRe/deleteRe，同时支持 MySQL 和 Oracle 风格。
-func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) string {
+func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) (string, error) {
 	var schema, table, where string
 	if op == "UPDATE" {
 		m := updateRe.FindStringSubmatch(stmt)
 		if m == nil {
-			return fmt.Sprintf("-- 无法解析%s，需人工回滚: %s", op, truncate(stmt, 80))
+			return "", fmt.Errorf("无法解析%s，需人工回滚: %s", op, truncate(stmt, 80))
 		}
 		// updateRe 捕获组：[0]=full [1..3]=schema [4..6]=table [7]=set [8]=where
 		schema = extractIdent(m, 1)
@@ -582,7 +583,7 @@ func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) stri
 	} else {
 		m := deleteRe.FindStringSubmatch(stmt)
 		if m == nil {
-			return fmt.Sprintf("-- 无法解析%s，需人工回滚: %s", op, truncate(stmt, 80))
+			return "", fmt.Errorf("无法解析%s，需人工回滚: %s", op, truncate(stmt, 80))
 		}
 		// deleteRe 捕获组：[0]=full [1..3]=schema [4..6]=table [7]=where
 		schema = extractIdent(m, 1)
@@ -591,7 +592,7 @@ func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) stri
 	}
 
 	if dbConn == nil {
-		return fmt.Sprintf("-- 无数据库连接，无法生成%s撤销SQL: %s", op, truncate(stmt, 80))
+		return "", fmt.Errorf("无数据库连接，无法生成%s撤销SQL: %s", op, truncate(stmt, 80))
 	}
 
 	// 查询旧数据。WHERE 子句已包含引号标识符，直接拼接。
@@ -606,13 +607,13 @@ func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) stri
 	}
 	rows, err := dbConn.Queryx(selectSQL)
 	if err != nil {
-		return fmt.Sprintf("-- 查询旧数据失败，需人工回滚: %s", truncate(err.Error(), 80))
+		return "", fmt.Errorf("查询旧数据失败，需人工回滚: %s", truncate(err.Error(), 80))
 	}
 	defer rows.Close()
 	oldRows, err := database.GetResultRows(dbType, rows)
 	if err != nil || len(oldRows) == 0 {
 		// 无旧数据：UPDATE/DELETE 实际未影响行，无需撤销
-		return "-- 原语句未影响任何行，无需撤销"
+		return "-- 原语句未影响任何行，无需撤销", nil
 	}
 
 	var buf bytes.Buffer
@@ -638,7 +639,7 @@ func undoForUpdateOrDelete(stmt, dbType string, dbConn *sqlx.DB, op string) stri
 				strings.Join(colStrs, ", "), strings.Join(valStrs, ", ")))
 		}
 	}
-	return strings.TrimRight(buf.String(), "\n")
+	return strings.TrimRight(buf.String(), "\n"), nil
 }
 
 // splitTopLevel 按分隔符切分，忽略括号/引号内的分隔符。
@@ -792,9 +793,15 @@ func RollbackSync(c *gin.Context) {
 	}
 
 	if len(errors) > 0 {
-		tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			logger.PrintErrf("[UndoSync] 事务回滚失败", rbErr)
+		}
 	} else {
-		tx.Commit()
+		if err := tx.Commit(); err != nil {
+			logger.PrintErrf("[UndoSync] 事务提交失败", err)
+			response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("事务提交失败: %v", err)})
+			return
+		}
 	}
 
 	// 审计

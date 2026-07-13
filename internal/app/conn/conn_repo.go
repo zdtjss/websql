@@ -40,7 +40,11 @@ func (r *connRepo) InsertConn(cfg *ConnCfg, dbSchema, dbVersion string) (string,
 	stmt, _ := r.db.Prepare("insert into t_conn (id, name, db_type, parent_id, user, pwd, url, db_schema, db_version) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	pwdEncoded := ""
 	if cfg.Pwd != nil && *cfg.Pwd != "" {
-		pwdEncoded = crypto.AESEncode(*cfg.Pwd)
+		encoded, encErr := crypto.AESEncode(*cfg.Pwd)
+		if encErr != nil {
+			return "", encErr
+		}
+		pwdEncoded = encoded
 	}
 	_, err := stmt.Exec(savedId, cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
 	if err != nil {
@@ -57,8 +61,11 @@ func (r *connRepo) UpdateConn(cfg *ConnCfg, dbSchema, dbVersion string) error {
 
 func (r *connRepo) UpdateConnWithPwd(cfg *ConnCfg, dbSchema, dbVersion string) error {
 	stmt, _ := r.db.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, pwd = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
-	pwdEncoded := crypto.AESEncode(*cfg.Pwd)
-	_, err := stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
+	pwdEncoded, err := crypto.AESEncode(*cfg.Pwd)
+	if err != nil {
+		return err
+	}
+	_, err = stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
 	return err
 }
 

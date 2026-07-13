@@ -221,6 +221,10 @@ export interface MonitorVarListResult {
   count: number
   supported: boolean
   unsupportedMessage?: string
+  /** 后端方言适配时回传的数据库类型（如 mysql / oracle），供前端 AI 分析使用 */
+  dbType?: string
+  /** 后端回传的数据库版本号 */
+  version?: string
 }
 
 /** 监控 - 获取完整服务器变量列表（带方言适配），对应 GET /monitor/variables/all

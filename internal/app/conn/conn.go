@@ -22,8 +22,7 @@ func SaveConn(c *gin.Context) {
 		return
 	}
 
-	ensureDefaultConn()
-	saved, err := defaultConnService.SaveConn(cfg)
+	saved, err := getDefaultConn().SaveConn(cfg)
 	if err != nil {
 		if errors.Is(err, ErrConnOpenFailed) {
 			response.WriteErr(c, 200, 500, err.Error())
@@ -49,8 +48,7 @@ func TestDbConn(c *gin.Context) {
 		return
 	}
 
-	ensureDefaultConn()
-	dbSchema, dbVersion, dbType, err := defaultConnService.TestDbConn(cfg)
+	dbSchema, dbVersion, dbType, err := getDefaultConn().TestDbConn(cfg)
 	if err != nil {
 		response.WriteErr(c, 200, 500, err.Error())
 		return
@@ -68,8 +66,7 @@ func DelConn(c *gin.Context) {
 	if !admin.CheckAdminPower(c) {
 		return
 	}
-	ensureDefaultConn()
-	defaultConnService.DeleteConn(c.Query("id"))
+	getDefaultConn().DeleteConn(c.Query("id"))
 	response.WriteOK(c, "")
 }
 
@@ -83,8 +80,7 @@ func ListConn2(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 
-	ensureDefaultConn()
-	cfgList, total, err := defaultConnService.ListConn2(name, parentId, page, pageSize)
+	cfgList, total, err := getDefaultConn().ListConn2(name, parentId, page, pageSize)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -101,8 +97,7 @@ func ListConn2(c *gin.Context) {
 }
 
 func ListConnBase(c *gin.Context) {
-	ensureDefaultConn()
-	cfgList, err := defaultConnService.ListConnBase()
+	cfgList, err := getDefaultConn().ListConnBase()
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -114,8 +109,7 @@ func ListUserConn(c *gin.Context) {
 	authorization := appctx.Ctx.GetAuthorization(c)
 	userPower := admin.GetUserPower(authorization)
 
-	ensureDefaultConn()
-	dtoList, err := defaultConnService.ListUserConn(userPower)
+	dtoList, err := getDefaultConn().ListUserConn(userPower)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return

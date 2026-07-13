@@ -816,9 +816,15 @@ func ApplySchemaDiff(c *gin.Context) {
 	}
 
 	if len(errors) > 0 {
-		tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			log.Printf("[ApplySchemaSync] 事务回滚失败: %v", rbErr)
+		}
 	} else {
-		tx.Commit()
+		if err := tx.Commit(); err != nil {
+			log.Printf("[ApplySchemaSync] 事务提交失败: %v", err)
+			response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("事务提交失败: %v", err)})
+			return
+		}
 	}
 
 	execTimeMs := int(time.Since(startTime).Milliseconds())

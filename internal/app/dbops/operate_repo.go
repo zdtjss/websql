@@ -11,6 +11,7 @@ import (
 	"websql/internal/database"
 	"websql/internal/dialect"
 	"websql/internal/logger"
+	"websql/internal/pkg/sanitize"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -66,9 +67,13 @@ func (r *operateRepo) ListSchemas(dc *sqlx.DB) []string {
 		log.Printf("查询失败: %v", err)
 		return schemas
 	}
+	defer row.Close()
 	var schemaName string
 	for row.Next() {
-		row.Scan(&schemaName)
+		if err := row.Scan(&schemaName); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		schemas = append(schemas, schemaName)
 	}
 	return schemas
@@ -81,10 +86,14 @@ func (r *operateRepo) ListAllColumnsForTable(dc *sqlx.DB, schema string) []map[s
 		log.Printf("查询失败: %v", err)
 		return tableColumns
 	}
+	defer row.Close()
 	var tableName2, columnName, columnComment string
 	for row.Next() {
 		columnComment = ""
-		row.Scan(&tableName2, &columnName, &columnComment)
+		if err := row.Scan(&tableName2, &columnName, &columnComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": columnComment})
 	}
 	return tableColumns
@@ -93,10 +102,17 @@ func (r *operateRepo) ListAllColumnsForTable(dc *sqlx.DB, schema string) []map[s
 func (r *operateRepo) ListTables(dc *sqlx.DB, schema string) []*tableRawRow {
 	tables := make([]*tableRawRow, 0)
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listTable"], schema)
-	logger.PrintErr(err)
+	if err != nil {
+		logger.PrintErr(err)
+		return tables
+	}
+	defer row.Close()
 	for row.Next() {
 		var t tableRawRow
-		row.Scan(&t.Name, &t.Type, &t.Comment)
+		if err := row.Scan(&t.Name, &t.Type, &t.Comment); err != nil {
+			logger.PrintErr(err)
+			continue
+		}
 		tables = append(tables, &t)
 	}
 	return tables
@@ -109,10 +125,14 @@ func (r *operateRepo) ListAllColumnsRaw(dc *sqlx.DB, schema string) []*columnRaw
 		log.Printf("查询失败: %v", err)
 		return columns
 	}
+	defer row.Close()
 	var columnName, columnComment string
 	for row.Next() {
 		columnComment = ""
-		row.Scan(&columnName, &columnComment)
+		if err := row.Scan(&columnName, &columnComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		columns = append(columns, &columnRawRow{Name: columnName, Comment: columnComment})
 	}
 	return columns
@@ -121,10 +141,17 @@ func (r *operateRepo) ListAllColumnsRaw(dc *sqlx.DB, schema string) []*columnRaw
 func (r *operateRepo) ListColumnsForTable(dc *sqlx.DB, table string) []*columnRawRow {
 	columns := make([]*columnRawRow, 0)
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listColumns"], table)
-	logger.PrintErr(err)
+	if err != nil {
+		logger.PrintErr(err)
+		return columns
+	}
+	defer row.Close()
 	for row.Next() {
 		var c columnRawRow
-		row.Scan(&c.Name, &c.Comment)
+		if err := row.Scan(&c.Name, &c.Comment); err != nil {
+			logger.PrintErr(err)
+			continue
+		}
 		columns = append(columns, &c)
 	}
 	return columns
@@ -136,6 +163,7 @@ func (r *operateRepo) ListTableColumnsRaw(dc *sqlx.DB, schema, table string) ([]
 		log.Printf("查询失败: %v", err)
 		return nil, err
 	}
+	defer rows.Close()
 	result, err := database.GetResultRows(dc.DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("获取列信息失败", err)
@@ -168,6 +196,7 @@ func (r *operateRepo) QueryTables(dc *sqlx.DB, schema string) []*conn.Table {
 		log.Printf("查询失败: %v", err)
 		return tables
 	}
+	defer stmt.Close()
 
 	var rs *sql.Rows
 	var err2 error
@@ -184,11 +213,15 @@ func (r *operateRepo) QueryTables(dc *sqlx.DB, schema string) []*conn.Table {
 		log.Printf("查询失败: %v", err2)
 		return tables
 	}
+	defer rs.Close()
 
 	var tableName, tableType, tableComment string
 	for rs.Next() {
 		tableComment = ""
-		rs.Scan(&tableName, &tableType, &tableComment)
+		if err := rs.Scan(&tableName, &tableType, &tableComment); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		table := &conn.Table{Name: tableName, Comment: tableComment}
 		tables = append(tables, table)
 	}
@@ -198,18 +231,29 @@ func (r *operateRepo) QueryTables(dc *sqlx.DB, schema string) []*conn.Table {
 func (r *operateRepo) ColumnMap(dc *sqlx.DB, table, schema string) map[string]string {
 	columnMap := make(map[string]string)
 	stmt, err := dc.Prepare(dialect.SQL_DIALECT[dc.DriverName()]["ColumnMap"])
-	logger.PrintErr(err)
+	if err != nil {
+		logger.PrintErr(err)
+		return columnMap
+	}
+	defer stmt.Close()
 	table = strings.TrimPrefix(table, schema+".")
 	if dc.DriverName() == "oracle" {
 		schema = strings.ToUpper(schema)
 		table = strings.ToUpper(table)
 	}
 	rs, err2 := stmt.Query(table, schema)
-	logger.PrintErr(err2)
+	if err2 != nil {
+		logger.PrintErr(err2)
+		return columnMap
+	}
+	defer rs.Close()
 	var name, comment string
 	for rs.Next() {
 		comment = ""
-		rs.Scan(&name, &comment)
+		if err := rs.Scan(&name, &comment); err != nil {
+			logger.PrintErr(err)
+			continue
+		}
 		columnMap[name] = comment
 	}
 	return columnMap
@@ -218,12 +262,23 @@ func (r *operateRepo) ColumnMap(dc *sqlx.DB, table, schema string) map[string]st
 func (r *operateRepo) QueryPrimaryKeyWithTx(tx *sqlx.Tx, schema, table string) ([]string, error) {
 	primaryKeys := make([]string, 0)
 	stmt, err := tx.Prepare(dialect.SQL_DIALECT[tx.DriverName()]["QueryPrimaryKey"])
-	logger.PrintErr(err)
+	if err != nil {
+		logger.PrintErr(err)
+		return nil, err
+	}
+	defer stmt.Close()
 	rs, err2 := stmt.Query(schema, table)
-	logger.PrintErr(err2)
+	if err2 != nil {
+		logger.PrintErr(err2)
+		return nil, err2
+	}
+	defer rs.Close()
 	var name string
 	for rs.Next() {
-		rs.Scan(&name)
+		if err := rs.Scan(&name); err != nil {
+			logger.PrintErr(err)
+			continue
+		}
 		primaryKeys = append(primaryKeys, name)
 	}
 	if len(primaryKeys) == 0 {
@@ -241,6 +296,7 @@ func (r *operateRepo) QueryPrimaryKey(dc *sqlx.DB, schema, table string) []strin
 	if err != nil {
 		return primaryKeys
 	}
+	defer stmt.Close()
 	schemaVal := schema
 	tableVal := table
 	if dc.DriverName() == "oracle" {
@@ -251,9 +307,13 @@ func (r *operateRepo) QueryPrimaryKey(dc *sqlx.DB, schema, table string) []strin
 	if err2 != nil {
 		return primaryKeys
 	}
+	defer rs.Close()
 	var name string
 	for rs.Next() {
-		rs.Scan(&name)
+		if err := rs.Scan(&name); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		primaryKeys = append(primaryKeys, name)
 	}
 	return primaryKeys
@@ -276,6 +336,7 @@ func (r *operateRepo) GetTableOptions(dc *sqlx.DB, schema, table string) ([]map[
 		log.Printf("查询失败: %v", err)
 		return nil, errors.New("操作失败")
 	}
+	defer rows.Close()
 	data, err := database.GetResultRows(dc.DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("获取表详情失败", err)
@@ -301,6 +362,7 @@ func (r *operateRepo) GetTableStatistics(dc *sqlx.DB, schema, table string) ([]m
 		log.Printf("查询失败: %v", err)
 		return nil, errors.New("操作失败")
 	}
+	defer rows.Close()
 	data, err := database.GetResultRows(dc.DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("获取表统计信息失败", err)
@@ -326,6 +388,7 @@ func (r *operateRepo) ListIndexes(dc *sqlx.DB, schema, table string) ([]map[stri
 		log.Printf("查询失败: %v", err)
 		return nil, errors.New("操作失败")
 	}
+	defer rows.Close()
 	data, err := database.GetResultRows(dc.DriverName(), rows)
 	if err != nil {
 		logger.PrintErrf("获取索引信息失败", err)
@@ -339,10 +402,14 @@ func (r *operateRepo) GetCurrentSchema(dc *sqlx.DB) string {
 	switch dc.DriverName() {
 	case "mysql", "mariadb":
 		row := dc.QueryRow("SELECT DATABASE()")
-		row.Scan(&schema)
+		if err := row.Scan(&schema); err != nil {
+			log.Printf("扫描行失败: %v", err)
+		}
 	case "oracle":
 		row := dc.QueryRow("SELECT USER FROM DUAL")
-		row.Scan(&schema)
+		if err := row.Scan(&schema); err != nil {
+			log.Printf("扫描行失败: %v", err)
+		}
 		schema = strings.ToUpper(schema)
 	case "sqlite":
 		schema = "main"
@@ -442,6 +509,13 @@ func (r *operateRepo) ListObjects(dc *sqlx.DB, schema, objType string) ([]map[st
 // 对于 SHOW CREATE 系列（MySQL/MariaDB），模板含 {name} 占位符，需字符串替换（name 已由 service 层 sanitize 校验）；
 // 对于参数化查询（SQLite/Oracle），使用占位符传参；Oracle 的标识符需转为大写。
 func (r *operateRepo) GetObjectDDL(dc *sqlx.DB, schema, name, objType string) (string, error) {
+	// 防御性校验：即使 service 层已校验，repo 层入口仍需兜底，防止其他调用路径绕过
+	if !sanitize.IsValidIdentifier(name) {
+		return "", fmt.Errorf("非法对象名: %s", name)
+	}
+	if schema != "" && !sanitize.IsValidIdentifier(schema) {
+		return "", fmt.Errorf("非法 schema 名: %s", schema)
+	}
 	dbType := dc.DriverName()
 	d, ok := dialect.SQL_DIALECT[dbType]
 	if !ok {

@@ -4,39 +4,42 @@ import (
 	"errors"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
-	"websql/internal/database"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/lazyinit"
 )
 
 // SnippetService 封装 SQL 收藏夹的业务逻辑：校验、创建者鉴权、导入导出转换。
-type SnippetService struct {
+type SnippetService interface {
+	List(userId, keyword, category, tag string) ([]*Snippet, error)
+	Save(req *SnippetSave, userId string) (*Snippet, error)
+	Delete(id, userId string) error
+	Export(userId string) (*SnippetExportData, error)
+	Import(items []SnippetImportItem, userId string) (int, error)
+	Categories(userId string) ([]CategoryStat, error)
+	AllTags(userId string) ([]string, error)
+}
+
+type snippetService struct {
 	repo SnippetRepo
 }
 
 // NewSnippetService 创建 SnippetService 实例。
-func NewSnippetService(repo SnippetRepo) *SnippetService {
-	return &SnippetService{repo: repo}
+func NewSnippetService(repo SnippetRepo) SnippetService {
+	return &snippetService{repo: repo}
 }
 
-// 默认实例，保持与 conn 包一致的 lazy init 模式。
-// database.Mngtdb 在 InitMngtDbConn() 之后才可用，必须延迟初始化。
-var (
-	defaultRepo    SnippetRepo
-	defaultService *SnippetService
-	defaultOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultSnippet = &lazyinit.Holder[SnippetService]{}
 
-// ensureDefault 初始化默认 Repo/Service，并确保表已创建。
-func ensureDefault() {
-	defaultOnce.Do(func() {
-		defaultRepo = NewSnippetRepo(database.Mngtdb)
-		defaultService = NewSnippetService(defaultRepo)
-		if err := defaultRepo.EnsureTable(); err != nil {
+func getDefaultSnippet() SnippetService {
+	return defaultSnippet.Get(func() SnippetService {
+		repo := NewSnippetRepo(getDB())
+		if err := repo.EnsureTable(); err != nil {
 			log.Printf("[Snippet] 自动建表失败: %v", err)
 		}
+		return NewSnippetService(repo)
 	})
 }
 
@@ -48,13 +51,13 @@ var (
 )
 
 // List 列表查询。
-func (s *SnippetService) List(userId, keyword, category, tag string) ([]*Snippet, error) {
+func (s *snippetService) List(userId, keyword, category, tag string) ([]*Snippet, error) {
 	return s.repo.List(userId, keyword, category, tag)
 }
 
 // Save 新增或更新。req.Id 为空表示新增；非空表示更新（仅创建者可改）。
 // 返回保存后的完整对象。
-func (s *SnippetService) Save(req *SnippetSave, userId string) (*Snippet, error) {
+func (s *snippetService) Save(req *SnippetSave, userId string) (*Snippet, error) {
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		return nil, ErrTitleRequired
@@ -132,7 +135,7 @@ func cleanTags(raw string) string {
 }
 
 // Delete 删除收藏（仅创建者可删）。
-func (s *SnippetService) Delete(id, userId string) error {
+func (s *snippetService) Delete(id, userId string) error {
 	exist, err := s.repo.FindById(id)
 	if err != nil || exist == nil || exist.UserId == nil || *exist.UserId != userId {
 		return ErrSnippetNotFound
@@ -141,7 +144,7 @@ func (s *SnippetService) Delete(id, userId string) error {
 }
 
 // Export 导出当前用户全部收藏为前端可下载的结构。
-func (s *SnippetService) Export(userId string) (*SnippetExportData, error) {
+func (s *snippetService) Export(userId string) (*SnippetExportData, error) {
 	list, err := s.repo.ListByUserId(userId)
 	if err != nil {
 		return nil, err
@@ -174,7 +177,7 @@ func (s *SnippetService) Export(userId string) (*SnippetExportData, error) {
 }
 
 // Import 批量导入收藏，跳过 SQL 内容为空的条目，返回成功导入数量。
-func (s *SnippetService) Import(items []SnippetImportItem, userId string) (int, error) {
+func (s *snippetService) Import(items []SnippetImportItem, userId string) (int, error) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	uid := userId
 	count := 0
@@ -208,7 +211,7 @@ func (s *SnippetService) Import(items []SnippetImportItem, userId string) (int, 
 }
 
 // Categories 返回当前用户已有分类及每个分类的条数，用于前端分类树展示。
-func (s *SnippetService) Categories(userId string) ([]CategoryStat, error) {
+func (s *snippetService) Categories(userId string) ([]CategoryStat, error) {
 	list, err := s.repo.ListByUserId(userId)
 	if err != nil {
 		return nil, err
@@ -235,7 +238,7 @@ type CategoryStat struct {
 }
 
 // AllTags 返回当前用户全部标签列表（去重），用于前端标签过滤下拉。
-func (s *SnippetService) AllTags(userId string) ([]string, error) {
+func (s *snippetService) AllTags(userId string) ([]string, error) {
 	list, err := s.repo.ListByUserId(userId)
 	if err != nil {
 		return nil, err

@@ -3,40 +3,40 @@ package admin
 import (
 	"fmt"
 	"strings"
-	"sync"
 
-	"websql/internal/database"
+	"websql/internal/pkg/lazyinit"
 )
 
 // RoleService 封装角色相关的业务逻辑：审计记录、缓存失效等
-type RoleService struct {
+type RoleService interface {
+	SaveRole(role *RoleSave, currentUserId, currentUserName string) error
+	DeleteRole(id, currentUserId, currentUserName string) error
+	RoleList() ([]*Role, error)
+	RoleBaseList() ([]*Role, error)
+	FindUserByRole(roleId string) ([]*User, error)
+	SaveRolePermission(role *RoleSave, currentUserId, currentUserName string) error
+}
+
+type roleService struct {
 	repo RoleRepo
 }
 
 // NewRoleService 创建 RoleService 实例
-func NewRoleService(repo RoleRepo) *RoleService {
-	return &RoleService{repo: repo}
+func NewRoleService(repo RoleRepo) RoleService {
+	return &roleService{repo: repo}
 }
 
-// 默认实例，保持对包级别函数的向后兼容
-// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
-// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
-var (
-	defaultRoleRepo    RoleRepo
-	defaultRoleService *RoleService
-	defaultRoleOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultRole = &lazyinit.Holder[RoleService]{}
 
-// ensureDefaultRole 初始化默认的 RoleRepo 和 RoleService
-func ensureDefaultRole() {
-	defaultRoleOnce.Do(func() {
-		defaultRoleRepo = NewRoleRepo(database.Mngtdb)
-		defaultRoleService = NewRoleService(defaultRoleRepo)
+func getDefaultRole() RoleService {
+	return defaultRole.Get(func() RoleService {
+		return NewRoleService(NewRoleRepo(getDB()))
 	})
 }
 
 // SaveRole 保存角色及权限，并记录审计日志、清除认证缓存
-func (s *RoleService) SaveRole(role *RoleSave, currentUserId, currentUserName string) error {
+func (s *roleService) SaveRole(role *RoleSave, currentUserId, currentUserName string) error {
 	if err := s.repo.SaveRole(role); err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func (s *RoleService) SaveRole(role *RoleSave, currentUserId, currentUserName st
 }
 
 // DeleteRole 删除角色及关联权限，并记录审计日志、清除认证缓存
-func (s *RoleService) DeleteRole(id string, currentUserId, currentUserName string) error {
+func (s *roleService) DeleteRole(id string, currentUserId, currentUserName string) error {
 	if err := s.repo.DeleteRole(id); err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func (s *RoleService) DeleteRole(id string, currentUserId, currentUserName strin
 }
 
 // RoleList 查询角色列表并填充权限详情
-func (s *RoleService) RoleList() ([]*Role, error) {
+func (s *roleService) RoleList() ([]*Role, error) {
 	roleList, err := s.repo.FindRoleList()
 	if err != nil {
 		return nil, err
@@ -83,17 +83,17 @@ func (s *RoleService) RoleList() ([]*Role, error) {
 }
 
 // RoleBaseList 查询角色基础列表
-func (s *RoleService) RoleBaseList() ([]*Role, error) {
+func (s *roleService) RoleBaseList() ([]*Role, error) {
 	return s.repo.FindRoleBaseList()
 }
 
 // FindUserByRole 按角色 ID 查询关联用户
-func (s *RoleService) FindUserByRole(roleId string) ([]*User, error) {
+func (s *roleService) FindUserByRole(roleId string) ([]*User, error) {
 	return s.repo.FindUsersByRoleId(roleId)
 }
 
 // SaveRolePermission 保存角色权限变更，并记录审计日志、清除认证缓存
-func (s *RoleService) SaveRolePermission(role *RoleSave, currentUserId, currentUserName string) error {
+func (s *roleService) SaveRolePermission(role *RoleSave, currentUserId, currentUserName string) error {
 	if err := s.repo.SaveRolePermission(role); err != nil {
 		return err
 	}

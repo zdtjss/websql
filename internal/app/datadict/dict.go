@@ -2,6 +2,7 @@ package datadict
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -109,7 +110,10 @@ func buildDictTable(conn *sqlx.DB, dbType, schema, table string) DictTable {
 		i := 0
 		for rows.Next() {
 			var columnName, dataType, isNullable, comments string
-			rows.Scan(&columnName, &dataType, &isNullable, &comments)
+			if err := rows.Scan(&columnName, &dataType, &isNullable, &comments); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			isPK := sliceContainsStr(pks, columnName)
 			dt.Columns = append(dt.Columns, DictColumn{
 				Name:       columnName,
@@ -486,7 +490,10 @@ func getDictTables(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	default:
@@ -498,7 +505,10 @@ func getDictTables(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	}
@@ -521,7 +531,10 @@ func getDictPKs(conn *sqlx.DB, dbType, schema, table string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var name string
-			rows.Scan(&name)
+			if err := rows.Scan(&name); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			pks = append(pks, name)
 		}
 		return pks

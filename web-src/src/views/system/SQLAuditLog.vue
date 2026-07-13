@@ -186,8 +186,8 @@ async function loadLogs() {
       params.endTime = dateRange.value[1]
     }
     const resp = await getAuditLogs(params)
-    logs.value = resp.data.data || []
-    total.value = resp.data.total || 0
+    logs.value = resp.data.data.data || []
+    total.value = resp.data.data.total || 0
   } catch (e) {
     console.error('[SQLAuditLog] 加载审计日志失败:', e)
     ElMessage.error('加载审计日志失败')

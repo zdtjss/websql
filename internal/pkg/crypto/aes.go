@@ -91,26 +91,36 @@ func aesGCMDecrypt(ciphertext string, key []byte) (string, error) {
 }
 
 // AESEncode 加密明文。新数据统一使用 AES-GCM，密文带 "g1:" 前缀。
-// 保留 panic 语义以兼容现有调用方（阶段 1 响应统一时再改为返回 error）。
-func AESEncode(plaintext string) string {
+// 空输入或加密失败时返回 error，调用方应检查 err。
+func AESEncode(plaintext string) (string, error) {
 	if plaintext == "" {
-		panic("被加密文本不能为空")
+		return "", errors.New("被加密文本不能为空")
 	}
 	key := getAESKey()
 	result, err := aesGCMEncrypt(plaintext, key)
 	if err != nil {
 		log.Printf("[Security] GCM 加密失败 - err=%v\n", err)
-		panic("加密失败")
+		return "", errors.New("加密失败")
 	}
-	return result
+	return result, nil
+}
+
+// AESEncodePanic 保留 panic 语义的包装函数，供不便处理 error 的调用方过渡使用。
+// Deprecated: 请迁移到 AESEncode 的 error 返回版本。
+func AESEncodePanic(plaintext string) string {
+	v, err := AESEncode(plaintext)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 // AESDecode 解密密文。自动识别新版 GCM（"g1:" 前缀）与旧版 ECB（无前缀），
 // 旧 ECB 仅用于解密存量数据，不再用于新加密。
-// 保留 panic 语义以兼容现有调用方（阶段 1 响应统一时再改为返回 error）。
-func AESDecode(ciphertext string) string {
+// 空输入或解密失败时返回 error，调用方应检查 err。
+func AESDecode(ciphertext string) (string, error) {
 	if ciphertext == "" {
-		panic("密文本不能为空")
+		return "", errors.New("密文本不能为空")
 	}
 	key := getAESKey()
 
@@ -119,21 +129,31 @@ func AESDecode(ciphertext string) string {
 		plaintext, err := aesGCMDecrypt(ciphertext, key)
 		if err != nil {
 			log.Printf("[Security] GCM 解密失败 - err=%v\n", err)
-			panic("解密失败")
+			return "", errors.New("解密失败")
 		}
-		return plaintext
+		return plaintext, nil
 	}
 
 	// 旧版 ECB 密文（兼容存量数据）
 	decodeString, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
 		log.Printf("[Security] Base64解码失败 - err=%v\n", err)
-		panic("无效密文")
+		return "", errors.New("无效密文")
 	}
 	dst, err := openssl.AesECBDecrypt(decodeString, key, openssl.PKCS7_PADDING)
 	if err != nil {
 		log.Printf("[Security] ECB 解密失败 - err=%v\n", err)
-		panic("解密失败")
+		return "", errors.New("解密失败")
 	}
-	return string(dst)
+	return string(dst), nil
+}
+
+// AESDecodePanic 保留 panic 语义的包装函数，供不便处理 error 的调用方过渡使用。
+// Deprecated: 请迁移到 AESDecode 的 error 返回版本。
+func AESDecodePanic(ciphertext string) string {
+	v, err := AESDecode(ciphertext)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

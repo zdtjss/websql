@@ -3,28 +3,25 @@ package storage
 import (
 	"log"
 	"net/http"
-	"sync"
 
-	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/lazyinit"
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )
 
-// 默认实例，与 snippet 包一致的 lazy init 模式。
-var (
-	defaultRepo    UserStorageRepo
-	defaultOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultStorage = &lazyinit.Holder[UserStorageRepo]{}
 
-func ensureDefault() {
-	defaultOnce.Do(func() {
-		defaultRepo = NewUserStorageRepo(database.Mngtdb)
-		if err := defaultRepo.EnsureTable(); err != nil {
+func getDefaultStorage() UserStorageRepo {
+	return defaultStorage.Get(func() UserStorageRepo {
+		repo := NewUserStorageRepo(getDB())
+		if err := repo.EnsureTable(); err != nil {
 			log.Printf("[UserStorage] 自动建表失败: %v", err)
 		}
+		return repo
 	})
 }
 
@@ -36,8 +33,7 @@ func List(c *gin.Context) {
 		response.WriteAuthErr(c, "")
 		return
 	}
-	ensureDefault()
-	list, err := defaultRepo.ListByUserId(userId)
+	list, err := getDefaultStorage().ListByUserId(userId)
 	if err != nil {
 		response.WriteErr(c, http.StatusOK, 500, "查询存储失败")
 		return
@@ -57,8 +53,7 @@ func Get(c *gin.Context) {
 		response.WriteErr(c, http.StatusOK, 400, "缺少 key 参数")
 		return
 	}
-	ensureDefault()
-	item, err := defaultRepo.FindByKey(userId, key)
+	item, err := getDefaultStorage().FindByKey(userId, key)
 	if err != nil || item == nil {
 		response.WriteOK(c, "")
 		return
@@ -82,8 +77,7 @@ func Save(c *gin.Context) {
 		response.WriteErr(c, http.StatusOK, 400, "key 不能为空")
 		return
 	}
-	ensureDefault()
-	if err := defaultRepo.Upsert(userId, req.Key, req.Value); err != nil {
+	if err := getDefaultStorage().Upsert(userId, req.Key, req.Value); err != nil {
 		log.Printf("[UserStorage] 保存失败 key=%s: %v", req.Key, err)
 		response.WriteErr(c, http.StatusOK, 500, "保存失败")
 		return
@@ -107,8 +101,7 @@ func Delete(c *gin.Context) {
 		response.WriteErr(c, http.StatusOK, 400, "key 不能为空")
 		return
 	}
-	ensureDefault()
-	if err := defaultRepo.Delete(userId, req.Key); err != nil {
+	if err := getDefaultStorage().Delete(userId, req.Key); err != nil {
 		log.Printf("[UserStorage] 删除失败 key=%s: %v", req.Key, err)
 		response.WriteErr(c, http.StatusOK, 500, "删除失败")
 		return

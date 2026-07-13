@@ -732,7 +732,7 @@
 
 /* Unified panel style */
 .classical-panel {
-    height: calc(100vh - 36px);
+    height: calc(100vh - 36px) !important;
     display: flex;
     flex-direction: column;
     background: var(--bg-primary);

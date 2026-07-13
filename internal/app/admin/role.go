@@ -20,8 +20,7 @@ func SaveRole(c *gin.Context) {
 		return
 	}
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
-	ensureDefaultRole()
-	err := defaultRoleService.SaveRole(role, currentUser.Id, currentUser.Name)
+	err := getDefaultRole().SaveRole(role, currentUser.Id, currentUser.Name)
 	if err != nil {
 		log.Printf("保存角色失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -36,8 +35,7 @@ func DelRole(c *gin.Context) {
 	}
 	id := c.Query("id")
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
-	ensureDefaultRole()
-	err := defaultRoleService.DeleteRole(id, currentUser.Id, currentUser.Name)
+	err := getDefaultRole().DeleteRole(id, currentUser.Id, currentUser.Name)
 	if err != nil {
 		log.Printf("删除角色失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -47,8 +45,7 @@ func DelRole(c *gin.Context) {
 }
 
 func RoleList(c *gin.Context) {
-	ensureDefaultRole()
-	roleList, err := defaultRoleService.RoleList()
+	roleList, err := getDefaultRole().RoleList()
 	if err != nil {
 		log.Printf("查询角色列表失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -58,8 +55,7 @@ func RoleList(c *gin.Context) {
 }
 
 func RoleBaseList(c *gin.Context) {
-	ensureDefaultRole()
-	roleList, err := defaultRoleService.RoleBaseList()
+	roleList, err := getDefaultRole().RoleBaseList()
 	if err != nil {
 		log.Printf("查询角色列表失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -69,8 +65,7 @@ func RoleBaseList(c *gin.Context) {
 }
 
 func FindUserByRole(c *gin.Context) {
-	ensureDefaultRole()
-	userList, err := defaultRoleService.FindUserByRole(c.PostForm("roleId"))
+	userList, err := getDefaultRole().FindUserByRole(c.PostForm("roleId"))
 	if err != nil {
 		log.Printf("查询用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -89,8 +84,7 @@ func SaveRolePermission(c *gin.Context) {
 		return
 	}
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
-	ensureDefaultRole()
-	err := defaultRoleService.SaveRolePermission(role, currentUser.Id, currentUser.Name)
+	err := getDefaultRole().SaveRolePermission(role, currentUser.Id, currentUser.Name)
 	if err != nil {
 		log.Printf("保存权限失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")

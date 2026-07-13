@@ -151,7 +151,9 @@ func doTreeInsert(tree []*DirTree) {
 		}
 		stmt.Exec(id, &t.Label, &t.Parent)
 	}
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("[doTreeInsert] 事务提交失败: %v", err)
+	}
 }
 
 func expendDirTreeAll(root []*DirTree) []*DirTree {

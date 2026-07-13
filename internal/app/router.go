@@ -32,6 +32,7 @@ import (
 	"websql/internal/database"
 	"websql/internal/middleware"
 	"websql/internal/pkg/jsonutil"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 	"websql/internal/version"
 
@@ -39,18 +40,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
-
-// 不需要以/结尾
-var destAddr = "http://localhost:8083"
-
-var proxyHttpClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-	},
-}
 
 // embeddedAssetsFS 非空时，/assets/* 和 SPA index.html 从此嵌入式文件系统服务，
 // 否则回退到磁盘 ./static/ 目录。由桌面版入口通过 SetEmbeddedAssets 设置。
@@ -82,7 +71,6 @@ func MainRegister(router *gin.Engine) {
 		router.Use(middleware.LoginRateLimitMiddleware())
 		router.Use(middleware.APIRateLimitMiddleware())
 	}
-	router.Use(middleware.CircuitBreakerMiddleware())
 	router.Use(middleware.AuthMiddleware())
 	router.Use(ContextMiddleware())
 
@@ -290,7 +278,7 @@ func MainRegister(router *gin.Engine) {
 		if ctr := GetContainer(); ctr != nil {
 			db = ctr.Mngtdb
 		} else {
-			db = database.Mngtdb
+			db = database.Mngtdb // Deprecated: 回退兼容，应通过容器获取
 		}
 		if db != nil {
 			if err := db.Ping(); err != nil {
@@ -304,8 +292,6 @@ func MainRegister(router *gin.Engine) {
 				"version": version.Version,
 			})
 	})
-
-	routerGroup.Any("/ext/", proxy)
 
 	if embeddedAssetsFS != nil {
 		router.StaticFS("/assets", embeddedAssetsFS)
@@ -325,45 +311,21 @@ func MainRegister(router *gin.Engine) {
 	log.Println("路由注册完成")
 }
 
-// proxy 对外代理的接口
-func proxy(c *gin.Context) {
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, destAddr+c.Request.RequestURI[4:], c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "创建代理请求失败"})
-		return
-	}
-	req.Header = c.Request.Header.Clone()
-	resp, err := proxyHttpClient.Do(req)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "代理请求失败"})
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, v := range resp.Header {
-		for _, vv := range v {
-			c.Header(k, vv)
-		}
-	}
-	c.Status(resp.StatusCode)
-	_, _ = io.Copy(c.Writer, resp.Body)
-}
-
 func handleExportDownload(c *gin.Context) {
 	fileName := c.Param("filename")
 	if fileName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件名不能为空"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "文件名不能为空")
 		return
 	}
 
 	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件名"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "非法文件名")
 		return
 	}
 
 	cleanPath := filepath.Clean("exports/" + fileName)
 	if !strings.HasPrefix(cleanPath, "exports") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "非法文件路径"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "非法文件路径")
 		return
 	}
 
@@ -386,14 +348,14 @@ func handleExportDownload(c *gin.Context) {
 		}
 	}
 	if ext == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的文件类型"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "不支持的文件类型")
 		return
 	}
 
 	filePath := "exports/" + fileName
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在"})
+		response.WriteErr(c, http.StatusNotFound, 404, "文件不存在")
 		return
 	}
 
@@ -407,7 +369,7 @@ func handleExportDownload(c *gin.Context) {
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "读取文件失败")
 		return
 	}
 	defer file.Close()

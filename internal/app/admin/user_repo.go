@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -83,7 +84,10 @@ func (r *userRepo) FindUserPower(userId string) []string {
 	logger.PrintErr(err)
 	var resId string
 	for rows.Next() {
-		rows.Scan(&resId)
+		if err := rows.Scan(&resId); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		resIds = append(resIds, resId)
 	}
 	return resIds
@@ -210,7 +214,9 @@ func (r *userRepo) CheckUserExist(user *User) error {
 	sql.WriteString("limit 1")
 	row := r.db.QueryRow(sql.String(), checkSqlParam...)
 	var checkUserId string
-	row.Scan(&checkUserId)
+	if err := row.Scan(&checkUserId); err != nil {
+		log.Printf("扫描行失败: %v", err)
+	}
 	if checkUserId != "" {
 		return errors.New("此登录名已存在")
 	}

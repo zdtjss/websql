@@ -253,12 +253,15 @@ func writeSQLError(c *gin.Context, err error) {
 }
 
 func IsAlphaNumeric(str string) bool {
+	if str == "" {
+		return false
+	}
 	for _, ch := range str {
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) {
-			return true
+		if !unicode.IsLetter(ch) && !unicode.IsDigit(ch) && ch != '_' {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func page(dbtype string, sql string) string {
@@ -637,10 +640,120 @@ func extractTableNameFromSQL(sqlStr string) string {
 	return tableNameArr.String()
 }
 
-func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableName, maxLine string, user *admin.User, connId, authorization string, queryCtx context.Context) *SQLResultItem {
-	result := &SQLResultItem{
-		SQL: sqlStr,
+// setSQLError 统一填充 SQL 执行错误结果：脱敏、截断、审计。
+func setSQLError(result *SQLResultItem, err error) {
+	result.Status = "error"
+	result.AuditError = audit.FormatErrorWithStack(err)
+	msg := sanitize.RedactCredentials(err.Error())
+	if len(msg) > 500 {
+		msg = msg[:500] + "..."
 	}
+	result.Error = msg
+}
+
+// execModifySQL 执行 DML/DDL 语句（update/delete/insert/alter 等），填充受影响行数。
+func execModifySQL(result *SQLResultItem, sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, queryCtx context.Context) {
+	result.Type = "modify"
+	var affected int64
+	if tx != nil {
+		rs, err := tx.ExecContext(queryCtx, sqlStr)
+		if err != nil {
+			setSQLError(result, err)
+			return
+		}
+		affected, _ = rs.RowsAffected()
+	} else {
+		rs, err := conn.ExecContext(queryCtx, sqlStr)
+		if err != nil {
+			setSQLError(result, err)
+			return
+		}
+		affected, _ = rs.RowsAffected()
+	}
+	result.Status = "success"
+	result.Affected = affected
+	result.Columns = []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}
+	result.Data = []map[string]any{{"受影响行数": affected}}
+}
+
+// execQuerySQL 执行查询语句，填充列信息、数据行和主键（用于可编辑判断）。
+func execQuerySQL(result *SQLResultItem, sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableName, maxLine, connId, authorization string, queryCtx context.Context) {
+	result.Type = "query"
+	params := make([]any, 0)
+	execSQL := sqlStr
+	if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
+		maxLineI, _ := strconv.Atoi(maxLine)
+		if maxLineI > 0 {
+			execSQL = page(conn.DriverName(), sqlStr)
+			params = append(params, maxLineI)
+		}
+	}
+
+	var rows *sqlx.Rows
+	var err error
+	if tx != nil {
+		rows, err = tx.QueryxContext(queryCtx, execSQL, params...)
+	} else {
+		rows, err = conn.QueryxContext(queryCtx, execSQL, params...)
+	}
+	if err != nil {
+		setSQLError(result, err)
+		return
+	}
+	defer rows.Close()
+
+	cts, err := rows.ColumnTypes()
+	if err != nil {
+		setSQLError(result, err)
+		return
+	}
+
+	columnList := make([]Column, len(cts))
+	columnNameList := make([]string, 0)
+
+	stmtTableName := extractTableNameFromSQL(sqlStr)
+	if stmtTableName == "" {
+		stmtTableName = tableName
+	}
+	realTableName, realSchema := stmtTableName, schema
+	if strings.Contains(stmtTableName, ".") {
+		realTableName = string(stmtTableName[strings.Index(stmtTableName, ".")+1:])
+		realSchema = string(stmtTableName[0:strings.Index(stmtTableName, ".")])
+	}
+
+	var keyIdx []int
+	var keys []string
+	columnMap := map[string]string{}
+
+	if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
+		keys = dbops.QueryPrimaryKeyCached(connId, schema, realTableName, conn)
+		columnMap = dbops.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
+	}
+
+	for idx, val := range cts {
+		columnNameList = append(columnNameList, val.Name())
+		columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName(), Comment: columnMap[val.Name()]}
+	}
+
+	if len(keys) != 0 {
+		keyIdx = database.KeyIdx(keys, columnNameList)
+	}
+
+	data, dataErr := database.GetResultRows(conn.DriverName(), rows)
+	if dataErr != nil {
+		setSQLError(result, dataErr)
+		return
+	}
+
+	result.Status = "success"
+	result.Columns = columnList
+	result.Data = data
+	result.CanEdit = len(keyIdx) != 0
+	result.Keys = keys
+}
+
+func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableName, maxLine string, user *admin.User, connId, authorization string, queryCtx context.Context) *SQLResultItem {
+	result := &SQLResultItem{SQL: sqlStr}
 
 	if checkPrefx(sqlStr, []string{"update", "delete"}) {
 		safego.GoWithName("sql-async-backup", func() {
@@ -651,144 +764,9 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 	}
 
 	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
-		result.Type = "modify"
-		var affected int64
-		if tx != nil {
-			rs, err := tx.ExecContext(queryCtx, sqlStr)
-			if err != nil {
-				result.Status = "error"
-				result.AuditError = audit.FormatErrorWithStack(err)
-				msg := err.Error()
-				msg = sanitize.RedactCredentials(msg)
-				if len(msg) > 500 {
-					msg = msg[:500] + "..."
-				}
-				result.Error = msg
-				return result
-			}
-			affected, _ = rs.RowsAffected()
-		} else {
-			rs, err := conn.ExecContext(queryCtx, sqlStr)
-			if err != nil {
-				result.Status = "error"
-				result.AuditError = audit.FormatErrorWithStack(err)
-				msg := err.Error()
-				msg = sanitize.RedactCredentials(msg)
-				if len(msg) > 500 {
-					msg = msg[:500] + "..."
-				}
-				result.Error = msg
-				return result
-			}
-			affected, _ = rs.RowsAffected()
-		}
-		result.Status = "success"
-		result.Affected = affected
-		result.Columns = []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}
-		result.Data = []map[string]any{{"受影响行数": affected}}
+		execModifySQL(result, sqlStr, conn, tx, queryCtx)
 	} else {
-		result.Type = "query"
-		params := make([]any, 0)
-		execSQL := sqlStr
-		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
-			maxLineI, _ := strconv.Atoi(maxLine)
-			if maxLineI > 0 {
-				execSQL = page(conn.DriverName(), sqlStr)
-				params = append(params, maxLineI)
-			}
-		}
-
-		var rows *sqlx.Rows
-		var err error
-		if tx != nil {
-			if len(params) > 0 {
-				rows, err = tx.QueryxContext(queryCtx, execSQL, params...)
-			} else {
-				rows, err = tx.QueryxContext(queryCtx, execSQL)
-			}
-		} else {
-			if len(params) > 0 {
-				rows, err = conn.QueryxContext(queryCtx, execSQL, params...)
-			} else {
-				rows, err = conn.QueryxContext(queryCtx, execSQL)
-			}
-		}
-
-		if err != nil {
-			result.Status = "error"
-			result.AuditError = audit.FormatErrorWithStack(err)
-			msg := err.Error()
-			msg = sanitize.RedactCredentials(msg)
-			if len(msg) > 500 {
-				msg = msg[:500] + "..."
-			}
-			result.Error = msg
-			return result
-		}
-		defer rows.Close()
-
-		cts, err3 := rows.ColumnTypes()
-		if err3 != nil {
-			result.Status = "error"
-			result.AuditError = audit.FormatErrorWithStack(err3)
-			msg := err3.Error()
-			msg = sanitize.RedactCredentials(msg)
-			if len(msg) > 500 {
-				msg = msg[:500] + "..."
-			}
-			result.Error = msg
-			return result
-		}
-
-		columnList := make([]Column, len(cts))
-		columnNameList := make([]string, 0)
-
-		stmtTableName := extractTableNameFromSQL(sqlStr)
-		if stmtTableName == "" {
-			stmtTableName = tableName
-		}
-		var realTableName, realSchema = stmtTableName, schema
-		if strings.Contains(stmtTableName, ".") {
-			realTableName = string(stmtTableName[strings.Index(stmtTableName, ".")+1:])
-			realSchema = string(stmtTableName[0:strings.Index(stmtTableName, ".")])
-		}
-
-		var keyIdx []int
-		var keys []string
-		columnMap := map[string]string{}
-
-		if IsAlphaNumeric(realTableName) && isSimpleQuery(sqlStr) {
-			keys = dbops.QueryPrimaryKeyCached(connId, schema, realTableName, conn)
-			columnMap = dbops.ColumnMapFiltered(strings.ToLower(realTableName), strings.ToLower(realSchema), connId, authorization, conn)
-		}
-
-		for idx, val := range cts {
-			columnNameList = append(columnNameList, val.Name())
-			columnList[idx] = Column{Name: val.Name(), Type: val.DatabaseTypeName(), Comment: columnMap[val.Name()]}
-		}
-
-		if len(keys) != 0 {
-			keyIdx = database.KeyIdx(keys, columnNameList)
-		}
-
-		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
-		if dataErr != nil {
-			result.Status = "error"
-			result.AuditError = audit.FormatErrorWithStack(dataErr)
-			msg := dataErr.Error()
-			msg = sanitize.RedactCredentials(msg)
-			if len(msg) > 500 {
-				msg = msg[:500] + "..."
-			}
-			result.Error = msg
-			return result
-		}
-
-		result.Status = "success"
-		result.Columns = columnList
-		result.Data = data
-		result.CanEdit = len(keyIdx) != 0
-		result.Keys = keys
+		execQuerySQL(result, sqlStr, conn, tx, schema, tableName, maxLine, connId, authorization, queryCtx)
 	}
 
 	return result

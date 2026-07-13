@@ -12,10 +12,9 @@ import (
 )
 
 func FindUserBase(c *gin.Context) {
-	ensureDefaultUser()
 	loginName := c.Query("loginName")
 	key := c.Query("key")
-	userList, err := defaultUserService.FindUserBase(loginName, key)
+	userList, err := getDefaultUserService().FindUserBase(loginName, key)
 	if err != nil {
 		log.Printf("查询用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -25,13 +24,12 @@ func FindUserBase(c *gin.Context) {
 }
 
 func FindUser(c *gin.Context) {
-	ensureDefaultUser()
 	key := c.Query("key")
 	name := c.Query("name")
 	loginName := c.Query("loginName")
 	roleId := c.Query("roleId")
 	userIdList, _ := c.GetPostFormArray("userIdList")
-	userList, err := defaultUserService.FindUser(roleId, name, loginName, key, userIdList)
+	userList, err := getDefaultUserService().FindUser(roleId, name, loginName, key, userIdList)
 	if err != nil {
 		log.Printf("查询用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -50,8 +48,7 @@ func SaveUser(c *gin.Context) {
 		return
 	}
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
-	ensureDefaultUser()
-	err := defaultUserService.Save(user, currentUser.Id, currentUser.Name)
+	err := getDefaultUserService().Save(user, currentUser.Id, currentUser.Name)
 	if err != nil {
 		if err.Error() == "此登录名已存在" {
 			response.WriteErr(c, 200, 400, err.Error())
@@ -68,8 +65,7 @@ func SaveUserBio(c *gin.Context) {
 	bioKey := c.PostForm("bioKey")
 	authorization := appctx.Ctx.GetAuthorization(c)
 	user := GetUser(authorization)
-	ensureDefaultUser()
-	err := defaultUserService.SaveUserBio(user.Id, bioKey)
+	err := getDefaultUserService().SaveUserBio(user.Id, bioKey)
 	if err != nil {
 		log.Printf("保存用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -98,8 +94,7 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	ensureDefaultUser()
-	err := defaultUserService.ChangePassword(user.Id, oldPwd, newPwd)
+	err := getDefaultUserService().ChangePassword(user.Id, oldPwd, newPwd)
 	if err != nil {
 		if err.Error() == "用户信息异常" || err.Error() == "旧密码不正确" {
 			response.WriteErr(c, 200, 400, err.Error())
@@ -127,8 +122,7 @@ func InitUser(c *gin.Context) {
 	if !CheckAdminPower(c) {
 		return
 	}
-	ensureDefaultUser()
-	err := defaultUserService.InitUser()
+	err := getDefaultUserService().InitUser()
 	if err != nil {
 		log.Printf("初始化用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -141,8 +135,7 @@ func DelUser(c *gin.Context) {
 	if !CheckAdminPower(c) {
 		return
 	}
-	ensureDefaultUser()
-	defaultUserService.Delete(c.PostForm("id"))
+	getDefaultUserService().Delete(c.PostForm("id"))
 	response.WriteOK(c, "")
 }
 

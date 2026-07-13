@@ -19,7 +19,7 @@ func EnsureLocalUser() {
 		return
 	}
 
-	db := database.Mngtdb
+	db := database.Mngtdb // Deprecated: 回退兼容，应通过容器获取
 	if ctr := GetContainer(); ctr != nil && ctr.Mngtdb != nil {
 		db = ctr.Mngtdb
 	}

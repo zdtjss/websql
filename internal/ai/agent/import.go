@@ -15,6 +15,7 @@ import (
 
 	admin "websql/internal/app/admin"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -149,27 +150,27 @@ func HandleUploadExcel(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		log.Printf("[Upload] 文件上传失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件上传失败，请检查文件是否正确选择"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "文件上传失败，请检查文件是否正确选择")
 		return
 	}
 
 	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 	ft, ok := classifyUploadExt(ext)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "仅支持 .xlsx/.xls/.csv/.md/.markdown 格式的文件"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "仅支持 .xlsx/.xls/.csv/.md/.markdown 格式的文件")
 		return
 	}
 
 	// Markdown 不做数据量限制；Excel/CSV 限制 20MB
 	if ft != fileTypeMarkdown && fileHeader.Size > maxUploadSize {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件大小不能超过 20MB"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "文件大小不能超过 20MB")
 		return
 	}
 
 	src, err := fileHeader.Open()
 	if err != nil {
 		log.Printf("[Upload] 打开文件失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "打开文件失败，请重试"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "打开文件失败，请重试")
 		return
 	}
 	defer src.Close()
@@ -180,14 +181,14 @@ func HandleUploadExcel(c *gin.Context) {
 	dst, err := os.Create(diskPath)
 	if err != nil {
 		log.Printf("[Upload] 保存文件失败 - err=%v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败，请重试"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "保存文件失败，请重试")
 		return
 	}
 	if _, err := io.Copy(dst, src); err != nil {
 		dst.Close()
 		os.Remove(diskPath)
 		log.Printf("[Upload] 写入文件失败 - err=%v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入文件失败，请重试"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "写入文件失败，请重试")
 		return
 	}
 	dst.Close()
@@ -198,7 +199,7 @@ func HandleUploadExcel(c *gin.Context) {
 		if err != nil {
 			os.Remove(diskPath)
 			log.Printf("[Upload] 读取 Markdown 失败 - err=%v\n", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败，请检查文件内容"})
+			response.WriteErr(c, http.StatusBadRequest, 400, "读取文件失败，请检查文件内容")
 			return
 		}
 		text := string(raw)
@@ -211,7 +212,7 @@ func HandleUploadExcel(c *gin.Context) {
 			CharCount: charCount,
 		})
 		log.Printf("[Upload] Markdown 已暂存 - id=%s, name=%s, chars=%d\n", fileID, fileHeader.Filename, charCount)
-		c.JSON(http.StatusOK, gin.H{
+		response.WriteOK(c, gin.H{
 			"fileId":      fileID,
 			"fileName":    fileHeader.Filename,
 			"fileType":    string(ft),
@@ -226,12 +227,12 @@ func HandleUploadExcel(c *gin.Context) {
 	if err != nil {
 		os.Remove(diskPath)
 		log.Printf("[Upload] 解析表格失败 - type=%s, err=%v\n", ft, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.WriteErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if len(allRows) < 2 {
 		os.Remove(diskPath)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "文件至少需要包含表头行和一行数据"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "文件至少需要包含表头行和一行数据")
 		return
 	}
 
@@ -269,7 +270,7 @@ func HandleUploadExcel(c *gin.Context) {
 	log.Printf("[Upload] 表格文件已暂存 - id=%s, name=%s, type=%s, columns=%v, rows=%d\n",
 		fileID, fileHeader.Filename, ft, columns, totalRows)
 
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"fileId":    fileID,
 		"fileName":  fileHeader.Filename,
 		"fileType":  string(ft),
@@ -330,17 +331,17 @@ func HandlePreMatchColumns(c *gin.Context) {
 		TableName string `json:"tableName"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数格式错误"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "参数格式错误")
 		return
 	}
 	if req.FileID == "" || req.ConnID == "" || req.TableName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "fileId、connId、tableName 不能为空"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "fileId、connId、tableName 不能为空")
 		return
 	}
 
 	meta, ok := uploadCache.Get(req.FileID)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "上传文件不存在或已过期，请重新上传"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "上传文件不存在或已过期，请重新上传")
 		return
 	}
 
@@ -352,7 +353,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 	}
 	conn, dbType := GetConn(req.ConnID, preMatchUserId)
 	if conn == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "数据库连接不存在"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "数据库连接不存在")
 		return
 	}
 
@@ -360,7 +361,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 
 	tableColumns, err := getTableColumns(conn, dbType, dbSchema, req.TableName)
 	if err != nil || len(tableColumns) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("获取表 %s 的列信息失败", req.TableName)})
+		response.WriteErrf(c, http.StatusBadRequest, 400, "获取表 %s 的列信息失败", req.TableName)
 		return
 	}
 
@@ -380,7 +381,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"matches":      matches,
 		"matchedCount": len(mapping),
 		"totalExcel":   len(meta.Columns),

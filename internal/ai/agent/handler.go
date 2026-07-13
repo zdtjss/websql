@@ -16,6 +16,7 @@ import (
 	conn "websql/internal/app/conn"
 	system "websql/internal/app/system"
 	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
 
 	"github.com/gin-gonic/gin"
@@ -214,7 +215,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("[Handler] 请求参数绑定失败 - err=%v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "请求参数格式错误")
 		return
 	}
 
@@ -227,17 +228,17 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	if err != nil {
 		switch err.Error() {
 		case "未配置 AI 服务":
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
 		case "未认证或认证已过期":
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			response.WriteAuthErr(c, err.Error())
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
 		}
 		return
 	}
 
 	if params.scope.IsRemote && !params.scope.HasAnyAccess() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "你没有此数据库连接的访问权限"})
+		response.WriteErr(c, http.StatusForbidden, 403, "你没有此数据库连接的访问权限")
 		return
 	}
 
@@ -283,11 +284,11 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	if err != nil {
 		switch err.Error() {
 		case "未配置 AI 服务":
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
 		case "未认证或认证已过期":
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			response.WriteAuthErr(c, err.Error())
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
 		}
 		return
 	}
@@ -323,7 +324,7 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 func (h *Handler) HandleGetSessions(c *gin.Context) {
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
 
@@ -344,14 +345,14 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 	total, err := countSessionsByUserID(user.Id, keyword)
 	if err != nil {
 		log.Printf("[Handler] 统计会话数量失败 - userId=%s, err=%v\n", user.Id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "获取会话列表失败")
 		return
 	}
 
 	sessions, err := listSessionsByUserIDPaged(user.Id, keyword, pageSize, offset)
 	if err != nil {
 		log.Printf("[Handler] 获取会话列表失败 - userId=%s, err=%v\n", user.Id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话列表失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "获取会话列表失败")
 		return
 	}
 
@@ -363,7 +364,7 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 		}
 		metas = append(metas, SessionMeta{ID: sess.ID, Title: title, CreatedAt: sess.CreatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	response.WriteOK(c, gin.H{
 		"sessions": metas,
 		"total":    total,
 		"page":     page,
@@ -374,52 +375,52 @@ func (h *Handler) HandleGetSessions(c *gin.Context) {
 func (h *Handler) HandleGetSession(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 sessionId 参数")
 		return
 	}
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
 	detail, err := h.sessions.GetDetail(sessionID)
 	if err != nil {
 		log.Printf("[Handler] 获取会话详情失败 - sessionId=%s, err=%v\n", sessionID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取会话详情失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "获取会话详情失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session": detail})
+	response.WriteOK(c, gin.H{"session": detail})
 }
 
 // HandleCancelAgent 主动取消正在运行的 Agent（Eino v0.9 Agent Cancel）
 func (h *Handler) HandleCancelAgent(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 sessionId 参数")
 		return
 	}
 	// 通过 session 的 cancel 机制触发取消
 	h.sessions.Cancel(sessionID)
-	c.JSON(http.StatusOK, gin.H{"message": "已发送取消请求"})
+	response.WriteOK(c, gin.H{"message": "已发送取消请求"})
 }
 
 func (h *Handler) HandleDeleteSession(c *gin.Context) {
 	sessionID := c.Query("sessionId")
 	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 sessionId 参数"})
+		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 sessionId 参数")
 		return
 	}
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或认证已过期"})
+		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
 	if err := h.sessions.Delete(sessionID); err != nil {
 		log.Printf("[Handler] 删除会话失败 - sessionId=%s, err=%v\n", sessionID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除会话失败"})
+		response.WriteErr(c, http.StatusInternalServerError, 500, "删除会话失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "会话已删除"})
+	response.WriteOK(c, gin.H{"message": "会话已删除"})
 }
 
 func GetDBInfo(connID string) (string, string, string) {

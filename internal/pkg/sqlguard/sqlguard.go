@@ -114,6 +114,53 @@ func ValidateDDL(sql string) error {
 	return nil
 }
 
+// dmlDangerousPatterns 是 DML 场景下的危险模式黑名单。
+// 不含 DROP TABLE/TRUNCATE 等 DDL 关键词，避免对含这些词的合法 DML 误报。
+var dmlDangerousPatterns = []string{
+	"INTO OUTFILE", "INTO DUMPFILE",
+	"LOAD_FILE(", "LOAD DATA",
+	"GRANT", "REVOKE", "CREATE USER", "ALTER USER", "DROP USER",
+	"SHUTDOWN",
+}
+
+// ValidateDML 校验 DML SQL（用于备份恢复中的 INSERT/UPDATE/DELETE 语句）
+// 允许 INSERT/UPDATE/DELETE，拦截文件写入、加载文件等危险操作
+func ValidateDML(sql string) error {
+	upper := normalize(sql)
+
+	allowedPrefixes := []string{"INSERT INTO", "UPDATE", "DELETE FROM"}
+	matched := false
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(upper, prefix) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		preview := upper
+		if len(preview) > 40 {
+			preview = preview[:40] + "..."
+		}
+		return fmt.Errorf("不允许执行的DML类型: %s (仅允许 INSERT/UPDATE/DELETE)", preview)
+	}
+
+	for _, d := range dmlDangerousPatterns {
+		if strings.Contains(upper, d) {
+			return fmt.Errorf("DML包含危险操作: %s", d)
+		}
+	}
+
+	return nil
+}
+
+// IsDML 判断 SQL 语句是否为 DML（INSERT/UPDATE/DELETE）
+func IsDML(sql string) bool {
+	upper := normalize(sql)
+	return strings.HasPrefix(upper, "INSERT INTO") ||
+		strings.HasPrefix(upper, "UPDATE") ||
+		strings.HasPrefix(upper, "DELETE FROM")
+}
+
 // checkDangerous 检查危险模式
 func checkDangerous(upper string) error {
 	for _, d := range dangerousPatterns {

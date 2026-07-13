@@ -102,7 +102,10 @@ func ExplainSQL(c *gin.Context) {
 		for i := range vals {
 			valPtrs[i] = &vals[i]
 		}
-		rows.Scan(valPtrs...)
+		if err := rows.Scan(valPtrs...); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		row := make(map[string]any)
 		for i, col := range cols {
 			if vals[i] != nil {
@@ -150,7 +153,10 @@ func execExplain(conn *sqlx.DB, dbType, sql string) (*ExplainResult, error) {
 		for i := range vals {
 			valPtrs[i] = &vals[i]
 		}
-		rows.Scan(valPtrs...)
+		if err := rows.Scan(valPtrs...); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		row := make(map[string]any)
 		for i, col := range cols {
 			if vals[i] != nil {

@@ -3,13 +3,12 @@ package dbops
 import (
 	"errors"
 	"strings"
-	"sync"
 	"time"
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
 	"websql/internal/app/permission"
-	"websql/internal/database"
+	"websql/internal/pkg/lazyinit"
 	"websql/internal/pkg/safego"
 	"websql/internal/pkg/sanitize"
 
@@ -17,29 +16,40 @@ import (
 )
 
 // OperateService 封装数据库操作相关的业务逻辑：连接获取、权限过滤、缓存管理等
-type OperateService struct {
+type OperateService interface {
+	ListSchema(key, authorization string) []*conn.Tree
+	ListTable(key, schema, authorization string) []*conn.Tree
+	ListColumns(connId, table, schema, authorization string) []*conn.Tree
+	ListAllColumns(key, schema, authorization string) []*conn.Tree
+	ListTableColumns(connIdParam, tableName, schema, authorization string) []map[string]any
+	QueryTableInfo(key, schema, authorization string) []*conn.Table
+	ColumnMap(table, schema string, dc *sqlx.DB) map[string]string
+	ColumnMapFiltered(table, schema, connId, authorization string, dc *sqlx.DB) map[string]string
+	QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error)
+	QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string
+	ListTableFat(connId, schema, authorization string) []*conn.Table
+	GetTableOptions(connId, schema, table, authorization string) (map[string]any, error)
+	GetTableStatistics(connId, schema, table, authorization string) (map[string]any, error)
+	ListIndexes(connId, schema, table, authorization string) ([]map[string]any, error)
+	ListObjects(connId, schema, objType, authorization string) ([]map[string]any, error)
+	GetObjectDDL(connId, schema, name, objType, authorization string) (string, error)
+}
+
+type operateService struct {
 	repo OperateRepo
 }
 
 // NewOperateService 创建 OperateService 实例
-func NewOperateService(repo OperateRepo) *OperateService {
-	return &OperateService{repo: repo}
+func NewOperateService(repo OperateRepo) OperateService {
+	return &operateService{repo: repo}
 }
 
-// 默认实例，保持对包级别函数的向后兼容
-// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
-// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
-var (
-	defaultOperateRepo    OperateRepo
-	defaultOperateService *OperateService
-	defaultOperateOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultOperate = &lazyinit.Holder[OperateService]{}
 
-// ensureDefaultOperate 初始化默认的 OperateRepo 和 OperateService
-func ensureDefaultOperate() {
-	defaultOperateOnce.Do(func() {
-		defaultOperateRepo = NewOperateRepo(database.Mngtdb)
-		defaultOperateService = NewOperateService(defaultOperateRepo)
+func getDefaultOperate() OperateService {
+	return defaultOperate.Get(func() OperateService {
+		return NewOperateService(NewOperateRepo(getDB()))
 	})
 }
 
@@ -113,7 +123,7 @@ func (c *metaCache) set(key string, columnMap map[string]string, primaryKeys []s
 // ===== 业务逻辑方法 =====
 
 // ListSchema 列出数据库下的所有 schema（按权限过滤）
-func (s *OperateService) ListSchema(key string, authorization string) []*conn.Tree {
+func (s *operateService) ListSchema(key string, authorization string) []*conn.Tree {
 	dc := conn.GetConn(key, authorization)
 	if dc == nil {
 		return []*conn.Tree{}
@@ -127,7 +137,7 @@ func (s *OperateService) ListSchema(key string, authorization string) []*conn.Tr
 }
 
 // ListTable 列出 schema 下的所有表（含列信息，按权限过滤）
-func (s *OperateService) ListTable(key string, schema, authorization string) []*conn.Tree {
+func (s *operateService) ListTable(key string, schema, authorization string) []*conn.Tree {
 	dc := conn.GetConn(key, authorization)
 	if dc == nil {
 		return []*conn.Tree{}
@@ -171,7 +181,7 @@ func (s *OperateService) ListTable(key string, schema, authorization string) []*
 }
 
 // ListColumns 列出表的所有列（按权限过滤）
-func (s *OperateService) ListColumns(connId string, table, schema, authorization string) []*conn.Tree {
+func (s *operateService) ListColumns(connId string, table, schema, authorization string) []*conn.Tree {
 	dc := conn.GetConn(connId, authorization)
 	if dc == nil {
 		return []*conn.Tree{}
@@ -196,7 +206,7 @@ func (s *OperateService) ListColumns(connId string, table, schema, authorization
 }
 
 // ListAllColumns 列出 schema 下的所有列
-func (s *OperateService) ListAllColumns(key string, schema, authorization string) []*conn.Tree {
+func (s *operateService) ListAllColumns(key string, schema, authorization string) []*conn.Tree {
 	dc := conn.GetConn(key, authorization)
 	if dc == nil {
 		return []*conn.Tree{}
@@ -210,7 +220,7 @@ func (s *OperateService) ListAllColumns(key string, schema, authorization string
 }
 
 // ListTableColumns 列出表的列详情（按权限过滤）
-func (s *OperateService) ListTableColumns(connIdParam string, tableName, schema, authorization string) []map[string]any {
+func (s *operateService) ListTableColumns(connIdParam string, tableName, schema, authorization string) []map[string]any {
 	dc := conn.GetConn(connIdParam, authorization)
 	if dc == nil {
 		return []map[string]any{}
@@ -231,7 +241,7 @@ func (s *OperateService) ListTableColumns(connIdParam string, tableName, schema,
 }
 
 // QueryTableInfo 查询表信息列表
-func (s *OperateService) QueryTableInfo(key string, schema, authorization string) []*conn.Table {
+func (s *operateService) QueryTableInfo(key string, schema, authorization string) []*conn.Table {
 	dc := conn.GetConn(key, authorization)
 	if dc == nil {
 		return []*conn.Table{}
@@ -240,12 +250,12 @@ func (s *OperateService) QueryTableInfo(key string, schema, authorization string
 }
 
 // ColumnMap 查询表的列名与注释映射
-func (s *OperateService) ColumnMap(table, schema string, dc *sqlx.DB) map[string]string {
+func (s *operateService) ColumnMap(table, schema string, dc *sqlx.DB) map[string]string {
 	return s.repo.ColumnMap(dc, table, schema)
 }
 
 // ColumnMapFiltered 查询表的列名与注释映射（带缓存与权限过滤）
-func (s *OperateService) ColumnMapFiltered(table, schema, connId, authorization string, dc *sqlx.DB) map[string]string {
+func (s *operateService) ColumnMapFiltered(table, schema, connId, authorization string, dc *sqlx.DB) map[string]string {
 	cacheKey := metaCacheKey(connId, schema, table)
 	if cached, ok := tableMetaCache.getColumnMap(cacheKey); ok {
 		access := permission.GetTableAccessDowngraded(connId, schema, table, authorization)
@@ -271,12 +281,12 @@ func (s *OperateService) ColumnMapFiltered(table, schema, connId, authorization 
 }
 
 // QueryPrimaryKey 查询表的主键（事务版本）
-func (s *OperateService) QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
+func (s *operateService) QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
 	return s.repo.QueryPrimaryKeyWithTx(tx, schema, table)
 }
 
 // QueryPrimaryKeyCached 查询表的主键（带缓存）
-func (s *OperateService) QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string {
+func (s *operateService) QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string {
 	cacheKey := metaCacheKey(connId, schema, table)
 	if cached, ok := tableMetaCache.getPrimaryKeys(cacheKey); ok {
 		return cached
@@ -294,7 +304,7 @@ func (s *OperateService) QueryPrimaryKeyCached(connId, schema, table string, dc 
 }
 
 // ListTableFat 列出表信息（含 schema 自动检测与权限过滤）
-func (s *OperateService) ListTableFat(connId, schema, authorization string) []*conn.Table {
+func (s *operateService) ListTableFat(connId, schema, authorization string) []*conn.Table {
 	if schema == "" && connId != "" {
 		dc := conn.GetConn(connId, authorization)
 		if dc != nil {
@@ -307,7 +317,7 @@ func (s *OperateService) ListTableFat(connId, schema, authorization string) []*c
 }
 
 // GetTableOptions 获取表选项信息
-func (s *OperateService) GetTableOptions(connId, schema, table, authorization string) (map[string]any, error) {
+func (s *operateService) GetTableOptions(connId, schema, table, authorization string) (map[string]any, error) {
 	permission.CheckTablePermission(connId, schema, table, authorization)
 	dc := conn.GetConn(connId, authorization)
 	if dc == nil {
@@ -324,7 +334,7 @@ func (s *OperateService) GetTableOptions(connId, schema, table, authorization st
 }
 
 // GetTableStatistics 获取表统计信息
-func (s *OperateService) GetTableStatistics(connId, schema, table, authorization string) (map[string]any, error) {
+func (s *operateService) GetTableStatistics(connId, schema, table, authorization string) (map[string]any, error) {
 	permission.CheckTablePermission(connId, schema, table, authorization)
 	dc := conn.GetConn(connId, authorization)
 	if dc == nil {
@@ -341,7 +351,7 @@ func (s *OperateService) GetTableStatistics(connId, schema, table, authorization
 }
 
 // ListIndexes 列出表的索引信息
-func (s *OperateService) ListIndexes(connId, schema, table, authorization string) ([]map[string]any, error) {
+func (s *operateService) ListIndexes(connId, schema, table, authorization string) ([]map[string]any, error) {
 	permission.CheckTablePermission(connId, schema, table, authorization)
 	dc := conn.GetConn(connId, authorization)
 	if dc == nil {
@@ -359,7 +369,7 @@ func (s *OperateService) ListIndexes(connId, schema, table, authorization string
 
 // ListObjects 列出 schema 下指定类型的数据库对象（view/procedure/function/trigger/event/table）。
 // 含 schema 标识符的 sanitize 校验与 schema 级访问权限校验，防止 SQL 注入与越权访问。
-func (s *OperateService) ListObjects(connId, schema, objType, authorization string) ([]map[string]any, error) {
+func (s *operateService) ListObjects(connId, schema, objType, authorization string) ([]map[string]any, error) {
 	if err := sanitize.ValidateIdentifier(schema, "schema名"); err != nil {
 		return nil, err
 	}
@@ -384,7 +394,7 @@ func (s *OperateService) ListObjects(connId, schema, objType, authorization stri
 // GetObjectDDL 获取指定对象的 DDL 定义文本。
 // schema 与对象名均通过 sanitize.ValidateIdentifier 校验，防止通过标识符进行的 SQL 注入；
 // 同时进行 schema 级访问权限校验。
-func (s *OperateService) GetObjectDDL(connId, schema, name, objType, authorization string) (string, error) {
+func (s *operateService) GetObjectDDL(connId, schema, name, objType, authorization string) (string, error) {
 	if err := sanitize.ValidateIdentifier(schema, "schema名"); err != nil {
 		return "", err
 	}
@@ -477,54 +487,44 @@ func filterTreeTablesByPermission(tables []*conn.Tree, connId, schema, authoriza
 }
 
 // ===== 向后兼容的包级别委托函数 =====
-// 这些函数被 treehandler / sql 等外部包调用，保持原有签名不变，委托到 defaultOperateService。
+// 这些函数被 treehandler / sql 等外部包调用，保持原有签名不变，委托到 getDefaultOperate()。
 
 func ListSchema(key string, authorization string) []*conn.Tree {
-	ensureDefaultOperate()
-	return defaultOperateService.ListSchema(key, authorization)
+	return getDefaultOperate().ListSchema(key, authorization)
 }
 
 func ListTable(key string, schema, authorization string) []*conn.Tree {
-	ensureDefaultOperate()
-	return defaultOperateService.ListTable(key, schema, authorization)
+	return getDefaultOperate().ListTable(key, schema, authorization)
 }
 
 func ListColumns(connId string, table, schema, authorization string) []*conn.Tree {
-	ensureDefaultOperate()
-	return defaultOperateService.ListColumns(connId, table, schema, authorization)
+	return getDefaultOperate().ListColumns(connId, table, schema, authorization)
 }
 
 func ListAllColumns(key string, schema, authorization string) []*conn.Tree {
-	ensureDefaultOperate()
-	return defaultOperateService.ListAllColumns(key, schema, authorization)
+	return getDefaultOperate().ListAllColumns(key, schema, authorization)
 }
 
 func ListTableColumns(connIdParam string, tableName, schema, authorization string) []map[string]any {
-	ensureDefaultOperate()
-	return defaultOperateService.ListTableColumns(connIdParam, tableName, schema, authorization)
+	return getDefaultOperate().ListTableColumns(connIdParam, tableName, schema, authorization)
 }
 
 func QueryTableInfo(key string, schema, authorization string) []*conn.Table {
-	ensureDefaultOperate()
-	return defaultOperateService.QueryTableInfo(key, schema, authorization)
+	return getDefaultOperate().QueryTableInfo(key, schema, authorization)
 }
 
 func ColumnMap(table, schema string, conn *sqlx.DB) map[string]string {
-	ensureDefaultOperate()
-	return defaultOperateService.ColumnMap(table, schema, conn)
+	return getDefaultOperate().ColumnMap(table, schema, conn)
 }
 
 func ColumnMapFiltered(table, schema, connId, authorization string, dc *sqlx.DB) map[string]string {
-	ensureDefaultOperate()
-	return defaultOperateService.ColumnMapFiltered(table, schema, connId, authorization, dc)
+	return getDefaultOperate().ColumnMapFiltered(table, schema, connId, authorization, dc)
 }
 
 func QueryPrimaryKey(schema, table string, tx *sqlx.Tx) ([]string, error) {
-	ensureDefaultOperate()
-	return defaultOperateService.QueryPrimaryKey(schema, table, tx)
+	return getDefaultOperate().QueryPrimaryKey(schema, table, tx)
 }
 
 func QueryPrimaryKeyCached(connId, schema, table string, dc *sqlx.DB) []string {
-	ensureDefaultOperate()
-	return defaultOperateService.QueryPrimaryKeyCached(connId, schema, table, dc)
+	return getDefaultOperate().QueryPrimaryKeyCached(connId, schema, table, dc)
 }

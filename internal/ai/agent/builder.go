@@ -189,11 +189,6 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		handlers = append(handlers, sm)
 	}
 
-	// 构建 Model Failover 配置（从系统配置的模型列表中获取备用模型）
-	// 当主模型持续不可用时（429/5xx/timeout 等），自动切换到备用模型
-	// 与 ModelRetryConfig 协同：retry 处理瞬时错误，failover 处理模型持续不可用
-	failoverConfig := buildFailoverConfig(ctx, cfg)
-
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
@@ -208,7 +203,6 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			MaxRetries:  3,
 			ShouldRetry: buildShouldRetryFunc(),
 		},
-		ModelFailoverConfig: failoverConfig,
 	})
 
 	if err != nil {

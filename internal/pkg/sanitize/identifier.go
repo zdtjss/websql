@@ -2,7 +2,9 @@ package sanitize
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // identifierPattern 匹配合法的 SQL 标识符（表名、schema 名、列名等）
@@ -55,4 +57,29 @@ func QuoteSchemaTable(schema, table, dbType string) (string, error) {
 	default:
 		return fmt.Sprintf("`%s`.`%s`", schema, table), nil
 	}
+}
+
+var safeFileNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_\-.]+$`)
+
+// SafeFileName 校验文件名是否安全（仅允许字母、数字、下划线、中划线、点）。
+// 防止路径穿越攻击（如 ../、绝对路径等）。返回 false 表示文件名不安全。
+func SafeFileName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	return safeFileNamePattern.MatchString(name)
+}
+
+// SanitizeFileName 清洗文件名，移除路径分隔符和 .. 等危险字符。
+// 如果清洗后为空，返回 fallback。
+func SanitizeFileName(name, fallback string) string {
+	name = filepath.Base(name)
+	name = strings.ReplaceAll(name, "..", "")
+	if SafeFileName(name) {
+		return name
+	}
+	return fallback
 }

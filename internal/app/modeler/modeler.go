@@ -261,7 +261,10 @@ func extractRelations(conn *sqlx.DB, dbType, schema string) []ERRelation {
 
 	for rows.Next() {
 		var constraintName, tableName, columnName, refTable, refColumn string
-		rows.Scan(&constraintName, &tableName, &columnName, &refTable, &refColumn)
+		if err := rows.Scan(&constraintName, &tableName, &columnName, &refTable, &refColumn); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		relations = append(relations, ERRelation{
 			SourceTable:  tableName,
 			SourceColumn: columnName,
@@ -289,7 +292,10 @@ func getSyncTableList(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	default:
@@ -301,7 +307,10 @@ func getSyncTableList(conn *sqlx.DB, dbType, schema string) []string {
 		defer rows.Close()
 		for rows.Next() {
 			var tableName, tableType, tableComment string
-			rows.Scan(&tableName, &tableType, &tableComment)
+			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
+			}
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	}

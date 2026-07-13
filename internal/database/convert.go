@@ -1,6 +1,8 @@
 package database
 
 import (
+	"log"
+
 	"websql/internal/dialect"
 	"websql/internal/logger"
 
@@ -16,7 +18,10 @@ func QueryColType(schema, table string, tx *sqlx.Tx) map[string]string {
 	var colName, colType string
 	for rs.Next() {
 		colType = ""
-		rs.Scan(&colName, &colType)
+		if err := rs.Scan(&colName, &colType); err != nil {
+			log.Printf("扫描行失败: %v", err)
+			continue
+		}
 		colTypeMap[colName] = colType
 	}
 	return colTypeMap

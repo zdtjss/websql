@@ -4,41 +4,46 @@ import (
 	"errors"
 	"log"
 	"strings"
-	"sync"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
 	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
+	"websql/internal/pkg/lazyinit"
 
 	"github.com/jmoiron/sqlx"
 )
 
 // ConnService 封装连接管理的业务逻辑：连接测试、权限校验、配置转换等
-type ConnService struct {
+type ConnService interface {
+	SaveConn(cfg *ConnCfg) (*ConnCfg, error)
+	TestDbConn(cfg *ConnCfg) (string, string, string, error)
+	DeleteConn(id string)
+	ListConn(parentId string, userPower *admin.UserPower) []*Tree
+	ListConn2(name, parentId string, page, pageSize int) ([]ConnCfg, int, error)
+	ListConnBase() ([]*ConnCfgBase, error)
+	ListUserConn(userPower *admin.UserPower) ([]UserConnDTO, error)
+	FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table
+	GetConn(id, authorization string) *sqlx.DB
+	GetConnNoCheck(connId string) *sqlx.DB
+}
+
+type connService struct {
 	repo ConnRepo
 }
 
 // NewConnService 创建 ConnService 实例
-func NewConnService(repo ConnRepo) *ConnService {
-	return &ConnService{repo: repo}
+func NewConnService(repo ConnRepo) ConnService {
+	return &connService{repo: repo}
 }
 
-// 默认实例，保持对包级别函数的向后兼容
-// 延迟初始化：database.Mngtdb 在 InitMngtDbConn() 之后才可用，
-// 包级变量初始化时 Mngtdb 仍为 nil，因此必须 lazy init。
-var (
-	defaultConnRepo    ConnRepo
-	defaultConnService *ConnService
-	defaultConnOnce    sync.Once
-)
+// 默认实例：lazyinit.Holder 替代散落的 sync.Once + 包级变量模式。
+var defaultConn = &lazyinit.Holder[ConnService]{}
 
-// ensureDefaultConn 初始化默认的 ConnRepo 和 ConnService
-func ensureDefaultConn() {
-	defaultConnOnce.Do(func() {
-		defaultConnRepo = NewConnRepo(database.Mngtdb)
-		defaultConnService = NewConnService(defaultConnRepo)
+func getDefaultConn() ConnService {
+	return defaultConn.Get(func() ConnService {
+		return NewConnService(NewConnRepo(getDB()))
 	})
 }
 
@@ -49,13 +54,13 @@ var (
 )
 
 // SaveConn 保存连接配置，返回保存后的配置（不含密码）
-// 行为与原实现一致：忽略 insert/update 错误，仅返回查询保存结果的错误
-func (s *ConnService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
+func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 	dbParam := ConvertToDBParam(cfg)
 	db := database.GetConn(dbParam)
 	if db == nil {
 		return nil, ErrConnOpenFailed
 	}
+	defer database.ReleaseConn(dbParam)
 
 	dbSchema, dbVersion, actualDbType := getDbVersionAndSchema(db, cfg.DbType)
 	// 自动修正 dbType：用户在前端可能误选 MySQL/MariaDB，这里根据 VERSION() 实际值修正
@@ -63,16 +68,24 @@ func (s *ConnService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 
 	var savedId string
 	if cfg.Id == "" {
-		// 原实现忽略 insert 错误，保持一致
-		savedId, _ = s.repo.InsertConn(cfg, dbSchema, dbVersion)
+		var insertErr error
+		savedId, insertErr = s.repo.InsertConn(cfg, dbSchema, dbVersion)
+		if insertErr != nil {
+			log.Printf("[SaveConn] 新增连接失败 - err=%v\n", insertErr)
+			return nil, insertErr
+		}
 	} else {
 		savedId = cfg.Id
+		var updateErr error
 		if cfg.Pwd == nil || *cfg.Pwd == "" {
-			_ = s.repo.UpdateConn(cfg, dbSchema, dbVersion)
+			updateErr = s.repo.UpdateConn(cfg, dbSchema, dbVersion)
 		} else {
-			_ = s.repo.UpdateConnWithPwd(cfg, dbSchema, dbVersion)
+			updateErr = s.repo.UpdateConnWithPwd(cfg, dbSchema, dbVersion)
 		}
-		database.ReleaseConn(dbParam)
+		if updateErr != nil {
+			log.Printf("[SaveConn] 更新连接失败 - id=%s, err=%v\n", savedId, updateErr)
+			return nil, updateErr
+		}
 	}
 
 	saved, err := s.repo.FindConnByIdWithParent(savedId)
@@ -87,7 +100,7 @@ func (s *ConnService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 }
 
 // TestDbConn 测试数据库连接，返回版本、schema 和实际数据库类型信息
-func (s *ConnService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
+func (s *connService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
 	dbParam := ConvertToDBParam(cfg)
 	db := database.GetConn(dbParam)
 	if db == nil {
@@ -106,12 +119,12 @@ func (s *ConnService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
 
 // DeleteConn 删除连接配置
 // 原实现忽略删除错误，保持一致
-func (s *ConnService) DeleteConn(id string) {
+func (s *connService) DeleteConn(id string) {
 	_ = s.repo.DeleteConn(id)
 }
 
 // ListConn 按父节点查询连接列表并构建树节点
-func (s *ConnService) ListConn(parentId string, userPower *admin.UserPower) []*Tree {
+func (s *connService) ListConn(parentId string, userPower *admin.UserPower) []*Tree {
 	cfgList, err := s.repo.FindConnList(parentId, userPower)
 	if err != nil || cfgList == nil {
 		return nil
@@ -128,23 +141,23 @@ func (s *ConnService) ListConn(parentId string, userPower *admin.UserPower) []*T
 }
 
 // ListConn2 分页查询连接列表
-func (s *ConnService) ListConn2(name, parentId string, page, pageSize int) ([]ConnCfg, int, error) {
+func (s *connService) ListConn2(name, parentId string, page, pageSize int) ([]ConnCfg, int, error) {
 	offset := (page - 1) * pageSize
 	return s.repo.FindConnList2(name, parentId, pageSize, offset)
 }
 
 // ListConnBase 查询连接基础列表
-func (s *ConnService) ListConnBase() ([]*ConnCfgBase, error) {
+func (s *connService) ListConnBase() ([]*ConnCfgBase, error) {
 	return s.repo.FindConnBaseList()
 }
 
 // ListUserConn 查询用户有权限的连接列表
-func (s *ConnService) ListUserConn(userPower *admin.UserPower) ([]UserConnDTO, error) {
+func (s *connService) ListUserConn(userPower *admin.UserPower) ([]UserConnDTO, error) {
 	return s.repo.FindUserConnList(userPower)
 }
 
 // FilterTablesByPermission 按权限过滤表列表
-func (s *ConnService) FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table {
+func (s *connService) FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table {
 	if config.IsLocalMode() {
 		return tables
 	}
@@ -176,7 +189,7 @@ func (s *ConnService) FilterTablesByPermission(tables []*Table, connId, schema s
 }
 
 // GetConn 获取数据库连接（带权限校验）
-func (s *ConnService) GetConn(id string, authorization string) *sqlx.DB {
+func (s *connService) GetConn(id string, authorization string) *sqlx.DB {
 	userPower := admin.GetUserPower(authorization)
 	if !config.IsLocalMode() {
 		if !admin.CheckConnAccess(userPower, id) {
@@ -196,7 +209,12 @@ func (s *ConnService) GetConn(id string, authorization string) *sqlx.DB {
 
 	pwd := ""
 	if cfgList[0].Pwd != nil && cfgList[0].DbType != "sqlite" {
-		pwd = crypto.AESDecode(*cfgList[0].Pwd)
+		decoded, decErr := crypto.AESDecode(*cfgList[0].Pwd)
+		if decErr != nil {
+			logger.PrintErrf("连接密码解密失败: %s", decErr, id)
+		} else {
+			pwd = decoded
+		}
 	}
 	cfgList[0].Pwd = &pwd
 
@@ -208,7 +226,7 @@ func (s *ConnService) GetConn(id string, authorization string) *sqlx.DB {
 }
 
 // GetConnNoCheck 获取数据库连接（不带权限校验）
-func (s *ConnService) GetConnNoCheck(connId string) *sqlx.DB {
+func (s *connService) GetConnNoCheck(connId string) *sqlx.DB {
 	if connId == "" {
 		return nil
 	}
@@ -221,7 +239,12 @@ func (s *ConnService) GetConnNoCheck(connId string) *sqlx.DB {
 
 	pwd := ""
 	if cfgList[0].Pwd != nil {
-		pwd = crypto.AESDecode(*cfgList[0].Pwd)
+		decoded, decErr := crypto.AESDecode(*cfgList[0].Pwd)
+		if decErr != nil {
+			logger.PrintErrf("连接密码解密失败: %s", decErr, connId)
+		} else {
+			pwd = decoded
+		}
 	}
 
 	name := ""
@@ -348,24 +371,20 @@ func checkPowerByParamForRole(roleDetails []*admin.PowerDetail, param *admin.Pow
 }
 
 // ===== 向后兼容的包级别委托函数 =====
-// 这些函数被其他包调用，保持原有签名不变，委托到 defaultConnService。
+// 这些函数被其他包调用，保持原有签名不变，委托到 getDefaultConn()。
 
 func ListConn(parentId string, userPower *admin.UserPower) []*Tree {
-	ensureDefaultConn()
-	return defaultConnService.ListConn(parentId, userPower)
+	return getDefaultConn().ListConn(parentId, userPower)
 }
 
 func FilterTablesByPermission(tables []*Table, connId, schema string, userPower *admin.UserPower) []*Table {
-	ensureDefaultConn()
-	return defaultConnService.FilterTablesByPermission(tables, connId, schema, userPower)
+	return getDefaultConn().FilterTablesByPermission(tables, connId, schema, userPower)
 }
 
 func GetConn(id string, authorization string) *sqlx.DB {
-	ensureDefaultConn()
-	return defaultConnService.GetConn(id, authorization)
+	return getDefaultConn().GetConn(id, authorization)
 }
 
 func GetConnNoCheck(connId string) *sqlx.DB {
-	ensureDefaultConn()
-	return defaultConnService.GetConnNoCheck(connId)
+	return getDefaultConn().GetConnNoCheck(connId)
 }

@@ -6,17 +6,16 @@ import (
 	"sync"
 	"time"
 	"websql/internal/logger"
-	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/safego"
 )
 
 const (
-	numShards  = 64
+	numShards  = 8
 	defaultTTL = 3 * time.Hour
 )
 
 type storeItem struct {
-	value     any
+	data      []byte
 	expiresAt time.Time
 }
 
@@ -44,9 +43,14 @@ func (s *shardedStore) getShard(key string) *shard {
 }
 
 func (s *shardedStore) add(key string, val any) {
+	data, err := json.Marshal(val)
+	if err != nil {
+		logger.PrintErrf("缓存序列化失败", err)
+		return
+	}
 	sh := s.getShard(key)
 	sh.mu.Lock()
-	sh.data[key] = &storeItem{value: val, expiresAt: time.Now().Add(defaultTTL)}
+	sh.data[key] = &storeItem{data: data, expiresAt: time.Now().Add(defaultTTL)}
 	sh.mu.Unlock()
 }
 
@@ -83,9 +87,7 @@ func (s *shardedStore) get(key string, dist any) {
 	item.expiresAt = time.Now().Add(defaultTTL)
 	sh.mu.Unlock()
 
-	// dist 是调用方传入的指针（如 *User），直接传给 json.Unmarshal
-	// 使其通过反射写入指针指向的结构体；不能传 &dist（*any），否则只改本地接口值
-	json.Unmarshal(jsonutil.ToJsonString(item.value), dist)
+	json.Unmarshal(item.data, dist)
 }
 
 func (s *shardedStore) cleanExpired() {
