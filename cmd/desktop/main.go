@@ -63,6 +63,10 @@ func main() {
 	}
 	config.Cfg = cfg
 	config.SetActive(cfg)
+	// 桌面版 DSN 中的相对路径基于 exe 所在目录解析
+	if exePath, err := os.Executable(); err == nil {
+		config.SetConfigDir(filepath.Dir(exePath))
+	}
 	// 桌面模式强制本地：免登录、不走远程权限体系
 	cfg.IsRemote = false
 	cfg.IsDesktop = true

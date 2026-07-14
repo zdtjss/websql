@@ -71,7 +71,7 @@
       </div>
 
       <!-- 外部用户认证 -->
-      <div class="config-card">
+      <div class="config-card" v-if="isRemote">
         <div class="config-card-header">
           <el-icon class="card-icon"><Link /></el-icon>
           <h3 class="card-title">外部用户认证</h3>
@@ -107,7 +107,7 @@
       </div>
 
       <!-- Redis 配置 -->
-      <div class="config-card">
+      <div class="config-card" v-if="isRemote">
         <div class="config-card-header">
           <el-icon class="card-icon"><Coin /></el-icon>
           <h3 class="card-title">Redis 配置</h3>
@@ -127,7 +127,7 @@
       </div>
 
       <!-- 生物识别配置 -->
-      <div class="config-card">
+      <div class="config-card" v-if="isRemote">
         <div class="config-card-header">
           <el-icon class="card-icon"><User /></el-icon>
           <h3 class="card-title">生物识别配置</h3>

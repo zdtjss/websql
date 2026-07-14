@@ -262,7 +262,7 @@ const modelRef = computed({
 }
 
 .table-selector-row .model-selector-container {
-  flex: 0 0 22%;
+  flex: 0 0 21%;
 }
 
 .table-selector-row .table-selector-container.full-width {

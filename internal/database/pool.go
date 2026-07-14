@@ -44,7 +44,9 @@ func InitMngtDbConn() {
 	if config.Get() == nil {
 		config.SetActive(config.ReadConfig())
 	}
-	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, config.Get().DB.DataSourceName)
+	dsn := config.ResolveDSN(config.Get().DB.DataSourceName)
+	log.Printf("管理库连接 - driver=%s, dsn=%s", config.Get().DB.DriverName, dsn)
+	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, dsn)
 	if err != nil {
 		panic(err)
 	}

@@ -89,7 +89,7 @@
           <div ref="vditorContainerRef" class="vditor-container"></div>
         </div>
       </el-form-item>
-      <el-form-item v-if="!roleId" label="分享给">
+      <el-form-item v-if="!roleId && isRemote" label="分享给">
         <el-select
           v-model="form.sharedUserIds"
           multiple
@@ -135,6 +135,7 @@ const { promptId, roleId } = defineProps({
 
 const emit = defineEmits(['saved', 'sendToAI'])
 
+const isRemote = sessionStorage.getItem('isRemote') === 'true'
 const isEdit = computed(() => !!promptId)
 const formRef = useTemplateRef('formRef')
 const saving = ref(false)
@@ -601,6 +602,7 @@ function handleSendToAI() {
 }
 
 .vditor-wrapper {
+  width: 100%;
   min-height: 500px;
 }
 

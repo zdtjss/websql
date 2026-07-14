@@ -15,10 +15,17 @@ var (
 
 	// activeCfg 由 Container 通过 SetActive 注入，为 nil 时 Get() 回退到 Cfg。
 	activeCfg *Config
+
+	// configDir 是 config.json 所在目录的绝对路径，用于将 DSN 中的相对路径解析为基于 config.json 目录的绝对路径。
+	configDir string
 )
 
 // SetActive 由 Container 在启动阶段调用，设置全局活跃配置。
 func SetActive(cfg *Config) { activeCfg = cfg }
+
+// SetConfigDir 设置配置文件所在目录的绝对路径，供 DSN 相对路径解析使用。
+// 桌面版通过此函数将 configDir 设为 exe 所在目录。
+func SetConfigDir(dir string) { configDir = dir }
 
 // Get 返回活跃配置。优先返回 Container 注入的实例，未注入时回退到 Cfg（迁移期兼容）。
 func Get() *Config {
@@ -37,22 +44,9 @@ func IsLocalMode() bool {
 
 func ReadConfig() *Config {
 	configFile := FindFile("config.json")
-	log.Printf("使用配置文件 %s", configFile)
-	fileData, err := os.ReadFile(configFile)
+	cfg, err := readConfigFromFile(configFile)
 	logutils.PanicErr(err)
-	var config Config
-	err = json.Unmarshal(fileData, &config)
-	logutils.PanicErr(err)
-	return &config
-}
-
-// ParseFromBytes 从字节切片解析配置，供桌面版从 //go:embed 内嵌的配置加载。
-func ParseFromBytes(data []byte) (*Config, error) {
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-	return &config, nil
+	return cfg
 }
 
 // TryReadConfig 与 ReadConfig 等价但找不到配置文件时返回 error 而非 panic。
@@ -62,13 +56,28 @@ func TryReadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return readConfigFromFile(configFile)
+}
+
+func readConfigFromFile(configFile string) (*Config, error) {
 	log.Printf("使用配置文件 %s", configFile)
+	absPath, _ := filepath.Abs(configFile)
+	configDir = filepath.Dir(absPath)
 	fileData, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, err
 	}
 	var config Config
 	if err := json.Unmarshal(fileData, &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// ParseFromBytes 从字节切片解析配置，供桌面版从 //go:embed 内嵌的配置加载。
+func ParseFromBytes(data []byte) (*Config, error) {
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 	return &config, nil
@@ -109,14 +118,32 @@ func ReadSql(fileName string) string {
 func FindFile(fileName string) string {
 	exec, err := os.Executable()
 	logutils.PanicErr(err)
-	configFile := filepath.Join(filepath.Dir(exec), "..", fileName)
-	_, err = os.Stat(configFile)
-	if err != nil {
-		configFile = filepath.Join(filepath.Dir(exec), fileName)
-		_, err = os.Stat(configFile)
-		logutils.PanicErr(err)
+	candidates := []string{
+		filepath.Join(filepath.Dir(exec), "..", fileName), // 生产模式：exe 在 bin/，config 在父目录
+		filepath.Join(filepath.Dir(exec), fileName),       // exe 同级
 	}
-	return configFile
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, fileName)) // 工作目录（兼容 go run）
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	logutils.PanicErr(fmt.Errorf("配置文件 %s 未找到（已查找: %v）", fileName, candidates))
+	return ""
+}
+
+// ResolveDSN 将 DSN 中的相对路径解析为基于 config.json 所在目录的绝对路径。
+// 仅对 SQLite 类驱动生效（其 DSN 为文件路径），其他驱动直接返回原值。
+func ResolveDSN(dsn string) string {
+	if configDir == "" || !filepath.IsAbs(configDir) {
+		return dsn
+	}
+	if !filepath.IsAbs(dsn) {
+		return filepath.Join(configDir, dsn)
+	}
+	return dsn
 }
 
 type Config struct {
