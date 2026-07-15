@@ -89,7 +89,7 @@
       </div>
 
       <!-- IP 访问控制 -->
-      <div class="config-card">
+      <div class="config-card" v-if="isRemote">
         <div class="config-card-header">
           <el-icon class="card-icon"><Lock /></el-icon>
           <h3 class="card-title">IP 访问控制</h3>
