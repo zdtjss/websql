@@ -12,10 +12,7 @@
   - Linux: libgtk-3-dev libwebkit2gtk-4.1-dev
 
 用法:
-  python scripts/build_desktop.py                          # 交互式选择平台 + 完整构建
-  python scripts/build_desktop.py --platform windows       # 构建 Windows 桌面版
-  python scripts/build_desktop.py --platform macos-amd64   # 构建 macOS amd64 桌面版
-  python scripts/build_desktop.py --platform linux         # 构建 Linux 桌面版
+  python scripts/build_desktop.py                          # 当前平台完整构建
   python scripts/build_desktop.py --skip-frontend          # 跳过前端构建
   python scripts/build_desktop.py --package                # 调用 wails3 build 完成构建与打包
   python scripts/build_desktop.py --check                  # 仅检查环境
@@ -113,37 +110,6 @@ def check_env():
 
 def detect_current_platform():
     return CURRENT_PLATFORM_MAP.get(sys.platform, "unknown")
-
-
-def select_platform(platform_arg):
-    if platform_arg and platform_arg in DESKTOP_PLATFORMS:
-        return platform_arg
-
-    current = detect_current_platform()
-
-    if platform_arg:
-        print(f"[WARN] 未知平台: {platform_arg}")
-
-    print("\n请选择目标平台 (桌面版使用 CGO，必须在目标平台上构建):")
-    keys = list(DESKTOP_PLATFORMS.keys())
-    for i, key in enumerate(keys, 1):
-        marker = " (当前)" if key == current else ""
-        print(f"  {i}. {key}{marker}")
-    print(f"  {len(keys) + 1}. 全部")
-
-    while True:
-        try:
-            choice = input(f"请输入选项 [1-{len(keys) + 1}] (默认 {keys.index(current) + 1}): ").strip()
-            if not choice:
-                return current
-            idx = int(choice) - 1
-            if 0 <= idx < len(keys):
-                return keys[idx]
-            if idx == len(keys):
-                return "all"
-        except (ValueError, EOFError):
-            pass
-        print("  无效输入，请重试")
 
 
 def build_frontend():
@@ -301,8 +267,6 @@ def build_platform(platform_key, skip_frontend, package):
 
 def main():
     parser = argparse.ArgumentParser(description="WebSQL Desktop Build Script (Wails v3)")
-    parser.add_argument("--platform", default=None,
-                        help="目标平台 (windows-amd64|macos-amd64|macos-arm64|linux-amd64|all)")
     parser.add_argument("--skip-frontend", action="store_true",
                         help="跳过前端构建,仅编译 Go 二进制")
     parser.add_argument("--package", action="store_true",
@@ -315,7 +279,10 @@ def main():
         check_env()
         return
 
-    platform = select_platform(args.platform)
+    platform = detect_current_platform()
+    if platform not in DESKTOP_PLATFORMS:
+        print(f"[FAIL] 不支持的平台: {platform}")
+        sys.exit(1)
 
     print()
     print("=" * 55)
@@ -326,16 +293,7 @@ def main():
 
     check_env()
 
-    if platform == "all":
-        targets = list(DESKTOP_PLATFORMS.keys())
-    else:
-        targets = [platform]
-
-    for key in targets:
-        print(f"\n{'=' * 55}")
-        print(f"  构建: {key}")
-        print(f"{'=' * 55}")
-        build_platform(key, args.skip_frontend, args.package)
+    build_platform(platform, args.skip_frontend, args.package)
 
     print(f"\n{'=' * 55}")
     print("  桌面版构建完成!")
