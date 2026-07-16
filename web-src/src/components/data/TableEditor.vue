@@ -22,7 +22,7 @@
                         <div v-if="scope.row.onColumnNameEdit" style="display:flex;align-items:center;gap:3px;">
                             <el-input v-model="scope.row.columnName" style="flex:1;min-width:100px;" size="small" />
                             <el-icon class="edit-action edit-save" title="保存" :size="14" @click="modifyColumnName(scope.row.idx, scope.row.columnName)"><Check /></el-icon>
-                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnNameEdit = false; scope.row.columnName = columnListOrigin[scope.row.idx].columnName"><Close /></el-icon>
+                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnNameEdit = false; scope.row.columnName = columnListOrigin[scope.row.idx].columnName"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -55,7 +55,7 @@
                                 clearable
                             />
                             <el-icon class="edit-action edit-save" title="保存" :size="14" @click="modifyColumnType(scope.row.idx, scope.row.columnType)"><Check /></el-icon>
-                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnTypeEdit = false; scope.row.columnType = columnListOrigin[scope.row.idx].columnType"><Close /></el-icon>
+                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnTypeEdit = false; scope.row.columnType = columnListOrigin[scope.row.idx].columnType"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -74,7 +74,7 @@
                         <div v-if="scope.row.onColumnDefaultEdit" style="display:flex;align-items:center;gap:3px;">
                             <el-input v-model="scope.row.columnDefault" style="flex:1;min-width:60px;" size="small" placeholder="NULL" />
                             <el-icon class="edit-action edit-save" title="保存" :size="14" @click="modifyColumnDefault(scope.row.idx, scope.row.columnDefault)"><Check /></el-icon>
-                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnDefaultEdit = false; scope.row.columnDefault = columnListOrigin[scope.row.idx].columnDefault"><Close /></el-icon>
+                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnDefaultEdit = false; scope.row.columnDefault = columnListOrigin[scope.row.idx].columnDefault"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -101,7 +101,7 @@
                             <el-input v-model="scope.row.columnComment" style="flex:1;min-width:100px;" size="small"
                                 type="textarea" autosize />
                             <el-icon class="edit-action edit-save" title="保存" :size="14" @click="modifyColumnComment(scope.row.idx, scope.row.columnComment)"><Check /></el-icon>
-                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnCommentEdit = false; scope.row.columnComment = columnListOrigin[scope.row.idx].columnComment"><Close /></el-icon>
+                            <el-icon class="edit-action edit-cancel" title="取消" :size="14" @click="scope.row.onColumnCommentEdit = false; scope.row.columnComment = columnListOrigin[scope.row.idx].columnComment"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -130,7 +130,7 @@
                             <el-icon title="保存" style="cursor: pointer;margin-left:4px;margin-right:4px;" :size="12"
                                 @click="renameIndex(scope.row)"><Check /></el-icon>
                             <el-icon title="取消" style="cursor: pointer;" :size="12"
-                                @click="scope.row.onNameEdit = false"><Close /></el-icon>
+                                @click="scope.row.onNameEdit = false"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -158,7 +158,7 @@
                             <el-icon title="保存" style="cursor: pointer;margin-left:4px;margin-right:4px;" :size="12"
                                 @click="saveIndexComment(scope.row)"><Check /></el-icon>
                             <el-icon title="取消" style="cursor: pointer;" :size="12"
-                                @click="scope.row.onCommentEdit = false"><Close /></el-icon>
+                                @click="scope.row.onCommentEdit = false"><Refresh /></el-icon>
                         </div>
                     </template>
                 </el-table-column>
@@ -239,7 +239,7 @@
                                 </el-select>
                                 <el-input v-else v-model="scope.row._edit" size="small" style="width:200px;" />
                                 <el-icon title="保存" style="cursor:pointer;" :size="12" @click="saveOption(scope.row)"><Check /></el-icon>
-                                <el-icon title="取消" style="cursor:pointer;" :size="12" @click="scope.row.editing = false"><Close /></el-icon>
+                                <el-icon title="取消" style="cursor:pointer;" :size="12" @click="scope.row.editing = false"><Refresh /></el-icon>
                             </div>
                         </template>
                     </el-table-column>
@@ -335,7 +335,7 @@
 </template>
 <script setup>
 import { ref, useTemplateRef, watch } from 'vue'
-import { Check, Close, CopyDocument, Delete, Edit } from '@element-plus/icons-vue'
+import { Check, CopyDocument, Delete, Edit, Refresh } from '@element-plus/icons-vue'
 import http from '@/api/index'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()

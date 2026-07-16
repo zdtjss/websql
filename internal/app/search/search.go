@@ -51,9 +51,23 @@ func SearchObjects(c *gin.Context) {
 	keyword := c.Query("keyword")
 	searchType := c.DefaultQuery("searchType", "all")
 
+	if connId == "" {
+		response.WriteOK(c, map[string]any{"results": []ObjectSearchResult{}, "totalResults": 0, "query": keyword, "searchType": searchType})
+		return
+	}
+
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	db := conn.GetConn(connId, authorization)
+	if db == nil {
+		response.WriteOK(c, map[string]any{"results": []ObjectSearchResult{}, "totalResults": 0, "query": keyword, "searchType": searchType, "error": "连接不可用"})
+		return
+	}
+	dbType := db.DriverName()
+
+	// 如果 schema 为空，尝试从连接配置中获取默认 schema
+	if schema == "" {
+		schema = conn.GetConnDefaultSchema(connId)
+	}
 
 	if strings.TrimSpace(keyword) == "" {
 		response.WriteOK(c, map[string]any{"results": []ObjectSearchResult{}, "totalResults": 0})
@@ -70,7 +84,7 @@ func SearchObjects(c *gin.Context) {
 		sqlTmpl, _ := dialect.SQL_DIALECT[dbType]["listTable"]
 		switch dbType {
 		case "oracle":
-			rows, _ := conn.Queryx(sqlTmpl, "notexists")
+			rows, _ := db.Queryx(sqlTmpl, "notexists")
 			if rows != nil {
 				defer rows.Close()
 				for rows.Next() {
@@ -92,7 +106,7 @@ func SearchObjects(c *gin.Context) {
 				}
 			}
 		default:
-			rows, _ := conn.Queryx(sqlTmpl, schema)
+			rows, _ := db.Queryx(sqlTmpl, schema)
 			if rows != nil {
 				defer rows.Close()
 				for rows.Next() {
@@ -120,7 +134,7 @@ func SearchObjects(c *gin.Context) {
 		switch dbType {
 		case "oracle":
 			sql := `SELECT B.TABLE_NAME,B.COLUMN_NAME,A.COMMENTS FROM USER_COL_COMMENTS A LEFT JOIN USER_TAB_COLUMNS B ON A.TABLE_NAME = B.TABLE_NAME AND a.COLUMN_NAME = b.COLUMN_NAME WHERE 'notexists' <> :1`
-			rows, _ := conn.Queryx(sql, "notexists")
+			rows, _ := db.Queryx(sql, "notexists")
 			if rows != nil {
 				defer rows.Close()
 				for rows.Next() {
@@ -143,7 +157,7 @@ func SearchObjects(c *gin.Context) {
 			}
 		default:
 			sql := `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND (LOWER(COLUMN_NAME) LIKE ? OR LOWER(COLUMN_COMMENT) LIKE ?)`
-			rows, err := conn.Queryx(sql, schema, likeKeyword, likeKeyword)
+			rows, err := db.Queryx(sql, schema, likeKeyword, likeKeyword)
 			if err == nil && rows != nil {
 				defer rows.Close()
 				for rows.Next() {
@@ -167,7 +181,7 @@ func SearchObjects(c *gin.Context) {
 
 	if searchType == "all" || searchType == "index" {
 		sql := fmt.Sprintf(`SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='%s' AND LOWER(INDEX_NAME) LIKE ?`, schema)
-		rows, err := conn.Queryx(sql, likeKeyword)
+		rows, err := db.Queryx(sql, likeKeyword)
 		if err == nil && rows != nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -192,7 +206,7 @@ func SearchObjects(c *gin.Context) {
 
 	if searchType == "all" || searchType == "view" {
 		sql := fmt.Sprintf(`SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s' AND LOWER(TABLE_NAME) LIKE ?`, schema)
-		rows, err := conn.Queryx(sql, likeKeyword)
+		rows, err := db.Queryx(sql, likeKeyword)
 		if err == nil && rows != nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -228,9 +242,23 @@ func SearchData(c *gin.Context) {
 	maxTables := c.DefaultQuery("maxTables", "50")
 	timeout := c.DefaultQuery("timeout", "30")
 
+	if connId == "" {
+		response.WriteOK(c, map[string]any{"results": []DataSearchResult{}, "totalResults": 0, "searchedTables": 0})
+		return
+	}
+
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	db := conn.GetConn(connId, authorization)
+	if db == nil {
+		response.WriteOK(c, map[string]any{"results": []DataSearchResult{}, "totalResults": 0, "searchedTables": 0, "error": "连接不可用"})
+		return
+	}
+	dbType := db.DriverName()
+
+	// 如果 schema 为空，尝试从连接配置中获取默认 schema
+	if schema == "" {
+		schema = conn.GetConnDefaultSchema(connId)
+	}
 
 	if strings.TrimSpace(keyword) == "" {
 		response.WriteOK(c, map[string]any{"results": []DataSearchResult{}, "totalResults": 0, "searchedTables": 0})
@@ -240,7 +268,7 @@ func SearchData(c *gin.Context) {
 	keyword = strings.TrimSpace(keyword)
 	likeKeyword := "%" + keyword + "%"
 
-	tableList := getAllSearchTables(conn, dbType, schema)
+	tableList := getAllSearchTables(db, dbType, schema)
 	searchCount := 0
 	results := make([]DataSearchResult, 0)
 	var mu sync.Mutex
@@ -264,7 +292,7 @@ func SearchData(c *gin.Context) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			colResults := searchTableData(conn, schema, table, likeKeyword, keyword)
+			colResults := searchTableData(db, schema, table, likeKeyword, keyword)
 			if len(colResults) > 0 {
 				mu.Lock()
 				results = append(results, colResults...)
@@ -290,7 +318,7 @@ func SearchData(c *gin.Context) {
 	})
 }
 
-func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) []DataSearchResult {
+func searchTableData(db *sqlx.DB, schema, table, likeKeyword, keyword string) []DataSearchResult {
 	results := make([]DataSearchResult, 0)
 
 	// 标识符白名单校验，防止 SQL 注入
@@ -299,7 +327,7 @@ func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) 
 	}
 
 	colSQL := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND DATA_TYPE IN ('varchar','char','text','longtext','mediumtext','tinytext')"
-	cols, err := conn.Queryx(colSQL, schema, table)
+	cols, err := db.Queryx(colSQL, schema, table)
 	if err != nil {
 		return results
 	}
@@ -320,7 +348,7 @@ func searchTableData(conn *sqlx.DB, schema, table, likeKeyword, keyword string) 
 	for _, col := range textCols {
 		query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE `%s` LIKE ?", schema, table, col)
 		var count int
-		err := conn.Get(&count, query, likeKeyword)
+		err := db.Get(&count, query, likeKeyword)
 		if err != nil {
 			continue
 		}
@@ -345,9 +373,35 @@ func SearchAll(c *gin.Context) {
 	keyword := c.Query("keyword")
 	searchType := c.DefaultQuery("searchType", "all")
 
+	if connId == "" {
+		response.WriteOK(c, &SearchResponse{
+			Query:         keyword,
+			SearchType:    searchType,
+			TotalResults:  0,
+			ObjectResults: make([]ObjectSearchResult, 0),
+			DataResults:   make([]DataSearchResult, 0),
+		})
+		return
+	}
+
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	db := conn.GetConn(connId, authorization)
+	if db == nil {
+		response.WriteOK(c, &SearchResponse{
+			Query:         keyword,
+			SearchType:    searchType,
+			TotalResults:  0,
+			ObjectResults: make([]ObjectSearchResult, 0),
+			DataResults:   make([]DataSearchResult, 0),
+		})
+		return
+	}
+	dbType := db.DriverName()
+
+	// 如果 schema 为空，尝试从连接配置中获取默认 schema
+	if schema == "" {
+		schema = conn.GetConnDefaultSchema(connId)
+	}
 
 	if strings.TrimSpace(keyword) == "" {
 		response.WriteOK(c, &SearchResponse{
@@ -370,7 +424,7 @@ func SearchAll(c *gin.Context) {
 	sqlTmpl, _ := dialect.SQL_DIALECT[dbType]["listTable"]
 	switch dbType {
 	case "oracle":
-		rows, _ := conn.Queryx(sqlTmpl, "notexists")
+		rows, _ := db.Queryx(sqlTmpl, "notexists")
 		if rows != nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -392,7 +446,7 @@ func SearchAll(c *gin.Context) {
 			}
 		}
 	default:
-		rows, _ := conn.Queryx(sqlTmpl, schema)
+		rows, _ := db.Queryx(sqlTmpl, schema)
 		if rows != nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -416,7 +470,7 @@ func SearchAll(c *gin.Context) {
 	}
 
 	colSQL := fmt.Sprintf("SELECT TABLE_NAME, COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='%s' AND (LOWER(COLUMN_NAME) LIKE ? OR LOWER(COLUMN_COMMENT) LIKE ?)", schema)
-	colRows, err := conn.Queryx(colSQL, likeKeyword, likeKeyword)
+	colRows, err := db.Queryx(colSQL, likeKeyword, likeKeyword)
 	if err == nil && colRows != nil {
 		defer colRows.Close()
 		for colRows.Next() {
@@ -450,11 +504,25 @@ func GetSearchTables(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	schema := c.Query("schema")
 
-	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	if connId == "" {
+		response.WriteOK(c, map[string]any{"tables": []any{}})
+		return
+	}
 
-	tables := getAllSearchTables(conn, dbType, schema)
+	authorization := appctx.Ctx.GetAuthorization(c)
+	db := conn.GetConn(connId, authorization)
+	if db == nil {
+		response.WriteOK(c, map[string]any{"tables": []any{}, "error": "连接不可用"})
+		return
+	}
+	dbType := db.DriverName()
+
+	// 如果 schema 为空，尝试从连接配置中获取默认 schema
+	if schema == "" {
+		schema = conn.GetConnDefaultSchema(connId)
+	}
+
+	tables := getAllSearchTables(db, dbType, schema)
 
 	type TableInfo struct {
 		Name    string `json:"name"`
@@ -464,14 +532,14 @@ func GetSearchTables(c *gin.Context) {
 	infos := make([]TableInfo, 0)
 	for _, table := range tables {
 		var comment string
-		conn.Get(&comment, fmt.Sprintf("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, table))
+		db.Get(&comment, fmt.Sprintf("SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", schema, table))
 		infos = append(infos, TableInfo{Name: table, Comment: comment})
 	}
 
 	response.WriteOK(c, map[string]any{"tables": infos})
 }
 
-func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {
+func getAllSearchTables(db *sqlx.DB, dbType, schema string) []string {
 	sqlTmpl, ok := dialect.SQL_DIALECT[dbType]["listTable"]
 	if !ok {
 		sqlTmpl = "SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = ? order by TABLE_NAME"
@@ -479,7 +547,7 @@ func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {
 	result := make([]string, 0)
 	switch dbType {
 	case "oracle":
-		rows, err := conn.Query(sqlTmpl, "notexists")
+		rows, err := db.Query(sqlTmpl, "notexists")
 		if err != nil {
 			return result
 		}
@@ -493,7 +561,7 @@ func getAllSearchTables(conn *sqlx.DB, dbType, schema string) []string {
 			result = append(result, strings.TrimSpace(tableName))
 		}
 	default:
-		rows, err := conn.Query(sqlTmpl, schema)
+		rows, err := db.Query(sqlTmpl, schema)
 		if err != nil {
 			return result
 		}

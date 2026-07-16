@@ -388,3 +388,19 @@ func GetConn(id string, authorization string) *sqlx.DB {
 func GetConnNoCheck(connId string) *sqlx.DB {
 	return getDefaultConn().GetConnNoCheck(connId)
 }
+
+// GetConnDefaultSchema 获取连接配置中保存的默认 schema（db_schema 字段）
+func GetConnDefaultSchema(connId string) string {
+	if connId == "" {
+		return ""
+	}
+	repo := NewConnRepo(getDB())
+	cfgList, err := repo.FindConnById(connId)
+	if err != nil || len(cfgList) == 0 {
+		return ""
+	}
+	if cfgList[0].DbSchema != nil {
+		return *cfgList[0].DbSchema
+	}
+	return ""
+}

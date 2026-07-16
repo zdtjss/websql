@@ -264,6 +264,24 @@ function onOpenColumnFilter(col: DataColumn, triggerEl: HTMLElement) {
 }
 
 function onFilterApplied(payload: { colName: string; condition: string }) {
+  // First remove any existing condition for the same column (to support "modify filter")
+  if (payload.colName && dataQuery.filterExpr.value.trim()) {
+    const effectiveDbType = dataQuery.effectiveDbType.value
+    const quotedColName = quoteId(payload.colName, effectiveDbType)
+    const conditions = dataQuery.filterExpr.value
+      .split(/\s+AND\s+/i)
+      .filter((c) => {
+        const trimmed = c.trim()
+        return (
+          !trimmed.startsWith(quotedColName) &&
+          !trimmed.startsWith(payload.colName) &&
+          !trimmed.includes(quotedColName) &&
+          !trimmed.includes(payload.colName)
+        )
+      })
+    dataQuery.filterExpr.value = conditions.join(' AND ')
+  }
+
   // Append the new condition to the existing WHERE clause
   if (dataQuery.filterExpr.value.trim()) {
     dataQuery.filterExpr.value = dataQuery.filterExpr.value.trim() + ' AND ' + payload.condition

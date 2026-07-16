@@ -110,6 +110,7 @@
         </div>
         <div class="tm-table-list">
           <el-table
+            ref="tableRef"
             :data="filteredTables"
             highlight-current-row
             size="small"
@@ -179,7 +180,7 @@
 import http from '@/api/index'
 import { Delete, DeleteFilled, Document, Download, Edit, MoreFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TableEditor from '@/components/data/TableEditor.vue'
 
 const { connId, schema, dbType, tabId, schemaPath } = defineProps({
@@ -195,6 +196,7 @@ const emit = defineEmits(['openDataBrowser'])
 const tableList = ref([])
 const searchKeyword = ref('')
 const selectedTable = ref(null)
+const tableRef = ref(null)
 
 const tableMeta = computed(() => {
   if (!selectedTable.value) return null
@@ -263,6 +265,9 @@ function loadTables() {
   http.get('/listTable', { params: { connId, schema } })
     .then((resp) => {
       tableList.value = resp.data.data || []
+      nextTick(() => {
+        tableRef.value?.doLayout()
+      })
     })
     .catch((err) => {
       console.error(err)
@@ -509,6 +514,12 @@ function onTableDrop() {
 onMounted(() => {
   loadTables()
   initSidebarWidth()
+  // el-table with height="100%" needs its container to have a resolved pixel height.
+  // When rendered inside a lazy tab-pane, the container may not have layout yet at mount time.
+  // Force a layout recalculation after the browser has a chance to paint.
+  setTimeout(() => {
+    tableRef.value?.doLayout()
+  }, 100)
 })
 
 onBeforeUnmount(() => {
@@ -586,6 +597,7 @@ watch(
 .tm-table-list {
   flex: 1;
   overflow: auto;
+  min-height: 0;
 }
 
 .tm-editor {
