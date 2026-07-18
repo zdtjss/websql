@@ -33,8 +33,8 @@ export interface UseSqlConfirmDeps {
   buildRequestSchemas: () => { connId: string; schema: string }[]
   /** 获取主连接 connId */
   getPrimaryConnId: () => string
-  /** 滚动到底部 */
-  scrollToBottom: () => void
+  /** 滚动到底部（force=true 时强制滚动，不判断用户位置） */
+  scrollToBottom: (force?: boolean) => void
   /** 处理会话过期 */
   handleSessionExpired: () => void
   /** 流式 exec 内容变化时回调（用于触发外部 HTML 重渲染） */

@@ -196,7 +196,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             }
             if (
                 (sqlLowerCase.startsWith('update ') || sqlLowerCase.startsWith('delete ')) &&
-                sqlLowerCase.indexOf(' where ') === -1
+                !hasWhereClause(sqlLowerCase)
             ) {
                 hasInvalid = true
                 ElMessage.warning('请明确 where 条件')
@@ -204,6 +204,21 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             }
         }
         return hasInvalid
+    }
+
+    /**
+     * 检测 SQL 是否包含 WHERE 子句。
+     * 支持多行 SQL，WHERE 关键字可能出现在行首、行尾或被空白/换行符包围。
+     * 使用正则匹配 WHERE 作为独立单词（前后为空白或行边界），
+     * 并排除字符串字面量中的 WHERE。
+     */
+    function hasWhereClause(sqlLowerCase: string): boolean {
+        // 去除字符串字面量内容，避免误匹配引号中的 'where'
+        const sqlWithoutStrings = sqlLowerCase
+            .replace(/'[^']*'/g, "''")
+            .replace(/"[^"]*"/g, '""')
+        // 匹配 WHERE 作为独立关键字：前后是空白字符（含换行）或字符串边界
+        return /(?:^|\s)where(?:\s|$)/m.test(sqlWithoutStrings)
     }
 
     function formatDuration(ms: number): string {

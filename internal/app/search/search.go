@@ -607,3 +607,282 @@ func parseSearchInt(s string) int {
 	}
 	return n
 }
+
+// BatchObjectResult 批量搜索时每条结果额外携带 connId 信息
+type BatchObjectResult struct {
+	ObjectSearchResult
+	ConnId string `json:"connId"`
+}
+
+// SearchObjectsBatch 批量搜索数据库对象，支持同时搜索多个连接。
+// 使用 goroutine 并发搜索所有连接/schema，提高全局搜索性能。
+// 参数：
+//   - connIds: 逗号分隔的连接 ID 列表
+//   - schema: 可选，指定 schema；为空时搜索连接的默认 schema
+//   - keyword: 搜索关键词
+//   - searchType: 搜索类型 (table/view/column/index/all)
+func SearchObjectsBatch(c *gin.Context) {
+	connIdsStr := c.Query("connIds")
+	schema := c.Query("schema")
+	keyword := c.Query("keyword")
+	searchType := c.DefaultQuery("searchType", "all")
+
+	if strings.TrimSpace(keyword) == "" {
+		response.WriteOK(c, map[string]any{"results": []BatchObjectResult{}, "totalResults": 0, "query": keyword, "searchType": searchType})
+		return
+	}
+
+	keyword = strings.TrimSpace(keyword)
+	authorization := appctx.Ctx.GetAuthorization(c)
+
+	// 未指定连接时，使用当前用户权限内的所有连接
+	var connIds []string
+	if strings.TrimSpace(connIdsStr) == "" {
+		connIds = conn.GetUserConnIds(authorization)
+	} else {
+		connIds = strings.Split(connIdsStr, ",")
+	}
+
+	if len(connIds) == 0 {
+		response.WriteOK(c, map[string]any{"results": []BatchObjectResult{}, "totalResults": 0, "query": keyword, "searchType": searchType})
+		return
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	allResults := make([]BatchObjectResult, 0)
+
+	// 并发度限制，避免同时打开过多数据库连接
+	sem := make(chan struct{}, 10)
+
+	for _, cid := range connIds {
+		cid = strings.TrimSpace(cid)
+		if cid == "" {
+			continue
+		}
+
+		wg.Add(1)
+		connId := cid
+		safego.GoWithName("search-batch-conn", func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			db := conn.GetConn(connId, authorization)
+			if db == nil {
+				return // 连接不可用，跳过
+			}
+
+			targetSchema := schema
+			if targetSchema == "" {
+				targetSchema = conn.GetConnDefaultSchema(connId)
+			}
+
+			results := searchObjectsForConn(db, connId, targetSchema, keyword, searchType)
+			if len(results) > 0 {
+				mu.Lock()
+				allResults = append(allResults, results...)
+				mu.Unlock()
+			}
+		})
+	}
+
+	wg.Wait()
+
+	response.WriteOK(c, map[string]any{
+		"results":      allResults,
+		"totalResults": len(allResults),
+		"query":        keyword,
+		"searchType":   searchType,
+	})
+}
+
+// searchObjectsForConn 在单个连接的指定 schema 下搜索数据库对象
+func searchObjectsForConn(db *sqlx.DB, connId, schema, keyword, searchType string) []BatchObjectResult {
+	dbType := db.DriverName()
+	lowerKeyword := strings.ToLower(keyword)
+	likeKeyword := "%" + keyword + "%"
+	results := make([]BatchObjectResult, 0)
+
+	if searchType == "all" || searchType == "table" {
+		sqlTmpl, _ := dialect.SQL_DIALECT[dbType]["listTable"]
+		switch dbType {
+		case "oracle":
+			rows, _ := db.Queryx(sqlTmpl, "notexists")
+			if rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, tableType, comment string
+					if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+						continue
+					}
+					if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
+						results = append(results, BatchObjectResult{
+							ObjectSearchResult: ObjectSearchResult{
+								Type: "table", Schema: schema, Name: tableName,
+								Comment: comment, MatchField: getMatchField(tableName, lowerKeyword, comment, lowerKeyword), MatchText: keyword,
+							},
+							ConnId: connId,
+						})
+					}
+				}
+			}
+		default:
+			rows, _ := db.Queryx(sqlTmpl, schema)
+			if rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, tableType, comment string
+					if err := rows.Scan(&tableName, &tableType, &comment); err != nil {
+						continue
+					}
+					if matchName(tableName, lowerKeyword) || matchStr(comment, lowerKeyword) {
+						results = append(results, BatchObjectResult{
+							ObjectSearchResult: ObjectSearchResult{
+								Type: "table", Schema: schema, Name: tableName,
+								Comment: comment, MatchField: getMatchField(tableName, lowerKeyword, comment, lowerKeyword), MatchText: keyword,
+							},
+							ConnId: connId,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if searchType == "all" || searchType == "view" {
+		switch dbType {
+		case "oracle":
+			// Oracle 视图在 user_views 中
+			sql := `SELECT VIEW_NAME FROM USER_VIEWS WHERE LOWER(VIEW_NAME) LIKE :1`
+			rows, _ := db.Queryx(sql, likeKeyword)
+			if rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var viewName string
+					if err := rows.Scan(&viewName); err != nil {
+						continue
+					}
+					results = append(results, BatchObjectResult{
+						ObjectSearchResult: ObjectSearchResult{
+							Type: "view", Schema: schema, Name: viewName,
+							MatchField: "name", MatchText: keyword,
+						},
+						ConnId: connId,
+					})
+				}
+			}
+		default:
+			sql := fmt.Sprintf(`SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s' AND LOWER(TABLE_NAME) LIKE ?`, schema)
+			rows, err := db.Queryx(sql, likeKeyword)
+			if err == nil && rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var viewName string
+					if err := rows.Scan(&viewName); err != nil {
+						continue
+					}
+					results = append(results, BatchObjectResult{
+						ObjectSearchResult: ObjectSearchResult{
+							Type: "view", Schema: schema, Name: viewName,
+							MatchField: "name", MatchText: keyword,
+						},
+						ConnId: connId,
+					})
+				}
+			}
+		}
+	}
+
+	if searchType == "all" || searchType == "column" {
+		switch dbType {
+		case "oracle":
+			sql := `SELECT B.TABLE_NAME,B.COLUMN_NAME,A.COMMENTS FROM USER_COL_COMMENTS A LEFT JOIN USER_TAB_COLUMNS B ON A.TABLE_NAME = B.TABLE_NAME AND a.COLUMN_NAME = b.COLUMN_NAME WHERE 'notexists' <> :1`
+			rows, _ := db.Queryx(sql, "notexists")
+			if rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, colName, comment string
+					if err := rows.Scan(&tableName, &colName, &comment); err != nil {
+						continue
+					}
+					if matchName(colName, lowerKeyword) || matchStr(comment, lowerKeyword) {
+						results = append(results, BatchObjectResult{
+							ObjectSearchResult: ObjectSearchResult{
+								Type: "column", Schema: schema, Name: fmt.Sprintf("%s.%s", tableName, colName),
+								Comment: comment, MatchField: getMatchField(colName, lowerKeyword, comment, lowerKeyword), MatchText: keyword,
+							},
+							ConnId: connId,
+						})
+					}
+				}
+			}
+		default:
+			sql := `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND (LOWER(COLUMN_NAME) LIKE ? OR LOWER(COLUMN_COMMENT) LIKE ?)`
+			rows, err := db.Queryx(sql, schema, likeKeyword, likeKeyword)
+			if err == nil && rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, colName, comment string
+					if err := rows.Scan(&tableName, &colName, &comment); err != nil {
+						continue
+					}
+					results = append(results, BatchObjectResult{
+						ObjectSearchResult: ObjectSearchResult{
+							Type: "column", Schema: schema, Name: fmt.Sprintf("%s.%s", tableName, colName),
+							Comment: comment, MatchField: "name", MatchText: keyword,
+						},
+						ConnId: connId,
+					})
+				}
+			}
+		}
+	}
+
+	if searchType == "all" || searchType == "index" {
+		switch dbType {
+		case "oracle":
+			sql := `SELECT TABLE_NAME, INDEX_NAME FROM USER_INDEXES WHERE LOWER(INDEX_NAME) LIKE :1`
+			rows, _ := db.Queryx(sql, likeKeyword)
+			if rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, idxName string
+					if err := rows.Scan(&tableName, &idxName); err != nil {
+						continue
+					}
+					results = append(results, BatchObjectResult{
+						ObjectSearchResult: ObjectSearchResult{
+							Type: "index", Schema: schema, Name: fmt.Sprintf("%s.%s", tableName, idxName),
+							MatchField: "name", MatchText: keyword,
+						},
+						ConnId: connId,
+					})
+				}
+			}
+		default:
+			sql := fmt.Sprintf(`SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA='%s' AND LOWER(INDEX_NAME) LIKE ?`, schema)
+			rows, err := db.Queryx(sql, likeKeyword)
+			if err == nil && rows != nil {
+				defer rows.Close()
+				for rows.Next() {
+					var tableName, idxName string
+					if err := rows.Scan(&tableName, &idxName); err != nil {
+						continue
+					}
+					if matchName(idxName, lowerKeyword) {
+						results = append(results, BatchObjectResult{
+							ObjectSearchResult: ObjectSearchResult{
+								Type: "index", Schema: schema, Name: fmt.Sprintf("%s.%s", tableName, idxName),
+								MatchField: "name", MatchText: keyword,
+							},
+							ConnId: connId,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return results
+}

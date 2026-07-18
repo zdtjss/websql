@@ -399,9 +399,16 @@ let doRenderMermaidBlocksFn = async (_scroll?: boolean): Promise<void> => { }
 let resetCurrentSessionFn = (_showMsg?: boolean): void => { }
 
 // ── 辅助函数 ──
-function scrollToBottom(): void {
+/** 判断用户是否已滚动到底部附近（80px 容差） */
+function isNearBottom(): boolean {
+  const el = msgContainer.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+function scrollToBottom(force?: boolean): void {
   nextTick(() => {
-    if (msgContainer.value) {
+    if (msgContainer.value && (force || isNearBottom())) {
       msgContainer.value.scrollTop = msgContainer.value.scrollHeight
     }
   })

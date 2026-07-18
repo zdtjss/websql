@@ -106,16 +106,16 @@ export function explainSqlOpt(formData: FormData): Promise<AxiosResponse<ApiResp
   return http.post('/sqlopt/explain', formData)
 }
 
-/** 搜索数据库对象，对应 GET /search/objects */
-export interface SearchObjectsParams {
-  connId: string
+/** 批量搜索数据库对象（多连接并发），对应 GET /search/objects/batch */
+export interface SearchObjectsBatchParams {
+  connIds: string
   schema?: string
   keyword: string
   searchType: string
 }
 
-export function searchObjects(params: SearchObjectsParams): Promise<AxiosResponse> {
-  return http.get('/search/objects', { params })
+export function searchObjectsBatch(params: SearchObjectsBatchParams): Promise<AxiosResponse> {
+  return http.get('/search/objects/batch', { params })
 }
 
 /** 数据字典 - 列出表，对应 GET /datadict/tables */

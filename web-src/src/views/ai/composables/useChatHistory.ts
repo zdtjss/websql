@@ -54,8 +54,8 @@ export interface UseChatHistoryDeps {
   loadTableListForSchemas: () => Promise<void>
   /** 渲染 mermaid 图表 */
   doRenderMermaidBlocks: (scrollAfter?: boolean) => Promise<void>
-  /** 滚动到底部 */
-  scrollToBottom: () => void
+  /** 滚动到底部（force=true 时强制滚动，不判断用户位置） */
+  scrollToBottom: (force?: boolean) => void
   /** 处理会话过期 */
   handleSessionExpired: () => void
   /** 重置当前会话所有状态（由 ChatView 协调各 composable 一起 reset） */
@@ -279,7 +279,7 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
         }
 
         ElMessage({ message: '已加载历史会话', type: 'success' })
-        scrollToBottom()
+        scrollToBottom(true)
         await doRenderMermaidBlocks()
       }
     } catch (e) {

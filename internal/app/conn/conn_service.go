@@ -385,6 +385,22 @@ func GetConn(id string, authorization string) *sqlx.DB {
 	return getDefaultConn().GetConn(id, authorization)
 }
 
+// GetUserConnIds 获取用户有权限的所有连接 ID 列表
+func GetUserConnIds(authorization string) []string {
+	userPower := admin.GetUserPower(authorization)
+	conns, err := getDefaultConn().ListUserConn(userPower)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(conns))
+	for _, c := range conns {
+		if c.ConnId != "" {
+			ids = append(ids, c.ConnId)
+		}
+	}
+	return ids
+}
+
 func GetConnNoCheck(connId string) *sqlx.DB {
 	return getDefaultConn().GetConnNoCheck(connId)
 }

@@ -1,4 +1,4 @@
-﻿/* ========== Markdown v-html 内容样式（unscoped，确保 v-html 注入的 DOM 元素能被正确样式化） ========== */
+/* ========== Markdown v-html 内容样式（unscoped，确保 v-html 注入的 DOM 元素能被正确样式化） ========== */
 .markdown-body p {
   margin-top: 0;
   margin-bottom: 12px;
@@ -222,18 +222,30 @@
   text-decoration-color: #ffffff;
 }
 
-/* Mermaid 容器（unscoped） */
+/* Mermaid 容器（unscoped） - 优雅毛玻璃风格 */
 .mermaid-container {
-  margin: 12px 0;
-  padding: 16px;
-  padding-top: 16px;
-  border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  margin: 16px 0;
+  padding: 20px;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #ffffff 0%, #f8faff 100%);
+  border: 1px solid rgba(168, 204, 245, 0.35);
+  box-shadow:
+    0 1px 3px rgba(77, 143, 219, 0.04),
+    0 4px 16px rgba(77, 143, 219, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
   overflow: hidden;
   text-align: center;
   position: relative;
   max-height: 600px;
   cursor: grab;
+  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s ease, transform 0.2s ease;
+}
+.mermaid-container:hover {
+  box-shadow:
+    0 2px 6px rgba(77, 143, 219, 0.08),
+    0 8px 24px rgba(77, 143, 219, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border-color: rgba(168, 204, 245, 0.55);
 }
 body.mermaid-ctrl-held .mermaid-container {
   cursor: zoom-in !important;
@@ -296,6 +308,176 @@ body.mermaid-dragging .mermaid-container {
   background: transparent !important;
 }
 
+/* Mermaid SVG 内部文本可见性修复 - 防止 markdown-body 样式泄漏到 SVG foreignObject */
+.mermaid-container svg {
+  color: #333;
+}
+.mermaid-container svg foreignObject,
+.mermaid-container svg foreignObject div,
+.mermaid-container svg foreignObject p,
+.mermaid-container svg foreignObject span {
+  color: #333;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: visible !important;
+}
+/* Timeline 图表特殊处理 - 确保时间线节点文字可见 */
+.mermaid-container svg .timeline-label text,
+.mermaid-container svg .timeline-label foreignObject div,
+.mermaid-container svg text {
+  fill: #333;
+  color: #333;
+}
+.mermaid-container svg .labelBox,
+.mermaid-container svg .label foreignObject div {
+  color: #333;
+  overflow: visible !important;
+}
+/* 日间模式：SVG 画布级背景 rect 修正（Gantt/Timeline 等图表的根级背景） */
+.mermaid-container svg > rect:first-child {
+  fill: #f8fafc !important;
+}
+/* 日间模式：强制覆盖 mermaid 中残留的深色矩形/路径填充（rect/path/polygon） */
+.mermaid-container svg rect[fill="#000"],
+.mermaid-container svg rect[fill="#000000"],
+.mermaid-container svg rect[fill="black"],
+.mermaid-container svg rect[fill="#1f2020"],
+.mermaid-container svg rect[fill="#1f1f1f"],
+.mermaid-container svg rect[fill="#0d0d0d"],
+.mermaid-container svg rect[fill="#1a1a2e"],
+.mermaid-container svg rect[fill="#16213e"],
+.mermaid-container svg rect[fill="#0f3460"],
+.mermaid-container svg rect[fill="#222"],
+.mermaid-container svg rect[fill="#333"],
+.mermaid-container svg rect[fill="#111"],
+.mermaid-container svg rect[fill="#2c3e50"],
+.mermaid-container svg rect[fill="#34495e"],
+.mermaid-container svg path[fill="#000"],
+.mermaid-container svg path[fill="#000000"],
+.mermaid-container svg path[fill="black"],
+.mermaid-container svg path[fill="#1f2020"],
+.mermaid-container svg path[fill="#1f1f1f"],
+.mermaid-container svg path[fill="#0d0d0d"],
+.mermaid-container svg path[fill="#222"],
+.mermaid-container svg path[fill="#333"],
+.mermaid-container svg path[fill="#111"],
+.mermaid-container svg path[fill="#2c3e50"],
+.mermaid-container svg path[fill="#34495e"],
+.mermaid-container svg polygon[fill="#000"],
+.mermaid-container svg polygon[fill="#000000"],
+.mermaid-container svg polygon[fill="black"],
+.mermaid-container svg polygon[fill="#222"],
+.mermaid-container svg polygon[fill="#333"] {
+  fill: #dbeafe !important;
+}
+.mermaid-container svg rect[fill="#000"] ~ foreignObject div,
+.mermaid-container svg rect[fill="#000000"] ~ foreignObject div,
+.mermaid-container svg rect[fill="black"] ~ foreignObject div {
+  color: #1e293b !important;
+}
+/* 日间模式 - 覆盖 timeline/gantt 等图表中 period/event/task/section 分组的图形背景 */
+/* 排除用户通过 style 指令自定义的 fill（如 style A fill:#FF6B6B） */
+.mermaid-container svg .task rect:not([style*="fill"]),
+.mermaid-container svg .task path:not([style*="fill"]),
+.mermaid-container svg .section rect:not([style*="fill"]),
+.mermaid-container svg .section path:not([style*="fill"]),
+.mermaid-container svg g[class*="period"] rect:not([style*="fill"]),
+.mermaid-container svg g[class*="period"] path:not([style*="fill"]),
+.mermaid-container svg g[class*="event"] rect:not([style*="fill"]),
+.mermaid-container svg g[class*="event"] path:not([style*="fill"]),
+.mermaid-container svg g[class*="task"] rect:not([style*="fill"]),
+.mermaid-container svg g[class*="task"] path:not([style*="fill"]),
+.mermaid-container svg g[class*="section"] rect:not([style*="fill"]),
+.mermaid-container svg g[class*="section"] path:not([style*="fill"]) {
+  fill: #dbeafe !important;
+  stroke: #93c5fd !important;
+}
+.mermaid-container svg .taskText,
+.mermaid-container svg .sectionTitle,
+.mermaid-container svg g[class*="period"] text,
+.mermaid-container svg g[class*="event"] text,
+.mermaid-container svg g[class*="period"] foreignObject div,
+.mermaid-container svg g[class*="event"] foreignObject div,
+.mermaid-container svg g[class*="task"] text,
+.mermaid-container svg g[class*="task"] foreignObject div,
+.mermaid-container svg g[class*="section"] text,
+.mermaid-container svg g[class*="section"] foreignObject div,
+.mermaid-container svg .taskText text,
+.mermaid-container svg .sectionTitle text {
+  fill: #1e293b !important;
+  color: #1e293b !important;
+}
+/* 日间模式 - 覆盖所有使用内联 style 设置深色填充的图形元素 */
+.mermaid-container svg rect[style*="fill: rgb(0, 0, 0)"],
+.mermaid-container svg rect[style*="fill:rgb(0,0,0)"],
+.mermaid-container svg rect[style*="fill: #000"],
+.mermaid-container svg rect[style*="fill:#000"],
+.mermaid-container svg rect[style*="fill: black"],
+.mermaid-container svg path[style*="fill: rgb(0, 0, 0)"],
+.mermaid-container svg path[style*="fill:rgb(0,0,0)"],
+.mermaid-container svg path[style*="fill: #000"],
+.mermaid-container svg path[style*="fill:#000"],
+.mermaid-container svg path[style*="fill: black"] {
+  fill: #dbeafe !important;
+}
+/* 日间模式 - timeline/gantt 相关 class 的图形元素都使用浅色背景 */
+.mermaid-container svg [class*="timeline"] rect:not([style*="fill"]),
+.mermaid-container svg [class*="timeline"] path:not([style*="fill"]),
+.mermaid-container svg [class*="event-line"] rect:not([style*="fill"]),
+.mermaid-container svg [class*="event-line"] path:not([style*="fill"]),
+.mermaid-container svg [class*="task-data"] rect:not([style*="fill"]),
+.mermaid-container svg [class*="task-data"] path:not([style*="fill"]),
+.mermaid-container svg [class*="gantt"] rect:not([style*="fill"]),
+.mermaid-container svg [class*="gantt"] path:not([style*="fill"]) {
+  fill: #dbeafe !important;
+  stroke: #93c5fd !important;
+}
+.mermaid-container svg [class*="timeline"] text,
+.mermaid-container svg [class*="timeline"] foreignObject div,
+.mermaid-container svg [class*="gantt"] text,
+.mermaid-container svg [class*="gantt"] foreignObject div {
+  fill: #1e293b !important;
+  color: #1e293b !important;
+}
+/* 日间模式 - 线条与箭头颜色（line / path stroke / marker 箭头） */
+.mermaid-container svg line[stroke="#000"],
+.mermaid-container svg line[stroke="#000000"],
+.mermaid-container svg line[stroke="black"] {
+  stroke: #64748b !important;
+}
+.mermaid-container svg path[fill="none"][stroke="#000"],
+.mermaid-container svg path[fill="none"][stroke="#000000"],
+.mermaid-container svg path[fill="none"][stroke="black"] {
+  stroke: #64748b !important;
+}
+.mermaid-container svg marker path[fill="#000"],
+.mermaid-container svg marker path[fill="#000000"],
+.mermaid-container svg marker path[fill="black"],
+.mermaid-container svg marker polygon[fill="#000"],
+.mermaid-container svg marker polygon[fill="#000000"],
+.mermaid-container svg marker polygon[fill="black"] {
+  fill: #64748b !important;
+}
+.mermaid-container svg marker path[stroke="#000"],
+.mermaid-container svg marker path[stroke="#000000"],
+.mermaid-container svg marker path[stroke="black"] {
+  stroke: #64748b !important;
+}
+/* 防止 markdown-body code 样式影响 mermaid SVG 内容 */
+.mermaid-container code,
+.mermaid-container svg code {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: inherit !important;
+  font-size: inherit !important;
+}
+
 .mermaid-fullscreen-container {
   background: var(--bg-secondary, #1e1e2e);
   box-shadow: 0 8px 40px rgba(255, 255, 255, 0.6);
@@ -304,6 +486,120 @@ body.mermaid-dragging .mermaid-container {
 [data-theme="dark"] .mermaid-container .edgeLabel,
 [data-theme="dark"] .mermaid-container .edgeLabel p {
   color: #d4d4d4;
+}
+
+/* 暗色模式 Mermaid 容器背景 */
+[data-theme="dark"] .mermaid-container {
+  background: linear-gradient(145deg, #1e1e30 0%, #181825 100%);
+  border-color: rgba(91, 141, 239, 0.2);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.2),
+    0 4px 16px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+[data-theme="dark"] .mermaid-container:hover {
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.3),
+    0 8px 28px rgba(91, 141, 239, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border-color: rgba(91, 141, 239, 0.35);
+}
+
+/* 暗色模式 Mermaid SVG 文本可见性 */
+[data-theme="dark"] .mermaid-container svg {
+  color: #d4d4d4;
+}
+[data-theme="dark"] .mermaid-container svg foreignObject,
+[data-theme="dark"] .mermaid-container svg foreignObject div,
+[data-theme="dark"] .mermaid-container svg foreignObject p,
+[data-theme="dark"] .mermaid-container svg foreignObject span {
+  color: #d4d4d4;
+}
+[data-theme="dark"] .mermaid-container svg .timeline-label text,
+[data-theme="dark"] .mermaid-container svg .timeline-label foreignObject div,
+[data-theme="dark"] .mermaid-container svg text {
+  fill: #d4d4d4;
+  color: #d4d4d4;
+}
+[data-theme="dark"] .mermaid-container svg .labelBox,
+[data-theme="dark"] .mermaid-container svg .label foreignObject div {
+  color: #d4d4d4;
+}
+/* 暗色模式：SVG 画布级背景 rect 修正 */
+[data-theme="dark"] .mermaid-container svg > rect:first-child {
+  fill: #1e1e2e !important;
+}
+/* 暗色模式 mermaid 深色矩形/路径覆盖 */
+[data-theme="dark"] .mermaid-container svg rect[fill="#000"],
+[data-theme="dark"] .mermaid-container svg rect[fill="#000000"],
+[data-theme="dark"] .mermaid-container svg rect[fill="black"],
+[data-theme="dark"] .mermaid-container svg rect[fill="#1f2020"],
+[data-theme="dark"] .mermaid-container svg rect[fill="#1f1f1f"],
+[data-theme="dark"] .mermaid-container svg path[fill="#000"],
+[data-theme="dark"] .mermaid-container svg path[fill="#000000"],
+[data-theme="dark"] .mermaid-container svg path[fill="black"],
+[data-theme="dark"] .mermaid-container svg path[fill="#1f2020"],
+[data-theme="dark"] .mermaid-container svg path[fill="#1f1f1f"],
+[data-theme="dark"] .mermaid-container svg polygon[fill="#000"],
+[data-theme="dark"] .mermaid-container svg polygon[fill="#000000"],
+[data-theme="dark"] .mermaid-container svg polygon[fill="black"] {
+  fill: #3b4252 !important;
+}
+[data-theme="dark"] .mermaid-container svg .task rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg .task path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg .section rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg .section path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="period"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="period"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="event"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="event"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="task"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="task"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="section"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-container svg g[class*="section"] path:not([style*="fill"]) {
+  fill: #3b4252 !important;
+  stroke: #4c566a !important;
+}
+[data-theme="dark"] .mermaid-container svg .taskText,
+[data-theme="dark"] .mermaid-container svg .sectionTitle,
+[data-theme="dark"] .mermaid-container svg g[class*="period"] text,
+[data-theme="dark"] .mermaid-container svg g[class*="event"] text,
+[data-theme="dark"] .mermaid-container svg g[class*="period"] foreignObject div,
+[data-theme="dark"] .mermaid-container svg g[class*="event"] foreignObject div,
+[data-theme="dark"] .mermaid-container svg g[class*="task"] text,
+[data-theme="dark"] .mermaid-container svg g[class*="task"] foreignObject div,
+[data-theme="dark"] .mermaid-container svg g[class*="section"] text,
+[data-theme="dark"] .mermaid-container svg g[class*="section"] foreignObject div,
+[data-theme="dark"] .mermaid-container svg .taskText text,
+[data-theme="dark"] .mermaid-container svg .sectionTitle text,
+[data-theme="dark"] .mermaid-container svg [class*="gantt"] text,
+[data-theme="dark"] .mermaid-container svg [class*="gantt"] foreignObject div {
+  fill: #e5e9f0 !important;
+  color: #e5e9f0 !important;
+}
+/* 暗色模式 - 线条与箭头颜色 */
+[data-theme="dark"] .mermaid-container svg line[stroke="#000"],
+[data-theme="dark"] .mermaid-container svg line[stroke="#000000"],
+[data-theme="dark"] .mermaid-container svg line[stroke="black"] {
+  stroke: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-container svg path[fill="none"][stroke="#000"],
+[data-theme="dark"] .mermaid-container svg path[fill="none"][stroke="#000000"],
+[data-theme="dark"] .mermaid-container svg path[fill="none"][stroke="black"] {
+  stroke: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-container svg marker path[fill="#000"],
+[data-theme="dark"] .mermaid-container svg marker path[fill="#000000"],
+[data-theme="dark"] .mermaid-container svg marker path[fill="black"],
+[data-theme="dark"] .mermaid-container svg marker polygon[fill="#000"],
+[data-theme="dark"] .mermaid-container svg marker polygon[fill="#000000"],
+[data-theme="dark"] .mermaid-container svg marker polygon[fill="black"] {
+  fill: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-container svg marker path[stroke="#000"],
+[data-theme="dark"] .mermaid-container svg marker path[stroke="#000000"],
+[data-theme="dark"] .mermaid-container svg marker path[stroke="black"] {
+  stroke: #94a3b8 !important;
 }
 
 [data-theme="dark"] .mermaid-source-preview {
@@ -331,6 +627,414 @@ body.mermaid-dragging .mermaid-container {
   color: var(--warning-color);
   text-align: center;
 }
+
+/* ── Mermaid 渲染失败 - 错误卡片 ── */
+.mermaid-error-card {
+  text-align: left;
+  padding: 16px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%);
+  border: 1px solid #fecaca;
+}
+.mermaid-error-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #dc2626;
+}
+.mermaid-error-header svg {
+  flex-shrink: 0;
+  stroke: #dc2626;
+}
+.mermaid-error-detail {
+  font-size: 12px;
+  color: #991b1b;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(220, 38, 38, 0.06);
+  border-radius: 6px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  word-break: break-word;
+}
+.mermaid-error-card .mermaid-source-preview {
+  display: block !important;
+  max-height: 200px;
+}
+[data-theme="dark"] .mermaid-error-card {
+  background: linear-gradient(135deg, #1c1017 0%, #1f1418 100%);
+  border-color: #7f1d1d;
+}
+[data-theme="dark"] .mermaid-error-header {
+  color: #fca5a5;
+}
+[data-theme="dark"] .mermaid-error-header svg {
+  stroke: #fca5a5;
+}
+[data-theme="dark"] .mermaid-error-detail {
+  color: #fca5a5;
+  background: rgba(220, 38, 38, 0.1);
+}
+
+/* ── Mermaid 不支持的图表类型 - 可视化数据卡片 ── */
+.mermaid-container.mermaid-unsupported {
+  cursor: default;
+}
+.mermaid-unsupported-card {
+  text-align: left;
+  padding: 24px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #ffffff 0%, #f7faff 50%, #f0f5ff 100%);
+  border: 1px solid rgba(168, 204, 245, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+.mermaid-unsupported-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #4d8fdb, #7c6bc4, #3daa7e, #e8a838);
+  border-radius: 14px 14px 0 0;
+}
+.mermaid-unsupported-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.mermaid-unsupported-icon {
+  font-size: 28px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+}
+.mermaid-unsupported-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mermaid-unsupported-type {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a2332;
+  letter-spacing: -0.3px;
+}
+.mermaid-unsupported-title {
+  font-size: 12px;
+  color: #4a5568;
+  font-weight: 500;
+}
+.mermaid-unsupported-body {
+  margin-bottom: 16px;
+}
+/* 可视化条形图 */
+.mermaid-viz-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mermaid-viz-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.mermaid-viz-bar-row.funnel {
+  flex-direction: column;
+  gap: 4px;
+}
+.mermaid-viz-bar-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3d5068;
+  min-width: 100px;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.mermaid-viz-bar-row.funnel .mermaid-viz-bar-label {
+  min-width: auto;
+  max-width: none;
+  text-align: center;
+  font-size: 11px;
+  color: #4a5568;
+}
+.mermaid-viz-bar-track {
+  flex: 1;
+  height: 28px;
+  background: rgba(77, 143, 219, 0.06);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+.mermaid-viz-bar-row.funnel .mermaid-viz-bar-track {
+  width: 100%;
+  height: 32px;
+}
+.mermaid-viz-bar-fill {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 10px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+.mermaid-viz-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 100%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.mermaid-viz-bar-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  white-space: nowrap;
+  position: relative;
+  z-index: 1;
+}
+.mermaid-unsupported-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #6b7a8d;
+  padding: 8px 12px;
+  background: rgba(77, 143, 219, 0.04);
+  border-radius: 8px;
+  border: 1px solid rgba(77, 143, 219, 0.1);
+}
+.mermaid-unsupported-notice svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* 暗色模式 - 可视化卡片 */
+[data-theme="dark"] .mermaid-unsupported-card {
+  background: linear-gradient(145deg, #1e1e30 0%, #181825 50%, #1a1a2e 100%);
+  border-color: rgba(91, 141, 239, 0.2);
+}
+[data-theme="dark"] .mermaid-unsupported-card::before {
+  background: linear-gradient(90deg, #5b8def, #7c6bc4, #4a9e7e, #d4915e);
+}
+[data-theme="dark"] .mermaid-unsupported-type {
+  color: #f0f3f8;
+}
+[data-theme="dark"] .mermaid-unsupported-title {
+  color: #a0aab8;
+}
+[data-theme="dark"] .mermaid-viz-bar-label {
+  color: #c8d0e0;
+}
+[data-theme="dark"] .mermaid-viz-bar-track {
+  background: rgba(91, 141, 239, 0.08);
+}
+[data-theme="dark"] .mermaid-unsupported-notice {
+  color: #a0aab8;
+  background: rgba(91, 141, 239, 0.06);
+  border-color: rgba(91, 141, 239, 0.12);
+}
+
+/* ── Mermaid XY Chart 优雅样式 ── */
+.mermaid-container svg .xychart-plot-line {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.mermaid-container svg .xychart-plot-band rect {
+  rx: 5;
+  ry: 5;
+  opacity: 0.88;
+}
+.mermaid-container svg .xychart-x-axis-label,
+.mermaid-container svg .xychart-y-axis-label {
+  fill: #6b7a8d !important;
+  font-size: 11px;
+  font-weight: 500;
+}
+.mermaid-container svg .xychart-title {
+  fill: #1a2332 !important;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+.mermaid-container svg .xychart-x-axis-title,
+.mermaid-container svg .xychart-y-axis-title {
+  fill: #4a5568 !important;
+  font-weight: 600;
+}
+[data-theme="dark"] .mermaid-container svg .xychart-x-axis-label,
+[data-theme="dark"] .mermaid-container svg .xychart-y-axis-label {
+  fill: #a0aab8 !important;
+}
+[data-theme="dark"] .mermaid-container svg .xychart-title {
+  fill: #f0f3f8 !important;
+}
+[data-theme="dark"] .mermaid-container svg .xychart-x-axis-title,
+[data-theme="dark"] .mermaid-container svg .xychart-y-axis-title {
+  fill: #c8d0e0 !important;
+}
+
+/* ── Mermaid Mindmap 精致样式 ── */
+.mermaid-container svg [class*="mindmap"] .node rect,
+.mermaid-container svg [class*="mindmap"] .node circle,
+.mermaid-container svg [class*="mindmap"] .node ellipse,
+.mermaid-container svg [class*="mindmap"] .node polygon,
+.mermaid-container svg .mindmap-node rect,
+.mermaid-container svg .mindmap-node circle {
+  rx: 14;
+  ry: 14;
+  stroke-width: 2;
+  filter: drop-shadow(0 2px 4px rgba(77, 143, 219, 0.1));
+}
+[data-theme="dark"] .mermaid-container svg [class*="mindmap"] .node rect,
+[data-theme="dark"] .mermaid-container svg [class*="mindmap"] .node circle,
+[data-theme="dark"] .mermaid-container svg .mindmap-node rect,
+[data-theme="dark"] .mermaid-container svg .mindmap-node circle {
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.3));
+}
+
+/* ── Mermaid Pie Chart 光泽效果 ── */
+.mermaid-container svg .pieCircle {
+  stroke-width: 2.5;
+  stroke: #ffffff;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.08));
+}
+.mermaid-container svg .pieTitleText {
+  fill: #1a2332 !important;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+.mermaid-container svg .slice {
+  transition: opacity 0.2s;
+}
+.mermaid-container svg .legend text {
+  fill: #4a5568 !important;
+  font-size: 12px;
+  font-weight: 500;
+}
+.mermaid-container svg .legend rect {
+  rx: 3;
+  ry: 3;
+}
+[data-theme="dark"] .mermaid-container svg .pieCircle {
+  stroke: #181825;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
+}
+[data-theme="dark"] .mermaid-container svg .pieTitleText {
+  fill: #f0f3f8 !important;
+}
+[data-theme="dark"] .mermaid-container svg .legend text {
+  fill: #c8d0e0 !important;
+}
+
+/* ── Mermaid Flowchart 节点精致化 ── */
+.mermaid-container svg .node rect,
+.mermaid-container svg .node polygon,
+.mermaid-container svg .node circle,
+.mermaid-container svg .node ellipse {
+  rx: 10;
+  ry: 10;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.06));
+  transition: filter 0.2s;
+}
+.mermaid-container svg .cluster rect,
+.mermaid-container svg .subgraph rect {
+  rx: 12;
+  ry: 12;
+  stroke-dasharray: 6 3;
+  stroke-width: 1.5;
+}
+.mermaid-container svg .edgePath path {
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+[data-theme="dark"] .mermaid-container svg .node rect,
+[data-theme="dark"] .mermaid-container svg .node polygon,
+[data-theme="dark"] .mermaid-container svg .node circle {
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.25));
+}
+
+/* ── Mermaid Sequence Diagram 精致线条 ── */
+.mermaid-container svg .actor {
+  rx: 8;
+  ry: 8;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 2px 4px rgba(77, 143, 219, 0.08));
+}
+.mermaid-container svg .note {
+  rx: 8;
+  ry: 8;
+  filter: drop-shadow(0 1px 3px rgba(232, 197, 71, 0.15));
+}
+.mermaid-container svg .activation0,
+.mermaid-container svg .activation1,
+.mermaid-container svg .activation2 {
+  rx: 3;
+  ry: 3;
+  stroke-width: 1.5;
+}
+.mermaid-container svg .messageLine0,
+.mermaid-container svg .messageLine1 {
+  stroke-width: 1.5;
+}
+[data-theme="dark"] .mermaid-container svg .actor {
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.3));
+}
+[data-theme="dark"] .mermaid-container svg .note {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+/* ── Mermaid Gantt 精致条形 ── */
+.mermaid-container svg .task {
+  rx: 6;
+  ry: 6;
+}
+.mermaid-container svg .task rect {
+  rx: 6;
+  ry: 6;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.05));
+}
+
+/* ── Mermaid Git Graph 精致样式 ── */
+.mermaid-container svg .commit-id text {
+  font-size: 10px;
+  font-weight: 500;
+}
+.mermaid-container svg .branch-label text {
+  font-weight: 700;
+  font-size: 12px;
+}
+.mermaid-container svg .commit {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+/* ── Mermaid Timeline 精致卡片 ── */
+.mermaid-container svg [class*="timeline"] rect {
+  rx: 8;
+  ry: 8;
+}
+
+/* ── Mermaid Journey 精致条形 ── */
+.mermaid-container svg .journey-section rect {
+  rx: 6;
+  ry: 6;
+}
 .mermaid-toolbar {
   position: absolute;
   top: 8px;
@@ -340,9 +1044,13 @@ body.mermaid-dragging .mermaid-container {
   gap: 2px;
   z-index: 100;
   backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
   padding: 4px;
   opacity: 0;
   transition: opacity 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 .mermaid-container:hover .mermaid-toolbar {
   opacity: 1;
@@ -350,7 +1058,7 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-tb-sep {
   width: 1px;
   height: 16px;
-  background: #3c3c3c;
+  background: #e2e8f0;
   margin: 0 2px;
 }
 .mermaid-tb-btn {
@@ -361,10 +1069,10 @@ body.mermaid-dragging .mermaid-container {
   width: 26px;
   height: 26px;
   font-size: 11px;
-  color: #9cdcfe;
+  color: #64748b;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 0;
   line-height: 1;
   transition: all 0.15s;
@@ -373,15 +1081,36 @@ body.mermaid-dragging .mermaid-container {
   white-space: nowrap;
 }
 .mermaid-tb-btn:hover {
-  color: #0fa1ef;
-  background: rgba(0, 122, 204, 0.15);
-  border-color: rgba(0, 122, 204, 0.3);
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
 }
 .mermaid-tb-btn:active {
-  background: rgba(0, 122, 204, 0.25);
+  background: rgba(59, 130, 246, 0.15);
 }
 .mermaid-tb-btn svg {
   flex-shrink: 0;
+}
+
+/* 暗色模式工具栏 */
+[data-theme="dark"] .mermaid-toolbar {
+  background: rgba(30, 30, 46, 0.9);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+[data-theme="dark"] .mermaid-tb-sep {
+  background: #4c566a;
+}
+[data-theme="dark"] .mermaid-tb-btn {
+  color: #94a3b8;
+}
+[data-theme="dark"] .mermaid-tb-btn:hover {
+  color: #81a1c1;
+  background: rgba(129, 161, 193, 0.12);
+  border-color: rgba(129, 161, 193, 0.25);
+}
+[data-theme="dark"] .mermaid-tb-btn:active {
+  background: rgba(129, 161, 193, 0.2);
 }
 .mermaid-container .node rect,
 .mermaid-container .node polygon,
@@ -390,8 +1119,8 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-container .cluster path,
 .mermaid-container .subgraph rect,
 .mermaid-container .subgraph path {
-  rx: 8;
-  ry: 8;
+  rx: 10;
+  ry: 10;
 }
 .mermaid-svg-wrap {
   text-align: center;
@@ -409,7 +1138,7 @@ body.mermaid-dragging .mermaid-container {
   align-items: center;
   justify-content: center;
   user-select: none;
-  border-top: 1px solid #3c3c3c;
+  border-top: 1px solid #e2e8f0;
   margin-top: 4px;
   opacity: 0;
   transition: opacity 0.2s ease;
@@ -419,12 +1148,21 @@ body.mermaid-dragging .mermaid-container {
 }
 .mermaid-resize-dots {
   font-size: 14px;
-  color: #808080;
+  color: #94a3b8;
   letter-spacing: 2px;
   line-height: 1;
 }
 .mermaid-resize-handle:hover .mermaid-resize-dots {
-  color: #569cd6;
+  color: #3b82f6;
+}
+[data-theme="dark"] .mermaid-resize-handle {
+  border-top-color: #3b4252;
+}
+[data-theme="dark"] .mermaid-resize-dots {
+  color: #64748b;
+}
+[data-theme="dark"] .mermaid-resize-handle:hover .mermaid-resize-dots {
+  color: #81a1c1;
 }
 body.mermaid-resizing,
 body.mermaid-resizing * {
@@ -976,6 +1714,121 @@ body.mermaid-resizing * {
   background: rgba(137, 180, 250, 0.06);
 }
 
+/* ── 聊天气泡全局样式（确保流式输出和历史消息样式一致） ── */
+.chat-bubble {
+  border-radius: 16px;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  position: relative;
+  animation: chatBubbleSlideIn 0.3s ease-out;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s ease;
+}
+.chat-bubble:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+@keyframes chatBubbleSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.chat-bubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #64b5f6 0%, #f0f0f0 100%);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 4px 12px rgba(100, 181, 246, 0.25);
+}
+.chat-bubble.user .bubble-label {
+  color: rgba(255, 255, 255, 0.95);
+}
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: linear-gradient(135deg, #ffffff 0%, #f5f5f5 100%);
+  color: #212121;
+  border-bottom-left-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.chat-bubble.assistant .bubble-label {
+  color: #546e7a;
+}
+.bubble-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.bubble-content {
+  word-break: break-word;
+}
+/* 思考过程块 */
+.thinking-block {
+  border: 1px solid rgba(84, 110, 122, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(236, 239, 241, 0.6) 0%, rgba(224, 228, 230, 0.4) 100%);
+  padding: 12px;
+  margin: 8px 0;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(84, 110, 122, 0.1);
+  transition: all 0.3s ease;
+}
+.thinking-block:hover {
+  box-shadow: 0 4px 12px rgba(84, 110, 122, 0.15);
+  transform: translateX(4px);
+}
+.thinking-label {
+  font-size: 13px;
+  color: #37474f;
+  margin-bottom: 8px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: color 0.3s ease;
+}
+.thinking-label:hover {
+  color: #546e7a;
+}
+.thinking-content {
+  font-size: 13px;
+  color: #455a64;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  line-height: 1.6;
+}
+
+/* 暗色模式气泡 */
+[data-theme="dark"] .chat-bubble.user {
+  background: linear-gradient(135deg, #2a4a7f 0%, #2d2d2d 100%);
+  color: #d4d4d4;
+  box-shadow: 0 4px 12px rgba(42, 74, 127, 0.3);
+}
+[data-theme="dark"] .chat-bubble.user .bubble-label {
+  color: rgba(212, 212, 212, 0.85);
+}
+[data-theme="dark"] .chat-bubble.assistant {
+  background: linear-gradient(135deg, #252526 0%, #1e1e1e 100%);
+  color: #d4d4d4;
+  border-color: var(--border-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+[data-theme="dark"] .chat-bubble.assistant:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+[data-theme="dark"] .chat-bubble.assistant .bubble-label {
+  color: var(--text-tertiary);
+}
+
 /* ── Mermaid Smooth Transition ── */
 .mermaid-svg-wrap.smooth-transition {
   transition: transform 0.2s ease-out;
@@ -1051,4 +1904,219 @@ body.mermaid-fullscreen-active {
 [data-theme="dark"] .mermaid-fullscreen-container {
   background: var(--bg-secondary, #1e1e2e);
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Mermaid 全屏模式 - 颜色修正（与 .mermaid-container 保持一致）
+   全屏 SVG 不在 .mermaid-container 内，需要独立规则
+   ═══════════════════════════════════════════════════════ */
+
+/* 全屏 - SVG 画布级背景 rect 修正 */
+.mermaid-fullscreen-container svg > rect:first-child {
+  fill: #f8fafc !important;
+}
+/* 全屏 - SVG 文本可见性 */
+.mermaid-fullscreen-container svg foreignObject,
+.mermaid-fullscreen-container svg foreignObject div,
+.mermaid-fullscreen-container svg foreignObject p,
+.mermaid-fullscreen-container svg foreignObject span {
+  color: #333 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.mermaid-fullscreen-container svg text {
+  fill: #333;
+  color: #333;
+}
+.mermaid-fullscreen-container .edgeLabel,
+.mermaid-fullscreen-container .edgeLabel p {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #333;
+}
+.mermaid-fullscreen-container .labelBkg {
+  background: transparent !important;
+}
+.mermaid-fullscreen-container code,
+.mermaid-fullscreen-container svg code {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: inherit !important;
+  font-size: inherit !important;
+}
+.mermaid-fullscreen-container .node rect,
+.mermaid-fullscreen-container .node polygon,
+.mermaid-fullscreen-container .node path,
+.mermaid-fullscreen-container .cluster rect,
+.mermaid-fullscreen-container .cluster path,
+.mermaid-fullscreen-container .subgraph rect,
+.mermaid-fullscreen-container .subgraph path {
+  rx: 8;
+  ry: 8;
+}
+/* 全屏 - 日间模式深色填充覆盖 */
+.mermaid-fullscreen-container svg rect[fill="#000"],
+.mermaid-fullscreen-container svg rect[fill="#000000"],
+.mermaid-fullscreen-container svg rect[fill="black"],
+.mermaid-fullscreen-container svg rect[fill="#1f2020"],
+.mermaid-fullscreen-container svg rect[fill="#1f1f1f"],
+.mermaid-fullscreen-container svg rect[fill="#0d0d0d"],
+.mermaid-fullscreen-container svg rect[fill="#222"],
+.mermaid-fullscreen-container svg rect[fill="#333"],
+.mermaid-fullscreen-container svg rect[fill="#111"],
+.mermaid-fullscreen-container svg path[fill="#000"],
+.mermaid-fullscreen-container svg path[fill="#000000"],
+.mermaid-fullscreen-container svg path[fill="black"],
+.mermaid-fullscreen-container svg path[fill="#1f2020"],
+.mermaid-fullscreen-container svg path[fill="#1f1f1f"],
+.mermaid-fullscreen-container svg path[fill="#222"],
+.mermaid-fullscreen-container svg path[fill="#333"],
+.mermaid-fullscreen-container svg polygon[fill="#000"],
+.mermaid-fullscreen-container svg polygon[fill="#000000"],
+.mermaid-fullscreen-container svg polygon[fill="black"] {
+  fill: #dbeafe !important;
+}
+/* 全屏 - task/section/period/event 图形背景 */
+.mermaid-fullscreen-container svg .task rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg .task path:not([style*="fill"]),
+.mermaid-fullscreen-container svg .section rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg .section path:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="period"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="period"] path:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="event"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="event"] path:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="task"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="task"] path:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="section"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg g[class*="section"] path:not([style*="fill"]),
+.mermaid-fullscreen-container svg [class*="timeline"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg [class*="timeline"] path:not([style*="fill"]),
+.mermaid-fullscreen-container svg [class*="gantt"] rect:not([style*="fill"]),
+.mermaid-fullscreen-container svg [class*="gantt"] path:not([style*="fill"]) {
+  fill: #dbeafe !important;
+  stroke: #93c5fd !important;
+}
+/* 全屏 - 文字颜色 */
+.mermaid-fullscreen-container svg .taskText,
+.mermaid-fullscreen-container svg .sectionTitle,
+.mermaid-fullscreen-container svg g[class*="period"] text,
+.mermaid-fullscreen-container svg g[class*="event"] text,
+.mermaid-fullscreen-container svg g[class*="task"] text,
+.mermaid-fullscreen-container svg g[class*="section"] text,
+.mermaid-fullscreen-container svg .taskText text,
+.mermaid-fullscreen-container svg .sectionTitle text,
+.mermaid-fullscreen-container svg [class*="timeline"] text,
+.mermaid-fullscreen-container svg [class*="gantt"] text {
+  fill: #1e293b !important;
+  color: #1e293b !important;
+}
+/* 全屏 - 线条与箭头 */
+.mermaid-fullscreen-container svg line[stroke="#000"],
+.mermaid-fullscreen-container svg line[stroke="#000000"],
+.mermaid-fullscreen-container svg line[stroke="black"] {
+  stroke: #64748b !important;
+}
+.mermaid-fullscreen-container svg path[fill="none"][stroke="#000"],
+.mermaid-fullscreen-container svg path[fill="none"][stroke="#000000"],
+.mermaid-fullscreen-container svg path[fill="none"][stroke="black"] {
+  stroke: #64748b !important;
+}
+.mermaid-fullscreen-container svg marker path[fill="#000"],
+.mermaid-fullscreen-container svg marker path[fill="#000000"],
+.mermaid-fullscreen-container svg marker path[fill="black"],
+.mermaid-fullscreen-container svg marker polygon[fill="#000"],
+.mermaid-fullscreen-container svg marker polygon[fill="#000000"],
+.mermaid-fullscreen-container svg marker polygon[fill="black"] {
+  fill: #64748b !important;
+}
+.mermaid-fullscreen-container svg marker path[stroke="#000"],
+.mermaid-fullscreen-container svg marker path[stroke="#000000"],
+.mermaid-fullscreen-container svg marker path[stroke="black"] {
+  stroke: #64748b !important;
+}
+
+/* 全屏 - 暗色模式覆盖 */
+[data-theme="dark"] .mermaid-fullscreen-container svg > rect:first-child {
+  fill: #1e1e2e !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg foreignObject,
+[data-theme="dark"] .mermaid-fullscreen-container svg foreignObject div {
+  color: #d4d4d4 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg text {
+  fill: #d4d4d4;
+  color: #d4d4d4;
+}
+[data-theme="dark"] .mermaid-fullscreen-container .edgeLabel,
+[data-theme="dark"] .mermaid-fullscreen-container .edgeLabel p {
+  color: #d4d4d4;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg rect[fill="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg rect[fill="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg rect[fill="black"],
+[data-theme="dark"] .mermaid-fullscreen-container svg rect[fill="#1f2020"],
+[data-theme="dark"] .mermaid-fullscreen-container svg rect[fill="#1f1f1f"],
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="black"],
+[data-theme="dark"] .mermaid-fullscreen-container svg polygon[fill="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg polygon[fill="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg polygon[fill="black"] {
+  fill: #3b4252 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg .task rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg .task path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg .section rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg .section path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="period"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="period"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="event"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="event"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="task"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="task"] path:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="section"] rect:not([style*="fill"]),
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="section"] path:not([style*="fill"]) {
+  fill: #3b4252 !important;
+  stroke: #4c566a !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg .taskText,
+[data-theme="dark"] .mermaid-fullscreen-container svg .sectionTitle,
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="period"] text,
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="event"] text,
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="task"] text,
+[data-theme="dark"] .mermaid-fullscreen-container svg g[class*="section"] text,
+[data-theme="dark"] .mermaid-fullscreen-container svg .taskText text,
+[data-theme="dark"] .mermaid-fullscreen-container svg .sectionTitle text,
+[data-theme="dark"] .mermaid-fullscreen-container svg [class*="timeline"] text,
+[data-theme="dark"] .mermaid-fullscreen-container svg [class*="gantt"] text {
+  fill: #e5e9f0 !important;
+  color: #e5e9f0 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg line[stroke="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg line[stroke="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg line[stroke="black"] {
+  stroke: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="none"][stroke="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="none"][stroke="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg path[fill="none"][stroke="black"] {
+  stroke: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[fill="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[fill="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[fill="black"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker polygon[fill="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker polygon[fill="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker polygon[fill="black"] {
+  fill: #94a3b8 !important;
+}
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[stroke="#000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[stroke="#000000"],
+[data-theme="dark"] .mermaid-fullscreen-container svg marker path[stroke="black"] {
+  stroke: #94a3b8 !important;
 }

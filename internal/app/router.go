@@ -238,6 +238,7 @@ func MainRegister(router *gin.Engine) {
 
 	// 全局数据库搜索
 	routerGroup.GET("/search/objects", search.SearchObjects)
+	routerGroup.GET("/search/objects/batch", search.SearchObjectsBatch)
 	routerGroup.GET("/search/data", search.SearchData)
 	routerGroup.GET("/search/all", search.SearchAll)
 	routerGroup.GET("/search/tables", search.GetSearchTables)
@@ -287,10 +288,10 @@ func MainRegister(router *gin.Engine) {
 			}
 		}
 		jsonutil.WriteJson(c.Writer, gin.H{
-				"status":  status,
-				"db":      dbStatus,
-				"version": version.Version,
-			})
+			"status":  status,
+			"db":      dbStatus,
+			"version": version.Version,
+		})
 	})
 
 	if embeddedAssetsFS != nil {

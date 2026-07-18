@@ -13,12 +13,12 @@
       <el-table-column prop="rowsExamined" label="扫描行数" width="110" resizable />
       <el-table-column prop="lastSeen" label="最后出现" width="160" resizable show-overflow-tooltip />
     </el-table>
-    <el-empty v-if="!loading && list.length === 0" description="暂无慢查询数据（可能未启用 performance_schema）" :image-size="60" />
+    <el-empty v-if="!loading && list.length === 0" :description="emptyDesc" :image-size="60" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getSlowQueries } from '@/api/conn'
 import { handleError } from '@/utils/errorHandler'
 
@@ -39,14 +39,19 @@ const props = defineProps<{
 const loading = ref(false)
 const list = ref<SlowRow[]>([])
 const loaded = ref(false)
+const reason = ref('')
+
+const emptyDesc = computed(() => reason.value || '暂无慢查询数据')
 
 async function load() {
   if (!props.connId) return
   loading.value = true
   try {
     const res = await getSlowQueries(props.connId, 20)
-    // 后端返回 { queries: [...], count, supported }，取 queries 数组
-    list.value = (res.data?.data?.queries || []) as SlowRow[]
+    // 后端返回 { queries: [...], count, supported, reason? }，取 queries 数组
+    const data = res.data?.data
+    list.value = (data?.queries || []) as SlowRow[]
+    reason.value = data?.reason || ''
   } catch (e) {
     handleError(e, '慢查询分析')
   } finally {

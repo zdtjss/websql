@@ -351,52 +351,40 @@ func GetProcesses(c *gin.Context) {
 	processes := make([]ProcessInfo, 0)
 
 	if dbType == "mysql" || dbType == "mariadb" {
-		rows, err := conn.Queryx("SHOW FULL PROCESSLIST")
+		type processRow struct {
+			Id      int64   `db:"Id"`
+			User    *string `db:"User"`
+			Host    *string `db:"Host"`
+			Db      *string `db:"db"`
+			Command *string `db:"Command"`
+			Time    int64   `db:"Time"`
+			State   *string `db:"State"`
+			Info    *string `db:"Info"`
+		}
+		var rows []processRow
+		err := conn.Select(&rows, "SHOW FULL PROCESSLIST")
 		if err != nil {
 			logger.PrintErrf("获取进程列表失败", err)
 			response.WriteOK(c, map[string]any{"processes": processes, "count": 0})
 			return
 		}
-		defer rows.Close()
-
-		cols, _ := rows.Columns()
-		for rows.Next() {
-			vals := make([]any, len(cols))
-			valPtrs := make([]any, len(cols))
-			for i := range vals {
-				valPtrs[i] = &vals[i]
+		deref := func(p *string) string {
+			if p != nil {
+				return *p
 			}
-			if err := rows.Scan(valPtrs...); err != nil {
-				log.Printf("扫描行失败: %v", err)
-				continue
-			}
-
-			p := ProcessInfo{}
-			for i, col := range cols {
-				val := ""
-				if vals[i] != nil {
-					val = fmt.Sprintf("%v", vals[i])
-				}
-				switch strings.ToLower(col) {
-				case "id":
-					fmt.Sscanf(val, "%d", &p.Id)
-				case "user":
-					p.User = val
-				case "host":
-					p.Host = val
-				case "db":
-					p.Db = val
-				case "command":
-					p.Command = val
-				case "time":
-					fmt.Sscanf(val, "%d", &p.Time)
-				case "state":
-					p.State = val
-				case "info":
-					p.Info = val
-				}
-			}
-			processes = append(processes, p)
+			return ""
+		}
+		for _, r := range rows {
+			processes = append(processes, ProcessInfo{
+				Id:      int(r.Id),
+				User:    deref(r.User),
+				Host:    deref(r.Host),
+				Db:      deref(r.Db),
+				Command: deref(r.Command),
+				Time:    int(r.Time),
+				State:   deref(r.State),
+				Info:    deref(r.Info),
+			})
 		}
 	} else if dbType == "oracle" {
 		rows, err := conn.Queryx("SELECT sid, serial#, username, status, machine, program FROM v$session WHERE type!='BACKGROUND'")
@@ -840,45 +828,63 @@ type SlowQueryInfo struct {
 func GetSlowQueries(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	dbConn := conn.GetConn(connId, authorization)
+	if dbConn == nil {
+		response.WriteErr(c, 200, 500, "数据库连接不可用")
+		return
+	}
+	dbType := dbConn.DriverName()
 
 	limit := parseLimit(c.Query("limit"), 20)
 	queries := make([]SlowQueryInfo, 0)
+	supported := false
+	reason := ""
 
 	if dbType == "mysql" || dbType == "mariadb" {
-		type slowRow struct {
-			DigestText      string  `db:"DIGEST_TEXT"`
-			AvgTimerWait    int64   `db:"AVG_TIMER_WAIT"`
-			CountStar       int64   `db:"COUNT_STAR"`
-			SumRowsExamined int64   `db:"SUM_ROWS_EXAMINED"`
-			LastSeen        *string `db:"LAST_SEEN"`
-		}
-		var rows []slowRow
-		// performance_schema 可能被禁用，查询失败仅记录日志返回空
-		err := conn.Select(&rows, `SELECT DIGEST_TEXT, AVG_TIMER_WAIT, COUNT_STAR, SUM_ROWS_EXAMINED, LAST_SEEN
-			FROM performance_schema.events_statements_summary_by_digest
-			WHERE DIGEST_TEXT IS NOT NULL
-			ORDER BY AVG_TIMER_WAIT DESC
-			LIMIT ?`, limit)
-		if err != nil {
-			logger.PrintErrf("获取慢查询摘要失败（performance_schema 可能未启用）", err)
+		supported = true
+		// 先诊断 performance_schema 是否可用
+		var psEnabled int
+		diagErr := dbConn.Get(&psEnabled, "SELECT COUNT(*) FROM performance_schema.setup_consumers WHERE NAME = 'events_statements_summary_by_digest' AND ENABLED = 'YES'")
+		if diagErr != nil {
+			reason = "performance_schema 不可用或当前用户无 SELECT 权限，请检查：1) performance_schema 是否启用（SHOW VARIABLES LIKE 'performance_schema'）；2) 当前用户是否拥有 performance_schema 的 SELECT 权限（GRANT SELECT ON performance_schema.* TO user）"
+			logger.PrintErrf("performance_schema 诊断失败", diagErr)
+		} else if psEnabled == 0 {
+			reason = "performance_schema 已启用但 events_statements_summary_by_digest 消费者未开启，请执行：UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_statements_summary_by_digest'"
 		} else {
-			for _, r := range rows {
-				last := ""
-				if r.LastSeen != nil {
-					last = *r.LastSeen
+			type slowRow struct {
+				DigestText      string  `db:"DIGEST_TEXT"`
+				AvgTimerWait    int64   `db:"AVG_TIMER_WAIT"`
+				CountStar       int64   `db:"COUNT_STAR"`
+				SumRowsExamined int64   `db:"SUM_ROWS_EXAMINED"`
+				LastSeen        *string `db:"LAST_SEEN"`
+			}
+			var rows []slowRow
+			err := dbConn.Select(&rows, `SELECT DIGEST_TEXT, AVG_TIMER_WAIT, COUNT_STAR, SUM_ROWS_EXAMINED, LAST_SEEN
+				FROM performance_schema.events_statements_summary_by_digest
+				WHERE DIGEST_TEXT IS NOT NULL
+				ORDER BY AVG_TIMER_WAIT DESC
+				LIMIT ?`, limit)
+			if err != nil {
+				reason = "查询 performance_schema.events_statements_summary_by_digest 失败"
+				logger.PrintErrf("获取慢查询摘要失败", err)
+			} else {
+				for _, r := range rows {
+					last := ""
+					if r.LastSeen != nil {
+						last = *r.LastSeen
+					}
+					queries = append(queries, SlowQueryInfo{
+						DigestText:   r.DigestText,
+						AvgMs:        float64(r.AvgTimerWait) / 1e9, // 皮秒 → 毫秒
+						ExecCount:    r.CountStar,
+						RowsExamined: r.SumRowsExamined,
+						LastSeen:     last,
+					})
 				}
-				queries = append(queries, SlowQueryInfo{
-					DigestText:   r.DigestText,
-					AvgMs:        float64(r.AvgTimerWait) / 1e9, // 皮秒 → 毫秒
-					ExecCount:    r.CountStar,
-					RowsExamined: r.SumRowsExamined,
-					LastSeen:     last,
-				})
 			}
 		}
 	} else if dbType == "oracle" {
+		supported = true
 		type sqlRow struct {
 			SQLID       string  `db:"sql_id"`
 			SQLText     *string `db:"sql_text"`
@@ -887,11 +893,12 @@ func GetSlowQueries(c *gin.Context) {
 		}
 		var rows []sqlRow
 		// limit 已在 parseLimit 钳制为 [1,100] 整数，内联安全；go-ora 占位符约定不一，避免 bind 参数
-		err := conn.Select(&rows, fmt.Sprintf(`SELECT * FROM (
+		err := dbConn.Select(&rows, fmt.Sprintf(`SELECT * FROM (
 			SELECT sql_id, sql_text, elapsed_time, executions
 			FROM v$sql ORDER BY elapsed_time DESC
 		) WHERE ROWNUM <= %d`, limit))
 		if err != nil {
+			reason = "查询 v$sql 失败"
 			logger.PrintErrf("获取 Oracle 慢查询失败", err)
 		} else {
 			for _, r := range rows {
@@ -909,11 +916,15 @@ func GetSlowQueries(c *gin.Context) {
 		}
 	}
 
-	response.WriteOK(c, map[string]any{
+	result := map[string]any{
 		"queries":   queries,
 		"count":     len(queries),
-		"supported": dbType == "mysql" || dbType == "mariadb" || dbType == "oracle",
-	})
+		"supported": supported,
+	}
+	if reason != "" {
+		result["reason"] = reason
+	}
+	response.WriteOK(c, result)
 }
 
 // TopTableInfo 表统计信息

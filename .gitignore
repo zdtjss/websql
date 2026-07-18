@@ -35,8 +35,8 @@ nway.s3db
 logs/
 
 # Runtime data
-data/
-exports/
+/data
+/exports
 backups/
 screenshots/
 __pycache__/

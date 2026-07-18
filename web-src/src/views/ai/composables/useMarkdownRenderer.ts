@@ -53,7 +53,7 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
 
   // ── 主题切换：切换 mermaid 主题并清空所有渲染缓存 ──
   watch(currentTheme, async (theme) => {
-    await switchMermaidTheme(theme === 'dark' ? 'dark' : 'default')
+    await switchMermaidTheme(theme === 'dark' ? 'dark' : 'light')
     clearMermaidSvgCache()
     chatHistory.value.forEach((msg) => {
       msg._renderedHtml = null
@@ -93,18 +93,30 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
           const token = tokens[idx]
           const info = token.info ? token.info.trim().toLowerCase() : ''
           if (info === 'mermaid') {
+            // 注意：不能在此处使用 svgCache 命中分支返回缓存的 SVG HTML。
+            // 原因：本函数返回的 HTML 会经过 sanitizeHtml (DOMPurify)，
+            // 其配置 FORBID_TAGS: ['script', 'style'] 会移除 mermaid SVG 中的 <style> 标签。
+            // xychart-beta / pie 等图表的 SVG 高度依赖 <style> 定义字体、颜色、动画、布局，
+            // 移除后图表样式会严重错乱，表现为"不能渲染"。
+            // 因此统一返回 data-mermaid-processed="false" 占位符，
+            // 由 renderSingleMermaid 直接 el.innerHTML 注入缓存（绕过 sanitizeHtml）。
+            //
+            // 另外，data-mermaid-source 属性值必须使用 base64 编码（而非 HTML 实体转义）。
+            // 原因：DOMPurify 会检测属性值中的 <br/>、--> 等模式（即使已转义为
+            // &lt;br/&gt;、--&gt;，DOMPurify 解析属性时会先解码实体再判断），并直接移除
+            // 整个 data-mermaid-source 属性，导致 renderSingleMermaid 取不到源码，
+            // graph TD/LR、xychart-beta 等含 <br/> 或 --> 的图表无法渲染。
+            // base64 为纯 ASCII，DOMPurify 不会破坏。
             const source = token.content.trim()
-            const svgCache = getMermaidSvgCache()
             const id = getNextMermaidId()
-            if (svgCache.has(source)) {
-              return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-processed="true">${svgCache.get(source)}</div>`
-            }
+            let encodedSource = ''
+            try { encodedSource = btoa(encodeURIComponent(source)) } catch (_) { /* ignore */ }
             const escaped = token.content
               .replace(/&/g, '&amp;')
               .replace(/</g, '&lt;')
               .replace(/>/g, '&gt;')
               .replace(/"/g, '&quot;')
-            return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${escaped}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
+            return `<div class="mermaid-container" data-mermaid-id="${id}" data-mermaid-source="${encodedSource}" data-mermaid-processed="false"><pre class="mermaid-source-preview"><code>📊 Mermaid\n${escaped}</code></pre></div>`
           }
           const lang = info || ''
           const rawCode = token.content
@@ -152,36 +164,160 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 
+  /**
+   * Mermaid v11.16 支持的所有图表类型关键字（用于自动检测 / 校验）
+   * 包含: flowchart, graph, sequence, class, state, er, gantt, pie, gitGraph,
+   *       journey, mindmap, timeline, quadrantChart, sankey, xychart-beta,
+   *       block-beta, packet-beta, architecture-beta, C4Context/C4Container/
+   *       C4Component/C4Deployment/C4Dynamic, requirement, zenuml, kanban,
+   *       radar-beta, ishikawa(-beta), venn-beta, treemap, wardley-beta,
+   *       swimlane-beta, cynefin-beta, railroad-beta 系列
+   */
+  const MERMAID_SUPPORTED_KEYWORDS = /^(graph\s+(TD|TB|BT|RL|LR)|flowchart\s+(TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|gantt|pie|gitGraph|journey|mindmap|timeline|quadrantChart|sankey-beta|sankey|xychart-beta|xychart|block-beta|packet-beta|architecture-beta|C4Context|C4Container|C4Component|C4Deployment|C4Dynamic|requirementDiagram|requirement|zenuml|kanban|radar-beta|ishikawa(-beta)?|venn-beta|treemap|wardley-beta|swimlane-beta|cynefin-beta|railroad-beta|railroad-ebnf-beta|railroad-abnf-beta|railroad-peg-beta)/m
+
+  /**
+   * AI 可能生成但 Mermaid v11.16 仍不支持的图表类型
+   * 这些类型需要以友好的 fallback 卡片渲染，而非报错
+   */
+  const UNSUPPORTED_DIAGRAM_KEYWORDS = /^(funnel|treeview)/m
+
   /** 自动检测未被 code fence 包裹的 mermaid 代码并包裹 */
   function autoWrapMermaidCode(text: string): string {
     if (!text) return ''
-    if (/```mermaid/i.test(text)) return text
 
-    const mermaidKeywords = /^(graph\s+(TD|TB|BT|RL|LR)|flowchart\s+(TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph|journey|mindmap|timeline|quadrantChart|sankey|xychart|block-beta)/m
-    if (!mermaidKeywords.test(text)) return text
+    // 同时检测支持的和不支持的类型，都作为 mermaid fence 包裹
+    const allKeywords = new RegExp(
+      MERMAID_SUPPORTED_KEYWORDS.source + '|' + UNSUPPORTED_DIAGRAM_KEYWORDS.source, 'm'
+    )
 
-    const match = text.match(mermaidKeywords)
-    if (!match) return text
+    // 如果已经全部包裹在 code fence 中，跳过
+    // 但如果还有未包裹的 mermaid 关键字，继续处理
+    const fenceBlocks: { start: number; end: number }[] = []
+    const fenceRegex = /```[\s\S]*?```/g
+    let fenceMatch: RegExpExecArray | null
+    while ((fenceMatch = fenceRegex.exec(text)) !== null) {
+      fenceBlocks.push({ start: fenceMatch.index, end: fenceMatch.index + fenceMatch[0].length })
+    }
 
-    const startIdx = match.index ?? 0
-    const before = text.substring(0, startIdx).trimEnd()
-    const afterStart = text.substring(startIdx)
+    function isInsideFence(idx: number): boolean {
+      return fenceBlocks.some(b => idx >= b.start && idx < b.end)
+    }
+
+    // 多次迭代处理所有未包裹的 mermaid 代码块
+    let result = text
+    let safetyCounter = 0
+    const MAX_ITERATIONS = 10
+
+    while (safetyCounter++ < MAX_ITERATIONS) {
+      // 重新计算 fence 位置（每次迭代文本可能变化）
+      const currentFences: { start: number; end: number }[] = []
+      const currentFenceRegex = /```[\s\S]*?```/g
+      let cf: RegExpExecArray | null
+      while ((cf = currentFenceRegex.exec(result)) !== null) {
+        currentFences.push({ start: cf.index, end: cf.index + cf[0].length })
+      }
+
+      // 用全局搜索找到第一个不在 fence 内的关键字
+      const globalKw = new RegExp(allKeywords.source, 'gm')
+      let match: RegExpExecArray | null
+      let wrapIdx = -1
+      while ((match = globalKw.exec(result)) !== null) {
+        const mIdx = match.index
+        const inside = currentFences.some(b => mIdx >= b.start && mIdx < b.end)
+        if (!inside) {
+          wrapIdx = mIdx
+          break
+        }
+        // 跳过包含该关键字的 fence
+        const enclosingFence = currentFences.find(b => mIdx >= b.start && mIdx < b.end)
+        if (enclosingFence) {
+          globalKw.lastIndex = enclosingFence.end
+        }
+      }
+
+      if (wrapIdx === -1) break
+      result = wrapSingleMermaidBlock(result, wrapIdx, allKeywords)
+    }
+
+    return result
+  }
+
+  /** 包裹单个位于 startIdx 处的 mermaid 代码块 */
+  function wrapSingleMermaidBlock(text: string, startIdx: number, _allKeywords: RegExp): string {
+    // 如果此关键字前面紧邻有 %%{init:...}%% 指令，将其纳入 mermaid 块
+    let actualStart = startIdx
+    const textBefore = text.substring(0, startIdx).trimEnd()
+    // 查找最近的 %%{init}%% 指令（在 textBefore 末尾）
+    const initEndIdx = textBefore.lastIndexOf('}%%')
+    if (initEndIdx !== -1) {
+      const initStartSearch = textBefore.lastIndexOf('%%{init', initEndIdx)
+      if (initStartSearch !== -1) {
+        // 检查 init 指令和关键字之间只有空白
+        const afterInit = textBefore.substring(initEndIdx + 3) // after '}%%'
+        if (/^\s*$/.test(afterInit)) {
+          // 确保 init 不在已有 fence 内部
+          const betweenFromInit = textBefore.substring(initStartSearch)
+          if (!betweenFromInit.includes('```')) {
+            actualStart = initStartSearch
+          }
+        }
+      }
+    }
+
+    const before = text.substring(0, actualStart).trimEnd()
+    const afterStart = text.substring(actualStart)
 
     const lines = afterStart.split('\n')
     let endLineIdx = lines.length
     let foundEmptyLine = false
+    let consecutiveEmpty = 0
 
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i]
       const trimmedLine = line.trim()
 
+      // 遇到已有的 code fence 标记（来自前一轮包裹）立即停止
+      if (/^```/.test(trimmedLine)) {
+        endLineIdx = i
+        break
+      }
+
       if (trimmedLine === '') {
+        consecutiveEmpty++
         foundEmptyLine = true
+        // 连续两个空行 → 明确的段落分隔
+        if (consecutiveEmpty >= 2) {
+          endLineIdx = i - 1
+          break
+        }
         continue
       }
+      consecutiveEmpty = 0
+
       if (foundEmptyLine) {
-        const isMermaidLine = /^\s+/.test(line) ||
-          /^(style|classDef|click|linkStyle|subgraph|end|%%|class\s)/.test(trimmedLine)
+        // 先检测是否是新的图表起始关键字（优先级最高）
+        const combinedKeywords = new RegExp(
+          MERMAID_SUPPORTED_KEYWORDS.source + '|' + UNSUPPORTED_DIAGRAM_KEYWORDS.source, 'm'
+        )
+        const isNewDiagram = combinedKeywords.test(trimmedLine)
+        if (isNewDiagram) {
+          endLineIdx = i
+          break
+        }
+        // 空行之后的 %% 指令通常是下一个图的 %%{init}%% 而非当前图的注释，
+        // 因此不将 %% 视为 mermaid 延续行，以正确分割相邻图表
+        //
+        // 不将 %% 开头的行视为空行后的延续行：
+        // - %%{init}%% 属于下一个图，由 wrapSingleMermaidBlock 的 actualStart 反向查找关联
+        // - 普通 %% 注释在空行后极少出现在当前图内
+        if (/^%%/.test(trimmedLine)) {
+          endLineIdx = i
+          break
+        }
+        const hasArrowSyntax = /-->|---|==>|\.\-\>|==\.|\|/.test(trimmedLine)
+        const hasNodeBracket = /[\[\]\(\)\{\}]/.test(trimmedLine)
+        const isMermaidKeyword = /^(style|classDef|click|linkStyle|subgraph|end|class\s|section|title|accTitle|accDescr|direction|root)\b/.test(trimmedLine)
+        const isMermaidLine = hasArrowSyntax || hasNodeBracket || isMermaidKeyword
         if (!isMermaidLine) {
           endLineIdx = i
           break
@@ -198,6 +334,106 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     result += '```mermaid\n' + mermaidContent + '\n```'
     if (after) result += '\n\n' + after
     return result
+  }
+
+  /**
+   * 检测 mermaid 源码是否属于不支持的图表类型。
+   * 如果是，返回匹配到的类型名称；否则返回 null。
+   */
+  function detectUnsupportedDiagramType(source: string): string | null {
+    const match = source.match(UNSUPPORTED_DIAGRAM_KEYWORDS)
+    return match ? match[1] : null
+  }
+
+  /** 为不支持的图表类型构建友好的 fallback HTML 卡片 */
+  function buildUnsupportedFallbackHtml(source: string, diagramType: string): string {
+    const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // 提取 title（如果有）
+    const titleMatch = source.match(/(?:^|\n)\s*title\s+"?([^"\n]+)"?/i)
+    const title = titleMatch ? titleMatch[1].trim() : ''
+    // 提取数据行
+    const dataLines = source.split('\n')
+      .filter(line => {
+        const t = line.trim()
+        return t && !t.startsWith('%%') && !UNSUPPORTED_DIAGRAM_KEYWORDS.test(t) && !/^\s*title\s/i.test(t)
+      })
+      .slice(0, 12)
+
+    // 解析 key-value 数据
+    interface DataItem { label: string; value: number; rawValue: string }
+    const items: DataItem[] = []
+    for (const line of dataLines) {
+      const t = line.trim()
+      const kvMatch = t.match(/^"([^"]+)"\s*:\s*(.+)$/)
+      if (kvMatch) {
+        const numVal = parseFloat(kvMatch[2].trim())
+        items.push({ label: kvMatch[1], value: isNaN(numVal) ? 0 : numVal, rawValue: kvMatch[2].trim() })
+      }
+    }
+
+    // 色板（与 mermaid 主色板一致）
+    const colors = ['#4d8fdb', '#7c6bc4', '#3daa7e', '#e8a838', '#d45d8a', '#3db5c4', '#6366f1', '#4abf8a', '#e88838', '#a855f7', '#22bfcf', '#7dc428']
+    const maxVal = Math.max(...items.map(d => d.value), 1)
+
+    // 根据类型选择图标
+    const iconMap: Record<string, string> = { funnel: '🔻', treeview: '🌳' }
+    const icon = iconMap[diagramType] || '📊'
+
+    // 构建可视化漏斗/条形图 HTML
+    let barsHtml = ''
+    if (items.length > 0) {
+      const isFunnel = diagramType === 'funnel'
+      barsHtml = items.map((item, i) => {
+        const pct = maxVal > 0 ? (item.value / maxVal) * 100 : 0
+        const width = isFunnel ? Math.max(pct, 18) : Math.max(pct, 12)
+        const color = colors[i % colors.length]
+        const barStyle = isFunnel
+          ? `width:${width}%;background:${color};border-radius:${6 + i}px;margin:0 auto;`
+          : `width:${width}%;background:linear-gradient(90deg, ${color} 0%, ${color}dd 100%);border-radius:8px;`
+        return `<div class="mermaid-viz-bar-row${isFunnel ? ' funnel' : ''}">` +
+          `<div class="mermaid-viz-bar-label">${item.label.replace(/</g, '&lt;').replace(/<br\/?>/gi, ' ')}</div>` +
+          `<div class="mermaid-viz-bar-track">` +
+            `<div class="mermaid-viz-bar-fill" style="${barStyle}">` +
+              `<span class="mermaid-viz-bar-value">${item.rawValue}</span>` +
+            `</div>` +
+          `</div>` +
+        `</div>`
+      }).join('')
+    } else {
+      // 没有可解析的 key-value 数据，显示原始行
+      barsHtml = dataLines.map(line => {
+        const t = line.trim()
+        return `<div class="mermaid-viz-bar-row"><div class="mermaid-viz-bar-label" style="flex:1">${t.replace(/</g, '&lt;')}</div></div>`
+      }).join('')
+    }
+
+    return `<div class="mermaid-content-wrapper">` +
+      `<div class="mermaid-unsupported-card">` +
+        `<div class="mermaid-unsupported-header">` +
+          `<span class="mermaid-unsupported-icon">${icon}</span>` +
+          `<div class="mermaid-unsupported-header-text">` +
+            `<span class="mermaid-unsupported-type">${diagramType.charAt(0).toUpperCase() + diagramType.slice(1)} Chart</span>` +
+            (title ? `<span class="mermaid-unsupported-title">${title.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>` : '') +
+          `</div>` +
+        `</div>` +
+        `<div class="mermaid-unsupported-body">` +
+          `<div class="mermaid-viz-bars">${barsHtml}</div>` +
+        `</div>` +
+        `<div class="mermaid-unsupported-notice">` +
+          `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v.01M12 8v4"/></svg>` +
+          `<span>Mermaid v11 暂不支持 ${diagramType} 类型，数据以可视化形式呈现</span>` +
+        `</div>` +
+      `</div>` +
+      `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
+    `</div>` +
+    `<div class="mermaid-toolbar">` +
+      `<button class="mermaid-tb-btn" data-action="toggle-source" title="源码/图表">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>` +
+      `</button>` +
+      `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+      `</button>` +
+    `</div>`
   }
 
   /** Markdown 预处理：mermaid 自动包裹、LaTeX 简化、链接处理等 */
@@ -281,6 +517,224 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     return msg._renderedHtml
   }
 
+  /** 后置修正 mermaid SVG 中的深色矩形填充 + 注入美化滤镜 */
+  function patchMermaidSvgColors(container: HTMLElement): void {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const lineColor = isDark ? '#7ba4e8' : '#4d8fdb'
+    const textColor = isDark ? '#e8ecf4' : '#1a2332'
+    // ── 颜色检测辅助函数 ──
+    function isDarkColor(color: string, threshold: number = 60): boolean {
+      if (!color || color === 'none' || color === 'transparent') return false
+      if (/^(#000|#000000|black|#1f1f1f|#1f2020|#0d0d0d|#111|#222|#333|#1a1a2e|#2c3e50|#34495e|#16213e)$/i.test(color)) return true
+      const hex6 = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+      if (hex6) {
+        const r = parseInt(hex6[1], 16), g = parseInt(hex6[2], 16), b = parseInt(hex6[3], 16)
+        return r <= threshold && g <= threshold && b <= threshold
+      }
+      const hex3 = color.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i)
+      if (hex3) {
+        const r = parseInt(hex3[1] + hex3[1], 16), g = parseInt(hex3[2] + hex3[2], 16), b = parseInt(hex3[3] + hex3[3], 16)
+        return r <= threshold && g <= threshold && b <= threshold
+      }
+      const rgbMatch = color.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
+      if (rgbMatch) return (+rgbMatch[1] <= threshold && +rgbMatch[2] <= threshold && +rgbMatch[3] <= threshold)
+      return false
+    }
+    function isDarkFill(fill: string): boolean { return isDarkColor(fill, 60) }
+    function hasUserFill(el: Element): boolean {
+      const attrFill = el.getAttribute('fill') || ''
+      if (attrFill && !isDarkFill(attrFill) && attrFill !== 'none' && attrFill !== 'transparent') return true
+      return !!(el as SVGElement).style?.fill
+    }
+    function hasUserStroke(el: Element): boolean { return !!(el as SVGElement).style?.stroke }
+
+    const svgEl = container.querySelector('svg')
+    if (!svgEl) return
+
+    const bgColor = isDark ? '#181825' : '#ffffff'
+    const nodeFill = isDark ? '#2a2d42' : '#e8f1fd'
+    const nodeStroke = isDark ? '#6e9cf5' : '#a8ccf5'
+    const taskFill = isDark ? '#5b8def' : '#e8f1fd'
+    const gridColor = isDark ? '#2a2d42' : '#eef3f9'
+
+    // ── 注入 SVG <defs>：阴影滤镜 ──
+    const defsId = 'mermaid-elegant-defs'
+    if (!svgEl.querySelector(`#${defsId}`)) {
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+      defs.id = defsId
+      // 节点柔和阴影
+      const shadowColor = isDark ? 'rgba(0,0,0,0.35)' : 'rgba(77,143,219,0.12)'
+      defs.innerHTML = `
+        <filter id="mermaid-node-shadow" x="-8%" y="-8%" width="116%" height="124%">
+          <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="${shadowColor}" flood-opacity="1"/>
+        </filter>
+        <filter id="mermaid-glow" x="-10%" y="-10%" width="120%" height="120%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur"/>
+          <feFlood flood-color="${isDark ? '#5b8def' : '#4d8fdb'}" flood-opacity="${isDark ? '0.2' : '0.1'}" result="color"/>
+          <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+          <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>`
+      svgEl.insertBefore(defs, svgEl.firstElementChild)
+    }
+
+    // ── 注入画布背景 ──
+    const vb = svgEl.viewBox?.baseVal
+    const bgW = vb?.width || svgEl.clientWidth || 2000
+    const bgH = vb?.height || svgEl.clientHeight || 800
+    const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    bgRect.setAttribute('x', '0')
+    bgRect.setAttribute('y', '0')
+    bgRect.setAttribute('width', String(bgW))
+    bgRect.setAttribute('height', String(bgH))
+    bgRect.style.setProperty('fill', bgColor, 'important')
+    bgRect.setAttribute('class', 'mermaid-canvas-bg')
+    const firstChild = svgEl.firstElementChild
+    if (firstChild && firstChild.tagName.toLowerCase() === 'defs') {
+      firstChild.insertAdjacentElement('afterend', bgRect)
+    } else if (firstChild) {
+      svgEl.insertBefore(bgRect, firstChild)
+    } else {
+      svgEl.appendChild(bgRect)
+    }
+
+    // ── 注入 CSS 规则覆盖深色遗留 + 添加圆角/阴影 ──
+    const overrideCss = `
+      .section0, .section1, .section2, .section3, .section4,
+      .section5, .section6, .section7, .section8, .section9,
+      .section--alt, .section-alt {
+        fill: ${taskFill} !important; opacity: 0.6; }
+      .task .section-bg, .task rect { fill: ${taskFill} !important; stroke: ${nodeStroke} !important; rx: 6; ry: 6; }
+      .grid line, .grid path { stroke: ${gridColor} !important; }
+      .today { stroke: #e85d6f !important; stroke-width: 2; }
+      .node rect, .node circle, .node ellipse, .node polygon { rx: 10; ry: 10; }
+      .cluster rect { rx: 12; ry: 12; stroke-dasharray: 6 3; }
+      .edgePath path { stroke-linecap: round; }
+      text { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; }
+    `
+    const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style')
+    styleEl.textContent = overrideCss
+    svgEl.insertBefore(styleEl, svgEl.firstElementChild)
+
+    // ── 修正画布级深色背景 rect ──
+    const rootRects = svgEl.querySelectorAll(':scope > rect:not(.mermaid-canvas-bg)')
+    const svgWidth = vb?.width || svgEl.clientWidth || 0
+    const svgHeight = vb?.height || svgEl.clientHeight || 0
+    rootRects.forEach((rect) => {
+      const w = parseFloat(rect.getAttribute('width') || '0')
+      const h = parseFloat(rect.getAttribute('height') || '0')
+      const isCanvasBg = (w >= svgWidth * 0.9 && h >= svgHeight * 0.9) || (w >= 500 && h >= 100)
+      if (!isCanvasBg) return
+      const attrFill = rect.getAttribute('fill') || ''
+      const styleFill = (rect as SVGElement).style.fill || ''
+      let effectiveFill = styleFill || attrFill
+      if (!effectiveFill || effectiveFill === 'none') {
+        try { const c = getComputedStyle(rect).fill; if (c && c !== 'none' && c !== 'rgba(0, 0, 0, 0)') effectiveFill = c } catch { /* */ }
+      }
+      if (effectiveFill && isDarkColor(effectiveFill, 120)) {
+        ;(rect as SVGElement).style.setProperty('fill', bgColor, 'important')
+      }
+    })
+
+    // ── 通用图形元素深色修正 + 应用阴影滤镜 ──
+    const shapeEls = container.querySelectorAll('svg rect, svg path, svg polygon')
+    shapeEls.forEach((el) => {
+      if (hasUserFill(el)) return
+      const attrFill = el.getAttribute('fill') || ''
+      if (!attrFill || attrFill === 'none') return
+      if (isDarkFill(attrFill)) {
+        el.setAttribute('fill', nodeFill)
+        if (!hasUserStroke(el)) {
+          const curStroke = el.getAttribute('stroke') || ''
+          if (!curStroke || isDarkFill(curStroke)) el.setAttribute('stroke', nodeStroke)
+        }
+      }
+    })
+
+    // ── 为 flowchart 节点添加阴影 ──
+    const nodeShapes = container.querySelectorAll('svg .node rect, svg .node polygon, svg .node circle, svg .node ellipse')
+    nodeShapes.forEach((el) => {
+      if (!el.getAttribute('filter')) {
+        el.setAttribute('filter', 'url(#mermaid-node-shadow)')
+      }
+    })
+
+    // ── Gantt/Timeline 专用修正 ──
+    const ganttSelectors = 'svg .task rect, svg .task path, svg .section rect, svg .section path, svg g[class*="task"] rect, svg g[class*="task"] path, svg g[class*="section"] rect, svg g[class*="section"] path, svg g[class*="period"] rect, svg g[class*="period"] path, svg g[class*="event"] rect, svg g[class*="event"] path'
+    container.querySelectorAll(ganttSelectors).forEach((el) => {
+      if (hasUserFill(el)) return
+      const svgItem = el as SVGElement
+      const attrFill = el.getAttribute('fill') || ''
+      const styleFill = svgItem.style.fill || ''
+      let effectiveFill = styleFill || attrFill
+      if (!effectiveFill || effectiveFill === 'none') {
+        try { const c = getComputedStyle(el).fill; if (c && c !== 'none') effectiveFill = c } catch { /* */ }
+      }
+      if (effectiveFill && isDarkColor(effectiveFill, 100)) {
+        svgItem.style.setProperty('fill', taskFill, 'important')
+        if (!hasUserStroke(el)) svgItem.style.setProperty('stroke', nodeStroke, 'important')
+      }
+    })
+
+    // ── 线条颜色修正 ──
+    container.querySelectorAll('svg line').forEach((el) => {
+      if (hasUserStroke(el)) return
+      const stroke = el.getAttribute('stroke') || ''
+      const styleStroke = (el as SVGElement).style.stroke || ''
+      const effective = styleStroke || stroke
+      if (effective && isDarkFill(effective)) {
+        if (styleStroke) (el as SVGElement).style.stroke = lineColor
+        else el.setAttribute('stroke', lineColor)
+      }
+    })
+
+    // ── Marker 箭头颜色 ──
+    container.querySelectorAll('svg marker path, svg marker polygon, svg marker polyline').forEach((el) => {
+      if (hasUserFill(el)) return
+      const fill = el.getAttribute('fill') || ''
+      const stroke = el.getAttribute('stroke') || ''
+      if (isDarkFill(fill)) el.setAttribute('fill', lineColor)
+      if (isDarkFill(stroke) && !hasUserStroke(el)) el.setAttribute('stroke', lineColor)
+      const sf = (el as SVGElement).style.fill
+      if (sf && isDarkFill(sf)) (el as SVGElement).style.fill = lineColor
+      const ss = (el as SVGElement).style.stroke
+      if (ss && isDarkFill(ss) && !hasUserStroke(el)) (el as SVGElement).style.stroke = lineColor
+    })
+
+    // ── Path 元素深色 stroke（线条类） ──
+    container.querySelectorAll('svg path').forEach((el) => {
+      if (hasUserStroke(el)) return
+      const fill = el.getAttribute('fill') || ''
+      const stroke = el.getAttribute('stroke') || ''
+      if ((!fill || fill === 'none') && stroke && isDarkFill(stroke)) el.setAttribute('stroke', lineColor)
+      const ss = (el as SVGElement).style.stroke
+      if ((!fill || fill === 'none') && ss && isDarkFill(ss)) (el as SVGElement).style.stroke = lineColor
+    })
+
+    // ── 文字颜色统一修正（跳过有用户自定义 classDef 样式的节点） ──
+    const nodeTextSelectors = 'svg .node text, svg .node foreignObject div, svg g[class*="period"] text, svg g[class*="period"] foreignObject div, svg g[class*="event"] text, svg g[class*="event"] foreignObject div, svg g[class*="task"] text, svg g[class*="task"] foreignObject div, svg g[class*="section"] text, svg g[class*="section"] foreignObject div, svg [class*="timeline"] text, svg [class*="timeline"] foreignObject div, svg [class*="gantt"] text, svg [class*="gantt"] foreignObject div, svg .taskText, svg .taskText text, svg .sectionTitle, svg .sectionTitle text'
+    container.querySelectorAll(nodeTextSelectors).forEach((el) => {
+      // 检测该文本所属的节点是否有用户自定义填充色（classDef 通过 fill 属性或 style 注入）
+      // 如果有，说明用户指定了 color，不应覆盖
+      const parentNode = el.closest('.node, g[class*="task"], g[class*="section"], g[class*="period"], g[class*="event"]')
+      if (parentNode) {
+        const shape = parentNode.querySelector('rect, polygon, circle, ellipse, path')
+        if (shape) {
+          const svgShape = shape as SVGElement
+          // 检查 inline style fill
+          if (svgShape.style?.fill) return
+          // 检查 fill 属性（mermaid 通过 classDef 设置的颜色通常作为属性而非 inline style）
+          const attrFill = shape.getAttribute('fill') || ''
+          // 排除 mermaid 默认填充色，仅跳过用户自定义颜色
+          const defaultFills = ['#e8e8e8', '#f4f4f4', '#ffffff', '#fff', 'white', '#eee', '#f9f9f9', '#cccccc', '#ccc']
+          if (attrFill && !defaultFills.includes(attrFill.toLowerCase())) return
+        }
+      }
+      const t = el as SVGElement | HTMLElement
+      t.style.color = textColor
+      t.style.fill = textColor
+    })
+  }
+
   /** 构造 mermaid 容器的 innerHTML（SVG + 工具栏 + 拖拽手柄） */
   function buildMermaidInnerHtml(svg: string, source: string): string {
     const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -323,6 +777,7 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     const containers = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
     if (containers.length === 0) return
 
+    _mermaidMutating = true
     const CONCURRENCY = 3
     const toRender = Array.from(containers)
     const batches: Element[][] = []
@@ -337,24 +792,75 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     if (scrollAfter && toRender.length > 0) {
       await nextTick()
       if (msgContainer.value) {
-        msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+        const nearBottom = msgContainer.value.scrollHeight - msgContainer.value.scrollTop - msgContainer.value.clientHeight < 80
+        if (nearBottom) {
+          msgContainer.value.scrollTop = msgContainer.value.scrollHeight
+        }
       }
     }
+    // 延迟恢复，确保浏览器合并 DOM 变更
+    nextTick(() => { _mermaidMutating = false })
+  }
+
+  /**
+   * 预处理 mermaid 源码：修正 AI 生成的常见语法问题
+   * - title "xxx" → title xxx（去掉引号，pie 等不接受带引号的 title；xychart-beta 需要保留引号）
+   * - 去除 %%{init:...}%% 中 mermaid 不识别的非法属性
+   */
+  function sanitizeMermaidSource(source: string): string {
+    if (!source) return source
+    let result = source
+    // 去掉 title 行两端的双引号: `title "xxx"` → `title xxx`
+    // xychart-beta 的 title 含特殊字符（括号、~、中文等）时必须保留引号，否则词法解析失败
+    if (!/^xychart(-beta)?\b/m.test(result)) {
+      result = result.replace(/^(\s*title\s+)"([^"]+)"(\s*)$/gm, '$1$2$3')
+    }
+    // mindmap 节点不支持 <br/> 标签，且节点文本中的 ()  [] 会被解析器误认为节点形状语法
+    // （如 "生产管理本部量大(696)但0提交" 中的 (696) 触发 NODE_ID 解析错误）
+    // 统一替换为空格以避免解析错误
+    if (/^mindmap\b/m.test(result)) {
+      result = result.replace(/<br\s*\/?>/gi, ' ')
+      result = result.replace(/[()\[\]]/g, ' ')
+    }
+    return result
   }
 
   /** 渲染单个 mermaid 容器（带 2 次重试，处理动态 import 失败） */
   async function renderSingleMermaid(el: HTMLElement): Promise<void> {
     const id = el.getAttribute('data-mermaid-id')
-    const source = el.getAttribute('data-mermaid-source')
-      ?.replace(/&quot;/g, '"')
-      .replace(/&gt;/g, '>')
-      .replace(/&lt;/g, '<')
-      .replace(/&amp;/g, '&')
+    // data-mermaid-source 为 base64(encodeURIComponent(source)) 编码的源码
+    // （fence 规则中已编码，避免 DOMPurify 移除含 <br/> 或 --> 的属性）
+    const encodedSource = el.getAttribute('data-mermaid-source')
+    let source: string | null = null
+    if (encodedSource) {
+      try {
+        source = decodeURIComponent(atob(encodedSource))
+      } catch (_) {
+        source = null
+      }
+    }
     if (!id || !source) return
-    const trimmed = source.trim()
+    const trimmed = sanitizeMermaidSource(source.trim())
     if (!trimmed || trimmed.length < 5) return
 
     el.setAttribute('data-mermaid-processed', 'true')
+
+    // svgCache 命中：直接注入缓存的 HTML（绕过 sanitizeHtml，保留 <style> 标签）
+    // 注意：fence 规则不再返回缓存 SVG，统一走此路径，避免 DOMPurify 移除 <style>
+    const svgCache = getMermaidSvgCache()
+    if (svgCache.has(trimmed)) {
+      el.innerHTML = svgCache.get(trimmed)
+      return
+    }
+
+    // 检测是否为不支持的图表类型 → 渲染 fallback 卡片
+    const unsupportedType = detectUnsupportedDiagramType(trimmed)
+    if (unsupportedType) {
+      const fallbackHtml = buildUnsupportedFallbackHtml(trimmed, unsupportedType)
+      el.innerHTML = fallbackHtml
+      el.classList.add('mermaid-unsupported')
+      return
+    }
 
     const MAX_RETRIES = 2
     let lastError: unknown = null
@@ -366,9 +872,15 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
         const { svg } = await mermaidLib.render(renderId, trimmed)
         const innerHtml = buildMermaidInnerHtml(svg, source)
         el.innerHTML = innerHtml
-        const svgCache = getMermaidSvgCache()
-        svgCache.set(trimmed, innerHtml)
-        invalidateMermaidMsgCache(trimmed)
+        // 后置修正：强制替换 SVG 中残留的深色矩形填充
+        patchMermaidSvgColors(el)
+        // 更新缓存时也要包含修正后的 HTML
+        const patchedInnerHtml = el.innerHTML
+        svgCache.set(trimmed, patchedInnerHtml)
+        // 不再调用 invalidateMermaidMsgCache：该函数会在每个 mermaid 块渲染成功后
+        // 清空消息的 _renderedHtml 缓存，导致 Vue 下次渲染时重新生成全新 HTML，
+        // 替换掉所有已渲染/待渲染的 mermaid 容器，引发级联重渲染，使大量图表显示为源码。
+        // SVG 缓存 (svgCache) 已确保相同源码不会重复渲染，无需消息级缓存失效。
         return
       } catch (e) {
         lastError = e
@@ -386,9 +898,25 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       }
     }
 
+    // 渲染失败 - 显示友好的错误卡片（含源码 + 复制按钮）
     console.warn('Mermaid render error for source:', trimmed.substring(0, 100), lastError)
     const escapedSource = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    el.innerHTML = `<pre class="mermaid-error"><code>${escapedSource}</code></pre><div class="mermaid-error-hint">⚠️ 图表渲染失败，请刷新页面重试</div>`
+    const errorMsg = lastError ? String((lastError as Error).message || '').substring(0, 120) : '未知错误'
+    el.innerHTML = `<div class="mermaid-content-wrapper">` +
+      `<div class="mermaid-error-card">` +
+        `<div class="mermaid-error-header">` +
+          `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>` +
+          `<span>图表渲染失败</span>` +
+        `</div>` +
+        `<div class="mermaid-error-detail">${errorMsg.replace(/</g, '&lt;')}</div>` +
+        `<pre class="mermaid-source-preview"><code>${escapedSource}</code></pre>` +
+      `</div>` +
+    `</div>` +
+    `<div class="mermaid-toolbar">` +
+      `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
+      `</button>` +
+    `</div>`
   }
 
   /** 清除包含指定 mermaid 源码的消息的渲染缓存 */
@@ -423,10 +951,14 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
   // ── MutationObserver：自动检测新插入的 mermaid 容器并渲染 ──
   let mermaidObserver: MutationObserver | null = null
   let mermaidObserverTimer: ReturnType<typeof setTimeout> | null = null
+  /** 防止 observer 对自身引起的 DOM 变化重复触发 */
+  let _mermaidMutating = false
 
   function setupMermaidObserver(): void {
     if (mermaidObserver) return
     mermaidObserver = new MutationObserver((mutations) => {
+      // 忽略自身引起的 DOM 变化，防止微循环
+      if (_mermaidMutating) return
       let hasNew = false
       for (const mutation of mutations) {
         if (mutation.type === 'childList') {
@@ -453,15 +985,22 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       if (hasNew) {
         if (mermaidObserverTimer) clearTimeout(mermaidObserverTimer)
         mermaidObserverTimer = setTimeout(() => {
-          void doRenderMermaidBlocks(true)
+          _mermaidMutating = true
+          void doRenderMermaidBlocks(true).then(() => {
+            // 渲染完成后恢复自定义高度（仅在有自定义高度时）
+            if (mermaidCustomHeights.size > 0) {
+              reapplyAllMermaidCustomHeights()
+            }
+            // 延迟恢复标记，确保浏览器合并本轮 DOM 变更
+            nextTick(() => { _mermaidMutating = false })
+          })
           mermaidObserverTimer = null
         }, 100)
       }
-      if (mermaidCustomHeights.size > 0) {
-        reapplyAllMermaidCustomHeights()
-      }
     })
-    mermaidObserver.observe(document.body, { childList: true, subtree: true })
+    // 优先监听消息容器，避免全树监听引起的性能问题和文本选择干扰
+    const target = msgContainer.value || document.body
+    mermaidObserver.observe(target, { childList: true, subtree: true })
   }
 
   function teardownMermaidObserver(): void {
@@ -772,6 +1311,10 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
 
     document.body.appendChild(overlay)
     document.body.classList.add('mermaid-fullscreen-active')
+
+    // 全屏 SVG 也需要颜色修正（全屏容器不在 .mermaid-container 内）
+    const fsContainer = overlay.querySelector('.mermaid-fullscreen-container') as HTMLElement
+    if (fsContainer) patchMermaidSvgColors(fsContainer)
 
     const fsContent = overlay.querySelector('.mermaid-fullscreen-content') as HTMLElement
 

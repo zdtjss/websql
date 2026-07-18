@@ -189,10 +189,10 @@ func ExportXlsxBySql(c *gin.Context) {
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
-	queryAndWriteBySql(c, sqlStr, connId, authorization)
+	queryAndWriteBySql(c, sqlStr, schema, filename, connId, authorization)
 }
 
-func queryAndWriteBySql(c *gin.Context, sqlStr string, connId string, authorization string) {
+func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName string, connId string, authorization string) {
 	log.Println("正在导出SQL: ", sqlStr)
 
 	connCtx := conn.GetConn(connId, authorization)
@@ -242,6 +242,22 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, connId string, authorizat
 	}
 	streamWriter.SetRow("A1", columns2)
 
+	// 写入字段注释行（第二行）
+	columnComment := make([]string, 0)
+	if tableName != "" {
+		columnMap := dbops.ColumnMapFiltered(tableName, schema, connId, authorization, connCtx)
+		for _, col := range columns {
+			columnComment = append(columnComment, columnMap[col])
+		}
+	}
+	var columnCommentRow = make([]any, len(columnComment))
+	for idx := range columnComment {
+		columnCommentRow[idx] = columnComment[idx]
+	}
+	if len(columnCommentRow) > 0 {
+		streamWriter.SetRow("A2", columnCommentRow)
+	}
+
 	values := make([]any, len(columns))
 	scanArgs := make([]any, len(values))
 	for i := range values {
@@ -249,7 +265,7 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, connId string, authorizat
 	}
 
 	driverName := connCtx.DriverName()
-	count := 1
+	count := 2
 	for rows.Next() {
 		err = rows.Scan(scanArgs...)
 		if err != nil {

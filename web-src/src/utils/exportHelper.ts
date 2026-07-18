@@ -17,7 +17,7 @@ export function exportToJson(data: any[], filename: string) {
   downloadBlob(json, filename + '.json', 'application/json')
 }
 
-export function exportToCsv(columns: string[], rows: any[], filename: string) {
+export function exportToCsv(columns: string[], rows: any[], filename: string, comments?: string[]) {
   const escapeCsvField = (val: any): string => {
     if (val === null || val === undefined) return '\\N'
     const str = String(val)
@@ -28,12 +28,13 @@ export function exportToCsv(columns: string[], rows: any[], filename: string) {
   }
 
   const header = columns.map(escapeCsvField).join(',')
+  const commentRow = comments ? '\n' + comments.map(escapeCsvField).join(',') : ''
   const body = rows.map(row =>
     columns.map(col => escapeCsvField(row[col])).join(',')
   ).join('\n')
 
   const bom = '\uFEFF'
-  downloadBlob(bom + header + '\n' + body, filename + '.csv', 'text/csv;charset=utf-8')
+  downloadBlob(bom + header + commentRow + '\n' + body, filename + '.csv', 'text/csv;charset=utf-8')
 }
 
 export function exportToSql(columns: string[], rows: any[], tableName: string, dbType?: string): string {

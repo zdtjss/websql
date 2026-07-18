@@ -74,7 +74,7 @@ import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage, FixedSizeList } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { showTree } from '@/api/conn'
-import { searchObjects } from '@/api/sql'
+import { searchObjectsBatch } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 import { handleError } from '@/utils/errorHandler'
 import { loadConnections } from '@/utils/dbMetadata'
@@ -253,10 +253,6 @@ async function doSearch() {
     if (isTableOrView.value) {
       await searchTablesRemotely(keyword.value.trim(), searchType.value)
     } else {
-      if (!filterConnId.value && connections.value.length === 0) {
-        ElMessage.warning('搜索列或索引需要先选择连接')
-        return
-      }
       await searchRemotely(keyword.value.trim(), searchType.value)
     }
     searched.value = true
@@ -301,80 +297,53 @@ function searchTablesLocally(keyword, type) {
 }
 
 async function searchTablesRemotely(keyword, type) {
-  const connIds = filterConnId.value
-    ? [filterConnId.value]
-    : connections.value.map(c => c.id).filter(Boolean)
+  try {
+    const res = await searchObjectsBatch({
+      connIds: filterConnId.value || '',
+      schema: filterSchema.value || '',
+      keyword,
+      searchType: type
+    })
+    const payload = res.data
+    const remoteResults = (payload?.results || payload?.data?.results || []).map(r => ({
+      ...r,
+      typeLabel: typeLabelMap[r.type] || r.type,
+      schema: r.schema || filterSchema.value || ''
+    }))
 
-  if (connIds.length === 0) return
-
-  const allResults = []
-  const tasks = connIds.map(async (cid) => {
-    try {
-      const res = await searchObjects({ connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type })
-      const payload = res.data
-      const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
-      return remoteResults.map(r => ({
-        ...r,
-        typeLabel: typeLabelMap[r.type] || r.type,
-        connId: cid,
-        schema: r.schema || (filterConnId.value ? filterSchema.value : '')
-      }))
-    } catch (e) {
-      return []
+    if (remoteResults.length > 0) {
+      const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
+      const newResults = remoteResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
+      results.value = [...results.value, ...newResults]
+      totalResults.value = results.value.length
     }
-  })
-
-  const settled = await Promise.allSettled(tasks)
-  for (const item of settled) {
-    if (item.status === 'fulfilled' && item.value) {
-      allResults.push(...item.value)
+    if (!results.value.length) {
+      searched.value = true
     }
-  }
-
-  if (allResults.length > 0) {
-    const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
-    const newResults = allResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
-    results.value = [...results.value, ...newResults]
-    totalResults.value = results.value.length
-  }
-  if (!results.value.length) {
-    searched.value = true
+  } catch (e) {
+    // 批量接口出错时静默处理
   }
 }
 
 async function searchRemotely(keyword, type) {
-  const connIds = filterConnId.value
-    ? [filterConnId.value]
-    : connections.value.map(c => c.id).filter(Boolean)
-
-  if (connIds.length === 0) return
-
-  const allResults = []
-  const tasks = connIds.map(async (cid) => {
-    try {
-      const res = await searchObjects({ connId: cid, schema: filterConnId.value ? filterSchema.value : '', keyword, searchType: type })
-      const payload = res.data
-      const remoteResults = (payload && payload.results ? payload.results : (payload.data && payload.data.results ? payload.data.results : [])) || []
-      return remoteResults.map(r => ({
-        ...r,
-        typeLabel: typeLabelMap[r.type] || r.type,
-        connId: cid,
-        schema: r.schema || (filterConnId.value ? filterSchema.value : '')
-      }))
-    } catch (e) {
-      return []
-    }
-  })
-
-  const settled = await Promise.allSettled(tasks)
-  for (const item of settled) {
-    if (item.status === 'fulfilled' && item.value) {
-      allResults.push(...item.value)
-    }
+  try {
+    const res = await searchObjectsBatch({
+      connIds: filterConnId.value || '',
+      schema: filterSchema.value || '',
+      keyword,
+      searchType: type
+    })
+    const payload = res.data
+    const remoteResults = (payload?.results || payload?.data?.results || []).map(r => ({
+      ...r,
+      typeLabel: typeLabelMap[r.type] || r.type,
+      schema: r.schema || filterSchema.value || ''
+    }))
+    results.value = remoteResults
+    totalResults.value = results.value.length
+  } catch (e) {
+    // 批量接口出错时静默处理
   }
-
-  results.value = allResults
-  totalResults.value = results.value.length
 }
 
 function selectObject(obj) {
