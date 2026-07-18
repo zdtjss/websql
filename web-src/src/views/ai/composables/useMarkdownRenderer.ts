@@ -822,6 +822,14 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       result = result.replace(/<br\s*\/?>/gi, ' ')
       result = result.replace(/[()\[\]]/g, ' ')
     }
+    // xychart-beta 不支持 legend 指令：mermaid 11.x 的 jison 语法定义中无 LEGEND 终端符
+    // （仅支持 XYCHART/title/X_AXIS/Y_AXIS/LINE/BAR/acc_title/acc_descr 等）。
+    // AI 常生成 `legend ["待填写", "按时提交", "逾期补填"]` 描述多系列含义，
+    // 但 mermaid 解析器会报词法/语法错误，导致 xychart-beta 整体渲染失败。
+    // 移除 legend 行以恢复渲染（多系列 bar/line 仍正常显示，仅缺少图例文字）。
+    if (/^xychart(-beta)?\b/m.test(result)) {
+      result = result.replace(/^\s*legend\b[^\n]*$/gim, '')
+    }
     return result
   }
 
