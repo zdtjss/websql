@@ -259,9 +259,22 @@ cd websql
 
 ### 9.3 编译打包 Web 版（纯 Go，支持交叉编译）
 
-Web 版采用 `CGO_ENABLED=0` 纯 Go 编译，前端静态资源通过 `go:embed` 嵌入二进制，单文件即可部署。
+Web 版采用 `CGO_ENABLED=0` 纯 Go 编译，前端静态资源通过 `go:embed` 嵌入二进制，单文件即可部署。**可在任意平台交叉编译全部目标平台**，无需在目标平台运行。
 
-**Windows 平台打包（产出全平台 zip）：**
+**推荐：使用跨平台打包脚本 `scripts/build_release.py`（Windows / Linux / macOS 均可运行）：**
+
+```bash
+python scripts/build_release.py                          # 交互式选择目标平台
+python scripts/build_release.py --platform windows       # 仅 Windows
+python scripts/build_release.py --platform linux         # 仅 Linux
+python scripts/build_release.py --platform macos         # macOS（amd64 + arm64）
+python scripts/build_release.py --platform all           # 全部平台
+python scripts/build_release.py --skip-frontend          # 跳过前端构建
+python scripts/build_release.py --skip-build             # 跳过 Go 编译（使用已有二进制）
+python scripts/build_release.py --skip-db                # 跳过全新数据库创建
+```
+
+**Windows 平台也可使用批处理脚本 `scripts\release.bat`（功能等价）：**
 
 ```bat
 scripts\release.bat              :: 交互式选择目标平台
@@ -269,14 +282,6 @@ scripts\release.bat windows      :: 仅 Windows
 scripts\release.bat linux        :: 仅 Linux
 scripts\release.bat macos        :: 仅 macOS（amd64 + arm64）
 scripts\release.bat all          :: 全部平台
-```
-
-**Linux / macOS 平台打包：**
-
-```bash
-python scripts/deploy-linux.py pack                        # 默认 linux-amd64
-python scripts/deploy-linux.py pack --platform macos-arm64 # 指定平台
-python scripts/deploy-linux.py pack --platform all         # 全部平台
 ```
 
 **支持的 Web 版目标平台：**
@@ -288,9 +293,9 @@ python scripts/deploy-linux.py pack --platform all         # 全部平台
 | `macos-amd64`   | macOS Intel       |
 | `macos-arm64`   | macOS Apple Silicon |
 
-**产物：** `dist-pack/websql-web-{platform}.zip`，包内含可执行文件、前端静态资源、迁移脚本、配置文件。
+**产物：** `dist-pack/websql-web-{platform}.zip`，包内含可执行文件、前端静态资源（`static/`）、迁移脚本（`migrations/`）、配置文件（`config.json`）、预置 SQLite 管理库（`nway.sqlite3.db`）、`db_migrate.py` 升级工具、`skills/` 目录及 `startup` 启动脚本，解压即可运行。
 
-**手动单平台快速编译（不打包）：**
+**手动单平台快速编译（不打包，仅产出二进制）：**
 
 ```bash
 # Linux / macOS
@@ -299,6 +304,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o WebSql main.go
 # Windows（PowerShell）
 $env:CGO_ENABLED=0; $env:GOOS="windows"; $env:GOARCH="amd64"; go build -o WebSql.exe main.go
 ```
+
+> 注：手动编译仅生成裸二进制，**不包含前端静态资源、迁移脚本、配置文件**，需自行准备 `static/`、`config.json` 等附属文件才能正常运行。生产部署推荐使用打包脚本。
 
 ### 9.4 编译打包桌面版（Wails v3，需在目标平台运行）
 
@@ -324,38 +331,111 @@ python scripts/build_desktop.py --check                  # 仅检查环境，不
 
 ### 9.5 启动与部署（Web 版）
 
+**使用打包产物部署（推荐）：**
+
 ```bash
-# 解压产物
+# 解压产物（包内已含预置 SQLite 管理库，开箱即用）
 unzip websql-web-linux-amd64.zip -d websql
 cd websql
 
-# 初始化数据库（首次部署，MySQL 管理库需手动执行初始化脚本）
-mysql -u root -p < mysql-init.sql
+# 启动服务（默认端口 80，可通过 -port 指定）
+./WebSql -port 8080
 
-# 启动服务
+# 后台运行（Linux）
+nohup ./WebSql -port 8080 > websql.log 2>&1 &
+
+# 或使用包内 startup 脚本
+./startup.sh    # Linux / macOS
+startup.bat     # Windows
+```
+
+**使用 MySQL / MariaDB 作为管理库（可选）：**
+
+打包产物默认使用 SQLite 管理库（`nway.sqlite3.db`），开箱即用无需配置。如需切换为 MySQL / MariaDB 管理库，需手动执行全量初始化脚本并修改 `config.json`：
+
+```bash
+# 1. 在 MySQL 中创建数据库并执行全量初始化脚本
+mysql -u root -p -e "CREATE DATABASE websql DEFAULT CHARSET utf8mb4;"
+mysql -u root -p websql < migrations/full/mysql_full.sql
+
+# 2. 修改 config.json，将 db.type 改为 "mysql"，db.dsn 改为 MySQL 连接串
+# {
+#   "isRemote": true,
+#   "db": {
+#     "type": "mysql",
+#     "dsn": "user:password@tcp(127.0.0.1:3306)/websql?charset=utf8mb4&parseTime=true",
+#     ...
+#   }
+# }
+
+# 3. 启动服务（后续版本升级时，由系统管理员手动执行增量脚本）
 ./WebSql -port 8080
 ```
 
+> 注：SQLite 管理库的版本升级由程序启动时自动执行迁移脚本完成；MySQL / MariaDB 管理库的版本升级需要系统管理员手动执行 `migrations/full/mysql_full.sql` 中的增量部分。
+
 ### 9.6 Docker 容器化部署（Web 版）
 
+项目根目录提供 `Dockerfile`，基于 Ubuntu 22.04，构建时会自动安装 Go 与 Node.js、克隆源码、编译后端与前端，最终产出可运行镜像。默认配置启用 HTTPS（端口 443），通过 `-remote` 标志以远程模式启动。
+
 ```bash
+# 构建镜像
 docker build -t websql .
+
+# 运行容器（默认 HTTPS 443 端口）
 docker run -d -p 443:443 -v ./data:/app/data websql
+
+# 如需自定义端口，可通过 -port 参数指定
+docker run -d -p 8080:8080 -v ./data:/app/data websql /app/WebSql -remote -port 8080
 ```
+
+> 注：容器内数据目录为 `/app`，挂载 `./data` 可持久化 SQLite 管理库与日志。如需使用 MySQL 管理库，请挂载并修改 `/app/config.json`。
 
 ### 9.7 前端二次开发
 
 ```bash
 cd web-src && npm install
-npm run dev     # 开发服务器
-npm run build   # 构建到 static/
+npm run dev     # 启动开发服务器（热重载）
+npm run build   # 构建生产产物到 web-src/dist/
 ```
+
+> 前端构建产物默认位于 `web-src/dist/`，Web 版通过 `go:embed` 嵌入到 `static/` 目录，桌面版通过 `scripts/build_desktop.py` 自动复制到 `cmd/desktop/static/`。
 
 ### 9.8 常见问题
 
-- **桌面版构建失败提示 "CGO disabled"**：Wails 依赖 CGO，请确保 `CGO_ENABLED=1` 且安装了对应平台的 C 编译器（Windows 为 MinGW-w64，macOS 为 Xcode CLT，Linux 为 gcc）。
-- **Gitee 上传大文件失败**：如需分发已编译产物，建议使用 GitHub Releases、阿里云 OSS、腾讯云 COS 等支持大文件的对象存储服务，或直接将 zip 包分卷压缩后上传。
-- **交叉编译桌面版失败**：Wails v3 不支持交叉编译，请在目标平台原生构建（如需 Windows 桌面版请在 Windows 上构建）。
+**Q1：桌面版构建失败提示 "CGO disabled" 或链接错误？**
+
+Wails v3 依赖 CGO，请确保：
+- 环境变量 `CGO_ENABLED=1`
+- 已安装对应平台的 C 编译器（Windows 为 MinGW-w64，macOS 为 Xcode CLT，Linux 为 gcc）
+- Windows 平台需安装 WebView2 Runtime（Win10/11 通常自带）
+
+**Q2：Gitee 上传大文件失败如何分发已编译产物？**
+
+Gitee 对单文件大小有严格限制，建议改用以下方式分发：
+- GitHub Releases（支持单文件最大 2GB）
+- 阿里云 OSS / 腾讯云 COS 等对象存储服务
+- 将 zip 包分卷压缩后上传（如 `split -b 50m websql-web-linux-amd64.zip`）
+
+**Q3：交叉编译桌面版失败？**
+
+Wails v3 不支持交叉编译，**必须在目标平台原生构建**。如需 Windows 桌面版，请在 Windows 上运行 `python scripts/build_desktop.py`；如需 macOS 桌面版，请在 macOS 上运行。Linux 桌面版需先安装 `libgtk-3-dev` 和 `libwebkit2gtk-4.1-dev`。
+
+**Q4：启动后浏览器无法访问？**
+
+- 检查端口是否被占用：`netstat -an | grep 8080`
+- 检查防火墙是否放行对应端口
+- 查看日志：`./logs/websql-YYYY-MM-DD.log` 或容器内 `/app/logs/`
+- 默认配置启用 HTTPS，访问地址应为 `https://host:port`（自签名证书需浏览器手动信任）
+
+**Q5：Web 版打包脚本 `build_release.py` 与 `release.bat` 有何区别？**
+
+两者功能等价，均产出 `dist-pack/websql-web-{platform}.zip`。`build_release.py` 是 Python 脚本，可在 Windows / Linux / macOS 任意平台运行；`release.bat` 是 Windows 批处理脚本，仅限 Windows。推荐优先使用 `build_release.py`。
+
+**Q6：如何升级到新版本？**
+
+- **Web 版**：重新拉取代码并打包，替换部署目录中的二进制与 `static/`、`migrations/` 目录，保留 `config.json` 与 `nway.sqlite3.db`（或 MySQL 管理库），重启服务。SQLite 管理库会自动迁移；MySQL/MariaDB 管理库需手动执行增量脚本。
+- **桌面版**：重新构建并替换可执行文件即可，用户数据保存在 `%APPDATA%/WebSQL/`（Windows）或对应平台用户数据目录，不会丢失。
 
 ***
 
