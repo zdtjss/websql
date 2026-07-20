@@ -10,7 +10,7 @@
         v-for="tag in activeFilterTags"
         :key="tag.colName"
         class="filter-chip"
-        @click="openColumnFilterByName(tag.colName)"
+        @click="(e) => openColumnFilterByName(tag.colName, e.currentTarget as HTMLElement)"
       >
         <span class="filter-chip-col">{{ tag.colName }}</span>
         <span class="filter-chip-expr">{{ tag.operatorLabel }} {{ tag.displayValue }}</span>
@@ -300,12 +300,17 @@ function openColumnFilter(col: DataColumn, triggerEl: HTMLElement) {
   })
 }
 
-function openColumnFilterByName(colName: string) {
+function openColumnFilterByName(colName: string, triggerEl?: HTMLElement) {
   const col = props.dataColumns.find((c) => c.name === colName)
   if (!col) return
-  // Use the filter icon element in the table header as the trigger
-  const headerEl = document.querySelector(`.col-filter-icon[data-col="${colName}"]`) as HTMLElement | null
-  if (headerEl) filterTriggerRef.value = headerEl
+  // Prefer the click target (the chip itself) so the popover appears in place;
+  // fall back to the table header filter icon when called programmatically.
+  if (triggerEl) {
+    filterTriggerRef.value = triggerEl
+  } else {
+    const headerEl = document.querySelector(`.col-filter-icon[data-col="${colName}"]`) as HTMLElement | null
+    if (headerEl) filterTriggerRef.value = headerEl
+  }
   currentColumn.value = col
   const savedCondition = columnFilterConditions.value[colName]
   if (savedCondition) {

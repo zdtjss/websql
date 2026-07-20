@@ -840,6 +840,7 @@ func ApplySchemaDiff(c *gin.Context) {
 		}
 	}
 	if user != nil {
+		connName, _ := conn.GetConnInfo(connId)
 		audit.GetAuditService().Record(&audit.AuditEntry{
 			Source:       "schemasync",
 			SQLText:      fmt.Sprintf("[SchemaDiff] %d statements, executed=%d", len(validatedSQLs), executedCount),
@@ -847,6 +848,7 @@ func ApplySchemaDiff(c *gin.Context) {
 			RiskLevel:    "high",
 			Status:       auditStatus,
 			ConnID:       connId,
+			ConnName:     connName,
 			SchemaName:   schema,
 			UserID:       user.Id,
 			UserName:     user.Name,

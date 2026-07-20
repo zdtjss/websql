@@ -101,7 +101,8 @@ func GetConn(param *DBParam) *sqlx.DB {
 	db, err := sqlx.Connect(param.DbType, makeDsn(param))
 	if err != nil {
 		log.Printf("连接数据库失败 - err=%v, param=%+v\n", err, param)
-		return nil
+		// 抛出异常由 middleware.CustomRecovery 捕获，将驱动返回的错误消息透传给用户
+		panic(err)
 	}
 	dbCfg := config.Get().DB
 	maxOpen := 50

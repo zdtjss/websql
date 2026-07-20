@@ -111,6 +111,30 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
+	// 桌面专属：页面缩放端点。前端通过 keydown 监听 Ctrl/Cmd+加号/减号/0 调用此端点，
+	// 由 Wails 内置 WebviewWindow.ZoomIn/ZoomOut/ZoomReset 实现真正的 WebView 级缩放。
+	// 不使用 Wails KeyBindings 是因为其在 Windows 上对 OEM_PLUS/OEM_MINUS 键名不匹配
+	// （注册 "plus"→"+"，但触发时 VirtualKeyCodes 返回 "oem_plus"），且各平台键名不一致。
+	router.Group("api").POST("/desktop/zoom", func(c *gin.Context) {
+		if mainWindow == nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "window not ready"})
+			return
+		}
+		action := c.Query("action")
+		switch action {
+		case "in":
+			mainWindow.ZoomIn()
+		case "out":
+			mainWindow.ZoomOut()
+		case "reset":
+			mainWindow.ZoomReset()
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid action"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
 	database.InitMngtDbConn()
 
 	// 检测程序升级：对比数据库中记录的旧版本与当前二进制版本

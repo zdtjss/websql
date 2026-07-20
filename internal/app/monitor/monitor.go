@@ -345,8 +345,12 @@ func GetProcesses(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	dbType := conn.DriverName()
+	dbConn := conn.GetConn(connId, authorization)
+	if dbConn == nil {
+		response.WriteErr(c, 200, 500, "数据库连接不可用")
+		return
+	}
+	dbType := dbConn.DriverName()
 
 	processes := make([]ProcessInfo, 0)
 
@@ -362,10 +366,10 @@ func GetProcesses(c *gin.Context) {
 			Info    *string `db:"Info"`
 		}
 		var rows []processRow
-		err := conn.Select(&rows, "SHOW FULL PROCESSLIST")
+		err := dbConn.Select(&rows, "SHOW FULL PROCESSLIST")
 		if err != nil {
-			logger.PrintErrf("获取进程列表失败", err)
-			response.WriteOK(c, map[string]any{"processes": processes, "count": 0})
+			logger.PrintErrf("获取进程列表失败 - dbType=%s, connId=%s, err=%v", err, dbType, connId)
+			response.WriteErr(c, 200, 500, "获取进程列表失败: "+err.Error())
 			return
 		}
 		deref := func(p *string) string {
@@ -387,23 +391,26 @@ func GetProcesses(c *gin.Context) {
 			})
 		}
 	} else if dbType == "oracle" {
-		rows, err := conn.Queryx("SELECT sid, serial#, username, status, machine, program FROM v$session WHERE type!='BACKGROUND'")
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var sid, serial, username, status, machine, program string
-				if err := rows.Scan(&sid, &serial, &username, &status, &machine, &program); err != nil {
-					log.Printf("扫描行失败: %v", err)
-					continue
-				}
-				processes = append(processes, ProcessInfo{
-					Id:      parseStrToInt(sid),
-					User:    username,
-					Host:    machine,
-					State:   status,
-					Command: program,
-				})
+		rows, err := dbConn.Queryx("SELECT sid, serial#, username, status, machine, program FROM v$session WHERE type!='BACKGROUND'")
+		if err != nil {
+			logger.PrintErrf("获取 Oracle 会话列表失败 - connId=%s, err=%v", err, connId)
+			response.WriteErr(c, 200, 500, "获取 Oracle 会话列表失败（可能缺少 v$session 查询权限）: "+err.Error())
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sid, serial, username, status, machine, program string
+			if err := rows.Scan(&sid, &serial, &username, &status, &machine, &program); err != nil {
+				log.Printf("扫描行失败: %v", err)
+				continue
 			}
+			processes = append(processes, ProcessInfo{
+				Id:      parseStrToInt(sid),
+				User:    username,
+				Host:    machine,
+				State:   status,
+				Command: program,
+			})
 		}
 	}
 

@@ -615,6 +615,7 @@ func ApplyDataSync(c *gin.Context) {
 		}
 	}
 	if user != nil {
+		connName, _ := conn.GetConnInfo(connId)
 		audit.GetAuditService().Record(&audit.AuditEntry{
 			Source:       "datasync",
 			SQLText:      fmt.Sprintf("[DataSync] %d statements (INSERT:%d UPDATE:%d DELETE:%d)", len(validatedSQLs), insertCount, updateCount, deleteCount),
@@ -622,6 +623,7 @@ func ApplyDataSync(c *gin.Context) {
 			RiskLevel:    "medium",
 			Status:       auditStatus,
 			ConnID:       connId,
+			ConnName:     connName,
 			SchemaName:   schema,
 			UserID:       user.Id,
 			UserName:     user.Name,

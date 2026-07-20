@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 	"websql/internal/ai/agent/sqlutil"
 	admin "websql/internal/app/admin"
-	conn "websql/internal/app/conn"
+	connpkg "websql/internal/app/conn"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -111,7 +111,7 @@ func GetConn(connId, userId string) (*sqlx.DB, string) {
 	if !admin.CheckConnAccessByUserId(userId, connId) {
 		return nil, ""
 	}
-	cfgList := []conn.ConnCfg{}
+	cfgList := []connpkg.ConnCfg{}
 	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connId)
 	if err != nil || len(cfgList) == 0 {
 		return nil, ""
@@ -247,18 +247,21 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, altSchema)
 					// 安全审计：自动路由事件必须可追溯（EINO_DEEP_ANALYSIS §13）
 					if auditCtx != nil {
+						altConnName, _ := connpkg.GetConnInfo(altConnID)
 						audit.GetAuditService().Record(&audit.AuditEntry{
-							Source:    "agent",
-							ToolName:  "query_data.auto_route",
-							SQLText:   input.SQL,
-							SQLType:   "SELECT",
-							RiskLevel: "low",
-							Status:    "auto_routed",
-							ConnID:    altConnID,
-							SessionID: auditCtx.SessionID,
-							UserID:    auditCtx.UserID,
-							UserName:  auditCtx.UserName,
-							ErrorMsg:  fmt.Sprintf("from=%s to=%s schema=%s reason=%v", connId, altConnID, altSchema, err),
+							Source:     "agent",
+							ToolName:   "query_data.auto_route",
+							SQLText:    input.SQL,
+							SQLType:    "SELECT",
+							RiskLevel:  "low",
+							Status:     "auto_routed",
+							ConnID:     altConnID,
+							ConnName:   altConnName,
+							SchemaName: altSchema,
+							SessionID:  auditCtx.SessionID,
+							UserID:     auditCtx.UserID,
+							UserName:   auditCtx.UserName,
+							ErrorMsg:   fmt.Sprintf("from=%s to=%s schema=%s reason=%v", connId, altConnID, altSchema, err),
 						})
 					}
 					altRawSQL := strings.TrimSpace(input.SQL)
@@ -302,6 +305,7 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 	if auditCtx == nil {
 		return
 	}
+	connName, schemaName := connpkg.GetConnInfo(connID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "agent",
 		ToolName:     "query_data",
@@ -310,6 +314,8 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 		RiskLevel:    "low",
 		Status:       status,
 		ConnID:       connID,
+		ConnName:     connName,
+		SchemaName:   schemaName,
 		SessionID:    auditCtx.SessionID,
 		UserID:       auditCtx.UserID,
 		UserName:     auditCtx.UserName,
@@ -602,6 +608,7 @@ func recordExecAudit(auditCtx *ExecAuditCtx, sql, connID, sqlType, riskLevel, st
 	if auditCtx == nil {
 		return
 	}
+	connName, schemaName := connpkg.GetConnInfo(connID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "agent",
 		ToolName:     "exec_sql",
@@ -610,6 +617,8 @@ func recordExecAudit(auditCtx *ExecAuditCtx, sql, connID, sqlType, riskLevel, st
 		RiskLevel:    riskLevel,
 		Status:       status,
 		ConnID:       connID,
+		ConnName:     connName,
+		SchemaName:   schemaName,
 		SessionID:    auditCtx.SessionID,
 		UserID:       auditCtx.UserID,
 		UserName:     auditCtx.UserName,

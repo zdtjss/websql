@@ -267,6 +267,7 @@ const editingModel = ref(null)
 const modelTesting = ref(false)
 const testingOutterUser = ref(false)
 const savingAll = ref(false)
+const isRemote = ref(sessionStorage.getItem('isRemote') === 'true')
 
 const knownContextWindows = {
   'deepseek-v4-flash': 1000000,

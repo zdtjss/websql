@@ -3,10 +3,9 @@
  *
  * 提供：
  * 1. 从任意错误对象中提取原始消息
- * 2. 清理错误消息中的敏感信息（凭据、IP、文件路径）
- * 3. 过滤堆栈/日志前缀等噪声
- * 4. 从 axios 错误中提取后端业务消息
- * 5. 统一错误处理（展示 + 返回消息）
+ * 2. 过滤堆栈/日志前缀等噪声
+ * 3. 从 axios 错误中提取后端业务消息
+ * 4. 统一错误处理（展示 + 返回消息）
  */
 
 // 匹配 Go/通用堆栈行、panic、fatal 等
@@ -16,15 +15,6 @@ const LOG_PREFIX_PATTERN = /^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\s+/
 // 匹配十六进制地址（如 0xc000010028）
 const HEX_ADDR_PATTERN = /0x[0-9a-fA-F]+/g
 
-// 凭据脱敏规则：将 password=xxx、token=xxx 等替换为 ***
-const CREDENTIAL_PATTERNS: { pattern: RegExp; replace: string }[] = [
-  { pattern: /(password|passwd|pwd|secret|token|api[_-]?key)\s*[=:]\s*\S+/gi, replace: '$1=***' },
-  { pattern: /(dsn|data\s*source\s*name)\s*[=:]\s*\S+/gi, replace: '$1=***' },
-  { pattern: /(authorization|cookie)\s*[:=]\s*\S+/gi, replace: '$1=***' },
-]
-
-// IP:端口脱敏（保留前两段，后两段打码）
-const IP_PORT_PATTERN = /\b(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}(:\d+)\b/g
 // 服务器文件路径脱敏
 const FILE_PATH_PATTERN = /(\/tmp\/|\/var\/|\/home\/|[A-Z]:\\|\\Users\\)[^\s]*/gi
 
@@ -71,15 +61,6 @@ function extractRawMsg(err: unknown): string {
   try { return String(err) } catch { return '' }
 }
 
-/** 对消息中的凭据、IP、文件路径等敏感信息进行脱敏 */
-function redactCredentials(msg: string): string {
-  for (const cr of CREDENTIAL_PATTERNS) {
-    msg = msg.replace(cr.pattern, cr.replace)
-  }
-  msg = msg.replace(IP_PORT_PATTERN, '$1.***$2')
-  return msg
-}
-
 /** 对消息中的服务器文件路径进行脱敏 */
 function redactFilePaths(msg: string): string {
   return msg.replace(FILE_PATH_PATTERN, '***')
@@ -87,7 +68,7 @@ function redactFilePaths(msg: string): string {
 
 /**
  * 清理原始消息：去除堆栈行、日志前缀、十六进制地址，
- * 并对敏感信息脱敏，最终返回用户可读的错误消息
+ * 最终返回用户可读的错误消息
  * @param msg 原始消息
  * @returns 清理后的消息
  */
@@ -121,7 +102,6 @@ function extractErrorMsg(msg: string): string {
   if (meaningfulLines.length === 0) return '系统内部错误'
 
   let result = meaningfulLines.join('; ')
-  result = redactCredentials(result)
   result = redactFilePaths(result)
 
   if (result.length > 500) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	appperm "websql/internal/app/permission"
+	conn "websql/internal/app/conn"
 	"websql/internal/audit"
 
 	"github.com/cloudwego/eino/adk"
@@ -69,16 +70,19 @@ func (m *PermissionMiddleware) logInfo(toolName, format string, args ...any) {
 
 func (m *PermissionMiddleware) auditPermDenied(toolName, reason string, objects []string) {
 	detail := fmt.Sprintf("tool=%s reason=%s objects=%v", toolName, reason, objects)
+	connName, schemaName := conn.GetConnInfo(m.Scope.ConnID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
-		Source:    "agent",
-		ToolName:  toolName,
-		SQLText:   detail,
-		SQLType:   "PERM_DENIED",
-		RiskLevel: "high",
-		Status:    "denied",
-		ConnID:    m.Scope.ConnID,
-		UserID:    m.Scope.UserID,
-		ErrorMsg:  detail,
+		Source:     "agent",
+		ToolName:   toolName,
+		SQLText:    detail,
+		SQLType:    "PERM_DENIED",
+		RiskLevel:  "high",
+		Status:     "denied",
+		ConnID:     m.Scope.ConnID,
+		ConnName:   connName,
+		SchemaName: schemaName,
+		UserID:     m.Scope.UserID,
+		ErrorMsg:   detail,
 	})
 }
 

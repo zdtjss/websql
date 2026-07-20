@@ -420,3 +420,23 @@ func GetConnDefaultSchema(connId string) string {
 	}
 	return ""
 }
+
+// GetConnInfo 返回连接名和默认 schema（db_schema 字段），用于审计日志等场景。
+// 连接不存在或字段为空时对应返回空字符串。
+func GetConnInfo(connId string) (name, schema string) {
+	if connId == "" {
+		return "", ""
+	}
+	repo := NewConnRepo(getDB())
+	cfgList, err := repo.FindConnById(connId)
+	if err != nil || len(cfgList) == 0 {
+		return "", ""
+	}
+	if cfgList[0].Name != nil {
+		name = *cfgList[0].Name
+	}
+	if cfgList[0].DbSchema != nil {
+		schema = *cfgList[0].DbSchema
+	}
+	return name, schema
+}

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"websql/internal/pkg/sanitize"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,7 +29,7 @@ func WriteOK(c *gin.Context, data any) {
 // WriteErr 写入业务错误响应。msg 会经过脱敏。
 // httpCode 默认 200（前端按 code 而非 HTTP 状态判断），鉴权类错误可传 401。
 func WriteErr(c *gin.Context, httpCode int, code int, msg string) {
-	c.JSON(httpCode, Response{Code: code, Msg: sanitize.SanitizeErrMsg(msg)})
+	c.JSON(httpCode, Response{Code: code, Msg: msg})
 }
 
 // WriteErrf 支持格式化的错误响应。

@@ -20,7 +20,6 @@ import (
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
-	"websql/internal/pkg/sanitize"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -150,7 +149,7 @@ func ExecSQL(c *gin.Context) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		result, err := batchExec(sqlStr, conn)
 		if err != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err.Error())
+			recordEditorAudit(c, user, connId, schema, sqlStr, "failed", 0, startTime, err.Error())
 			writeSQLError(c, err)
 			return
 		}
@@ -166,7 +165,7 @@ func ExecSQL(c *gin.Context) {
 				}
 			}
 		}
-		recordEditorAudit(c, user, connId, sqlStr, "success", totalAffected, startTime, "")
+		recordEditorAudit(c, user, connId, schema, sqlStr, "success", totalAffected, startTime, "")
 		response.WriteOK(c, rspData)
 	} else {
 		params := make([]any, 0)
@@ -191,7 +190,7 @@ func ExecSQL(c *gin.Context) {
 		}
 
 		if err2 != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err2.Error())
+			recordEditorAudit(c, user, connId, schema, sqlStr, "failed", 0, startTime, err2.Error())
 			writeSQLError(c, err2)
 			return
 		}
@@ -199,7 +198,7 @@ func ExecSQL(c *gin.Context) {
 
 		cts, err3 := rows.ColumnTypes()
 		if err3 != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, err3.Error())
+			recordEditorAudit(c, user, connId, schema, sqlStr, "failed", 0, startTime, err3.Error())
 			writeSQLError(c, err3)
 			return
 		}
@@ -231,21 +230,20 @@ func ExecSQL(c *gin.Context) {
 
 		data, dataErr := database.GetResultRows(conn.DriverName(), rows)
 		if dataErr != nil {
-			recordEditorAudit(c, user, connId, sqlStr, "failed", 0, startTime, dataErr.Error())
+			recordEditorAudit(c, user, connId, schema, sqlStr, "failed", 0, startTime, dataErr.Error())
 			writeSQLError(c, dataErr)
 			return
 		}
 
 		rspData := &TableDataList{Columns: columnList, Data: data, CanEdit: len(keyIdx) != 0, Keys: keys}
 
-		recordEditorAudit(c, user, connId, sqlStr, "success", len(data), startTime, "")
+		recordEditorAudit(c, user, connId, schema, sqlStr, "success", len(data), startTime, "")
 		response.WriteOK(c, rspData)
 	}
 }
 
 func writeSQLError(c *gin.Context, err error) {
 	msg := err.Error()
-	msg = sanitize.RedactCredentials(msg)
 	if len(msg) > 500 {
 		msg = msg[:500] + "..."
 	}
@@ -452,7 +450,7 @@ func isSimpleQuery(sqlStr string) bool {
 	return true
 }
 
-func recordEditorAudit(c *gin.Context, user *admin.User, connID, sqlStr, status string, affectedRows int, startTime time.Time, errorMsg string) {
+func recordEditorAudit(c *gin.Context, user *admin.User, connID, schema, sqlStr, status string, affectedRows int, startTime time.Time, errorMsg string) {
 	if user == nil {
 		return
 	}
@@ -460,6 +458,7 @@ func recordEditorAudit(c *gin.Context, user *admin.User, connID, sqlStr, status 
 	sqlType := detectSQLTypeForEditor(sqlStr)
 	riskLevel := detectRiskLevelForEditor(sqlStr)
 
+	connName, _ := conn.GetConnInfo(connID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "sqleditor",
 		SQLText:      sqlStr,
@@ -467,6 +466,8 @@ func recordEditorAudit(c *gin.Context, user *admin.User, connID, sqlStr, status 
 		RiskLevel:    riskLevel,
 		Status:       status,
 		ConnID:       connID,
+		ConnName:     connName,
+		SchemaName:   schema,
 		UserID:       user.Id,
 		UserName:     user.Name,
 		ClientIP:     c.ClientIP(),
@@ -644,7 +645,7 @@ func extractTableNameFromSQL(sqlStr string) string {
 func setSQLError(result *SQLResultItem, err error) {
 	result.Status = "error"
 	result.AuditError = audit.FormatErrorWithStack(err)
-	msg := sanitize.RedactCredentials(err.Error())
+	msg := err.Error()
 	if len(msg) > 500 {
 		msg = msg[:500] + "..."
 	}
@@ -865,7 +866,7 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 			auditAffectedRows += int(results[i].Affected)
 		}
 	}
-	recordEditorAudit(c, user, connId, sqlStr, auditStatus, auditAffectedRows, startTime, auditErrorMsg)
+	recordEditorAudit(c, user, connId, schema, sqlStr, auditStatus, auditAffectedRows, startTime, auditErrorMsg)
 
 	response.WriteOK(c, batchResult)
 }

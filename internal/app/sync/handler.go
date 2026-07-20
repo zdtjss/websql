@@ -1068,6 +1068,7 @@ func recordRollbackAudit(c *gin.Context, sessionId string, log *RollbackLog, exe
 	if errCount > 0 {
 		status = "failed"
 	}
+	connName, _ := conn.GetConnInfo(log.ConnId)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "datasync-rollback",
 		SQLText:      fmt.Sprintf("[DataSyncRollback] session=%s undo=%d executed=%d errors=%d", sessionId, len(log.UndoSQLs), executed, errCount),
@@ -1075,6 +1076,7 @@ func recordRollbackAudit(c *gin.Context, sessionId string, log *RollbackLog, exe
 		RiskLevel:    "high",
 		Status:       status,
 		ConnID:       log.ConnId,
+		ConnName:     connName,
 		SchemaName:   log.Schema,
 		UserID:       user.Id,
 		UserName:     user.Name,

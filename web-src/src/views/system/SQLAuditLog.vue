@@ -76,16 +76,19 @@
           </template>
         </el-table-column>
         <el-table-column prop="userName" label="用户" width="90" resizable />
+        <el-table-column prop="connName" label="连接" min-width="120" resizable show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :title="row.connName">{{ row.connName || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="schemaName" label="Schema" min-width="100" resizable show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :title="row.schemaName">{{ row.schemaName || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="sqlType" label="类型" width="90" resizable>
           <template #default="{ row }">
             <el-tag :type="getTypeTag(row.sqlType)" size="small">{{ row.sqlType }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="riskLevel" label="风险" width="70" resizable>
-          <template #default="{ row }">
-            <el-tag :type="getRiskTag(row.riskLevel)" size="small">
-              {{ getRiskLabel(row.riskLevel) }}
-            </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="70" resizable>
@@ -127,10 +130,9 @@
         size="small"
       />
     </div>
-
     <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close class="sql-detail-dialog">
       <div style="margin-bottom: 8px; color: var(--text-tertiary); font-size: 13px;">
-        {{ sqlDetail.userName }} | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
+        {{ getRiskLabel(sqlDetail.riskLevel) }} | {{ sqlDetail.userName }}<span v-if="sqlDetail.connName"> | {{ sqlDetail.connName }}</span><span v-if="sqlDetail.schemaName"> | {{ sqlDetail.schemaName }}</span> | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
       </div>
       <pre class="sql-full-text" v-html="highlightedSql"></pre>
     </el-dialog>
