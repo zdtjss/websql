@@ -2,6 +2,7 @@ package permission
 
 import (
 	"bytes"
+	"database/sql"
 	"log"
 	"strings"
 
@@ -155,10 +156,12 @@ func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 }
 
 func FilterTablesWithPermission(key string, schema, authorization string) []*conn.Tree {
-	tableName, tableType, tableComment := "", "", ""
+	tableName, tableType := "", ""
+	var tableComment sql.NullString
 	dc := conn.GetConn(key, authorization)
 
-	tableName2, columnName, columnComment := "", "", ""
+	tableName2, columnName := "", ""
+	var columnComment sql.NullString
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schema)
 	if err != nil {
 		log.Printf("[FilterTablesWithPermission] 查询列信息失败: %v", err)
@@ -166,12 +169,15 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 	}
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
-		columnComment = ""
 		if err := row.Scan(&tableName2, &columnName, &columnComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": columnComment})
+		cc := ""
+		if columnComment.Valid {
+			cc = columnComment.String
+		}
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": cc})
 	}
 
 	grouped := make(map[string][]conn.Column)
@@ -196,7 +202,11 @@ func FilterTablesWithPermission(key string, schema, authorization string) []*con
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		treeNode := &conn.Tree{Label: tableName, Data: map[string]any{"text": tableComment, "columns": grouped[tableName]}, Type: conn.TREE_NODE_TYPE_TABLE}
+		tc := ""
+		if tableComment.Valid {
+			tc = tableComment.String
+		}
+		treeNode := &conn.Tree{Label: tableName, Data: map[string]any{"text": tc, "columns": grouped[tableName]}, Type: conn.TREE_NODE_TYPE_TABLE}
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
 			switch tableType {
 			case "VIEW":

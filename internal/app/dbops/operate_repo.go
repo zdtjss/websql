@@ -87,14 +87,18 @@ func (r *operateRepo) ListAllColumnsForTable(dc *sqlx.DB, schema string) []map[s
 		return tableColumns
 	}
 	defer row.Close()
-	var tableName2, columnName, columnComment string
+	var tableName2, columnName string
+	var columnComment sql.NullString
 	for row.Next() {
-		columnComment = ""
 		if err := row.Scan(&tableName2, &columnName, &columnComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": columnComment})
+		commentStr := ""
+		if columnComment.Valid {
+			commentStr = columnComment.String
+		}
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName2, "columnName": columnName, "columnComment": commentStr})
 	}
 	return tableColumns
 }
@@ -109,9 +113,13 @@ func (r *operateRepo) ListTables(dc *sqlx.DB, schema string) []*tableRawRow {
 	defer row.Close()
 	for row.Next() {
 		var t tableRawRow
-		if err := row.Scan(&t.Name, &t.Type, &t.Comment); err != nil {
+		var comment sql.NullString
+		if err := row.Scan(&t.Name, &t.Type, &comment); err != nil {
 			logger.PrintErr(err)
 			continue
+		}
+		if comment.Valid {
+			t.Comment = comment.String
 		}
 		tables = append(tables, &t)
 	}
@@ -126,14 +134,18 @@ func (r *operateRepo) ListAllColumnsRaw(dc *sqlx.DB, schema string) []*columnRaw
 		return columns
 	}
 	defer row.Close()
-	var columnName, columnComment string
+	var columnName string
+	var columnComment sql.NullString
 	for row.Next() {
-		columnComment = ""
 		if err := row.Scan(&columnName, &columnComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		columns = append(columns, &columnRawRow{Name: columnName, Comment: columnComment})
+		commentStr := ""
+		if columnComment.Valid {
+			commentStr = columnComment.String
+		}
+		columns = append(columns, &columnRawRow{Name: columnName, Comment: commentStr})
 	}
 	return columns
 }
@@ -215,14 +227,18 @@ func (r *operateRepo) QueryTables(dc *sqlx.DB, schema string) []*conn.Table {
 	}
 	defer rs.Close()
 
-	var tableName, tableType, tableComment string
+	var tableName, tableType string
+	var tableComment sql.NullString
 	for rs.Next() {
-		tableComment = ""
 		if err := rs.Scan(&tableName, &tableType, &tableComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		table := &conn.Table{Name: tableName, Comment: tableComment}
+		comment := ""
+		if tableComment.Valid {
+			comment = tableComment.String
+		}
+		table := &conn.Table{Name: tableName, Comment: comment}
 		tables = append(tables, table)
 	}
 	return tables

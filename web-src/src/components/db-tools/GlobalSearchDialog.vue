@@ -13,7 +13,6 @@
           <span class="option-extra">{{ s.data?.dbType || '' }}</span>
         </el-option>
       </el-select>
-      <!-- 图标按钮：仅图标无文字，需补充 aria-label（复用 title 的值） -->
       <el-button text size="small" @click="doSearch" :loading="searching" title="搜索" aria-label="搜索">
         <el-icon :size="16"><Search /></el-icon>
       </el-button>
@@ -31,16 +30,15 @@
         <el-option label="列" value="column" />
         <el-option label="索引" value="index" />
       </el-select>
-      <el-button v-if="searchType === 'column' || searchType === 'index'" type="primary" @click="doSearch" :loading="searching">搜索</el-button>
     </div>
 
-    <!-- 搜索结果统计动态变化，aria-live 通知屏幕阅读器 -->
+    <!-- 搜索结果统计 -->
     <div class="search-summary" v-if="lastQuery" aria-live="polite">
       搜索 "{{lastQuery}}" 找到 {{totalResults}} 个结果
+      <span v-if="searching" class="searching-hint">（搜索中...）</span>
     </div>
 
-    <!-- 搜索结果列表：使用虚拟滚动（FixedSizeList）优化大数据量渲染性能 -->
-    <!-- el-auto-resizer 自动撑满父容器并传入可用宽高，FixedSizeList 仅渲染可见区域内的项 -->
+    <!-- 搜索结果列表：使用虚拟滚动优化大数据量渲染 -->
     <div v-if="results.length" class="search-result-container" :style="{ height: resultContainerHeight + 'px' }" role="listbox" aria-label="搜索结果列表" :aria-busy="searching">
       <el-auto-resizer>
         <template #default="{ height, width }">
@@ -56,7 +54,7 @@
                 @keyup.enter="selectObject(data[index])">
                 <el-tag :type="getTypeColor(data[index].type)" size="small" class="result-tag">{{data[index].typeLabel || data[index].type}}</el-tag>
                 <span class="result-name" :title="data[index].name">{{data[index].name}}</span>
-                <span v-if="data[index].schema" class="result-schema">{{data[index].schema}}</span>
+                <span v-if="data[index].schema" class="result-schema" :title="connTitle(data[index])">{{data[index].schema}}</span>
                 <span v-if="data[index].comment" class="result-comment" :title="data[index].comment">{{data[index].comment}}</span>
               </div>
             </template>
@@ -69,12 +67,13 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { ElMessage, FixedSizeList } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { showTree } from '@/api/conn'
-import { searchObjectsBatch } from '@/api/sql'
+import { searchObjectsBatchSSE } from '@/api/sql'
+import type { BatchObjectResult, SearchSSEHandle } from '@/api/sql'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 import { handleError } from '@/utils/errorHandler'
 import { loadConnections } from '@/utils/dbMetadata'
@@ -89,32 +88,38 @@ const emit = defineEmits(['select'])
 
 // 虚拟滚动单项高度（px）：与 .search-result-item 的 padding/line-height 匹配
 const RESULT_ITEM_SIZE = 44
-// 结果列表最大高度（与原 el-scrollbar max-height 保持一致）
-const RESULT_MAX_HEIGHT = 280
+// 结果列表最大高度
+const RESULT_MAX_HEIGHT = 400
 
 const keywordInputRef = useTemplateRef('keywordInputRef')
 const filterConnId = ref('')
 const filterSchema = ref('')
-const connections = ref([])
-const schemas = ref([])
+const connections = ref<any[]>([])
+const schemas = ref<any[]>([])
 const keyword = ref('')
 const searchType = ref('table')
 const searching = ref(false)
 const searched = ref(false)
 const lastQuery = ref('')
-const results = ref([])
+const results = ref<any[]>([])
 const totalResults = ref(0)
+
+// 当前活跃的 SSE 连接（用于中止上次搜索）
+let activeSSEHandle: SearchSSEHandle | null = null
 
 // 虚拟滚动容器高度：结果较少时按实际条数计算，避免留白；超过最大高度则按最大高度
 const resultContainerHeight = computed(() =>
   Math.min(RESULT_MAX_HEIGHT, results.value.length * RESULT_ITEM_SIZE)
 )
 
-let debounceTimer = null
+let debounceTimer: number | null = null
 
 const isTableOrView = computed(() => searchType.value === 'table' || searchType.value === 'view')
 
-const typeLabelMap = {
+// 按字段或索引搜索时需要指定连接和 schema
+const requiresConnAndSchema = computed(() => searchType.value === 'column' || searchType.value === 'index')
+
+const typeLabelMap: Record<string, string> = {
   table: '表',
   view: '视图',
   column: '列',
@@ -131,20 +136,19 @@ watch([visible, () => connId, () => schema], ([newVisible, newConnId, newSchema]
 
 watch(keyword, (val) => {
   if (!isTableOrView.value) return
-  clearTimeout(debounceTimer)
+  if (debounceTimer !== null) clearTimeout(debounceTimer)
   if (!val.trim()) {
     results.value = []
     totalResults.value = 0
     return
   }
-  debounceTimer = setTimeout(() => {
+  debounceTimer = window.setTimeout(() => {
     results.value = searchTablesLocally(val.trim(), searchType.value)
     totalResults.value = results.value.length
   }, 200)
 })
 
 async function init(freshOpen = true) {
-  // 新打开时做完整重置；已可见时仅更新过滤器
   if (freshOpen) {
     keyword.value = ''
     results.value = []
@@ -157,7 +161,6 @@ async function init(freshOpen = true) {
   filterSchema.value = ''
   schemas.value = []
 
-  // loadConnections 内部已统一处理错误并返回空数组，无需外层 try/catch
   connections.value = await loadConnections({ pageSize: 1000 })
 
   if (connId) {
@@ -173,7 +176,9 @@ async function init(freshOpen = true) {
 }
 
 function cleanup() {
-  clearTimeout(debounceTimer)
+  if (debounceTimer !== null) clearTimeout(debounceTimer)
+  activeSSEHandle?.abort()
+  activeSSEHandle = null
   filterConnId.value = ''
   filterSchema.value = ''
   schemas.value = []
@@ -204,7 +209,7 @@ async function onSchemaChange() {
   }
 }
 
-async function loadSchemaTables(schemaName) {
+async function loadSchemaTables(schemaName: string) {
   if (!filterConnId.value || !schemaName) return
   try {
     const res = await showTree({ connId: filterConnId.value, key: schemaName, type: 'schema', level: '3' })
@@ -222,7 +227,7 @@ function onSearchTypeChange() {
   searched.value = false
   lastQuery.value = ''
   if (isTableOrView.value && keyword.value.trim()) {
-    debounceTimer = setTimeout(() => {
+    debounceTimer = window.setTimeout(() => {
       results.value = searchTablesLocally(keyword.value.trim(), searchType.value)
       totalResults.value = results.value.length
     }, 100)
@@ -235,25 +240,42 @@ function onKeywordClear() {
   lastQuery.value = ''
 }
 
-function getTypeColor(type) {
-  const map = { table: 'primary', view: 'success', column: 'warning', index: 'info' }
+function getTypeColor(type: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
+  const map: Record<string, 'primary' | 'success' | 'warning' | 'info' | 'danger'> = { table: 'primary', view: 'success', column: 'warning', index: 'info' }
   return map[type] || 'info'
 }
 
 async function doSearch() {
   if (!keyword.value.trim()) { ElMessage.warning('请输入搜索关键词'); return }
 
-  results.value = []
-  totalResults.value = 0
+  // 按字段或索引搜索时，必须指定连接和 schema
+  if (requiresConnAndSchema.value) {
+    if (!filterConnId.value) {
+      ElMessage.warning('按字段或索引搜索时请先选择连接')
+      return
+    }
+    if (!filterSchema.value) {
+      ElMessage.warning('按字段或索引搜索时请先选择 Schema')
+      return
+    }
+  }
+
+  if (debounceTimer !== null) clearTimeout(debounceTimer)
   searching.value = true
   lastQuery.value = keyword.value
   searched.value = false
 
   try {
     if (isTableOrView.value) {
-      await searchTablesRemotely(keyword.value.trim(), searchType.value)
+      // 先用本地缓存填充结果，确保即时反馈
+      results.value = searchTablesLocally(keyword.value.trim(), searchType.value)
+      totalResults.value = results.value.length
+      // 再远程搜索补充
+      await searchRemoteSSE(keyword.value.trim(), searchType.value, true)
     } else {
-      await searchRemotely(keyword.value.trim(), searchType.value)
+      results.value = []
+      totalResults.value = 0
+      await searchRemoteSSE(keyword.value.trim(), searchType.value, false)
     }
     searched.value = true
   } catch (e) {
@@ -263,12 +285,17 @@ async function doSearch() {
   }
 }
 
-function searchTablesLocally(keyword, type) {
+function searchTablesLocally(keyword: string, type: string) {
   const keywordLower = keyword.toLowerCase()
   const matched = []
-  const schemasToSearch = filterSchema.value
+  let schemasToSearch = filterSchema.value
     ? [filterSchema.value]
     : Object.keys(dbSchemaProxy.schemaProxy)
+
+  // 设置了连接过滤时，只搜索属于该连接的 schema
+  if (filterConnId.value && !filterSchema.value) {
+    schemasToSearch = schemasToSearch.filter(s => dbSchemaProxy.getConnId(s) === filterConnId.value)
+  }
 
   for (const schemaName of schemasToSearch) {
     const allTables = dbSchemaProxy.getAll(schemaName)
@@ -288,7 +315,7 @@ function searchTablesLocally(keyword, type) {
           name: tableName,
           schema: schemaName,
           comment: self.detail || '',
-          connId: schemaConnId || filterConnId.value || connId || ''
+          connId: schemaConnId || filterConnId.value || ''
         })
       }
     }
@@ -296,63 +323,74 @@ function searchTablesLocally(keyword, type) {
   return matched
 }
 
-async function searchTablesRemotely(keyword, type) {
-  try {
-    const res = await searchObjectsBatch({
-      connIds: filterConnId.value || '',
-      schema: filterSchema.value || '',
-      keyword,
-      searchType: type
-    })
-    const payload = res.data
-    const remoteResults = (payload?.results || payload?.data?.results || []).map(r => ({
-      ...r,
-      typeLabel: typeLabelMap[r.type] || r.type,
-      schema: r.schema || filterSchema.value || ''
-    }))
+/**
+ * 通过 SSE 流式远程搜索，结果逐条追加到 results 中。
+ * @param mergeLocal 是否与已有本地结果去重合并（true = 表/视图场景）
+ */
+function searchRemoteSSE(keyword: string, type: string, mergeLocal: boolean): Promise<void> {
+  // 中止上次未完成的搜索
+  activeSSEHandle?.abort()
 
-    if (remoteResults.length > 0) {
-      const existing = new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
-      const newResults = remoteResults.filter(r => !existing.has(r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
-      results.value = [...results.value, ...newResults]
-      totalResults.value = results.value.length
-    }
-    if (!results.value.length) {
-      searched.value = true
-    }
-  } catch (e) {
-    // 批量接口出错时静默处理
-  }
+  return new Promise<void>((resolve) => {
+    const existingSet = mergeLocal
+      ? new Set(results.value.map(r => r.type + '_' + r.name + '_' + r.schema + '_' + r.connId))
+      : null
+
+    activeSSEHandle = searchObjectsBatchSSE({
+      params: {
+        connIds: filterConnId.value || '',
+        schema: filterSchema.value || '',
+        keyword,
+        searchType: type
+      },
+      onResult(r: BatchObjectResult) {
+        const item = {
+          ...r,
+          typeLabel: typeLabelMap[r.type] || r.type,
+          schema: r.schema || filterSchema.value || ''
+        }
+        if (existingSet) {
+          const key = item.type + '_' + item.name + '_' + item.schema + '_' + item.connId
+          if (existingSet.has(key)) return
+          existingSet.add(key)
+        }
+        results.value = [...results.value, item]
+        totalResults.value = results.value.length
+      },
+      onDone() {
+        activeSSEHandle = null
+        resolve()
+      },
+      onError(err) {
+        // 如果是参数校验错误（后端返回 event:error），提示用户
+        if (err?.message) {
+          ElMessage.warning(err.message)
+        }
+        activeSSEHandle = null
+        resolve()
+      }
+    })
+  })
 }
 
-async function searchRemotely(keyword, type) {
-  try {
-    const res = await searchObjectsBatch({
-      connIds: filterConnId.value || '',
-      schema: filterSchema.value || '',
-      keyword,
-      searchType: type
-    })
-    const payload = res.data
-    const remoteResults = (payload?.results || payload?.data?.results || []).map(r => ({
-      ...r,
-      typeLabel: typeLabelMap[r.type] || r.type,
-      schema: r.schema || filterSchema.value || ''
-    }))
-    results.value = remoteResults
-    totalResults.value = results.value.length
-  } catch (e) {
-    // 批量接口出错时静默处理
-  }
+function getConnName(connId: string) {
+  if (!connId) return ''
+  const conn = connections.value.find(c => c.id === connId)
+  return conn ? (conn.name || conn.id) : connId
 }
 
-function selectObject(obj) {
+function connTitle(item: any) {
+  const connName = getConnName(item.connId)
+  return connName ? `${item.schema}（${connName}）` : item.schema
+}
+
+function selectObject(obj: any) {
   emit('select', {
     type: obj.type,
     name: obj.name,
     schema: obj.schema,
     comment: obj.comment,
-    connId: obj.connId || filterConnId.value
+    connId: obj.connId || filterConnId.value || connId || ''
   })
 }
 </script>
@@ -380,7 +418,11 @@ function selectObject(obj) {
   font-size: 13px;
 }
 
-/* 虚拟滚动结果容器：需提供明确高度供 el-auto-resizer 读取 */
+.searching-hint {
+  color: #e6a23c;
+}
+
+/* 虚拟滚动结果容器 */
 .search-result-container {
   border: 1px solid var(--db-border-light, #ebeef5);
   border-radius: 6px;
@@ -389,8 +431,6 @@ function selectObject(obj) {
 }
 
 .search-result-item {
-  /* FixedSizeList 会通过 inline style 注入 position/top/height/width，
-     此处仅补充外观与布局，display:flex 与 absolute 定位兼容 */
   padding: 8px 12px;
   border-bottom: 1px solid var(--db-border-light, #ebeef5);
   cursor: pointer;

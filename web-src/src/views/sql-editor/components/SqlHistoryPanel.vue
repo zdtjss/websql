@@ -11,10 +11,8 @@
             <el-table-column prop="exec_time" label="时间" width="160" resizable />
             <el-table-column prop="operation_type" label="类型" width="80" resizable>
                 <template #default="scope">
-                    <el-tag v-if="scope.row.operation_type === 'select'" type="info" size="small">SELECT</el-tag>
-                    <el-tag v-else-if="scope.row.operation_type === 'update'" type="warning"
-                        size="small">UPDATE</el-tag>
-                    <el-tag v-else type="danger" size="small">DELETE</el-tag>
+                    <el-tag :type="historyTagType(scope.row.operation_type)" size="small">{{
+                        historyTagLabel(scope.row.operation_type) }}</el-tag>
                 </template>
             </el-table-column>
             <el-table-column prop="exec_sql" label="SQL" resizable>
@@ -29,8 +27,8 @@
             </el-table-column>
             <el-table-column label="操作" width="50" resizable>
                 <template #default="scope">
-                    <el-icon v-if="scope.row.operation_type !== 'select'" style="cursor: pointer;"
-                        @click="emit('showBackup', scope.row.id)" title="查看备份数据">
+                    <el-icon v-if="scope.row.operation_type === 'update' || scope.row.operation_type === 'delete'"
+                        style="cursor: pointer;" @click="emit('showBackup', scope.row.id)" title="查看备份数据">
                         <View />
                     </el-icon>
                 </template>
@@ -71,6 +69,21 @@ const {
     showSqlHistory,
     onDrawerDragStart,
 } = useSqlHistory({ connId: props.connId, schema: props.schema })
+
+const ddlTypes = new Set(['alter', 'create', 'drop', 'truncate'])
+const dmlTypes = new Set(['insert', 'update', 'delete', 'replace', 'merge'])
+const queryTypes = new Set(['select', 'show', 'describe', 'explain', 'with'])
+
+function historyTagType(type: string): 'success' | 'warning' | 'info' | 'danger' {
+    if (queryTypes.has(type)) return 'info'
+    if (dmlTypes.has(type)) return 'warning'
+    if (ddlTypes.has(type)) return 'danger'
+    return 'info'
+}
+
+function historyTagLabel(type: string): string {
+    return type.toUpperCase()
+}
 
 // 抽屉打开时加载历史数据（原 showSqlHistory 既加载又打开，拆分后由父组件控制可见性）
 watch(

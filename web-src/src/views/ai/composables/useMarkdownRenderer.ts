@@ -830,6 +830,13 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     if (/^xychart(-beta)?\b/m.test(result)) {
       result = result.replace(/^\s*legend\b[^\n]*$/gim, '')
     }
+    // timeline 语法中 `:` 是日期与事件的分隔符，AI 常生成 "日期 时间 : 事件" 格式
+    // （如 "2026-06-04 09:12 : 黄迪发起窜货投诉申请"），其中时间的冒号被解析器误认为分隔符，
+    // 导致 "09" 被当作事件、"12 : ..." 被当作额外内容，触发 Parse error。
+    // 修复：将 "YYYY-MM-DD HH:MM : 事件" 转为 "YYYY-MM-DD : HH:MM 事件"
+    if (/^timeline\b/m.test(result)) {
+      result = result.replace(/^(\s*\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s*:\s*(.+)$/gm, '$1 : $2 $3')
+    }
     return result
   }
 
@@ -1238,17 +1245,65 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
         ElMessage.error('未找到可导出的 SVG 图表')
         return
       }
-      const svgString = new XMLSerializer().serializeToString(svg)
+
+      // 优先用 viewBox 获取 SVG 原始尺寸（mermaid 通常设置 viewBox 而非 width/height 属性）
+      // 不能用 getBoundingClientRect()：它返回的是受 CSS 限制的显示尺寸
+      // （.mermaid-container max-height:600px、.mermaid-content-wrapper max-height:500px），
+      // 全屏模式下还会被 .mermaid-svg-wrap 的 transform: scale() 放大，导致尺寸完全错误。
+      let intrinsicWidth = 0
+      let intrinsicHeight = 0
+      const viewBox = svg.viewBox?.baseVal
+      if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
+        intrinsicWidth = viewBox.width
+        intrinsicHeight = viewBox.height
+      } else {
+        const w = svg.width?.baseVal?.value
+        const h = svg.height?.baseVal?.value
+        if (w && h && w > 0 && h > 0) {
+          intrinsicWidth = w
+          intrinsicHeight = h
+        } else {
+          // 最后回退到 boundingClientRect（仅在无 viewBox 和 width/height 时）
+          const rect = svg.getBoundingClientRect()
+          intrinsicWidth = rect.width || 800
+          intrinsicHeight = rect.height || 600
+        }
+      }
+
+      // 克隆 SVG，设置明确的 width/height 属性并移除 max-width 限制
+      // （确保 img.onload 后浏览器按原始尺寸渲染，而非受 100% 宽度约束）
+      const svgClone = svg.cloneNode(true) as SVGSVGElement
+      svgClone.setAttribute('width', String(intrinsicWidth))
+      svgClone.setAttribute('height', String(intrinsicHeight))
+      svgClone.style.removeProperty('max-width')
+      svgClone.style.removeProperty('max-height')
+      const svgString = new XMLSerializer().serializeToString(svgClone)
       const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString)
 
       const img = new Image()
       img.onload = () => {
-        const width = svg.width.baseVal.value || svg.getBoundingClientRect().width || 800
-        const height = svg.height.baseVal.value || svg.getBoundingClientRect().height || 600
+        // 根据图表原始尺寸动态决定缩放倍数：
+        // - 小图（max<=800）用 4 倍，保证细节清晰
+        // - 中等图（800~2000）用 3 倍
+        // - 大图（>2000）用 2 倍，避免画布像素总数过大触发浏览器限制
+        const maxDim = Math.max(intrinsicWidth, intrinsicHeight)
+        let scale = 3
+        if (maxDim <= 800) scale = 4
+        else if (maxDim > 2000) scale = 2
+
+        // 浏览器 canvas 像素总数上限（Chrome ~16384 边长，Safari 更低；保守用 16384*16384）
+        const MAX_CANVAS_DIM = 16384
+        let targetW = Math.round(intrinsicWidth * scale)
+        let targetH = Math.round(intrinsicHeight * scale)
+        if (targetW > MAX_CANVAS_DIM || targetH > MAX_CANVAS_DIM) {
+          const downScale = MAX_CANVAS_DIM / Math.max(targetW, targetH)
+          targetW = Math.round(targetW * downScale)
+          targetH = Math.round(targetH * downScale)
+        }
+
         const canvas = document.createElement('canvas')
-        const scale = 2
-        canvas.width = width * scale
-        canvas.height = height * scale
+        canvas.width = targetW
+        canvas.height = targetH
         const ctx = canvas.getContext('2d')!
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(0, 0, canvas.width, canvas.height)

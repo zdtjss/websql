@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"sort"
@@ -535,7 +536,8 @@ func getTableList(conn *sqlx.DB, dbType, schema string) ([]string, error) {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				return result, fmt.Errorf("扫描表列表失败: %v", err)
 			}
@@ -548,7 +550,8 @@ func getTableList(conn *sqlx.DB, dbType, schema string) ([]string, error) {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				return result, fmt.Errorf("扫描表列表失败: %v", err)
 			}

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -449,7 +450,8 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []TableInfo {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				continue
 			}
@@ -465,7 +467,8 @@ func getAllTables(conn *sqlx.DB, dbType, schema string) []TableInfo {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				continue
 			}

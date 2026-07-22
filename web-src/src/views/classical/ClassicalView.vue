@@ -1112,6 +1112,9 @@ function onSearchPopoverHide() {
 
 function onSearchSelect(obj) {
   searchPopoverRef.value?.hide()
+  // 搜索结果应自带正确的 connId/schema，仅当缺失时回退到当前 tab
+  if (!obj.connId && !searchConnId.value) return
+  if (!obj.schema && !searchSchema.value) return
   const connId = obj.connId || searchConnId.value
   const schema = obj.schema || searchSchema.value
   const dbType = obj.dbType || dbSchemaProxy.getDbType(schema) || ''

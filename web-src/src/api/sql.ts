@@ -106,7 +106,7 @@ export function explainSqlOpt(formData: FormData): Promise<AxiosResponse<ApiResp
   return http.post('/sqlopt/explain', formData)
 }
 
-/** 批量搜索数据库对象（多连接并发），对应 GET /search/objects/batch */
+/** 批量搜索数据库对象（多连接并发），对应 GET /search/objects/batch（SSE 流式响应） */
 export interface SearchObjectsBatchParams {
   connIds: string
   schema?: string
@@ -114,8 +114,143 @@ export interface SearchObjectsBatchParams {
   searchType: string
 }
 
-export function searchObjectsBatch(params: SearchObjectsBatchParams): Promise<AxiosResponse> {
-  return http.get('/search/objects/batch', { params })
+export interface BatchObjectResult {
+  type: string
+  schema: string
+  name: string
+  comment: string
+  matchField: string
+  matchText: string
+  connId: string
+  connName?: string
+}
+
+export interface SearchDonePayload {
+  totalResults: number
+  timeout?: boolean
+}
+
+export interface SearchObjectsBatchSSEOptions {
+  params: SearchObjectsBatchParams
+  onResult: (result: BatchObjectResult) => void
+  onDone: (payload: SearchDonePayload) => void
+  onError?: (error: Error) => void
+}
+
+export interface SearchSSEHandle {
+  abort: () => void
+}
+
+/**
+ * 以 SSE 流式方式批量搜索数据库对象。
+ * 每查到一条结果立即通过 onResult 回调返回给调用方，搜索完毕后触发 onDone。
+ * 后端返回 event:error 时触发 onError。
+ */
+export function searchObjectsBatchSSE(options: SearchObjectsBatchSSEOptions): SearchSSEHandle {
+  const { params, onResult, onDone, onError } = options
+  const controller = new AbortController()
+
+  const query = new URLSearchParams()
+  query.set('keyword', params.keyword)
+  query.set('searchType', params.searchType)
+  if (params.connIds) query.set('connIds', params.connIds)
+  if (params.schema) query.set('schema', params.schema)
+
+  const baseUrl = import.meta.env.VITE_API_URL || ''
+  const auth = sessionStorage.getItem('authentication') || ''
+  const fullUrl = `${baseUrl}/search/objects/batch?${query.toString()}`
+
+  void (async () => {
+    try {
+      const resp = await fetch(fullUrl, {
+        method: 'GET',
+        headers: { Authorization: auth },
+        signal: controller.signal,
+      })
+
+      if (!resp.ok) {
+        throw new Error(`搜索请求失败: HTTP ${resp.status}`)
+      }
+      if (!resp.body) {
+        throw new Error('响应体为空')
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let currentEvent = ''
+      let dataLines: string[] = []
+
+      const flushEvent = () => {
+        if (dataLines.length === 0) return
+        const data = dataLines.join('\n').trim()
+        dataLines = []
+        if (!data) return
+
+        if (currentEvent === 'result') {
+          try {
+            const parsed = JSON.parse(data) as BatchObjectResult
+            onResult(parsed)
+          } catch { /* ignore parse error */ }
+        } else if (currentEvent === 'done') {
+          try {
+            const parsed = JSON.parse(data) as SearchDonePayload
+            onDone(parsed)
+          } catch {
+            onDone({ totalResults: 0 })
+          }
+        } else if (currentEvent === 'error') {
+          try {
+            const parsed = JSON.parse(data) as { msg?: string }
+            onError?.(new Error(parsed.msg || '搜索出错'))
+          } catch {
+            onError?.(new Error('搜索出错'))
+          }
+        }
+        currentEvent = ''
+      }
+
+      const processLine = (line: string) => {
+        if (line === '') {
+          flushEvent()
+          return
+        }
+        if (line.startsWith(':')) return
+        if (line.startsWith('event:')) {
+          currentEvent = line.slice(6).trim()
+        } else if (line.startsWith('data:')) {
+          const payload = line.slice(5)
+          dataLines.push(payload.startsWith(' ') ? payload.slice(1) : payload)
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (value) {
+          buf += decoder.decode(value, { stream: true })
+        }
+        if (done) {
+          buf += decoder.decode()
+          if (buf) processLine(buf)
+          flushEvent()
+          break
+        }
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          processLine(line)
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // 用户主动取消，不报错
+        return
+      }
+      onError?.(err instanceof Error ? err : new Error(String(err)))
+    }
+  })()
+
+  return { abort: () => controller.abort() }
 }
 
 /** 数据字典 - 列出表，对应 GET /datadict/tables */

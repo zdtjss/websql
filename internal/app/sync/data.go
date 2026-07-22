@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"log"
 	"sort"
@@ -400,9 +401,13 @@ func getTableColumnsDetail(conn *sqlx.DB, dbType, schema, table string) []DataDi
 	columns := make([]DataDiffColumn, 0)
 	for rows.Next() {
 		var col DataDiffColumn
-		if err := rows.Scan(&col.Name, &col.Type, &col.Comment); err != nil {
+		var comment sql.NullString
+		if err := rows.Scan(&col.Name, &col.Type, &comment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
+		}
+		if comment.Valid {
+			col.Comment = comment.String
 		}
 		columns = append(columns, col)
 	}

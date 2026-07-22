@@ -1,6 +1,7 @@
 package datadict
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -489,7 +490,8 @@ func getDictTables(conn *sqlx.DB, dbType, schema string) []string {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				log.Printf("扫描行失败: %v", err)
 				continue
@@ -504,7 +506,8 @@ func getDictTables(conn *sqlx.DB, dbType, schema string) []string {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var tableName, tableType, tableComment string
+			var tableName, tableType string
+			var tableComment sql.NullString
 			if err := rows.Scan(&tableName, &tableType, &tableComment); err != nil {
 				log.Printf("扫描行失败: %v", err)
 				continue

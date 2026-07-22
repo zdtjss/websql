@@ -42,7 +42,7 @@
           <el-option label="低" value="low" />
         </el-select>
       </el-form-item>
-      <el-form-item label="用户">
+      <el-form-item label="用户" v-if="isRemote">
         <el-select
           v-model="queryParams.userId"
           placeholder="输入用户名搜索"
@@ -75,7 +75,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="userName" label="用户" width="90" resizable />
+        <el-table-column prop="userName" label="用户" width="90" resizable v-if="isRemote"/>
         <el-table-column prop="connName" label="连接" min-width="120" resizable show-overflow-tooltip>
           <template #default="{ row }">
             <span :title="row.connName">{{ row.connName || '-' }}</span>
@@ -132,7 +132,7 @@
     </div>
     <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close class="sql-detail-dialog">
       <div style="margin-bottom: 8px; color: var(--text-tertiary); font-size: 13px;">
-        {{ getRiskLabel(sqlDetail.riskLevel) }} | {{ sqlDetail.userName }}<span v-if="sqlDetail.connName"> | {{ sqlDetail.connName }}</span><span v-if="sqlDetail.schemaName"> | {{ sqlDetail.schemaName }}</span> | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
+        {{ isRemote ? sqlDetail.userName : "" }}<span v-if="sqlDetail.connName"> | {{ sqlDetail.connName }}</span><span v-if="sqlDetail.schemaName"> | {{ sqlDetail.schemaName }}</span> | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
       </div>
       <pre class="sql-full-text" v-html="highlightedSql"></pre>
     </el-dialog>
@@ -162,6 +162,8 @@ const total = ref(0)
 const sqlDialogVisible = ref(false)
 const sqlDetail = ref({})
 const highlightedSql = ref('')
+
+const isRemote = ref(sessionStorage.getItem('isRemote') === 'true')
 
 watch(sqlDialogVisible, async (visible) => {
   if (visible && sqlDetail.value.sqlText) {

@@ -1,5 +1,5 @@
 <template>
-  <div class="table-manager classical-panel">
+  <div ref="rootRef" class="table-manager classical-panel">
     <!-- Toolbar -->
     <div class="tm-toolbar">
       <el-button size="small" type="primary" @click="onNewTable" :icon="Plus">新建表</el-button>
@@ -197,6 +197,7 @@ const tableList = ref([])
 const searchKeyword = ref('')
 const selectedTable = ref(null)
 const tableRef = ref(null)
+const rootRef = ref(null)
 
 const tableMeta = computed(() => {
   if (!selectedTable.value) return null
@@ -511,6 +512,9 @@ function onTableDrop() {
   loadTables()
 }
 
+// 监听容器可见性变化，tab 切换回时 el-table 需要重新 doLayout
+let visibilityObserver = null
+
 onMounted(() => {
   loadTables()
   initSidebarWidth()
@@ -520,11 +524,27 @@ onMounted(() => {
   setTimeout(() => {
     tableRef.value?.doLayout()
   }, 100)
+
+  // 使用 IntersectionObserver 监听容器从隐藏变为可见（tab 切换场景）
+  if (rootRef.value) {
+    visibilityObserver = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        nextTick(() => {
+          tableRef.value?.doLayout()
+        })
+      }
+    })
+    visibilityObserver.observe(rootRef.value)
+  }
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
+  if (visibilityObserver) {
+    visibilityObserver.disconnect()
+    visibilityObserver = null
+  }
 })
 
 watch(

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -401,7 +402,8 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 		roleTableMap = getRoleTablePermissions(roleId, connId, schemaName)
 	}
 
-	tableName, columnName, columnComment := "", "", ""
+	tableName, columnName := "", ""
+	var columnComment sql.NullString
 
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listAllColumns"], schemaName)
 	if err != nil {
@@ -412,12 +414,15 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 
 	tableColumns := make([]map[string]string, 0)
 	for row.Next() {
-		columnComment = ""
 		if err := row.Scan(&tableName, &columnName, &columnComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
-		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": columnComment})
+		commentStr := ""
+		if columnComment.Valid {
+			commentStr = columnComment.String
+		}
+		tableColumns = append(tableColumns, map[string]string{"tableName": tableName, "columnName": columnName, "columnComment": commentStr})
 	}
 
 	grouped := make(map[string][]map[string]string)
@@ -429,7 +434,8 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 		grouped[tableName] = append(grouped[tableName], col)
 	}
 
-	tableType, tableComment := "", ""
+	tableType := ""
+	var tableComment sql.NullString
 	row, err = dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listTable"], schemaName)
 	if err != nil {
 		logger.PrintErr(err)
@@ -442,6 +448,10 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 		if err := row.Scan(&tableName, &tableType, &tableComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
+		}
+		commentStr := ""
+		if tableComment.Valid {
+			commentStr = tableComment.String
 		}
 		nodeType := "table"
 		if dc.DriverName() == "mysql" || dc.DriverName() == "mariadb" {
@@ -473,7 +483,7 @@ func getTableTree(connId, schema, authorization string, roleId string) []*Permis
 				"schemaName": schemaName,
 				"table":      tableName,
 				"tableName":  tableName,
-				"comment":    tableComment,
+				"comment":    commentStr,
 			},
 		})
 	}

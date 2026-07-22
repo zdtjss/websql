@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div>
     <div class="ai-sql-panel-container">
       <div class="container">
@@ -600,7 +600,7 @@ async function loadConnList(): Promise<void> {
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    const rawList: any[] = []
+    let firstSchemaSet = false
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -613,18 +613,21 @@ async function loadConnList(): Promise<void> {
         if (!data) continue
         try {
           const parsed = JSON.parse(data)
-          if (parsed.connId) rawList.push(parsed)
+          if (parsed.connId) {
+            connSchemaList.value.push(parsed)
+            if (schemasLoading.value) schemasLoading.value = false
+            if (!firstSchemaSet) {
+              const schemas = parsed.schemas || []
+              if (schemas.length > 0) {
+                selectedSchemas.value = [parsed.connId + '::' + schemas[0].name]
+                firstSchemaSet = true
+              } else if (parsed.dbSchema) {
+                selectedSchemas.value = [parsed.connId + '::' + parsed.dbSchema]
+                firstSchemaSet = true
+              }
+            }
+          }
         } catch { /* ignore */ }
-      }
-    }
-    connSchemaList.value = rawList
-    if (rawList.length > 0) {
-      const firstConn = rawList[0]
-      const schemas = firstConn.schemas || []
-      if (schemas.length > 0) {
-        selectedSchemas.value = [firstConn.connId + '::' + schemas[0].name]
-      } else if (firstConn.dbSchema) {
-        selectedSchemas.value = [firstConn.connId + '::' + firstConn.dbSchema]
       }
     }
   } catch (e) {

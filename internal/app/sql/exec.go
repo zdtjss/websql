@@ -400,11 +400,20 @@ func extractTableToken(s string) string {
 }
 
 func asyncRecordHistory(ddlSql string, user *admin.User, connId string) {
+	upper := strings.ToUpper(strings.TrimSpace(ddlSql))
+	operationType := "select"
+	for _, prefix := range []string{"SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH",
+		"INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "REPLACE", "MERGE"} {
+		if strings.HasPrefix(upper, prefix+" ") || strings.HasPrefix(upper, prefix+"\n") || strings.HasPrefix(upper, prefix+"\t") {
+			operationType = strings.ToLower(prefix)
+			break
+		}
+	}
 	historyWriter.enqueue(&historyRecord{
 		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
 		User:          user.LoginName,
 		ConnId:        connId,
-		OperationType: "select",
+		OperationType: operationType,
 		ExecTime:      time.Now(),
 		ExecSql:       ddlSql,
 		Data:          "",
