@@ -18,7 +18,6 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -485,76 +484,4 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	}
 
 	return coreTools, deferredTools, nil
-}
-
-// ──────────────────────────────────────────────
-// 系统提示词
-// ──────────────────────────────────────────────
-
-// estimateTokenCount 估算文本的 token 数量。
-// 提供比默认 4 chars/token 更精确的估算，针对中英文混合文本优化。
-func estimateTokenCount(_ context.Context, input *summarization.TokenCounterInput) (int, error) {
-	total := 0
-	for _, msg := range input.Messages {
-		total += estimateTextTokens(msg.Content)
-		for _, tc := range msg.ToolCalls {
-			total += estimateTextTokens(tc.Function.Name)
-			total += estimateTextTokens(tc.Function.Arguments)
-			total += 4
-		}
-		if msg.ToolCallID != "" {
-			total += estimateTextTokens(msg.ToolCallID) + 3
-		}
-		if msg.ToolName != "" {
-			total += estimateTextTokens(msg.ToolName) + 3
-		}
-		if msg.Name != "" {
-			total += estimateTextTokens(msg.Name) + 3
-		}
-		total += 6
-	}
-	for _, tool := range input.Tools {
-		total += estimateTextTokens(tool.Desc)
-	}
-	total = total * 115 / 100
-	return total, nil
-}
-
-func estimateTextTokens(text string) int {
-	total := 0
-	runes := []rune(text)
-	i := 0
-	for i < len(runes) {
-		ch := runes[i]
-		if ch >= 0x4E00 && ch <= 0x9FFF {
-			total += 2
-			i++
-		} else if ch >= 0x3000 && ch <= 0x303F {
-			total += 2
-			i++
-		} else if ch >= 0xFF00 && ch <= 0xFFEF {
-			total += 2
-			i++
-		} else if ch >= 0x2000 && ch <= 0x206F {
-			total += 1
-			i++
-		} else if ch >= 0x0080 {
-			total += 2
-			i++
-		} else if ch == ' ' || ch == '\n' || ch == '\t' {
-			total += 1
-			i++
-		} else {
-			segLen := 1
-			for j := i + 1; j < len(runes) && runes[j] < 0x0080 && runes[j] != ' ' && runes[j] != '\n' && runes[j] != '\t'; j++ {
-				segLen++
-			}
-			total += (segLen + 3) / 4
-			i += segLen
-		}
-	}
-	if total == 0 && len(text) > 0 {
-		total = (len(text) + 3) / 4
-	}
-	return total
 }

@@ -130,7 +130,7 @@
     <el-dialog
       v-model="editDialogVisible"
       :title="editingId ? '编辑收藏' : '添加收藏'"
-      width="640px"
+      width="750px"
       :append-to-body="true"
       destroy-on-close
     >

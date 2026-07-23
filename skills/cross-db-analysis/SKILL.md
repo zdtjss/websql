@@ -10,9 +10,6 @@ dependencies:
   - type: context
     name: schema
     description: 跨库分析需要 schema 信息用于路由查询
-  - type: skill
-    name: query_data
-    description: 使用 query_data 工具分别查各库
 error_hints:
   - pattern: "connection refused"
     hint: "数据库连接被拒绝。请检查目标数据库是否运行、网络是否可达"

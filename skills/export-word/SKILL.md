@@ -7,9 +7,6 @@ dependencies:
   - type: context
     name: connection_id
     description: 需要 query_data 已建立数据库连接
-  - type: skill
-    name: query_data
-    description: 导出前需先用 query_data 取数
 error_hints:
   - pattern: "ModuleNotFoundError"
     hint: "Python 依赖缺失。请先用 execute 工具运行 pip install -r requirements.txt 安装依赖后重试"

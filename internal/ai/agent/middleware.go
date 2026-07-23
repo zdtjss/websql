@@ -112,21 +112,10 @@ func (b *osfsReductionBackend) Write(ctx context.Context, req *filesystem.WriteR
 }
 
 // reductionTokenCounter 适配 reduction 中间件期望的签名。
-// 复用项目自实现的 estimateTokenCount，但输入输出签名不同：
-//
-//	reduction.TokenCounter:     func(ctx, []*schema.Message, []*schema.ToolInfo) (int64, error)
-//	summarization.TokenCounter: func(ctx, *summarization.TokenCounterInput) (int, error)
-//
-// 这里按字符/4 估算每条消息，与项目自实现的启发式一致。
-func reductionTokenCounter(_ context.Context, msgs []*schema.Message, _ []*schema.ToolInfo) (int64, error) {
-	var total int64
-	for _, m := range msgs {
-		if m == nil {
-			continue
-		}
-		total += int64(len(m.Content)+3) / 4
-	}
-	return total, nil
+// 统一使用 CountMessages（中文感知 token 计数），与 summarization 共用同一套计数逻辑，
+// 确保两者的触发阈值可比。
+func reductionTokenCounter(ctx context.Context, msgs []*schema.Message, tools []*schema.ToolInfo) (int64, error) {
+	return CountMessages(ctx, msgs, tools)
 }
 
 type DangerousSQLApprovalMiddleware struct {
@@ -386,75 +375,23 @@ func recoveryHint(toolName, args string, err error) string {
 
 type contextKeyStartTime struct{}
 type contextKeyIteration struct{}
-type contextKeyToolCallStats struct{}
-
-// toolCallStats 记录一次 Agent Run 期间的工具调用统计信息。
-type toolCallStats struct {
-	totalCalls    int
-	successCalls  int
-	failedCalls   int
-	totalDuration time.Duration
-	toolCounts    map[string]int
-	toolErrors    map[string]int
-}
-
-func newToolCallStats() *toolCallStats {
-	return &toolCallStats{
-		toolCounts: make(map[string]int),
-		toolErrors: make(map[string]int),
-	}
-}
-
-func (s *toolCallStats) recordCall(toolName string, duration time.Duration, err error) {
-	s.totalCalls++
-	s.totalDuration += duration
-	s.toolCounts[toolName]++
-	if err != nil {
-		s.failedCalls++
-		s.toolErrors[toolName]++
-	} else {
-		s.successCalls++
-	}
-}
-
-func (s *toolCallStats) summary() string {
-	if s == nil || s.totalCalls == 0 {
-		return "no tool calls"
-	}
-	tools := make([]string, 0, len(s.toolCounts))
-	for name, count := range s.toolCounts {
-		tools = append(tools, fmt.Sprintf("%s=%d", name, count))
-	}
-	errs := ""
-	if s.failedCalls > 0 {
-		errTools := make([]string, 0, len(s.toolErrors))
-		for name, count := range s.toolErrors {
-			errTools = append(errTools, fmt.Sprintf("%s=%d", name, count))
-		}
-		errs = fmt.Sprintf(", errors=%d(%s)", s.failedCalls, strings.Join(errTools, ","))
-	}
-	return fmt.Sprintf("total=%d, success=%d%s, totalDuration=%v, tools=[%s]",
-		s.totalCalls, s.successCalls, errs, s.totalDuration, strings.Join(tools, ", "))
-}
 
 type ToolCallLoggingMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
 
-// BeforeAgent 在 Agent 开始执行前初始化统计信息到 context 中。
+// BeforeAgent 在 Agent 开始执行前初始化计时和迭代计数到 context 中。
 func (m *ToolCallLoggingMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
 	ctx = context.WithValue(ctx, contextKeyStartTime{}, time.Now())
 	ctx = context.WithValue(ctx, contextKeyIteration{}, new(int))
-	ctx = context.WithValue(ctx, contextKeyToolCallStats{}, newToolCallStats())
 	log.Printf("[AgentLifecycle] Agent 开始执行\n")
 	return ctx, runCtx, nil
 }
 
-// AfterAgent 在 Agent 成功结束后记录总耗时和统计信息（Eino v0.9 新增）
+// AfterAgent 在 Agent 成功结束后记录总耗时和迭代次数。
 func (m *ToolCallLoggingMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
 	if startTime, ok := ctx.Value(contextKeyStartTime{}).(time.Time); ok && !startTime.IsZero() {
 		elapsed := time.Since(startTime)
-		stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
 		iterCount := 0
 		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
 			iterCount = *ic
@@ -463,8 +400,8 @@ func (m *ToolCallLoggingMiddleware) AfterAgent(ctx context.Context, state *adk.C
 		if state != nil {
 			msgCount = len(state.Messages)
 		}
-		log.Printf("[AgentLifecycle] Agent 执行完毕 - 总耗时=%v, 迭代次数=%d, 消息数=%d, 工具调用统计: %s\n",
-			elapsed, iterCount, msgCount, stats.summary())
+		log.Printf("[AgentLifecycle] Agent 执行完毕 - 总耗时=%v, 迭代次数=%d, 消息数=%d\n",
+			elapsed, iterCount, msgCount)
 	}
 	return ctx, nil
 }
@@ -474,7 +411,6 @@ func (m *ToolCallLoggingMiddleware) BeforeModelRewriteState(ctx context.Context,
 	if _, ok := ctx.Value(contextKeyStartTime{}).(time.Time); !ok {
 		ctx = context.WithValue(ctx, contextKeyStartTime{}, time.Now())
 		ctx = context.WithValue(ctx, contextKeyIteration{}, new(int))
-		ctx = context.WithValue(ctx, contextKeyToolCallStats{}, newToolCallStats())
 	}
 	if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
 		*ic++
@@ -509,10 +445,6 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 
 		elapsed := time.Since(startTime)
-		stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
-		if stats != nil {
-			stats.recordCall(tCtx.Name, elapsed, err)
-		}
 		if err != nil {
 			log.Printf("[ToolCall] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
 				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
@@ -546,55 +478,12 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 			elapsed := time.Since(startTime)
 			log.Printf("[ToolCall:Stream] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
 				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
-			stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
-			if stats != nil {
-				stats.recordCall(tCtx.Name, elapsed, err)
-			}
 			return nil, err
 		}
 
-		// Copy(2) 把流扇出为两个独立的 StreamReader：
-		//   1) consumer — 返回给下游消费者，保证原流被完整消费
-		//   2) logger   — 在后台 goroutine 里消费，用于日志
-		//
-		// 解决 v1 实现的"双消费者从同一底层 channel 抢数据"问题：
-		// 之前代码 wrapped.Recv() 与下游 reader.Recv() 共享同一底层，
-		// 导致数据被瓜分、前端拿到的数据不完整。
-		copies := reader.Copy(2)
-		if len(copies) < 2 {
-			// Copy 失败兜底：原样返回，仅打日志
-			return reader, nil
-		}
-		consumer := copies[0]
-		logger := copies[1]
-
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[ToolCall:Stream] logger panic recovered - name=%s, callID=%s, panic=%v\n",
-						tCtx.Name, tCtx.CallID, r)
-				}
-			}()
-			var contentBuf strings.Builder
-			for {
-				chunk, err := logger.Recv()
-				if err != nil {
-					break
-				}
-				contentBuf.WriteString(chunk)
-			}
-			elapsed := time.Since(startTime)
-			content := contentBuf.String()
-			stats, _ := ctx.Value(contextKeyToolCallStats{}).(*toolCallStats)
-			if stats != nil {
-				stats.recordCall(tCtx.Name, elapsed, nil)
-			}
-			resultPreview := truncateResultForLog(content)
-			log.Printf("[ToolCall:Stream] 流结束 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d, result=%s\n",
-				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(content), resultPreview)
-		}()
-
-		return consumer, nil
+		// 不再 Copy(2) 扇出流内容做日志，避免每个 chunk 起后台 goroutine 消费。
+		// 流式工具调用的日志仅记录开始/失败，结束日志由调用方在消费 reader 后按需打印。
+		return reader, nil
 	}, nil
 }
 

@@ -141,23 +141,27 @@ func ListUserConnSchemasStream(c *gin.Context) {
 					}
 				}()
 
-				schemas := []SchemaDTO{}
-				schemaTrees := dbops.ListSchema(r.ConnId, authorization)
-				for _, st := range schemaTrees {
-					schemas = append(schemas, SchemaDTO{Name: st.Label})
-				}
+			schemas := []SchemaDTO{}
+			// 与 ShowTree 保持一致：使用 permission.FilterSchemasWithPermission
+			// 该方法在本地/桌面模式下跳过权限过滤，返回所有 schema；
+			// 而 dbops.ListSchema 内部的 filterSchemasByPermission 未处理本地模式，
+			// 会导致本地模式下 userPower 为空时返回空列表，schema 不完整。
+			schemaTrees := permission.FilterSchemasWithPermission(r.ConnId, authorization)
+			for _, st := range schemaTrees {
+				schemas = append(schemas, SchemaDTO{Name: st.Label})
+			}
 
-				data, _ := json.Marshal(UserConnSchemaDTO{
-					ConnId:    r.ConnId,
-					Name:      r.Name,
-					DbSchema:  r.DbSchema,
-					DirName:   r.DirName,
-					DbType:    r.DbType,
-					Schemas:   schemas,
-					Available: true,
-				})
-				ch <- json.RawMessage(data)
-			}()
+			data, _ := json.Marshal(UserConnSchemaDTO{
+				ConnId:    r.ConnId,
+				Name:      r.Name,
+				DbSchema:  r.DbSchema,
+				DirName:   r.DirName,
+				DbType:    r.DbType,
+				Schemas:   schemas,
+				Available: true,
+			})
+			ch <- json.RawMessage(data)
+		}()
 		}(i, row)
 	}
 

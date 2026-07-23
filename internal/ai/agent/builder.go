@@ -71,7 +71,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			ContextTokens:   triggerTokens,
 			ContextMessages: 200,
 		},
-		TokenCounter: estimateTokenCount,
+		TokenCounter: CountForSummarization,
 	})
 
 	if err != nil {

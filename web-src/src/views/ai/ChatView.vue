@@ -600,7 +600,6 @@ async function loadConnList(): Promise<void> {
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let firstSchemaSet = false
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -616,16 +615,6 @@ async function loadConnList(): Promise<void> {
           if (parsed.connId) {
             connSchemaList.value.push(parsed)
             if (schemasLoading.value) schemasLoading.value = false
-            if (!firstSchemaSet) {
-              const schemas = parsed.schemas || []
-              if (schemas.length > 0) {
-                selectedSchemas.value = [parsed.connId + '::' + schemas[0].name]
-                firstSchemaSet = true
-              } else if (parsed.dbSchema) {
-                selectedSchemas.value = [parsed.connId + '::' + parsed.dbSchema]
-                firstSchemaSet = true
-              }
-            }
           }
         } catch { /* ignore */ }
       }

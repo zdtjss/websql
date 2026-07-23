@@ -361,6 +361,21 @@ func (b *OSFilesystemBackend) getPythonCommand() string {
 	return "python"
 }
 
+// pythonEnvDir 返回需要加入子进程 PATH 的 Python 目录。
+// 当检测到捆绑的 Python 分发（绝对路径，如 C:\WebSQL\python\python.exe）时，
+// 返回其所在目录；当 pythonPath 为空或为裸命令名（已位于系统 PATH）时返回空。
+// 捆绑 Python 不在系统 PATH 中，必须显式加入子进程 PATH 才能让
+// python/python3/pip 等命令在 execute 工具生成的 shell 命令中正确解析。
+func (b *OSFilesystemBackend) pythonEnvDir() string {
+	if b.pythonPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(b.pythonPath) {
+		return ""
+	}
+	return filepath.Dir(b.pythonPath)
+}
+
 // preprocessCommand 跨平台命令预处理。
 // 1. 剥离 tail 管道（部分平台无 tail 命令）
 // 2. 将 python3 替换为检测到的 Python 命令（当 python3 不可用时）
@@ -454,6 +469,16 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 		"PYTHONIOENCODING=utf-8",
 		"PYTHONDONTWRITEBYTECODE=1",
 	)
+	// 捆绑 Python 分发不在系统 PATH 中，需将其目录加入子进程 PATH，
+	// 否则 execute 工具生成的 `python script.py` 命令无法解析。
+	if pythonDir := b.pythonEnvDir(); pythonDir != "" {
+		for i, env := range cmd.Env {
+			if len(env) >= 5 && strings.EqualFold(env[:5], "PATH=") {
+				cmd.Env[i] = "PATH=" + pythonDir + string(os.PathListSeparator) + env[5:]
+				break
+			}
+		}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

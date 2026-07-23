@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	skill "github.com/cloudwego/eino/adk/middlewares/skill"
+	"websql/internal/config"
 )
 
 // SkillEnv 封装 Eino Skill Backend 与 Filesystem Backend 的运行环境。
@@ -134,40 +138,128 @@ func getPythonVersion() string {
 	if !IsPythonAvailable() {
 		return ""
 	}
-	verCtx, verCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer verCancel()
-	cmd := exec.CommandContext(verCtx, pythonPath, "--version")
-	hideWindow(cmd)
-	if output, err := cmd.CombinedOutput(); err == nil {
-		return strings.TrimSpace(string(output))
-	}
-	return ""
+	version, _ := validatePythonCandidate(pythonPath)
+	return version
 }
 
+// detectPython 检测系统中可用的 Python 解释器。
+//
+// 检测顺序（桌面/本地模式下）：
+//  1. 运行目录下的捆绑 Python 分发文件（python/python.exe 等）
+//     —— 保证桌面版在用户未安装 Python 时仍可使用 Skill
+//  2. 系统 PATH 查找（exec.LookPath，操作系统提供的搜索方案）
+//
+// Wails3 不提供 Python 搜索能力；操作系统 PATH 查找由 exec.LookPath 完成，
+// 这就是"按操作系统办法执行"的实现。
 func detectPython() {
+	// 1. 本地/桌面模式：优先在运行目录查找捆绑的 Python 分发文件
+	if config.IsLocalMode() {
+		for _, dir := range candidateSearchDirs() {
+			if path, version := findBundledPython(dir); path != "" {
+				log.Printf("[SkillDetector] 发现运行目录 Python: %s (%s)", path, version)
+				pythonAvailable = true
+				pythonPath = path
+				return
+			}
+		}
+	}
+
+	// 2. 回退到系统 PATH 查找（操作系统提供的搜索方案）
 	for _, name := range []string{"python3", "python"} {
 		path, err := exec.LookPath(name)
 		if err != nil {
 			continue
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, path, "--version")
-		hideWindow(cmd)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			continue
+		if version, ok := validatePythonCandidate(path); ok {
+			log.Printf("[SkillDetector] 发现系统 Python: %s (%s)", path, version)
+			pythonAvailable = true
+			pythonPath = path
+			return
 		}
-
-		versionStr := strings.TrimSpace(string(output))
-		log.Printf("[SkillDetector] 发现 Python: %s (%s)", path, versionStr)
-		pythonAvailable = true
-		pythonPath = path
-		return
 	}
 
 	log.Println("[SkillDetector] 未检测到 Python，Agent 将使用 Go 原生工具兜底")
 	pythonAvailable = false
+}
+
+// candidateSearchDirs 返回需要检查捆绑 Python 分发文件的候选目录列表（去重）。
+// 桌面模式下，可执行文件所在目录是首要候选（用户可能将便携 Python 放在 exe 同级）；
+// 当前工作目录作为补充（dev 模式下 exe 在 build 子目录，而 Python 在项目根）。
+func candidateSearchDirs() []string {
+	var dirs []string
+	seen := make(map[string]bool)
+
+	addDir := func(p string) {
+		if p == "" {
+			return
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if !seen[abs] {
+			seen[abs] = true
+			dirs = append(dirs, abs)
+		}
+	}
+
+	if exePath, err := os.Executable(); err == nil {
+		addDir(filepath.Dir(exePath))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		addDir(cwd)
+	}
+
+	return dirs
+}
+
+// findBundledPython 在指定目录下查找捆绑的 Python 分发文件。
+// 支持常见便携/嵌入式分发布局：
+//   - Windows: python\python.exe, py\python.exe, python3.exe, python.exe
+//   - Unix:    python/bin/python3, python/bin/python, bin/python3, bin/python
+//
+// 返回找到的可执行文件绝对路径及其版本号；未找到返回空字符串。
+func findBundledPython(dir string) (path, version string) {
+	var candidates []string
+	if runtime.GOOS == "windows" {
+		candidates = []string{
+			filepath.Join(dir, "python", "python.exe"),
+			filepath.Join(dir, "py", "python.exe"),
+			filepath.Join(dir, "python3.exe"),
+			filepath.Join(dir, "python.exe"),
+		}
+	} else {
+		candidates = []string{
+			filepath.Join(dir, "python", "bin", "python3"),
+			filepath.Join(dir, "python", "bin", "python"),
+			filepath.Join(dir, "bin", "python3"),
+			filepath.Join(dir, "bin", "python"),
+		}
+	}
+
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if v, ok := validatePythonCandidate(candidate); ok {
+			return candidate, v
+		}
+	}
+	return "", ""
+}
+
+// validatePythonCandidate 执行 `<path> --version` 验证候选路径可用。
+// 返回版本字符串（如 "Python 3.11.5"）和是否可用。
+func validatePythonCandidate(path string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, path, "--version")
+	hideWindow(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(output)), true
 }
