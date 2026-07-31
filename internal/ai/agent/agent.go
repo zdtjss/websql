@@ -414,8 +414,15 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 		if cfg.EnableThinking {
 			ollamaCfg.Thinking = &ollama.ThinkValue{Value: true}
 		}
-		if cfg.Temperature > 0 {
-			ollamaCfg.Options = &ollama.Options{Temperature: cfg.Temperature}
+		if cfg.Temperature > 0 || cfg.FrequencyPenalty > 0 || cfg.PresencePenalty > 0 {
+			opts := &ollama.Options{Temperature: cfg.Temperature}
+			if cfg.FrequencyPenalty > 0 {
+				opts.FrequencyPenalty = cfg.FrequencyPenalty
+			}
+			if cfg.PresencePenalty > 0 {
+				opts.PresencePenalty = cfg.PresencePenalty
+			}
+			ollamaCfg.Options = opts
 		}
 		ollamaCfg.HTTPClient = NewAuthClient(cfg.ApiKey)
 		cm, err = ollama.NewChatModel(ctx, ollamaCfg)
@@ -427,6 +434,14 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 		if cfg.Temperature > 0 {
 			temp := cfg.Temperature
 			openaiCfg.Temperature = &temp
+		}
+		if cfg.FrequencyPenalty > 0 {
+			fp := cfg.FrequencyPenalty
+			openaiCfg.FrequencyPenalty = &fp
+		}
+		if cfg.PresencePenalty > 0 {
+			pp := cfg.PresencePenalty
+			openaiCfg.PresencePenalty = &pp
 		}
 		cm, err = openai.NewChatModel(ctx, openaiCfg)
 	default:

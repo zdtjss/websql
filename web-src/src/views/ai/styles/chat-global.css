@@ -265,6 +265,7 @@ body.mermaid-dragging .mermaid-container {
   position: relative;
   z-index: 0;
   overflow: hidden;
+  overflow-x: auto;
 }
 .mermaid-source-preview {
   margin: 0;
@@ -676,6 +677,36 @@ body.mermaid-dragging .mermaid-container {
 [data-theme="dark"] .mermaid-error-detail {
   color: #fca5a5;
   background: rgba(220, 38, 38, 0.1);
+}
+
+/* ── Mermaid AI 修复按钮 ── */
+.mermaid-fix-btn {
+  display: inline-flex;
+  align-items: center;
+  color: #2563eb;
+  font-weight: 500;
+}
+.mermaid-fix-btn:hover:not([disabled]) {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.08);
+}
+.mermaid-fix-btn[disabled] {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+[data-theme="dark"] .mermaid-fix-btn {
+  color: #60a5fa;
+}
+[data-theme="dark"] .mermaid-fix-btn:hover:not([disabled]) {
+  color: #93c5fd;
+  background: rgba(96, 165, 250, 0.1);
+}
+@keyframes mermaid-fix-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.mermaid-fix-spin {
+  animation: mermaid-fix-spin 1s linear infinite;
 }
 
 /* ── Mermaid 不支持的图表类型 - 可视化数据卡片 ── */
@@ -1129,6 +1160,15 @@ body.mermaid-dragging .mermaid-container {
 .mermaid-svg-wrap svg {
   max-width: 100%;
   height: auto;
+}
+/* xychart-beta 的 SVG 不应被 max-width:100% 压缩，
+   否则多标签时 x-axis 文字互相重叠。让它保持原始宽度，容器横向滚动。 */
+.mermaid-xychart .mermaid-svg-wrap svg {
+  max-width: none;
+  min-width: 600px;
+}
+.mermaid-xychart .mermaid-content-wrapper {
+  overflow-x: auto;
 }
 /* Mermaid 高度拖拽手柄 */
 .mermaid-resize-handle {

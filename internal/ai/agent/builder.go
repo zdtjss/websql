@@ -154,7 +154,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		&SkillGuardMiddleware{
 			Scope:    scope,
 			Schemas:  schemas,
-			ConnID:    connID,
+			ConnID:   connID,
 			DBType:   dbType,
 			DBSchema: dbSchema,
 		},
@@ -292,20 +292,25 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 // Agents.md 位于项目根目录，包含数据安全规范、SQL 性能规范、方言兼容性提醒等运行时指南。
 // 内容是瞬态的（不进入会话状态），不会被 summarization 压缩。
 // 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
+//
+// 读取优先级：
+//  1. 磁盘文件（工作目录下的 AGENTS.md）— 支持运行时热更新
+//  2. 编译时嵌入的内容（_embedded_agents.md）— 确保打包后可用
 func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
-	// 解析 Agents.md 的绝对路径（相对于工作目录）
-	agentsMDPath := "Agents.md"
-	if absPath, err := filepath.Abs(agentsMDPath); err == nil {
-		agentsMDPath = absPath
+	// 解析磁盘路径（可能不存在，backend 会回退到嵌入内容）
+	diskPath := "AGENTS.md"
+	if absPath, err := filepath.Abs(diskPath); err == nil {
+		diskPath = absPath
 	}
 
-	// 使用 export.OSFilesystemBackend 作为 agentsmd.Backend（只需 Read 方法）
-	backend := export.NewOSFilesystemBackend()
+	// 使用嵌入式后端：优先磁盘 → 回退嵌入
+	backend := &embeddedAgentsMDBackend{diskPath: diskPath}
 
+	// agentsmd 中间件需要一个文件路径作为标识（不影响实际读取，因为 backend 会处理）
 	mw, err := agentsmd.New(ctx, &agentsmd.Config{
-		Backend:        backend,
-		AgentsMDFiles:  []string{agentsMDPath},
-		AllAgentsMDMaxBytes: 100_000, // 100KB 上限
+		Backend:             backend,
+		AgentsMDFiles:       []string{diskPath},
+		AllAgentsMDMaxBytes: 100_000,
 		OnLoadWarning: func(filePath string, err error) {
 			log.Printf("[AgentsMD] 加载警告 - file=%s, err=%v\n", filePath, err)
 		},
@@ -315,6 +320,11 @@ func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
 		return nil
 	}
 
-	log.Printf("[Agent] AgentsMD 中间件已启用 - file=%s\n", agentsMDPath)
+	// 检测实际来源
+	if _, statErr := os.Stat(diskPath); statErr == nil {
+		log.Printf("[Agent] AgentsMD 已启用（来源：磁盘文件）- file=%s\n", diskPath)
+	} else {
+		log.Printf("[Agent] AgentsMD 已启用（来源：嵌入内容，%d 字节）\n", len(embeddedAgentsMD))
+	}
 	return mw
 }

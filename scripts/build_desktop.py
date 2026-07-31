@@ -189,6 +189,18 @@ def copy_migrations_to_desktop():
     print(f"[OK] 已复制全量初始化脚本到 {full_dst_dir}")
 
 
+def generate_agents_md_embed():
+    """执行 go generate 将 AGENTS.md 复制到 agent 包供 go:embed 嵌入。"""
+    print("\n[Build] 生成 AGENTS.md 嵌入文件...")
+    agents_md_src = os.path.join(PROJECT_ROOT, "AGENTS.md")
+    agents_md_dst = os.path.join(PROJECT_ROOT, "internal", "ai", "agent", "_embedded_agents.md")
+    if not os.path.isfile(agents_md_src):
+        print(f"  [WARN] 未找到 {agents_md_src}，跳过")
+        return
+    shutil.copy2(agents_md_src, agents_md_dst)
+    print(f"  [OK] AGENTS.md → _embedded_agents.md ({os.path.getsize(agents_md_dst)} 字节)")
+
+
 def build_go(platform_key):
     cfg = DESKTOP_PLATFORMS[platform_key]
     ext = cfg["ext"]
@@ -249,6 +261,9 @@ def build_platform(platform_key, skip_frontend, package):
         copy_syso_to_desktop()
 
     copy_migrations_to_desktop()
+
+    # 生成 AGENTS.md 嵌入文件（确保 go:embed 能找到 _embedded_agents.md）
+    generate_agents_md_embed()
 
     if package:
         print("\n[Build] 调用 wails3 build 完成完整构建与打包...")

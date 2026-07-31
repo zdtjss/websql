@@ -21,6 +21,8 @@ export interface UseMarkdownRendererDeps {
   msgContainer: Ref<HTMLElement | null>
   /** 当前主题（用于切换 mermaid 主题） */
   currentTheme: Ref<string>
+  /** 当 mermaid 渲染失败时，请求 AI 修复的回调（可选） */
+  onFixMermaid?: (source: string, errorMsg: string) => void
 }
 
 /**
@@ -38,7 +40,7 @@ export interface UseMarkdownRendererDeps {
  *      返回的事件处理器进行绑定，onUnmounted 中解绑。
  */
 export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
-  const { chatHistory, msgContainer, currentTheme } = deps
+  const { chatHistory, msgContainer, currentTheme, onFixMermaid } = deps
 
   const apiBase = import.meta.env.VITE_API_URL || ''
 
@@ -810,6 +812,19 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
   function sanitizeMermaidSource(source: string): string {
     if (!source) return source
     let result = source
+
+    // ─── 通用修复：移除 YAML front-matter `---` 配置块 ───
+    // AI 常生成 `---\nconfig:\n  xyChart:\n    width: 900\n---` 形式的前置配置，
+    // 但 mermaid.render() 不接受 YAML front-matter（仅 CLI/Live Editor 支持），
+    // 解析器遇到 `---` 会报 "Parse error" 或将其误认为箭头语法。
+    // 移除整个 front-matter 块，保留其后的图表声明。
+    result = result.replace(/^\s*---[\s\S]*?---\s*\n?/, '')
+
+    // ─── 通用修复：移除 AI 偶尔生成的 ```mermaid 内嵌 fence 标记 ───
+    // 有时 AI 会在 mermaid 源码内部再嵌套 ```mermaid ... ```，导致解析失败
+    result = result.replace(/^```mermaid\s*$/gm, '')
+    result = result.replace(/^```\s*$/gm, '')
+
     // 去掉 title 行两端的双引号: `title "xxx"` → `title xxx`
     // xychart-beta 的 title 含特殊字符（括号、~、中文等）时必须保留引号，否则词法解析失败
     if (!/^xychart(-beta)?\b/m.test(result)) {
@@ -822,13 +837,17 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       result = result.replace(/<br\s*\/?>/gi, ' ')
       result = result.replace(/[()\[\]]/g, ' ')
     }
-    // xychart-beta 不支持 legend 指令：mermaid 11.x 的 jison 语法定义中无 LEGEND 终端符
-    // （仅支持 XYCHART/title/X_AXIS/Y_AXIS/LINE/BAR/acc_title/acc_descr 等）。
-    // AI 常生成 `legend ["待填写", "按时提交", "逾期补填"]` 描述多系列含义，
-    // 但 mermaid 解析器会报词法/语法错误，导致 xychart-beta 整体渲染失败。
-    // 移除 legend 行以恢复渲染（多系列 bar/line 仍正常显示，仅缺少图例文字）。
+    // ─── xychart-beta 专项修复 ───
     if (/^xychart(-beta)?\b/m.test(result)) {
+      // 修复1: legend 行移除（mermaid 11.x 不支持 LEGEND 终端符）
       result = result.replace(/^\s*legend\b[^\n]*$/gim, '')
+      // 修复2: y-axis / x-axis 范围分隔符 `--` → `-->`
+      // AI 高频错误：`y-axis "标签" 0 -- 1200`，解析器期望 ARROW_DELIMITER (`-->`)
+      // 但遇到 `--` 后跟数字时将 `-` 解析为 MINUS，报 "Expecting 'ARROW_DELIMITER', got 'MINUS'"
+      // 匹配模式：`数字 -- 数字` 或 `数字 --数字`（轴范围声明中）
+      result = result.replace(/^(\s*[xy]-axis\b.*\d)\s*--\s*(?!>)(\d)/gm, '$1 --> $2')
+      // 修复3: 移除不支持的 dateFormat / axisFormat 等 gantt 语法混入
+      result = result.replace(/^\s*(dateFormat|axisFormat|numberFormat)\b[^\n]*$/gim, '')
     }
     // timeline 语法中 `:` 是日期与事件的分隔符，AI 常生成 "日期 时间 : 事件" 格式
     // （如 "2026-06-04 09:12 : 黄迪发起窜货投诉申请"），其中时间的冒号被解析器误认为分隔符，
@@ -837,6 +856,26 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     if (/^timeline\b/m.test(result)) {
       result = result.replace(/^(\s*\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s*:\s*(.+)$/gm, '$1 : $2 $3')
     }
+    // ─── pie 专项修复 ───
+    if (/^pie\b/m.test(result)) {
+      // AI 常在 pie 中生成带 % 的数值如 `"类别" : 45%`，mermaid pie 只接受纯数字
+      result = result.replace(/^(\s*"[^"]+"\s*:\s*[\d.]+)%\s*$/gm, '$1')
+    }
+    // ─── flowchart / graph 专项修复 ───
+    if (/^(flowchart|graph)\b/m.test(result)) {
+      // AI 有时生成 `A["带<br>换行"]` 中的 <br> 在严格模式下不被接受
+      // 将 <br> / <br/> 替换为实际换行（mermaid flowchart 的 htmlLabels 模式支持 <br/>，
+      // 但某些上下文中仍有兼容问题，保留此行作为保底——仅在 securityLevel=strict 时生效）
+      // 注意：当前配置 securityLevel='loose'，htmlLabels=true，<br/> 实际可用，暂不替换
+    }
+    // ─── sequenceDiagram 专项修复 ───
+    if (/^sequenceDiagram\b/m.test(result)) {
+      // AI 常生成 `participant A as "用户"` 带引号的别名，mermaid 不需要引号
+      result = result.replace(/^(\s*(?:participant|actor)\s+\S+\s+as\s+)"([^"]+)"$/gm, '$1$2')
+    }
+
+    // 最终清理：去除首尾多余空行（避免解析器对前导空行报错）
+    result = result.trim()
     return result
   }
 
@@ -887,6 +926,10 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
         const { svg } = await mermaidLib.render(renderId, trimmed)
         const innerHtml = buildMermaidInnerHtml(svg, source)
         el.innerHTML = innerHtml
+        // xychart-beta 标记：为容器添加 class，让 CSS 取消 max-width 压缩
+        if (/^xychart(-beta)?\b/m.test(trimmed)) {
+          el.classList.add('mermaid-xychart')
+        }
         // 后置修正：强制替换 SVG 中残留的深色矩形填充
         patchMermaidSvgColors(el)
         // 更新缓存时也要包含修正后的 HTML
@@ -913,10 +956,17 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       }
     }
 
-    // 渲染失败 - 显示友好的错误卡片（含源码 + 复制按钮）
+    // 渲染失败 - 显示友好的错误卡片（含源码 + 复制按钮 + AI修复按钮）
     console.warn('Mermaid render error for source:', trimmed.substring(0, 100), lastError)
     const escapedSource = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const errorMsg = lastError ? String((lastError as Error).message || '').substring(0, 120) : '未知错误'
+    const errorMsg = lastError ? String((lastError as Error).message || '').substring(0, 200) : '未知错误'
+    // 将源码和错误信息存入 data 属性，供 AI 修复按钮使用
+    let encodedFixSource = ''
+    let encodedFixError = ''
+    try {
+      encodedFixSource = btoa(encodeURIComponent(source))
+      encodedFixError = btoa(encodeURIComponent(errorMsg))
+    } catch (_) { /* ignore */ }
     el.innerHTML = `<div class="mermaid-content-wrapper">` +
       `<div class="mermaid-error-card">` +
         `<div class="mermaid-error-header">` +
@@ -928,6 +978,10 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
       `</div>` +
     `</div>` +
     `<div class="mermaid-toolbar">` +
+      `<button class="mermaid-tb-btn mermaid-fix-btn" data-action="fix-mermaid" data-fix-source="${encodedFixSource}" data-fix-error="${encodedFixError}" title="让 AI 修复此图表">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>` +
+        `<span style="margin-left:3px;font-size:12px;">AI 修复</span>` +
+      `</button>` +
       `<button class="mermaid-tb-btn" data-action="copy-source" title="复制源码">` +
         `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>` +
       `</button>` +
@@ -1198,6 +1252,31 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
           btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
           setTimeout(() => { btn.innerHTML = origHtml }, 1200)
         }).catch(() => { /* ignore */ })
+        break
+      }
+      case 'fix-mermaid': {
+        // AI 修复：从 data 属性解码 mermaid 源码和错误信息，调用 onFixMermaid 回调
+        if (!onFixMermaid) {
+          ElMessage.info('AI 修复功能不可用')
+          break
+        }
+        const fixSourceEncoded = btn.dataset.fixSource || ''
+        const fixErrorEncoded = btn.dataset.fixError || ''
+        let fixSource = ''
+        let fixError = ''
+        try {
+          fixSource = decodeURIComponent(atob(fixSourceEncoded))
+          fixError = decodeURIComponent(atob(fixErrorEncoded))
+        } catch (_) { /* ignore */ }
+        if (!fixSource) {
+          ElMessage.warning('无法获取图表源码')
+          break
+        }
+        // 禁用按钮，防止重复点击
+        btn.setAttribute('disabled', 'true')
+        btn.style.opacity = '0.5'
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mermaid-fix-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span style="margin-left:3px;font-size:12px;">修复中...</span>'
+        onFixMermaid(fixSource, fixError)
         break
       }
       case 'export-png': {

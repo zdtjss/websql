@@ -131,8 +131,24 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		}
 	}
 
-	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, fullSchemas=%d, allFull=%v, tables=%d, columnTables=%d\n",
-		userId, connId, schemaNames, len(scope.FullAccessSchemas), scope.AllSchemasFull, len(scope.AllowedTables), len(scope.AllowedColumns))
+	// 判定 conn 级完整访问权限（最高级别快速路径）：
+	// 条件：用户在某个角色中拥有 conn 级权限，且所有选中的 schema 均被授予完整访问
+	// （即无任何 schema/table/column 级限制降级了 conn 级权限）。
+	// 此标记启用后，SkipChecks() 返回 true，跳过 Permission Agent 调用和程序化检查，
+	// 同时避免不必要的 Permission Agent 实例化（builder.go 中依赖此字段）。
+	if scope.AllSchemasFull && len(scope.AllowedTables) == 0 && len(scope.AllowedColumns) == 0 {
+		// 确认确实来源于 conn 级权限（而非单纯的多个 schema 级权限恰好覆盖全部）
+		for _, roleDetails := range byRole {
+			r := admin.ResolveRolePermissions(roleDetails)
+			if r.HasConnLevel {
+				scope.HasFullConnAccess = true
+				break
+			}
+		}
+	}
+
+	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, fullConn=%v, fullSchemas=%d, allFull=%v, tables=%d, columnTables=%d\n",
+		userId, connId, schemaNames, scope.HasFullConnAccess, len(scope.FullAccessSchemas), scope.AllSchemasFull, len(scope.AllowedTables), len(scope.AllowedColumns))
 
 	return scope
 }
@@ -261,7 +277,7 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 func (s *PermissionScope) DescribeForPrompt() string {
 	if !s.IsRemote || s.HasFullConnAccess {
 		if !s.AllowModify {
-			return "\n\n## 数据修改权限（最高优先级）\n当前角色**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。\n"
+			return "\n\n## 数据权限（违反将被拦截并记录安全事件）\n⛔ **禁止修改数据**。不得生成或执行 INSERT/UPDATE/DELETE/ALTER/DROP/CREATE/TRUNCATE。用户要求修改时告知：当前角色无修改权限，请联系管理员。\n"
 		}
 		return ""
 	}
@@ -273,24 +289,26 @@ func (s *PermissionScope) DescribeForPrompt() string {
 		}
 		schemaDesc := strings.Join(schemaNames, ", ")
 		if !s.AllowModify {
-			return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema [%s] 的完整访问权限，但**禁止修改数据**。你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。", schemaDesc)
+			return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n⛔ **禁止修改数据**。不得生成或执行任何写操作 SQL。用户要求修改时告知：当前角色无修改权限。\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
 		}
-		return fmt.Sprintf("\n\n## 数据权限\n拥有 Schema [%s] 的完整访问权限。禁止访问未授权的 Schema。", schemaDesc)
+		return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
 	}
 
 	var sb strings.Builder
-	sb.WriteString("\n\n## 数据权限（最高优先级）\n")
-	sb.WriteString("绝对禁止使用、提及任何未授权表的信息。\n\n")
+	sb.WriteString("\n\n## 数据权限（违反将被拦截并记录安全事件）\n")
+	sb.WriteString("你**仅被允许**访问以下表和字段。任何对未列出对象的查询将被系统立即拒绝。\n\n")
 
-	if len(s.AllowedTables) > 0 {
-		tables := make([]string, 0, len(s.AllowedTables))
+	// 表格化展示权限
+	hasTablePerm := len(s.AllowedTables) > 0
+	hasColPerm := len(s.AllowedColumns) > 0
+
+	if hasTablePerm || hasColPerm {
+		sb.WriteString("| 表名 | 访问级别 | 可用字段 |\n")
+		sb.WriteString("|------|---------|--------|\n")
+
 		for t := range s.AllowedTables {
-			tables = append(tables, t)
+			fmt.Fprintf(&sb, "| %s | full | 全部 |\n", t)
 		}
-		fmt.Fprintf(&sb, "表级权限（可访问所有字段）：%s\n\n", strings.Join(tables, ", "))
-	}
-
-	if len(s.AllowedColumns) > 0 {
 		for table, cols := range s.AllowedColumns {
 			if s.AllowedTables[table] {
 				continue
@@ -299,12 +317,15 @@ func (s *PermissionScope) DescribeForPrompt() string {
 			for col := range cols {
 				colList = append(colList, col)
 			}
-			fmt.Fprintf(&sb, "字段级权限 - 表 `%s`：仅允许 [%s]，其他字段禁止使用\n", table, strings.Join(colList, ", "))
+			fmt.Fprintf(&sb, "| %s | column | %s |\n", table, strings.Join(colList, ", "))
 		}
+		sb.WriteString("\n")
 	}
 
+	sb.WriteString("⚠️ 对 column 级别的表使用 SELECT * **会被拒绝**，必须显式列出允许字段。\n")
+
 	if !s.AllowModify {
-		sb.WriteString("\n**禁止修改数据**：你绝对不能生成或执行任何 INSERT、UPDATE、DELETE、ALTER、DROP、CREATE、TRUNCATE 等写操作 SQL。如果用户要求修改数据，请明确告知：您当前的角色没有数据修改权限，请联系管理员开通。\n")
+		sb.WriteString("⛔ **禁止修改数据**。不得生成或执行任何写操作 SQL。\n")
 	}
 
 	return sb.String()

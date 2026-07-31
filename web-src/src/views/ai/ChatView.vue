@@ -481,6 +481,11 @@ const mdRenderer = useMarkdownRenderer({
   chatHistory: chatHistory.chatHistory,
   msgContainer,
   currentTheme,
+  onFixMermaid: (source: string, errorMsg: string) => {
+    // 后期绑定：调用 chatStream.streamChatResponse 发送修复请求
+    // 此时 chatStream 尚未创建，但调用时已可用（闭包捕获）
+    handleFixMermaid(source, errorMsg)
+  },
 })
 
 // 更新后期绑定
@@ -528,7 +533,31 @@ const chatStream = useChatStream({
   lastQuestion: sqlConfirm.lastQuestion,
 })
 
-// ── 5. 定义 clearSession（协调所有 composable 的重置） ──
+// ── 5. Mermaid AI 修复：渲染失败时一键让 AI 修正语法 ──
+function handleFixMermaid(source: string, errorMsg: string): void {
+  if (loading.value) {
+    ElMessage.warning('AI 正在响应中，请稍后再试')
+    return
+  }
+  // 构造一条精确的修复指令，包含原始源码和解析错误
+  const fixPrompt = `我刚才生成的 Mermaid 图表渲染失败，请修复语法错误并重新输出完整的 mermaid 代码块。
+
+**解析错误**：
+${errorMsg}
+
+**原始代码**：
+\`\`\`
+${source}
+\`\`\`
+
+请直接输出修复后的完整 \`\`\`mermaid 代码块，不需要解释。`
+
+  // 以用户消息形式发送修复请求（不显示在输入框，直接走 streamChatResponse）
+  chatHistory.chatHistory.value.push({ role: 'user', content: '🔧 修复图表渲染错误' })
+  void chatStream.streamChatResponse(fixPrompt, null)
+}
+
+// ── 6. 定义 clearSession（协调所有 composable 的重置） ──
 function clearSession(showMsg?: boolean): void {
   chatStream.stopGeneration()
   chatHistory.clearMessages()

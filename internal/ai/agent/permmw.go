@@ -8,8 +8,8 @@ import (
 	"log"
 	"strings"
 
-	appperm "websql/internal/app/permission"
 	conn "websql/internal/app/conn"
+	appperm "websql/internal/app/permission"
 	"websql/internal/audit"
 
 	"github.com/cloudwego/eino/adk"
@@ -130,9 +130,8 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return endpoint(ctx, argumentsInJSON, opts...)
 		case "execute":
 			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
-			// 此处记录审计日志后放行，命令黑名单校验在执行层拦截
-			m.logAllow(tCtx.Name, "execute_validated_by_backend")
-			return endpoint(ctx, argumentsInJSON, opts...)
+			// 此处增加审计记录 + 间接危险命令检测
+			return m.checkExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
 			m.logAllow(tCtx.Name, "unmonitored_tool")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -180,8 +179,8 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return endpoint(ctx, argumentsInJSON, opts...)
 		case "execute":
 			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
-			m.logAllow(tCtx.Name+"(stream)", "execute_validated_by_backend")
-			return endpoint(ctx, argumentsInJSON, opts...)
+			// 审计记录 + 间接危险命令检测（流式版本）
+			return m.checkStreamExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
 			m.logAllow(tCtx.Name+"(stream)", "unmonitored_tool")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -455,7 +454,20 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 		return "", m.buildPermError(decision)
 	}
 
-	m.logAllow("exec_sql", "agent")
+	// 双重验证：Permission Agent 允许后，对高风险写操作（DDL + 无 WHERE 的 DELETE/UPDATE）
+	// 追加程序化表级校验。防止 Permission Agent（LLM）误放行导致越权操作。
+	// 仅做表级验证（轻量），不重复做列级验证（已由 Agent 完成）。
+	if containsDangerousSQL(sql) {
+		if err := m.doubleCheckHighRiskExec(sql, tables); err != nil {
+			m.logDeny("exec_sql", "双重验证拦截(agent允许但程序化拒绝)", err.(*PermissionError).Objects)
+			m.auditPermDenied("exec_sql", "double_check_blocked: "+err.Error(), err.(*PermissionError).Objects)
+			return "", err
+		}
+		m.logAllow("exec_sql", "agent+double_check")
+	} else {
+		m.logAllow("exec_sql", "agent")
+	}
+
 	return endpoint(ctx, args, opts...)
 }
 
@@ -491,6 +503,41 @@ func (m *PermissionMiddleware) checkExecAccessFallback(ctx context.Context, args
 
 	m.logAllow("exec_sql", "fallback(programmatic)")
 	return endpoint(ctx, args, opts...)
+}
+
+// doubleCheckHighRiskExec 对高风险写操作做程序化表级双重验证。
+// 当 Permission Agent（LLM）返回 allowed=true 时，此函数对 DDL/危险 DML 追加
+// 最低限度的程序化验证（仅验证表级访问权限），防止 LLM 误判导致越权。
+//
+// 设计原则：
+//   - 仅对高风险操作生效（由 containsDangerousSQL 判断）
+//   - 仅做表级验证（轻量且可靠），不重复 Agent 已完成的列级/语义分析
+//   - 发现任何一个无权限表即拒绝，不做部分允许
+func (m *PermissionMiddleware) doubleCheckHighRiskExec(sql string, tables []string) error {
+	if len(tables) == 0 {
+		tables = appperm.ExtractTablesFromSQL(sql)
+	}
+	if len(tables) == 0 {
+		// 无法提取表名（例如 SET/USE 等语句），退化放行
+		return nil
+	}
+
+	var deniedTables []string
+	for _, table := range tables {
+		if !m.Scope.IsTableAllowedIgnoreCase(table) {
+			deniedTables = append(deniedTables, table)
+		}
+	}
+
+	if len(deniedTables) > 0 {
+		log.Printf("%s [双重验证] Permission Agent 允许但程序化检查拦截 - sql=%s, deniedTables=%v\n",
+			m.logPrefix(), truncateForLog(sql), deniedTables)
+		return &PermissionError{
+			Message: fmt.Sprintf("双重验证拦截：Permission Agent 判定允许，但程序化检查发现无权访问表 %v", deniedTables),
+			Objects: deniedTables,
+		}
+	}
+	return nil
 }
 
 func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, opts ...tool.Option) (string, error) {
@@ -830,4 +877,166 @@ func truncateForLog(s string) string {
 		return s[:300] + "..."
 	}
 	return strings.ReplaceAll(s, "\n", " ")
+}
+
+// ──────────────────────────────────────────────
+// execute 工具审计与安全增强
+// ──────────────────────────────────────────────
+
+// checkExecuteAccess 对 execute 工具增加审计记录和间接危险命令检测。
+// OSFilesystemBackend.validateCommand 在执行层做第一道黑名单拦截，
+// 此处在权限层做第二道间接攻击检测 + 完整审计记录。
+func (m *PermissionMiddleware) checkExecuteAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	command := m.extractCommandFromArgs(args)
+
+	// 间接危险命令检测
+	if warning := detectIndirectDangerousCommand(command); warning != "" {
+		m.logDeny("execute", "间接危险命令检测", []string{warning})
+		m.auditExecute(command, "denied", warning)
+		return "", &PermissionError{
+			Message: fmt.Sprintf("execute 安全检查拦截：%s", warning),
+			Objects: []string{command},
+		}
+	}
+
+	// 审计记录（执行前）
+	m.auditExecute(command, "executing", "")
+	m.logAllow("execute", "audit_recorded")
+
+	result, err := endpoint(ctx, args, opts...)
+
+	// 审计记录（执行后更新状态）
+	if err != nil {
+		m.auditExecute(command, "failed", err.Error())
+	}
+
+	return result, err
+}
+
+// checkStreamExecuteAccess 流式版本的 execute 审计
+func (m *PermissionMiddleware) checkStreamExecuteAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	command := m.extractCommandFromArgs(args)
+
+	// 间接危险命令检测
+	if warning := detectIndirectDangerousCommand(command); warning != "" {
+		m.logDeny("execute(stream)", "间接危险命令检测", []string{warning})
+		m.auditExecute(command, "denied", warning)
+		return nil, &PermissionError{
+			Message: fmt.Sprintf("execute 安全检查拦截：%s", warning),
+			Objects: []string{command},
+		}
+	}
+
+	// 审计记录
+	m.auditExecute(command, "executing", "")
+	m.logAllow("execute(stream)", "audit_recorded")
+
+	return endpoint(ctx, args, opts...)
+}
+
+// extractCommandFromArgs 从 execute 工具参数中提取命令字符串
+func (m *PermissionMiddleware) extractCommandFromArgs(args string) string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return ""
+	}
+	if cmd, ok := raw["command"].(string); ok {
+		return strings.TrimSpace(cmd)
+	}
+	// 兼容其他可能的参数名
+	if cmd, ok := raw["cmd"].(string); ok {
+		return strings.TrimSpace(cmd)
+	}
+	return ""
+}
+
+// auditExecute 记录 execute 工具的审计日志
+func (m *PermissionMiddleware) auditExecute(command, status, errorMsg string) {
+	connName, schemaName := conn.GetConnInfo(m.Scope.ConnID)
+
+	riskLevel := "medium"
+	if status == "denied" {
+		riskLevel = "high"
+	}
+
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:     "agent",
+		ToolName:   "execute",
+		SQLText:    truncateForAudit(command),
+		SQLType:    "SHELL",
+		RiskLevel:  riskLevel,
+		Status:     status,
+		ConnID:     m.Scope.ConnID,
+		ConnName:   connName,
+		SchemaName: schemaName,
+		UserID:     m.Scope.UserID,
+		ErrorMsg:   errorMsg,
+	})
+}
+
+// truncateForAudit 截断审计内容，避免巨大命令撑爆数据库字段
+func truncateForAudit(s string) string {
+	if len(s) > 2000 {
+		return s[:2000] + "...(truncated)"
+	}
+	return s
+}
+
+// detectIndirectDangerousCommand 检测通过间接方式执行危险操作的命令。
+// 补充 OSFilesystemBackend.defaultCommandValidator 的直接模式检测，
+// 覆盖以下攻击向量：
+//   - Python subprocess / os.system 执行 shell 命令
+//   - base64 编码绕过
+//   - 数据外传（python requests/urllib 发送数据）
+//   - 数据库 CLI 直接操作
+//
+// 返回空字符串表示安全；返回非空字符串为拦截原因。
+func detectIndirectDangerousCommand(command string) string {
+	if command == "" {
+		return ""
+	}
+	lower := strings.ToLower(command)
+
+	// 1. Python 中通过 subprocess/os.system 间接执行 shell（可绕过前端黑名单）
+	indirectExecPatterns := []struct {
+		pattern string
+		reason  string
+	}{
+		{"os.system(", "检测到 Python os.system() 调用，可能用于绕过命令校验"},
+		{"subprocess.call(", "检测到 Python subprocess 调用，可能用于绕过命令校验"},
+		{"subprocess.run(", "检测到 Python subprocess 调用，可能用于绕过命令校验"},
+		{"subprocess.popen(", "检测到 Python subprocess 调用，可能用于绕过命令校验"},
+		{"subprocess.check_output(", "检测到 Python subprocess 调用，可能用于绕过命令校验"},
+		// base64 编码执行
+		{"base64 -d", "检测到 base64 解码执行，可能用于隐藏恶意命令"},
+		{"base64 --decode", "检测到 base64 解码执行，可能用于隐藏恶意命令"},
+		// 数据外传
+		{"requests.post(", "检测到 Python requests 外传数据"},
+		{"requests.get(", "检测到 Python requests 发起网络请求"},
+		{"urllib.request", "检测到 Python urllib 发起网络请求"},
+		{"http.client", "检测到 Python http.client 发起网络请求"},
+		{"socket.connect", "检测到 Python socket 连接"},
+		// 数据库 CLI 直接操作（绕过权限中间件）
+		{"mysql -e", "检测到直接使用数据库 CLI 执行 SQL，绕过权限控制"},
+		{"mysql --execute", "检测到直接使用数据库 CLI 执行 SQL，绕过权限控制"},
+		{"psql -c", "检测到直接使用数据库 CLI 执行 SQL，绕过权限控制"},
+		{"sqlite3 ", "检测到直接使用数据库 CLI，绕过权限控制"},
+		{"sqlplus", "检测到直接使用 Oracle CLI，绕过权限控制"},
+		// eval/exec 动态执行
+		{"eval(", "检测到 Python eval() 动态执行代码"},
+		{"exec(", "检测到 Python exec() 动态执行代码"},
+		// PowerShell 编码绕过
+		{"-encodedcommand", "检测到 PowerShell 编码命令执行"},
+		{"invoke-webrequest", "检测到 PowerShell 网络请求"},
+		{"invoke-restmethod", "检测到 PowerShell 网络请求"},
+		{"new-object net.webclient", "检测到 PowerShell 网络下载"},
+	}
+
+	for _, p := range indirectExecPatterns {
+		if strings.Contains(lower, p.pattern) {
+			return p.reason
+		}
+	}
+
+	return ""
 }

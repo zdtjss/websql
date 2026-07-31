@@ -56,6 +56,8 @@ type AIModelItem struct {
 	Model            string  `json:"model"`
 	ApiKey           string  `json:"apiKey"`
 	Temperature      float32 `json:"temperature"`
+	FrequencyPenalty float32 `json:"frequencyPenalty"`
+	PresencePenalty  float32 `json:"presencePenalty"`
 	MaxContextTokens int     `json:"maxContextTokens"`
 	EnableThinking   bool    `json:"enableThinking"`
 	IsDefault        bool    `json:"isDefault"`
@@ -78,6 +80,8 @@ type AIConfig struct {
 	Model            string  `json:"model"`
 	ApiKey           string  `json:"apiKey"`
 	Temperature      float32 `json:"temperature"`
+	FrequencyPenalty float32 `json:"frequencyPenalty"`
+	PresencePenalty  float32 `json:"presencePenalty"`
 	MaxContextTokens int     `json:"maxContextTokens"`
 	EnableThinking   bool    `json:"enableThinking"`
 }
@@ -181,6 +185,8 @@ func GetAIConfigFromDB() *AIConfig {
 			Model:            picked.Model,
 			ApiKey:           picked.ApiKey,
 			Temperature:      temperature,
+			FrequencyPenalty: picked.FrequencyPenalty,
+			PresencePenalty:  picked.PresencePenalty,
 			MaxContextTokens: picked.MaxContextTokens,
 			EnableThinking:   picked.EnableThinking,
 		}
@@ -343,6 +349,8 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 							Model:            m.Model,
 							ApiKey:           m.ApiKey,
 							Temperature:      m.Temperature,
+							FrequencyPenalty: m.FrequencyPenalty,
+							PresencePenalty:  m.PresencePenalty,
 							MaxContextTokens: m.MaxContextTokens,
 							EnableThinking:   m.EnableThinking,
 						}
@@ -364,6 +372,8 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 				Model:            m.Model,
 				ApiKey:           m.ApiKey,
 				Temperature:      m.Temperature,
+				FrequencyPenalty: m.FrequencyPenalty,
+				PresencePenalty:  m.PresencePenalty,
 				MaxContextTokens: m.MaxContextTokens,
 				EnableThinking:   m.EnableThinking,
 			}

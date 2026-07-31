@@ -177,6 +177,17 @@ def cleanup_fresh_db(tmp_dir):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def generate_agents_md_embed():
+    """将 AGENTS.md 复制到 agent 包供 go:embed 嵌入。"""
+    agents_md_src = os.path.join(PROJECT_ROOT, "AGENTS.md")
+    agents_md_dst = os.path.join(PROJECT_ROOT, "internal", "ai", "agent", "_embedded_agents.md")
+    if not os.path.isfile(agents_md_src):
+        print(f"  [WARN] 未找到 {agents_md_src}，跳过 AGENTS.md 嵌入")
+        return
+    shutil.copy2(agents_md_src, agents_md_dst)
+    print(f"  [OK] AGENTS.md 嵌入文件已生成 ({os.path.getsize(agents_md_dst)} 字节)")
+
+
 def compile_go(platform_key):
     cfg = PLATFORMS[platform_key]
     goos, goarch, ext = cfg["goos"], cfg["goarch"], cfg["ext"]
@@ -252,6 +263,11 @@ def create_package(platform_key, binary_path, db_path):
                     arcname = os.path.join("skills", os.path.relpath(file_path, SKILLS_DIR))
                     zipf.write(file_path, arcname)
 
+        # AGENTS.md（运行时可热更新覆盖嵌入内容）
+        agents_md = os.path.join(PROJECT_ROOT, "AGENTS.md")
+        if os.path.isfile(agents_md):
+            zipf.write(agents_md, "AGENTS.md")
+
         # 启动脚本
         if goos == "windows":
             zipf.writestr("startup.bat", STARTUP_BAT_CONTENT)
@@ -304,6 +320,7 @@ def main():
 
         # 逐平台编译 + 打包
         print("\n[3/4] 交叉编译 Go 二进制...")
+        generate_agents_md_embed()
         packages = []
         for platform_key in targets:
             cfg = PLATFORMS[platform_key]

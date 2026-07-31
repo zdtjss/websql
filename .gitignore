@@ -65,4 +65,7 @@ cmd/desktop/static/*
 !cmd/desktop/static/.gitkeep
 release-desktop/
 
+# Generated embed files
+internal/ai/agent/_embedded_agents.md
+
 node_modules/

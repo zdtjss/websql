@@ -120,15 +120,13 @@
           >
             <el-table-column prop="name" label="表名" show-overflow-tooltip resizable />
             <el-table-column prop="comment" label="注释" show-overflow-tooltip resizable />
-            <el-table-column label="" width="44" align="center" resizable>
+            <el-table-column label="" width="68" align="center" resizable>
               <template #default="scope">
+                <el-icon style="cursor: pointer; color: #409eff; vertical-align: middle;" :size="16" title="浏览数据" @click.stop="onTableAction('browse', scope.row)"><Document /></el-icon>
                 <el-dropdown trigger="hover" @command="(cmd) => onTableAction(cmd, scope.row)" @click.stop>
-                  <el-icon style="cursor: pointer; color: #909399;" :size="16" title="操作"><MoreFilled /></el-icon>
+                  <el-icon style="cursor: pointer; color: #909399; vertical-align: middle; margin-left: 6px;" :size="16" title="操作"><MoreFilled /></el-icon>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="browse">
-                        <el-icon><Document /></el-icon>浏览数据
-                      </el-dropdown-item>
                       <el-dropdown-item command="export">
                         <el-icon><Download /></el-icon>数据导出
                       </el-dropdown-item>
@@ -228,8 +226,8 @@ const sidebarWidth = ref(500)
 let isResizing = false
 
 function initSidebarWidth() {
-  const el = document.querySelector('.tm-sidebar')
-  if (el) {
+  const el = rootRef.value?.querySelector('.tm-sidebar')
+  if (el && el.offsetWidth > 0) {
     sidebarWidth.value = el.offsetWidth
   }
 }
@@ -245,7 +243,7 @@ function onResizeStart(e) {
 
 function onResizeMove(e) {
   if (!isResizing) return
-  const parent = document.querySelector('.tm-body')
+  const parent = rootRef.value?.querySelector('.tm-body')
   if (!parent) return
   const parentRect = parent.getBoundingClientRect()
   let newWidth = e.clientX - parentRect.left
@@ -529,7 +527,8 @@ onMounted(() => {
   if (rootRef.value) {
     visibilityObserver = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) {
-        nextTick(() => {
+        // 等浏览器完成布局计算后再 doLayout，避免 flex 高度尚未解析时 el-table height=100% 为 0
+        requestAnimationFrame(() => {
           tableRef.value?.doLayout()
         })
       }
@@ -622,7 +621,7 @@ watch(
 
 .tm-editor {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   padding: 8px 12px;
   display: flex;
   flex-direction: column;
@@ -659,6 +658,7 @@ watch(
 .tm-editor :deep(.table-editor-tabs) {
   flex: 1;
   min-height: 0;
+  max-height: none;
 }
 
 .classical-empty {

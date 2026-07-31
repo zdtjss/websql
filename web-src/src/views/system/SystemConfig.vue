@@ -191,6 +191,14 @@
         <el-form-item label="Temperature">
           <el-slider v-model="modelForm.temperature" :min="0" :max="2" :step="0.1" show-input />
         </el-form-item>
+        <el-form-item label="频率惩罚">
+          <el-slider v-model="modelForm.frequencyPenalty" :min="0" :max="2" :step="0.1" show-input />
+          <span style="font-size: 12px; color: var(--text-tertiary);">按 token 出现频率施加惩罚，抑制重复内容生成（推荐 0.3~0.8）</span>
+        </el-form-item>
+        <el-form-item label="存在惩罚">
+          <el-slider v-model="modelForm.presencePenalty" :min="0" :max="2" :step="0.1" show-input />
+          <span style="font-size: 12px; color: var(--text-tertiary);">对已出现过的 token 施加固定惩罚，鼓励多样化表达（推荐 0.1~0.6）</span>
+        </el-form-item>
         <el-form-item label="上下文窗口">
           <el-input-number v-model="modelForm.maxContextTokens" :min="0" :step="1000" placeholder="0=自动推断" />
           <span style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">模型上下文窗口大小（tokens），0 表示使用默认值 128000</span>
@@ -291,6 +299,8 @@ const modelForm = ref({
   model: '',
   apiKey: '',
   temperature: 0.7,
+  frequencyPenalty: 0.5,
+  presencePenalty: 0.3,
   maxContextTokens: 0,
   enableThinking: false
 })
@@ -368,6 +378,8 @@ const showAddModelDialog = () => {
     model: '',
     apiKey: '',
     temperature: 0.7,
+    frequencyPenalty: 0.5,
+    presencePenalty: 0.3,
     maxContextTokens: 0,
     enableThinking: false
   }
@@ -383,6 +395,8 @@ const showEditModelDialog = (model) => {
     model: model.model,
     apiKey: model.apiKey || '',
     temperature: model.temperature || 0.7,
+    frequencyPenalty: model.frequencyPenalty ?? 0.5,
+    presencePenalty: model.presencePenalty ?? 0.3,
     maxContextTokens: model.maxContextTokens || 0,
     enableThinking: model.enableThinking || false
   }

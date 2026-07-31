@@ -109,8 +109,9 @@ function buildMermaidConfig(theme) {
     },
     // Mindmap: 宽松节点
     mindmap: { padding: 20, maxNodeWidth: 220 },
-    // XY Chart: 精致图表
-    xyChart: { titlePadding: 12, titleFontSize: 15, width: 700, height: 400 },
+    // XY Chart: 精致图表（宽度设大以避免多标签重叠，容器支持横向滚动）
+    // labelRotation: -45 让 x-axis 标签倾斜显示，防止长文本重叠
+    xyChart: { titlePadding: 12, titleFontSize: 15, width: 900, height: 450, xAxis: { labelPadding: 15, labelRotation: -45 } },
     // Pie: 优雅饼图
     pie: { textPosition: 0.72, useMaxWidth: true },
     // Sequence: 紧凑时序
