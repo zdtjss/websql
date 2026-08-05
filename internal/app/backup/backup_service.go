@@ -2,6 +2,7 @@ package backup
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -407,19 +408,31 @@ func (s *backupService) GetBackupTables(connId, schema, authorization string) (m
 func (s *backupService) DownloadBackup(c *gin.Context, backupId string) error {
 	s.repo.EnsureBackupTable()
 
+	if backupId == "" {
+		logger.PrintErrf("[DownloadBackup] backupId 为空", fmt.Errorf("backupId 缺失"))
+		return fmt.Errorf("备份不存在")
+	}
+
 	record, err := s.repo.FindBackupById(backupId)
 	if err != nil {
-		return fmt.Errorf("备份不存在")
+		// 记录真实错误原因（记录不存在 / 列扫描失败等），避免统一误报“备份不存在”而无法排查
+		logger.PrintErrf("[DownloadBackup] 查询备份记录失败 backupId="+backupId, err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("备份不存在")
+		}
+		return fmt.Errorf("查询备份记录失败: %s", err.Error())
 	}
 
 	content, err1 := os.ReadFile(record.FilePath)
 	if err1 != nil {
+		logger.PrintErrf("[DownloadBackup] 读取备份文件失败 backupId="+backupId+" path="+record.FilePath, err1)
 		return fmt.Errorf("备份文件不存在")
 	}
 
 	if record.Encrypted {
 		decoded, decErr := crypto.AESDecode(string(content))
 		if decErr != nil {
+			logger.PrintErrf("[DownloadBackup] 备份文件解密失败 backupId="+backupId+" path="+record.FilePath, decErr)
 			return fmt.Errorf("备份文件解密失败: %s", decErr.Error())
 		}
 		content = []byte(decoded)

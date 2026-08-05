@@ -890,6 +890,9 @@ function refreshTree() {
   if (treeLoading.value) return
   treeLoading.value = true
   treeData.value = []
+  // 清空 schema 树缓存,确保刷新后重新展开表/视图分类时重新请求最新数据
+  Object.keys(schemaTreeCache).forEach(k => delete schemaTreeCache[k])
+  Object.keys(schemaTreeCached).forEach(k => delete schemaTreeCached[k])
   showTree({ connId: "", key: "", type: "dir", level: 0 })
     .then((resp) => {
       treeData.value = resp.data.data

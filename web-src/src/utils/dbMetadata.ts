@@ -189,10 +189,22 @@ export function buildSyncFormData(options: SyncFormDataOptions): FormData {
  * DataSyncDialog.generatedSQL 计算属性与 executeStructureSync 内部各有一份
  * 几乎相同的 reduce 逻辑（遍历 columnDiffs/indexDiffs 拼接 alterStatement），
  * 统一抽取避免双份维护。
+ *
+ * 整表新增（ADD）：columnDiffs 为空，建表语句来自后端返回的 sourceDDL
+ * （SHOW CREATE TABLE 结果），需单独拼接，否则会生成空 SQL 导致
+ * "没有需要执行的SQL"。
  */
 export function buildSchemaDiffSQL(diffs: SchemaDiff[]): string {
   let sql = ''
   for (const d of diffs || []) {
+    // 整表新增：直接使用源端完整建表 DDL
+    if (d.diffType === 'ADD') {
+      if (d.sourceDDL && d.sourceDDL.trim()) {
+        sql += d.sourceDDL.trim().replace(/;+$/, '') + ';\n'
+      }
+      // ADD 无列/索引差异项，无需继续遍历
+      continue
+    }
     if (d.columnDiffs) {
       for (const cd of d.columnDiffs) {
         if (cd.alterStatement) sql += cd.alterStatement + '\n'

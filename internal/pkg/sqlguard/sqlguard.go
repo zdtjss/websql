@@ -25,17 +25,22 @@ func normalize(sql string) string {
 }
 
 // ValidateSchemaSQL 校验 Schema 变更 SQL
-// 仅允许 ALTER TABLE / CREATE INDEX / DROP INDEX
+// 仅允许 ALTER TABLE / CREATE TABLE / CREATE INDEX / DROP INDEX
+// （CREATE TABLE 用于结构同步中的整表新增）
 func ValidateSchemaSQL(sql string) error {
 	upper := normalize(sql)
 
 	allowedPrefixes := []string{
-		"ALTER TABLE", "CREATE INDEX", "DROP INDEX",
+		"ALTER TABLE", "CREATE TABLE", "CREATE INDEX", "DROP INDEX",
 	}
 	matched := false
+	isCreateTable := false
 	for _, prefix := range allowedPrefixes {
 		if strings.HasPrefix(upper, prefix) {
 			matched = true
+			if prefix == "CREATE TABLE" {
+				isCreateTable = true
+			}
 			break
 		}
 	}
@@ -44,9 +49,14 @@ func ValidateSchemaSQL(sql string) error {
 		if len(preview) > 40 {
 			preview = preview[:40] + "..."
 		}
-		return fmt.Errorf("不允许执行的SQL类型: %s (仅允许 ALTER TABLE / CREATE INDEX / DROP INDEX)", preview)
+		return fmt.Errorf("不允许执行的SQL类型: %s (仅允许 ALTER TABLE / CREATE TABLE / CREATE INDEX / DROP INDEX)", preview)
 	}
 
+	if isCreateTable {
+		// 建表语句中的列注释/默认值可能合法包含 DROP TABLE 等字样
+		// （如 COMMENT='...DROP TABLE...'），改用严格黑名单避免误拦
+		return checkStrictDangerous(upper)
+	}
 	return checkDangerous(upper)
 }
 
@@ -164,6 +174,23 @@ func IsDML(sql string) bool {
 // checkDangerous 检查危险模式
 func checkDangerous(upper string) error {
 	for _, d := range dangerousPatterns {
+		if strings.Contains(upper, d) {
+			return fmt.Errorf("SQL包含危险操作: %s", d)
+		}
+	}
+	return nil
+}
+
+// checkStrictDangerous 检查严格危险模式（不含 DROP TABLE/TRUNCATE）。
+// 用于 CREATE TABLE 场景：建表语句的列注释/默认值可能合法包含这些关键词，
+// 而文件写入、权限变更等真正危险的操作仍会被拦截。
+func checkStrictDangerous(upper string) error {
+	strict := []string{
+		"DROP DATABASE",
+		"GRANT", "REVOKE", "CREATE USER", "ALTER USER", "DROP USER",
+		"SHUTDOWN", "LOAD DATA", "INTO OUTFILE", "INTO DUMPFILE",
+	}
+	for _, d := range strict {
 		if strings.Contains(upper, d) {
 			return fmt.Errorf("SQL包含危险操作: %s", d)
 		}

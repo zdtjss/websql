@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"websql/internal/database"
-	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/idgen"
 
 	"github.com/jmoiron/sqlx"
@@ -56,27 +55,22 @@ func (r *userStorageRepo) FindByKey(userId, key string) (*UserStorage, error) {
 	return s, nil
 }
 
-// Upsert 先尝试 INSERT，UNIQUE 冲突时回退为 UPDATE。
-// 使用 RetryOnBusy 包裹以应对并发写入时的 SQLITE_BUSY。
+// Upsert 使用单条 INSERT ... ON CONFLICT DO UPDATE（依赖 (user_id, storage_key) 唯一索引）。
+// 相比先 INSERT 后回退 UPDATE 的两段式写法，只需一次加锁、一条语句，降低 SQLITE_BUSY 概率。
+// 外层仍用 RetryOnBusy 兜底并发写入时的 SQLITE_BUSY。
 func (r *userStorageRepo) Upsert(userId, key, value string) error {
 	return database.RetryOnBusy(func() error {
 		_, err := r.db.Exec(
-			`insert into t_user_storage (id, user_id, storage_key, storage_value) values (?, ?, ?, ?)`,
+			`insert into t_user_storage (id, user_id, storage_key, storage_value)
+			 values (?, ?, ?, ?)
+			 on conflict(user_id, storage_key) do update set
+			   storage_value = excluded.storage_value,
+			   updated_at = CURRENT_TIMESTAMP`,
 			idgen.RandomStr(), userId, key, value)
 		if err != nil {
-			if !dberr.IsUniqueConstraint(err) {
-				log.Printf("[UserStorage] 插入失败 key=%s: %v", key, err)
-				return err
-			}
-			_, err = r.db.Exec(
-				`update t_user_storage set storage_value = ?, updated_at = CURRENT_TIMESTAMP where user_id = ? and storage_key = ?`,
-				value, userId, key)
-			if err != nil {
-				log.Printf("[UserStorage] 更新失败 key=%s: %v", key, err)
-			}
-			return err
+			log.Printf("[UserStorage] 保存失败 key=%s: %v", key, err)
 		}
-		return nil
+		return err
 	}, 5, 50*time.Millisecond)
 }
 

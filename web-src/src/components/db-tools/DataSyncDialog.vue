@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" title="数据同步与结构同步" width="1200px" :close-on-click-modal="false" @opened="onOpen"
+  <el-dialog v-model="visible" title="数据同步与结构同步" width="1200px" :close-on-click-modal="false" @opened="onOpen" @close="saveConfigToStorage"
     :draggable="!isFullscreen" :fullscreen="isFullscreen" :show-close="false"
     aria-label="数据同步与结构同步对话框">
     <template #header="{ close }">
@@ -133,9 +133,11 @@
 
     <div v-show="activeStep === 2">
       <div v-if="syncMode === 'structure'">
-        <el-alert :title="`发现 ${schemaDiffs.length} 个差异 (新增:${addCount}, 修改:${modifyCount}, 删除:${dropCount})`" type="warning" :closable="false" style="margin-bottom:15px" role="alert" />
+        <el-alert :title="`发现 ${schemaDiffs.length} 个差异 (新增:${addCount}, 修改:${modifyCount}, 删除:${dropCount})，已勾选 ${selectedDiffCount} 个待执行`" type="warning" :closable="false" style="margin-bottom:15px" role="alert" />
+        <el-alert v-if="dropSelectedCount > 0" :title="`注意：已勾选 ${dropSelectedCount} 个删除类型的表。结构同步不会自动删表，如需删表请人工执行 DROP`" type="info" :closable="false" style="margin-bottom:15px" role="alert" />
 
-        <el-table :data="schemaDiffs" max-height="400" stripe highlight-current-row aria-label="结构差异列表" @row-click="selectSchemaDiff">
+        <el-table ref="schemaDiffTableRef" :data="schemaDiffs" max-height="400" stripe highlight-current-row aria-label="结构差异列表" @row-click="selectSchemaDiff" @selection-change="onDiffSelectionChange">
+          <el-table-column type="selection" width="45" aria-label="勾选要执行的表" />
           <el-table-column prop="tableName" label="表名" width="180" />
           <el-table-column prop="diffType" label="差异类型" width="100">
             <template #default="{row}">
@@ -237,11 +239,12 @@
               <div style="display:flex;gap:8px;align-items:center">
                 <span v-if="accumulatedSQL && !syncSQL" style="font-size:12px;color:#909399" aria-live="polite">已生成 {{sqlStatementCount}} 条SQL</span>
                 <el-button v-if="!accumulatedSQL && !syncSQL" type="primary" size="small" @click="loadSyncSQL" :loading="loadingSQL">生成SQL</el-button>
-                <el-button type="primary" size="small" @click="copySQL(syncSQL || accumulatedSQL || '')" aria-label="复制同步 SQL">复制SQL</el-button>
+                <el-button v-if="fullSQL" size="small" @click="downloadFullSQL" aria-label="下载完整同步 SQL 文件">下载完整SQL</el-button>
+                <el-button type="primary" size="small" @click="copySQL(fullSQL)" aria-label="复制同步 SQL">复制SQL</el-button>
               </div>
             </div>
           </template>
-          <pre v-if="syncSQL || accumulatedSQL" style="background:#1e1e1e;color:#d4d4d4;padding:15px;border-radius:6px;max-height:250px;overflow:auto;font-size:13px;line-height:1.5"><code>{{syncSQL || accumulatedSQL}}</code></pre>
+          <pre v-if="previewSQL" style="background:#1e1e1e;color:#d4d4d4;padding:15px;border-radius:6px;max-height:250px;overflow:auto;font-size:13px;line-height:1.5"><code>{{previewSQL}}</code></pre>
           <div v-else style="text-align:center;color:#909399;padding:20px">点击"生成SQL"预览同步语句</div>
         </el-card>
 
@@ -325,12 +328,14 @@
         </div>
       </div>
       <div v-else>
-        <el-result :icon="syncSuccess ? 'success' : 'warning'" :title="syncSuccess ? '同步完成' : '同步完成（部分错误）'" :sub-title="syncResult" role="status">
+        <el-result :icon="syncSuccess ? 'success' : 'warning'" :title="syncSuccess ? '同步完成' : '同步完成（部分错误）'" :sub-title="syncResultSubTitle" role="status">
           <template #extra>
             <el-button @click="resetDialog">重新同步</el-button>
-            <!-- 回滚按钮：仅数据同步且生成了会话 ID 时可用（回滚已执行则隐藏） -->
+            <!-- 同步后验证：保持当前配置重新比较，确认两端已对齐 -->
+            <el-button :loading="comparing" @click="verifyByRecompare">重新比较验证</el-button>
+            <!-- 回滚按钮：仅数据同步且生成了会话 ID 时可用（回滚已执行则隐藏），附过期倒计时 -->
             <el-button v-if="canRollback" type="warning" :loading="rollbackLoading" @click="onRollback">
-              回滚最近同步
+              回滚最近同步<span v-if="rollbackExpireText">（{{rollbackExpireText}}）</span>
             </el-button>
             <!-- 导出报告：HTML（含 Mermaid 流程图）/ CSV -->
             <el-button v-if="syncMode === 'data'" :loading="exportLoading === 'html'" @click="onExportReport('html')">导出 HTML 报告</el-button>
@@ -338,6 +343,50 @@
             <el-button type="primary" @click="visible=false">关闭</el-button>
           </template>
         </el-result>
+
+        <!-- 错误明细：逐条展示失败原因，支持整体复制 -->
+        <el-card v-if="syncErrors.length" shadow="never" style="margin-top:15px">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-weight:bold;color:#f56c6c">错误明细（共 {{syncErrors.length}} 条）</span>
+              <el-button size="small" @click="copySQL(syncErrors.join('\n'))" aria-label="复制全部错误信息">复制全部</el-button>
+            </div>
+          </template>
+          <el-table :data="syncErrors.slice(0, 200)" max-height="260" size="small" border aria-label="同步错误明细">
+            <el-table-column type="index" label="#" width="60" />
+            <el-table-column label="错误信息">
+              <template #default="{row}">
+                <span style="font-size:12px;word-break:break-all">{{row}}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="syncErrors.length > 200" style="margin-top:8px;font-size:12px;color:#909399">仅展示前 200 条，完整信息请点击"复制全部"</div>
+        </el-card>
+
+        <!-- 结构同步：每条 DDL 的执行结果明细（DDL 无事务，逐条展示成败） -->
+        <el-card v-if="schemaSyncDetails.length" shadow="never" style="margin-top:15px">
+          <template #header>
+            <span style="font-weight:bold">DDL 执行明细（{{schemaSyncDetails.length}} 条）</span>
+          </template>
+          <el-table :data="schemaSyncDetails" max-height="260" size="small" border aria-label="DDL 执行明细">
+            <el-table-column label="状态" width="80">
+              <template #default="{row}">
+                <el-tag :type="row.success ? 'success' : 'danger'" size="small">{{row.success ? '成功' : '失败'}}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="SQL">
+              <template #default="{row}">
+                <span style="font-size:12px;word-break:break-all">{{row.sql}}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="错误" width="260">
+              <template #default="{row}">
+                <span v-if="row.error" style="font-size:12px;color:#f56c6c;word-break:break-all">{{row.error}}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-alert v-if="ddlNote" :title="ddlNote" type="warning" :closable="false" style="margin-top:10px" role="alert" />
+        </el-card>
       </div>
     </div>
 
@@ -356,7 +405,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, reactive, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, reactive, onBeforeUnmount, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Right, FullScreen, Close, Loading } from '@element-plus/icons-vue'
 import { handleError } from '@/utils/errorHandler'
@@ -417,6 +466,23 @@ const accumulatedSQL = ref('')
 const sqlStatementCount = ref(0)
 const cancelled = ref(false)
 let abortController = null
+
+// ===== 交互增强：差异勾选 / SQL 预览截断 / DDL 明细 / 回滚倒计时 / 配置记忆 =====
+// 结构差异表格引用（用于默认全选）与已勾选的差异行
+const schemaDiffTableRef = ref(null)
+const selectedDiffs = ref([])
+// 结构同步逐条 DDL 执行明细（后端返回）与 DDL 无事务提示
+const schemaSyncDetails = ref([])
+const ddlNote = ref('')
+// 数据同步降级逐条执行的提示（批次事务失败时后端自动降级）
+const syncFallbackNote = ref('')
+// 回滚日志过期倒计时（秒）
+const rollbackExpireSec = ref(0)
+let rollbackCountdownTimer = null
+// localStorage 配置记忆键名
+const SYNC_CONFIG_KEY = 'dataSyncDialog.config.v1'
+// SQL 预览最大行数，超出截断并提供下载
+const PREVIEW_LINE_LIMIT = 500
 
 // ===== 数据同步增强：冲突策略 / Dry-Run / 回滚 / 报告 =====
 // 冲突处理策略（默认 update）。后端按此策略生成 INSERT 语句。
@@ -542,15 +608,41 @@ const canRollback = computed(() =>
   syncMode.value === 'data' && !!syncSessionId.value && !rollbackDone.value && !cancelled.value
 )
 
+// 回滚日志剩余有效时间文案
+const rollbackExpireText = computed(() => {
+  if (!canRollback.value || rollbackExpireSec.value <= 0) return ''
+  return `剩余 ${formatSyncDuration(rollbackExpireSec.value)} 过期`
+})
+
+// 结果页副标题：同步结果 + 降级提示
+const syncResultSubTitle = computed(() => {
+  if (syncFallbackNote.value) return `${syncResult.value}（${syncFallbackNote.value}）`
+  return syncResult.value
+})
+
+// 已勾选待执行的差异数（含 DROP 类型计数用于提示）
+const selectedDiffCount = computed(() => selectedDiffs.value.length)
+const dropSelectedCount = computed(() => selectedDiffs.value.filter(d => d.diffType === 'DROP').length)
+
+// 完整同步 SQL（复制/下载使用全量，预览用截断版避免大文本卡页）
+const fullSQL = computed(() => syncSQL.value || accumulatedSQL.value || '')
+const previewSQL = computed(() => {
+  const sql = fullSQL.value
+  if (!sql) return ''
+  const lines = sql.split('\n')
+  if (lines.length <= PREVIEW_LINE_LIMIT) return sql
+  return lines.slice(0, PREVIEW_LINE_LIMIT).join('\n')
+    + `\n-- …… 已省略 ${lines.length - PREVIEW_LINE_LIMIT} 行，点击"下载完整SQL"查看全部`
+})
+
 const generatedSQL = computed(() => {
   if (!selectedSchemaDiff.value) return ''
   let sql = ''
-  if (selectedSchemaDiff.value.diffType === 'ADD') {
-    sql = selectedSchemaDiff.value.sourceDDL ? `CREATE TABLE ... (源表DDL);\n` : ''
-  } else if (selectedSchemaDiff.value.diffType === 'DROP') {
+  if (selectedSchemaDiff.value.diffType === 'DROP') {
     sql = `-- 目标端存在但源端不存在，如需删除: DROP TABLE \`${selectedSchemaDiff.value.tableName}\`;\n`
   }
-  // 列/索引变更 SQL 统一由公共函数拼接，避免与 executeStructureSync 重复维护
+  // 列/索引变更与整表新增的 CREATE TABLE 统一由公共函数拼接，
+  // 避免与 executeStructureSync 重复维护
   sql += buildSchemaDiffSQL([selectedSchemaDiff.value])
   return sql || '-- 无变更'
 })
@@ -606,13 +698,65 @@ async function onOpen() {
   lastSyncMeta.update = 0
   lastSyncMeta.delete = 0
   lastSyncMeta.dryRun = false
+  // 重置交互增强状态
+  selectedDiffs.value = []
+  schemaSyncDetails.value = []
+  ddlNote.value = ''
+  syncFallbackNote.value = ''
+  stopRollbackCountdown()
   stopSyncTickTimer()
   connections.value = await loadConnections()
+
+  // 恢复上次配置（外部传入的 connId/schema 优先）
+  const saved = loadConfigFromStorage()
   if (connId) {
     sourceConnId.value = connId
-    onSourceConnChange()
+    await onSourceConnChange()
+  } else if (saved?.sourceConnId && connections.value.some(c => c.id === saved.sourceConnId)) {
+    sourceConnId.value = saved.sourceConnId
+    await onSourceConnChange()
+    if (sourceSchemas.value.includes(saved.sourceSchema)) sourceSchema.value = saved.sourceSchema
   }
   if (schema) sourceSchema.value = schema
+
+  if (saved?.targetConnId && connections.value.some(c => c.id === saved.targetConnId)) {
+    targetConnId.value = saved.targetConnId
+    await onTargetConnChange()
+    if (targetSchemas.value.includes(saved.targetSchema)) targetSchema.value = saved.targetSchema
+  }
+  if (saved) {
+    if (saved.syncMode === 'structure' || saved.syncMode === 'data') syncMode.value = saved.syncMode
+    if (saved.syncTable && sourceTables.value.includes(saved.syncTable)) syncTable.value = saved.syncTable
+    if (typeof saved.chunkSize === 'number' && saved.chunkSize >= 1000 && saved.chunkSize <= 50000) chunkSize.value = saved.chunkSize
+    if (saved.conflictStrategy) conflictStrategy.value = saved.conflictStrategy
+    if (saved.syncDirection === 'source_to_target' || saved.syncDirection === 'target_to_source') syncDirection.value = saved.syncDirection
+  }
+}
+
+// 将当前配置存入 localStorage，下次打开自动回填
+function saveConfigToStorage() {
+  try {
+    localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify({
+      sourceConnId: sourceConnId.value,
+      targetConnId: targetConnId.value,
+      sourceSchema: sourceSchema.value,
+      targetSchema: targetSchema.value,
+      syncMode: syncMode.value,
+      syncTable: syncTable.value,
+      chunkSize: chunkSize.value,
+      conflictStrategy: conflictStrategy.value,
+      syncDirection: syncDirection.value,
+    }))
+  } catch { /* localStorage 不可用时静默降级 */ }
+}
+
+function loadConfigFromStorage() {
+  try {
+    const raw = localStorage.getItem(SYNC_CONFIG_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
 }
 
 async function onSourceConnChange() {
@@ -629,6 +773,63 @@ async function onTargetConnChange() {
 }
 
 function selectSchemaDiff(row) { selectedSchemaDiff.value = row }
+
+// 结构差异勾选变化
+function onDiffSelectionChange(rows) { selectedDiffs.value = rows }
+
+// 下载完整同步 SQL（预览截断时的完整内容出口）
+function downloadFullSQL() {
+  const sql = fullSQL.value
+  if (!sql) { ElMessage.warning('没有可下载的SQL'); return }
+  const name = syncMode.value === 'data' ? `data_sync_${syncTable.value || 'table'}` : 'schema_sync'
+  const blob = new Blob([sql], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${name}_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}.sql`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// 同步后验证：保持当前源/目标配置重新比较，确认两端已对齐
+async function verifyByRecompare() {
+  if (!canCompare.value) {
+    ElMessage.warning('请先完善源和目标配置')
+    activeStep.value = 0
+    return
+  }
+  await startCompare()
+}
+
+// 回滚日志过期倒计时
+function startRollbackCountdown(sec) {
+  stopRollbackCountdown()
+  rollbackExpireSec.value = Math.max(0, sec)
+  if (rollbackExpireSec.value <= 0) return
+  rollbackCountdownTimer = setInterval(() => {
+    rollbackExpireSec.value--
+    if (rollbackExpireSec.value <= 0) stopRollbackCountdown()
+  }, 1000)
+}
+
+function stopRollbackCountdown() {
+  if (rollbackCountdownTimer) {
+    clearInterval(rollbackCountdownTimer)
+    rollbackCountdownTimer = null
+  }
+}
+
+// Alt+Enter 快捷键：步骤 0 开始比较，步骤 2 执行同步
+function onGlobalKeydown(e) {
+  if (!visible.value || !e.altKey || e.key !== 'Enter') return
+  if (activeStep.value === 0 && canCompare.value && !comparing.value) {
+    e.preventDefault()
+    startCompare()
+  } else if (activeStep.value === 2 && !syncing.value) {
+    e.preventDefault()
+    executeSync()
+  }
+}
 
 function copySQL(sql) {
   if (!sql) { ElMessage.warning('没有可复制的SQL'); return }
@@ -755,6 +956,10 @@ async function startStructureCompare() {
   compareStatus.value = '比较完成'
   if (schemaDiffs.value.length) selectedSchemaDiff.value = schemaDiffs.value[0]
   setTimeout(() => activeStep.value = 2, 500)
+  // 默认全选所有差异，用户可取消勾选排除个别变更
+  nextTick(() => {
+    schemaDiffTableRef.value?.toggleAllSelection()
+  })
 }
 
 async function startDataCompareChunked() {
@@ -845,15 +1050,27 @@ async function executeSync() {
     let sqlCount = 0
     let actionDesc = ''
     if (syncMode.value === 'structure') {
-      const sqlToApply = buildSchemaDiffSQL(schemaDiffs.value)
-      if (!sqlToApply.trim()) { ElMessage.info('没有需要执行的SQL'); return }
-      sqlCount = sqlToApply.split(';').filter(s => s.trim()).length
-      actionDesc = `即将对目标库执行 ${sqlCount} 条结构变更语句（ALTER/CREATE INDEX/DROP INDEX），是否确认？`
+      const diffsToApply = selectedDiffs.value.length ? selectedDiffs.value : schemaDiffs.value
+      if (!diffsToApply.length) { ElMessage.warning('请至少勾选一个要同步的表'); return }
+      const sqlToApply = buildSchemaDiffSQL(diffsToApply)
+      if (!sqlToApply.trim()) {
+        const dropOnly = diffsToApply.every(d => d.diffType === 'DROP')
+        ElMessage.info(dropOnly ? '勾选的表均为删除类型，结构同步不自动删表，无可执行SQL' : '没有需要执行的SQL')
+        return
+      }
+      sqlCount = splitSQLStatements(sqlToApply).length
+      actionDesc = `即将对目标库的 ${diffsToApply.length} 个表执行 ${sqlCount} 条结构变更语句（CREATE TABLE/ALTER/CREATE INDEX/DROP INDEX），是否确认？`
+      if (dropSelectedCount.value > 0) {
+        actionDesc += `\n注意：已勾选 ${dropSelectedCount.value} 个删除类型的表，不会被自动删除。`
+      }
     } else {
       const sqlToExecute = syncSQL.value || accumulatedSQL.value
       if (!sqlToExecute || sqlToExecute === '-- 无需同步') { ElMessage.info('没有需要同步的数据'); return }
-      sqlCount = (sqlToExecute.match(/;\n/g) || []).length
-      actionDesc = `即将对目标库执行 ${sqlCount} 条数据同步语句（INSERT/UPDATE/DELETE），将分批执行，是否确认？`
+      sqlCount = splitSQLStatements(sqlToExecute).length
+      // 结构化摘要：直接用差异统计的行数，比正则数分号更可靠
+      actionDesc = `即将对目标库同步表 ${syncTable.value}：`
+        + `新增 ${dataDiff.value.addCount || 0} 行，修改 ${dataDiff.value.modifyCount || 0} 行，删除 ${dataDiff.value.deleteCount || 0} 行，`
+        + `共 ${sqlCount} 条SQL（分批执行），是否确认？`
     }
 
     await ElMessageBox.confirm(actionDesc, '同步确认', {
@@ -862,6 +1079,9 @@ async function executeSync() {
       type: 'warning',
     })
   } catch { return }
+
+  // 确认执行后保存配置，下次打开自动回填
+  saveConfigToStorage()
 
   syncing.value = true
   cancelled.value = false
@@ -879,6 +1099,9 @@ async function executeSync() {
   startSyncTickTimer()
   // 数据同步增强：生成会话 ID（用于回滚）、重置错误/回滚状态、记录报告元信息
   syncErrors.value = []
+  syncFallbackNote.value = ''
+  schemaSyncDetails.value = []
+  ddlNote.value = ''
   rollbackDone.value = false
   if (syncMode.value === 'data') {
     syncSessionId.value = (crypto?.randomUUID?.() || `sync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
@@ -897,6 +1120,14 @@ async function executeSync() {
       await executeStructureSync()
     } else {
       await executeDataSyncBatched()
+      // 同步完成后拉取回滚日志剩余有效期，用于结果页倒计时展示
+      if (syncSessionId.value && !cancelled.value) {
+        try {
+          const logRes = await getRollbackLog(syncSessionId.value)
+          const logResult = unwrapResponse(logRes) || {}
+          if (typeof logResult.expiresIn === 'number') startRollbackCountdown(logResult.expiresIn)
+        } catch { /* 倒计时获取失败不影响主流程 */ }
+      }
     }
   } catch (e) {
     if (cancelled.value) {
@@ -931,7 +1162,9 @@ function stopSyncTickTimer() {
 }
 
 async function executeStructureSync() {
-  const sqlToApply = buildSchemaDiffSQL(schemaDiffs.value)
+  // 仅执行已勾选的差异（未勾选时兜底全部，兼容表格引用未就绪场景）
+  const diffsToApply = selectedDiffs.value.length ? selectedDiffs.value : schemaDiffs.value
+  const sqlToApply = buildSchemaDiffSQL(diffsToApply)
   if (!sqlToApply.trim()) { ElMessage.info('没有需要执行的SQL'); return }
 
   syncStatusText.value = '正在执行结构同步...'
@@ -945,7 +1178,11 @@ async function executeStructureSync() {
   formData.append('sql', sqlToApply)
   const res = await applySchemaDiff(formData)
   const result = unwrapResponse(res) || {}
-  syncSuccess.value = result.success
+  syncSuccess.value = !!result.success
+  // 逐条 DDL 执行明细与 DDL 无事务提示（后端返回）
+  schemaSyncDetails.value = result.details || []
+  ddlNote.value = result.ddlNote || ''
+  if (result.errors && result.errors.length) syncErrors.value = [...result.errors]
   syncResult.value = `成功执行 ${result.executedCount || 0} 条语句` + (result.errors && result.errors.length ? `，${result.errors.length} 条失败` : '')
   syncProgress.value = 100
 }
@@ -1001,6 +1238,14 @@ async function executeDataSyncBatched() {
       if (result.errors && result.errors.length) {
         totalErrors += result.errors.length
         allErrors.push(...result.errors)
+      }
+      // 后端批次事务失败后已自动降级为逐条执行，errors 已精确定位到具体语句
+      if (result.fallback) {
+        syncFallbackNote.value = '部分批次失败已降级为逐条执行，失败语句见错误明细'
+      }
+      // 后端检测到取消/超时：停止后续批次
+      if (result.cancelled) {
+        cancelled.value = true
       }
       executedBatches++
     } catch (e) {
@@ -1273,10 +1518,22 @@ function resetDialog() {
   lastSyncMeta.update = 0
   lastSyncMeta.delete = 0
   lastSyncMeta.dryRun = false
+  // 重置交互增强状态
+  selectedDiffs.value = []
+  schemaSyncDetails.value = []
+  ddlNote.value = ''
+  syncFallbackNote.value = ''
+  stopRollbackCountdown()
 }
 
-// 组件卸载时清理定时器，避免内存泄漏
+// 组件卸载时清理定时器与快捷键监听，避免内存泄漏
 onBeforeUnmount(() => {
   stopSyncTickTimer()
+  stopRollbackCountdown()
+  document.removeEventListener('keydown', onGlobalKeydown)
+})
+
+onMounted(() => {
+  document.addEventListener('keydown', onGlobalKeydown)
 })
 </script>

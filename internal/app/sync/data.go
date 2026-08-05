@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -506,18 +507,18 @@ func ApplyDataSync(c *gin.Context) {
 	userVal, _ := c.Get("currentUser")
 	user, _ := userVal.(*admin.User)
 
-	sqlList := strings.Split(sqlStr, ";")
-	validatedSQLs := make([]string, 0, len(sqlList))
-	for _, s := range sqlList {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
+	// 引号感知切分：避免数据值中的分号（如 'a;b'）导致语句被误切
+	validatedSQLs := make([]string, 0, 32)
+	for _, s := range splitSQLStatements(sqlStr) {
 		if err := validateDataSQL(s); err != nil {
 			response.WriteOK(c, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
 		validatedSQLs = append(validatedSQLs, s)
+	}
+	if len(validatedSQLs) == 0 {
+		response.WriteOK(c, map[string]any{"success": true, "message": "没有有效的SQL语句"})
+		return
 	}
 
 	// 权限校验：对每条 SQL 做表级/列级权限检查
@@ -537,71 +538,50 @@ func ApplyDataSync(c *gin.Context) {
 		}
 	}
 
+	// 执行上下文：携带客户端取消信号，并提供整体超时保护
+	ctx, cancel := context.WithTimeout(c.Request.Context(), syncBatchTimeout)
+	defer cancel()
+
 	startTime := time.Now()
 
-	tx, err := dbConn.Beginx()
-	if err != nil {
-		response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
-		return
+	// 仅在提供 syncSessionId 时记录回滚日志（避免无谓的 SELECT 开销）
+	recordUndo := syncSessionId != ""
+
+	// ---- 快速路径：整批在一个事务中执行（性能最优，全成功或全回滚）----
+	results, errors, cancelled := execDataBatchInTx(ctx, dbConn, dbType, validatedSQLs, recordUndo)
+	fallbackUsed := false
+
+	// ---- 批次失败自动降级为逐条执行 ----
+	// 快速路径的事务已整体回滚（无数据提交），逐条重放可以精确定位坏语句，
+	// 其余语句各自独立提交，避免单条坏数据拖垮整批导致数据缺失
+	if !cancelled && len(errors) > 0 {
+		log.Printf("[ApplyDataSync] 批次事务执行存在 %d 个错误，降级为逐条执行 connId=%s", len(errors), connId)
+		fallbackUsed = true
+		results, errors, cancelled = execDataStatementsIndividually(ctx, dbConn, dbType, validatedSQLs, recordUndo)
 	}
 
 	insertCount := 0
 	updateCount := 0
 	deleteCount := 0
-	errors := make([]string, 0)
-	// 仅在提供 syncSessionId 时记录回滚日志（避免无谓的 SELECT 开销）
-	recordUndo := syncSessionId != ""
-	executedOriginals := make([]string, 0, len(validatedSQLs))
-	undoSQLs := make([]string, 0, len(validatedSQLs))
-
-	for _, s := range validatedSQLs {
-		upper := strings.ToUpper(s)
-		// 执行前生成撤销 SQL（UPDATE/DELETE 会先 SELECT 旧值）。
-		// 仅对成功执行的语句保留撤销 SQL，失败语句不记录。
-		var undo string
-		if recordUndo {
-			var undoErr error
-			undo, undoErr = generateUndoSQL(s, dbConn, dbType)
-			if undoErr != nil {
-				// 撤销 SQL 生成失败：跳过该语句，避免无法回滚的数据被提交
-				errors = append(errors, fmt.Sprintf("回滚SQL生成失败，已跳过: %s - %s", s[:minStr(80, s)], undoErr.Error()))
-				continue
-			}
+	executedOriginals := make([]string, 0, len(results))
+	undoSQLs := make([]string, 0, len(results))
+	for _, r := range results {
+		switch r.kind {
+		case "INSERT":
+			insertCount += r.affected
+		case "UPDATE":
+			updateCount += r.affected
+		case "DELETE":
+			deleteCount += r.affected
 		}
-		result, err := tx.Exec(s)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", s[:minStr(80, s)], err.Error()))
-			continue
-		}
-		if recordUndo {
-			executedOriginals = append(executedOriginals, s)
-			undoSQLs = append(undoSQLs, undo)
-		}
-		affected, _ := result.RowsAffected()
-		if strings.HasPrefix(upper, "INSERT") {
-			insertCount += int(affected)
-		} else if strings.HasPrefix(upper, "UPDATE") {
-			updateCount += int(affected)
-		} else if strings.HasPrefix(upper, "DELETE") {
-			deleteCount += int(affected)
+		if recordUndo && r.undo != "" {
+			executedOriginals = append(executedOriginals, r.sql)
+			undoSQLs = append(undoSQLs, r.undo)
 		}
 	}
 
-	committed := false
-	if len(errors) > 0 {
-		if rbErr := tx.Rollback(); rbErr != nil {
-			log.Printf("[ApplyDataSync] 事务回滚失败: %v", rbErr)
-		}
-	} else {
-		if err := tx.Commit(); err == nil {
-			committed = true
-		} else {
-			log.Printf("[ApplyDataSync] 事务提交失败: %v", err)
-		}
-	}
-
-	// 事务提交成功后，将本批次的撤销 SQL 追加到会话回滚日志（30 分钟后自动清理）
-	if committed && recordUndo && len(executedOriginals) > 0 {
+	// 已提交语句的撤销 SQL 追加到会话回滚日志（30 分钟后自动清理）
+	if recordUndo && len(executedOriginals) > 0 {
 		rollbackLog := getOrCreateRollbackLog(syncSessionId, connId, schema, dbType)
 		appendRollbackEntries(rollbackLog, executedOriginals, undoSQLs)
 	}
@@ -639,18 +619,141 @@ func ApplyDataSync(c *gin.Context) {
 		})
 	}
 
-	log.Printf("[SyncAudit] ApplyDataSync connId=%s schema=%s sqlCount=%d insert=%d update=%d delete=%d success=%v user=%s",
-		connId, schema, len(validatedSQLs), insertCount, updateCount, deleteCount, len(errors) == 0, authorization)
+	log.Printf("[SyncAudit] ApplyDataSync connId=%s schema=%s sqlCount=%d insert=%d update=%d delete=%d success=%v fallback=%v user=%s",
+		connId, schema, len(validatedSQLs), insertCount, updateCount, deleteCount, len(errors) == 0, fallbackUsed, authorization)
 
 	response.WriteOK(c, map[string]any{
-		"success":     len(errors) == 0,
+		"success":     len(errors) == 0 && !cancelled,
 		"sessionId":   syncSessionId,
 		"insertCount": insertCount,
 		"updateCount": updateCount,
 		"deleteCount": deleteCount,
 		"errorCount":  len(errors),
 		"errors":      errors,
+		// fallback=true 表示批次事务失败后已降级为逐条执行，errors 为逐条定位到的具体失败语句
+		"fallback": fallbackUsed,
+		// cancelled=true 表示客户端取消或超时，剩余语句未执行
+		"cancelled": cancelled,
 	})
+}
+
+// syncBatchTimeout 单批同步请求的整体超时保护
+const syncBatchTimeout = 10 * time.Minute
+
+// dataStmtResult 单条语句的执行结果
+type dataStmtResult struct {
+	sql      string
+	kind     string // INSERT/UPDATE/DELETE
+	affected int
+	undo     string
+}
+
+// classifyStmtKind 识别语句类型（REPLACE 归入 INSERT）
+func classifyStmtKind(s string) string {
+	upper := strings.ToUpper(strings.TrimSpace(s))
+	switch {
+	case strings.HasPrefix(upper, "INSERT"), strings.HasPrefix(upper, "REPLACE"):
+		return "INSERT"
+	case strings.HasPrefix(upper, "UPDATE"):
+		return "UPDATE"
+	case strings.HasPrefix(upper, "DELETE"):
+		return "DELETE"
+	}
+	return ""
+}
+
+// execDataBatchInTx 快速路径：整批在一个事务中执行。
+// 任一语句失败/取消即中止并整体回滚，返回错误列表由调用方决定是否降级逐条执行。
+func execDataBatchInTx(ctx context.Context, dbConn *sqlx.DB, dbType string, sqls []string, recordUndo bool) ([]dataStmtResult, []string, bool) {
+	errors := make([]string, 0)
+	results := make([]dataStmtResult, 0, len(sqls))
+
+	tx, err := dbConn.Beginx()
+	if err != nil {
+		return nil, []string{fmt.Sprintf("开启事务失败: %v", err)}, false
+	}
+
+	cancelled := false
+	for _, s := range sqls {
+		if ctx.Err() != nil {
+			cancelled = true
+			errors = append(errors, "同步已取消或超时，未提交语句已回滚")
+			break
+		}
+		var undo string
+		if recordUndo {
+			u, undoErr := generateUndoSQL(s, dbConn, dbType)
+			if undoErr != nil {
+				errors = append(errors, fmt.Sprintf("回滚SQL生成失败: %s - %s", truncate(s, 120), undoErr.Error()))
+				break
+			}
+			undo = u
+		}
+		res, execErr := tx.ExecContext(ctx, s)
+		if execErr != nil {
+			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", truncate(s, 120), execErr.Error()))
+			break
+		}
+		affected, _ := res.RowsAffected()
+		results = append(results, dataStmtResult{sql: s, kind: classifyStmtKind(s), affected: int(affected), undo: undo})
+	}
+
+	if cancelled || len(errors) > 0 {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			log.Printf("[ApplyDataSync] 事务回滚失败: %v", rbErr)
+		}
+		return nil, errors, cancelled
+	}
+	if commitErr := tx.Commit(); commitErr != nil {
+		log.Printf("[ApplyDataSync] 事务提交失败: %v", commitErr)
+		return nil, []string{fmt.Sprintf("事务提交失败: %v", commitErr)}, false
+	}
+	return results, nil, false
+}
+
+// execDataStatementsIndividually 降级路径：逐条执行，每条独立事务。
+// 成功语句单独提交、失败语句被隔离并记录具体错误，避免单条坏语句拖垮整批。
+func execDataStatementsIndividually(ctx context.Context, dbConn *sqlx.DB, dbType string, sqls []string, recordUndo bool) ([]dataStmtResult, []string, bool) {
+	errors := make([]string, 0)
+	results := make([]dataStmtResult, 0, len(sqls))
+	cancelled := false
+
+	for _, s := range sqls {
+		if ctx.Err() != nil {
+			cancelled = true
+			errors = append(errors, "同步已取消或超时，剩余语句未执行")
+			break
+		}
+		var undo string
+		if recordUndo {
+			u, undoErr := generateUndoSQL(s, dbConn, dbType)
+			if undoErr != nil {
+				errors = append(errors, fmt.Sprintf("回滚SQL生成失败，已跳过: %s - %s", truncate(s, 120), undoErr.Error()))
+				continue
+			}
+			undo = u
+		}
+		tx, txErr := dbConn.Beginx()
+		if txErr != nil {
+			errors = append(errors, fmt.Sprintf("开启事务失败: %s - %v", truncate(s, 120), txErr))
+			continue
+		}
+		res, execErr := tx.ExecContext(ctx, s)
+		if execErr != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Printf("[ApplyDataSync] 事务回滚失败: %v", rbErr)
+			}
+			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", truncate(s, 120), execErr.Error()))
+			continue
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			errors = append(errors, fmt.Sprintf("提交失败: %s - %v", truncate(s, 120), commitErr))
+			continue
+		}
+		affected, _ := res.RowsAffected()
+		results = append(results, dataStmtResult{sql: s, kind: classifyStmtKind(s), affected: int(affected), undo: undo})
+	}
+	return results, errors, cancelled
 }
 
 func validateDataSQL(sql string) error {
@@ -764,13 +867,6 @@ func buildSyncData(conn1, conn2 *sqlx.DB, dbType, schema1, schema2, table, direc
 	targetMap := buildRowMap(targetData, keyColumns)
 
 	return sourceMap, targetMap, keyColumns
-}
-
-func minStr(a int, s string) int {
-	if a < len(s) {
-		return a
-	}
-	return len(s)
 }
 
 type quoteInfo struct {

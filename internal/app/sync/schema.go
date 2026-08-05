@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -781,52 +782,46 @@ func ApplySchemaDiff(c *gin.Context) {
 		}
 	}
 
-	sqlList := strings.Split(sqlStr, ";")
-	validatedSQLs := make([]string, 0, len(sqlList))
-	for _, s := range sqlList {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
+	// 引号感知切分，与数据同步保持一致
+	validatedSQLs := make([]string, 0, 16)
+	for _, s := range splitSQLStatements(sqlStr) {
 		if err := validateSchemaSQL(s); err != nil {
 			response.WriteOK(c, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
 		validatedSQLs = append(validatedSQLs, s)
 	}
-
-	startTime := time.Now()
-
-	tx, err := dbConn.Beginx()
-	if err != nil {
-		response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("开启事务失败: %v", err)})
+	if len(validatedSQLs) == 0 {
+		response.WriteOK(c, map[string]any{"success": true, "message": "没有有效的SQL语句"})
 		return
 	}
 
+	// 执行上下文：携带客户端取消信号，并提供整体超时保护
+	ctx, cancel := context.WithTimeout(c.Request.Context(), syncBatchTimeout)
+	defer cancel()
+
+	startTime := time.Now()
+
+	// DDL 在 MySQL/Oracle 上会隐式提交，事务无法真正回滚，因此逐条独立执行并逐条返回结果，
+	// 避免给用户造成"失败可整体回滚"的误导
 	executedCount := 0
 	errors := make([]string, 0)
+	details := make([]map[string]any, 0, len(validatedSQLs))
+	cancelled := false
 
 	for _, s := range validatedSQLs {
-		_, err := tx.Exec(s)
+		if ctx.Err() != nil {
+			cancelled = true
+			errors = append(errors, "同步已取消或超时，剩余语句未执行")
+			break
+		}
+		_, err := dbConn.ExecContext(ctx, s)
 		if err != nil {
-			if len(s) > 80 {
-				s = s[:80]
-			}
-			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", s, err.Error()))
+			errors = append(errors, fmt.Sprintf("执行失败: %s - %s", truncate(s, 120), err.Error()))
+			details = append(details, map[string]any{"sql": truncate(s, 200), "success": false, "error": err.Error()})
 		} else {
 			executedCount++
-		}
-	}
-
-	if len(errors) > 0 {
-		if rbErr := tx.Rollback(); rbErr != nil {
-			log.Printf("[ApplySchemaSync] 事务回滚失败: %v", rbErr)
-		}
-	} else {
-		if err := tx.Commit(); err != nil {
-			log.Printf("[ApplySchemaSync] 事务提交失败: %v", err)
-			response.WriteOK(c, map[string]any{"success": false, "message": fmt.Sprintf("事务提交失败: %v", err)})
-			return
+			details = append(details, map[string]any{"sql": truncate(s, 200), "success": true})
 		}
 	}
 
@@ -866,10 +861,15 @@ func ApplySchemaDiff(c *gin.Context) {
 		connId, schema, len(validatedSQLs), len(errors) == 0, authorization)
 
 	response.WriteOK(c, map[string]any{
-		"success":       len(errors) == 0,
+		"success":       len(errors) == 0 && !cancelled,
 		"executedCount": executedCount,
 		"errorCount":    len(errors),
 		"errors":        errors,
+		// details: 每条 DDL 的执行结果明细，前端可逐条展示成功/失败
+		"details":   details,
+		"cancelled": cancelled,
+		// DDL 不支持事务回滚的提示（MySQL/Oracle 隐式提交），已执行语句会保留
+		"ddlNote": "DDL 语句不支持事务回滚，已成功执行的变更会保留，请根据下方明细人工确认",
 	})
 }
 

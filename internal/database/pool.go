@@ -45,6 +45,9 @@ func InitMngtDbConn() {
 		config.SetActive(config.ReadConfig())
 	}
 	dsn := config.ResolveDSN(config.Get().DB.DataSourceName)
+	if config.Get().DB.DriverName == "sqlite" {
+		dsn = WithSQLitePragmas(dsn, true)
+	}
 	log.Printf("管理库连接 - driver=%s, dsn=%s", config.Get().DB.DriverName, dsn)
 	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, dsn)
 	if err != nil {
@@ -72,13 +75,40 @@ func InitMngtDbConn() {
 	Mngtdb = sqlxDb
 }
 
+// WithSQLitePragmas 通过 DSN 的 _pragma 参数为连接池中的【每个】连接设置 PRAGMA。
+// 关键点：PRAGMA 是连接级配置，用 db.Exec 执行只对当时取到的那一个物理连接生效，
+// 连接池后续新建的连接 busy_timeout 仍为 0，并发写入时会立即报 SQLITE_BUSY。
+// modernc.org/sqlite 驱动支持 _pragma=name(args) 形式的 DSN 参数，对每个新建连接自动执行。
+// immediateTx：true 时额外加 _txlock=immediate，适用于管理库这类短事务场景，
+// 可避免读事务升级写事务时的互锁；用户数据库不建议开启（会串行化事务内读）。
+func WithSQLitePragmas(dsn string, immediateTx bool) string {
+	pragmas := []string{
+		"_pragma=busy_timeout(30000)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=temp_store(MEMORY)",
+	}
+	if immediateTx {
+		pragmas = append(pragmas, "_txlock=immediate")
+	}
+	for _, p := range pragmas {
+		if strings.Contains(dsn, p) {
+			continue
+		}
+		if strings.Contains(dsn, "?") {
+			dsn += "&" + p
+		} else {
+			dsn += "?" + p
+		}
+	}
+	return dsn
+}
+
+// initSQLitePragma 对池中首个连接补设 DSN 未覆盖的 PRAGMA（如 cache_size）。
+// 注意：仅影响执行时取到的单个连接，通用配置必须走 WithSQLitePragmas 的 DSN 方式。
 func initSQLitePragma(db *sqlx.DB) {
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=30000",
-		"PRAGMA synchronous=NORMAL",
 		"PRAGMA cache_size=-64000",
-		"PRAGMA temp_store=MEMORY",
 	}
 	for _, p := range pragmas {
 		db.Exec(p)
@@ -238,7 +268,8 @@ func makeDsn(param *DBParam) string {
 		// MariaDB 与 MySQL 协议兼容，DSN 格式一致
 		return fmt.Sprintf("%s:%s@%s", param.User, param.Pwd, param.Url)
 	case "sqlite", "sqlite3":
-		return param.Url
+		// 用户 SQLite 库同样通过 DSN 为每个连接设置 busy_timeout/WAL，规避并发写锁冲突
+		return WithSQLitePragmas(param.Url, false)
 	default:
 		return param.User + ":" + param.Pwd + "@" + param.Url
 	}

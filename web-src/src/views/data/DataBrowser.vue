@@ -360,9 +360,10 @@ async function saveData() {
   const setClauses = changedCols
     .map((key) => quoteId(key, dbType) + ' = ' + fmtVal(current[key], dbType))
     .join(', ')
-  const pkCols = dataQuery.pkColumns.value.length > 0 ? dataQuery.pkColumns.value : Object.keys(origin).slice(0, 1)
-  const allWhereCols = [...pkCols, ...changedCols.filter((k) => !pkCols.includes(k))]
-  const whereClauses = allWhereCols.map((key) => buildWhereCondition(key, origin[key], dbType)).join(' AND ')
+  // 有主键时仅以主键作为 WHERE 条件；无主键时以所有字段作为 WHERE 条件
+  const pkCols = dataQuery.pkColumns.value
+  const whereCols = pkCols.length > 0 ? pkCols : Object.keys(origin)
+  const whereClauses = whereCols.map((key) => buildWhereCondition(key, origin[key], dbType)).join(' AND ')
   const sql = 'UPDATE ' + quoteId(tableName, dbType) + ' SET ' + setClauses + ' WHERE ' + whereClauses
 
   saving.value = true

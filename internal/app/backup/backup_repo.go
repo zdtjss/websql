@@ -59,7 +59,9 @@ func (r *backupRepo) FindBackups(connId, schema string) ([]BackupRecord, error) 
 
 func (r *backupRepo) FindBackupById(id string) (BackupRecord, error) {
 	var record BackupRecord
-	err := r.db.Get(&record, "SELECT * FROM t_backup WHERE id=?", id)
+	// 使用显式列名而非 SELECT *：t_backup 表可能残留旧版本的多余列（user/exec_time/exec_sql/data），
+	// SELECT * 会导致 sqlx 扫描到结构体不存在的列而报错，进而误报“备份不存在”。
+	err := r.db.Get(&record, "SELECT id,name,conn_id,schema_name,db_type,size_bytes,backup_type,encrypted,created_at,description,COALESCE(status,'completed') status, COALESCE(file_path,'') file_path FROM t_backup WHERE id=?", id)
 	return record, err
 }
 
