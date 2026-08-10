@@ -217,6 +217,14 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, err
 		}
+		// 多语句注入防护：检测 SQL 中是否包含分号分隔的多条语句。
+		// 防止 "SELECT 1; DROP TABLE x" 绕过语句类型白名单。
+		// 必须在类型白名单之后、执行之前检查。
+		if sqlutil.ContainsMultipleStatements(sql) {
+			err := errors.New("query_data 不支持多语句执行（检测到分号分隔的多条SQL），请拆分为单条语句分别执行")
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
+			return nil, err
+		}
 		// 方言兼容性预检：在执行前检测不兼容语法（如 MySQL 上的 PERCENTILE_CONT），
 		// 避免无谓的数据库往返，同时给 LLM 提供精确的替代写法
 		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType); len(dialectErrs) > 0 {

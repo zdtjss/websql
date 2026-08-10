@@ -4,9 +4,21 @@
             <div style="margin-bottom: 8px; display: flex; gap: 8px;">
                 <el-button size="small" @click="addColAtEnd">添加字段</el-button>
                 <el-button size="small" type="danger" :disabled="selectedColumns.length === 0" @click="batchDelCols">删除选中</el-button>
+                <el-button size="small" type="warning" plain :disabled="!columnOrderDirty || hasNewCol" @click="saveColumnOrder">保存顺序</el-button>
+                <el-button size="small" :disabled="!columnOrderDirty" @click="resetColumnOrder">重置顺序</el-button>
             </div>
-            <el-table :data="columnList" style="width: 100%" class="col-table" height="100%" @selection-change="onColSelectionChange">
+            <el-table :data="columnList" style="width: 100%" class="col-table" height="100%" ref="colTableRef"
+                :row-class-name="rowClassName" @selection-change="onColSelectionChange"
+                @dragover="onTableDragOver" @drop="onTableDrop" @dragend="onDragEnd">
                 <el-table-column type="selection" width="40" />
+                <el-table-column width="36" align="center">
+                    <template #default="scope">
+                        <el-icon v-if="!scope.row.isNew" class="drag-handle" :size="14" title="拖拽调整字段顺序"
+                            draggable="true" @dragstart="onDragStart($event, scope.row)">
+                            <Rank />
+                        </el-icon>
+                    </template>
+                </el-table-column>
                 <el-table-column label="名称" width="240" resizable>
                     <template #default="scope">
                         <el-input v-if="scope.row.isNew" v-model="scope.row.columnName" size="small" />
@@ -334,8 +346,8 @@
     </el-dialog>
 </template>
 <script setup>
-import { ref, useTemplateRef, watch } from 'vue'
-import { Check, CopyDocument, Delete, Edit, Refresh } from '@element-plus/icons-vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
+import { Check, CopyDocument, Delete, Edit, Rank, Refresh } from '@element-plus/icons-vue'
 import http from '@/api/index'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 const dbSchemaProxy = useDbSchemaStore()
@@ -359,6 +371,10 @@ const foreignKeyList = ref([])
 const fkLoading = ref(false)
 
 const selectedColumns = ref([])
+const colTableRef = useTemplateRef('colTableRef')
+const columnOrderDirty = ref(false)
+let dragColIdx = null
+const hasNewCol = computed(() => columnList.value.some(c => c.isNew))
 
 const addIndexDialogVisible = ref(false)
 const newIndex = ref({ name: "", type: "INDEX", columns: [] })
@@ -453,6 +469,7 @@ function loadData(pane) {
                     columnList.value[i]['idx'] = i
                 }
                 columnListOrigin = JSON.parse(JSON.stringify(columnList.value))
+                columnOrderDirty.value = false
             })
     } else if (name === "indexes") {
         loadIndexes()
@@ -468,7 +485,7 @@ function loadData(pane) {
 }
 
 function loadIndexes() {
-    http.post("/listIndexes", getPostBody())
+    return http.post("/listIndexes", getPostBody())
         .then((resp) => {
             const raw = resp.data.data || []
             indexList.value = raw.map((r, i) => ({
@@ -480,6 +497,7 @@ function loadIndexes() {
                 indexType: r.INDEX_TYPE || r.index_type || r.indexType,
                 indexComment: r.INDEX_COMMENT || r.index_comment || r.indexComment || '',
             }))
+            return indexList.value
         })
 }
 
@@ -503,7 +521,7 @@ function loadForeignKeys() {
     params.append('schema', tableMeta.schema)
     params.append('sql', sql)
     params.append('maxLine', '100')
-    http.post('/execSQL', params)
+    return http.post('/execSQL', params)
         .then((resp) => {
             const data = resp.data.data?.data || []
             if (dbType === 'sqlite') {
@@ -534,6 +552,7 @@ function loadForeignKeys() {
                     deleteRule: r.DELETE_RULE || r.delete_rule || r.DELETE_RULE || '-',
                 }))
             }
+            return foreignKeyList.value
         })
         .catch(() => { foreignKeyList.value = [] })
         .finally(() => { fkLoading.value = false })
@@ -894,6 +913,267 @@ function batchDelCols() {
     }).catch(() => {})
 }
 
+// ========== 字段顺序调整 ==========
+function rowClassName({ row }) {
+    return 'col-row-' + row.idx
+}
+
+function onDragStart(e, row) {
+    dragColIdx = row.idx
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要设置 data 才能触发拖拽
+    e.dataTransfer.setData('text/plain', String(row.idx))
+}
+
+function onDragEnd() {
+    dragColIdx = null
+    clearDragOverClass()
+}
+
+function clearDragOverClass() {
+    const root = colTableRef.value?.$el
+    if (!root) return
+    root.querySelectorAll('tr.col-drag-over').forEach(tr => tr.classList.remove('col-drag-over'))
+}
+
+function getRowIdxOfTr(tr) {
+    const m = /col-row-(\d+)/.exec(tr.className || '')
+    return m ? Number(m[1]) : null
+}
+
+function onTableDragOver(e) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (dragColIdx == null) return
+    const tr = e.target?.closest ? e.target.closest('tr') : null
+    if (!tr || tr.classList.contains('col-drag-over')) return
+    const idx = getRowIdxOfTr(tr)
+    if (idx == null) return
+    const row = columnList.value.find(c => c.idx === idx)
+    if (!row || row.isNew) return // 新增行不可作为落点
+    clearDragOverClass()
+    tr.classList.add('col-drag-over')
+}
+
+function onTableDrop(e) {
+    e.preventDefault()
+    const tr = e.target?.closest ? e.target.closest('tr') : null
+    const targetIdx = tr ? getRowIdxOfTr(tr) : null
+    if (targetIdx == null || dragColIdx == null) {
+        onDragEnd()
+        return
+    }
+    const list = [...columnList.value]
+    const from = list.findIndex(c => c.idx === dragColIdx)
+    const to = list.findIndex(c => c.idx === targetIdx)
+    if (from === -1 || to === -1 || from === to) {
+        onDragEnd()
+        return
+    }
+    const moved = list.splice(from, 1)[0]
+    // 鼠标位于目标行下半部 → 插入到目标行之后
+    const rect = tr.getBoundingClientRect()
+    const insertAfter = e.clientY > rect.top + rect.height / 2
+    const targetPos = to > from ? to - 1 : to
+    let dest = insertAfter ? targetPos + 1 : targetPos
+    // 落点不能越过最后一个新增字段
+    let lastRealPos = -1
+    list.forEach((c, i) => { if (!c.isNew) lastRealPos = i })
+    dest = Math.min(dest, lastRealPos + 1)
+    list.splice(dest, 0, moved)
+    list.forEach((c, i) => { c.idx = i })
+    columnList.value = list
+    columnOrderDirty.value = true
+    onDragEnd()
+}
+
+function resetColumnOrder() {
+    columnList.value = JSON.parse(JSON.stringify(columnListOrigin))
+    columnList.value.forEach((c, i) => { c.idx = i })
+    columnOrderDirty.value = false
+    ElMessage({ message: '已恢复原字段顺序', type: 'info' })
+}
+
+function buildModifySql(col, prevColName) {
+    const tbl = quoteIdent(tableMeta.tableName)
+    const c = quoteIdent(col.columnName)
+    let sql = `alter table ${tbl} modify ${c} ${col.columnType}`
+    if (col.isNullable === 'YES') {
+        sql += col.columnDefault ? ` default '${escapeStr(col.columnDefault)}'` : ' default null'
+    } else {
+        sql += ' not null'
+        if (col.columnDefault) sql += ` default '${escapeStr(col.columnDefault)}'`
+    }
+    sql += ` comment '${escapeStr(col.columnComment || '')}'`
+    sql += prevColName ? ` after ${quoteIdent(prevColName)}` : ' first'
+    return sql
+}
+
+function saveColumnOrder() {
+    if (hasNewCol.value) {
+        ElMessage({ message: '请先完成新增字段再保存顺序', type: 'warning' })
+        return
+    }
+    if (getDbType() === 'sqlite') {
+        ElMessage({ message: 'SQLite 暂不支持调整字段顺序，可使用“结构同步”功能', type: 'warning' })
+        resetColumnOrder()
+        return
+    }
+    const newList = [...columnList.value]
+    const oldNames = columnListOrigin.map(c => c.columnName)
+    const newNames = newList.map(c => c.columnName)
+    if (JSON.stringify(oldNames) === JSON.stringify(newNames)) {
+        columnOrderDirty.value = false
+        ElMessage({ message: '字段顺序未发生变化', type: 'info' })
+        return
+    }
+    if (isOracle()) {
+        syncOracleColumnOrder(newList)
+        return
+    }
+    // MySQL / MariaDB：仅为真正移动的字段生成 MODIFY ... AFTER/FIRST
+    // （处于最长公共子序列中的字段相对顺序未变，无需修改；被挤位的字段无需处理）
+    const moves = computeOrderMoves(oldNames, newNames)
+    const sqls = moves.map(k => buildModifySql(newList[k], k > 0 ? newList[k - 1].columnName : null))
+    ElMessageBox.confirm(
+        `将执行 ${sqls.length} 条 ALTER TABLE 语句调整字段顺序，DDL 执行后不可回滚，是否继续？`,
+        '保存字段顺序',
+        { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    ).then(() => {
+        execSql(sqls.join(';'), () => {
+            ElMessage({ message: '字段顺序已更新', type: 'success' })
+            loadData('colums')
+        })
+    }).catch(() => {})
+}
+
+// 计算调整字段顺序所需的最小移动集合：
+// 新旧顺序的最长公共子序列（LCS）中的字段相对顺序未变，无需移动；
+// 其余字段按新顺序依次 MODIFY ... AFTER 新顺序中的前一列（首列用 FIRST）。
+// 按新顺序从前到后执行可保证 AFTER 引用的前驱列已处于正确位置。
+// 返回需要移动的字段在新顺序中的下标数组
+function computeOrderMoves(oldNames, newNames) {
+    const n = oldNames.length
+    const m = newNames.length
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+    for (let i = 1; i <= n; i++) {
+        for (let j = 1; j <= m; j++) {
+            dp[i][j] = oldNames[i - 1] === newNames[j - 1]
+                ? dp[i - 1][j - 1] + 1
+                : Math.max(dp[i - 1][j], dp[i][j - 1])
+        }
+    }
+    // 回溯 LCS，得到无需移动的字段集合
+    const keep = new Set()
+    let i = n
+    let j = m
+    while (i > 0 && j > 0) {
+        if (oldNames[i - 1] === newNames[j - 1]) {
+            keep.add(newNames[j - 1])
+            i--
+            j--
+        } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+            i--
+        } else {
+            j--
+        }
+    }
+    const moves = []
+    for (let k = 0; k < m; k++) {
+        if (!keep.has(newNames[k])) moves.push(k)
+    }
+    return moves
+}
+
+function execSqlPromise(sql) {
+    const params = new URLSearchParams()
+    params.append("connId", tableMeta.connId)
+    params.append("schema", tableMeta.schema)
+    params.append("tableName", tableMeta.tableName)
+    params.append("sql", sql)
+    params.append("maxLine", 1)
+    return http.post("/execSQL", params).then((resp) => resp.data)
+}
+
+// Oracle 字段顺序同步：先探测版本，仅 12c+ 支持原生 INVISIBLE/VISIBLE 技巧
+// 10g/11g 或版本无法确认时不执行任何变更，提示用户自行处理
+function syncOracleColumnOrder(newList) {
+    getOracleVersion().then((version) => {
+        if (version == null) {
+            ElMessage({ message: '无法确认 Oracle 版本，请在 SQL 控制台确认；仅 Oracle 12c+ 支持调整字段顺序', type: 'warning' })
+            resetColumnOrder()
+            return
+        }
+        if (version < 12) {
+            ElMessage({ message: 'Oracle ' + version + 'g 不支持调整字段顺序（需 12c+），请使用“结构同步”或自行重建表处理', type: 'warning' })
+            resetColumnOrder()
+            return
+        }
+        runOracleInvisibleReorder(newList)
+    })
+}
+
+// 探测 Oracle 主版本号（v$instance 优先，失败时降级 product_component_version；均失败返回 null）
+function parseOracleVersion(text) {
+    const m = /^(\d+)/.exec(String(text || '').trim())
+    return m ? parseInt(m[1], 10) : null
+}
+
+async function getOracleVersion() {
+    try {
+        const resp = await execSqlPromise('SELECT version FROM v$instance')
+        const rows = resp?.data?.data || []
+        const v = rows[0] && (rows[0].VERSION ?? rows[0].version)
+        if (v != null) {
+            const ver = parseOracleVersion(String(v))
+            if (ver != null) return ver
+        }
+    } catch (e) { console.log('v$instance 查询失败', e) }
+    try {
+        const resp = await execSqlPromise("SELECT version FROM product_component_version WHERE product LIKE 'Oracle Database%'")
+        const rows = resp?.data?.data || []
+        const v = rows[0] && (rows[0].VERSION ?? rows[0].version)
+        if (v != null) {
+            const ver = parseOracleVersion(String(v))
+            if (ver != null) return ver
+        }
+    } catch (e) { console.log('product_component_version 查询失败', e) }
+    return null
+}
+
+// Oracle 12c+：通过 INVISIBLE/VISIBLE 技巧重排字段：
+// 先将全部字段设为 INVISIBLE，再按新顺序设为 VISIBLE（visible 列按声明顺序排在末尾）。
+// 两条语句必须串行执行；第二条失败时按原顺序恢复可见性，避免表处于全不可见状态。
+function runOracleInvisibleReorder(newList) {
+    const tbl = quoteIdent(tableMeta.tableName)
+    const colNames = newList.map(c => quoteIdent(c.columnName))
+    const invisibleSQL = "ALTER TABLE " + tbl + " MODIFY (" + colNames.map(n => n + " INVISIBLE").join(", ") + ")"
+    const visibleSQL = "ALTER TABLE " + tbl + " MODIFY (" + colNames.map(n => n + " VISIBLE").join(", ") + ")"
+    ElMessageBox.confirm(
+        'Oracle 通过 INVISIBLE/VISIBLE 技巧调整字段顺序（需 Oracle 12c+），两条语句执行期间该表所有字段将暂时不可见，请勿在此期间访问该表。是否继续？',
+        '保存字段顺序',
+        { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    ).then(async () => {
+        try {
+            await execSqlPromise(invisibleSQL)
+            try {
+                await execSqlPromise(visibleSQL)
+            } catch (err) {
+                // 第二条失败：按原顺序恢复可见性，避免表处于全不可见状态
+                const restoreSQL = "ALTER TABLE " + tbl + " MODIFY (" + columnListOrigin.map(c => quoteIdent(c.columnName) + " VISIBLE").join(", ") + ")"
+                try { await execSqlPromise(restoreSQL) } catch (e2) { console.log('恢复字段可见性失败', e2) }
+                throw err
+            }
+            ElMessage({ message: '字段顺序已更新', type: 'success' })
+            loadData('colums')
+        } catch (err) {
+            ElMessage({ message: '字段顺序调整失败：' + (err?.message || '未知错误'), type: 'error' })
+            loadData('colums')
+        }
+    }).catch(() => {})
+}
+
+
 // ========== 索引操作 ==========
 function showAddIndexDialog() {
     newIndex.value = { name: "", type: "INDEX", columns: [] }
@@ -1093,6 +1373,23 @@ function copyCreateScript() {
 .edit-cancel:hover {
     background: #fef0f0;
     color: #f56c6c;
+}
+
+.drag-handle {
+    cursor: grab;
+    color: var(--el-text-color-secondary);
+}
+.drag-handle:hover {
+    color: var(--el-color-primary);
+}
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+:deep(tr.col-drag-over) {
+    outline: 1px dashed var(--el-color-primary);
+    outline-offset: -1px;
+    background: var(--el-color-primary-light-9);
 }
 </style>
 

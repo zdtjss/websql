@@ -136,9 +136,10 @@ func main() {
 	})
 
 	database.InitMngtDbConn()
+	mngtDB := database.Mngtdb // 本地持有引用，后续传入 Container
 
 	// 检测程序升级：对比数据库中记录的旧版本与当前二进制版本
-	prevVer, _ := migration.GetPreviousAppVersion(database.Mngtdb)
+	prevVer, _ := migration.GetPreviousAppVersion(mngtDB)
 	if prevVer != "" && prevVer != version.Version {
 		log.Printf("[Desktop] 检测到程序升级: %s → %s", prevVer, version.Version)
 	} else if prevVer == "" {
@@ -150,17 +151,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("[Desktop] 提取嵌入迁移脚本失败: %v", err)
 	}
-	if err := migration.RunMigrations(database.Mngtdb, config.Get().DB.DriverName, migrationSub, string(fullInitSQL)); err != nil {
+	if err := migration.RunMigrations(mngtDB, config.Get().DB.DriverName, migrationSub, string(fullInitSQL)); err != nil {
 		log.Fatalf("[Desktop] 管理库迁移失败: %v", err)
 	}
 
 	// 校验 DB schema 版本是否满足要求
-	if v, _ := migration.GetLatestAppliedVersion(database.Mngtdb); v != "" && v < version.RequiredMigrationVersion {
+	if v, _ := migration.GetLatestAppliedVersion(mngtDB); v != "" && v < version.RequiredMigrationVersion {
 		log.Printf("[Desktop] 警告: DB schema 版本 %s 低于要求 %s", v, version.RequiredMigrationVersion)
 	}
 
 	// 持久化当前程序版本号，供下次启动对比
-	if err := migration.RecordAppVersion(database.Mngtdb, version.Version); err != nil {
+	if err := migration.RecordAppVersion(mngtDB, version.Version); err != nil {
 		log.Printf("[Desktop] 记录程序版本失败: %v", err)
 	}
 
@@ -180,7 +181,7 @@ func main() {
 		store.InitRedis(config.Get())
 	}
 
-	container := app.NewContainer()
+	container := app.NewContainerWithDB(mngtDB)
 	defer container.Close()
 
 	// 确保 local 用户存在并自动登录

@@ -28,7 +28,9 @@ func init() {
 	sql.Register("mariadb", &mysql.MySQLDriver{})
 }
 
-// Deprecated: 使用 Container，将在阶段 4 移除
+// Deprecated: 使用 database.OpenMngtDB() + app.NewContainerWithDB() 替代。
+// 仅在过渡期保留：dbaccess.Holder 回退和 LoadConfigFromDB 仍依赖此变量。
+// 计划在所有直接引用消除后删除。
 var Mngtdb *sqlx.DB
 
 var (
@@ -40,31 +42,41 @@ var (
 )
 
 func InitMngtDbConn() {
-	// 仅在调用方未预先加载配置时才读取，避免覆盖桌面入口已设置的 IsRemote/IsDesktop 标志。
-	if config.Get() == nil {
-		config.SetActive(config.ReadConfig())
-	}
-	dsn := config.ResolveDSN(config.Get().DB.DataSourceName)
-	if config.Get().DB.DriverName == "sqlite" {
-		dsn = WithSQLitePragmas(dsn, true)
-	}
-	log.Printf("管理库连接 - driver=%s, dsn=%s", config.Get().DB.DriverName, dsn)
-	sqlxDb, err := sqlx.Connect(config.Get().DB.DriverName, dsn)
+	db, err := OpenMngtDB(config.Get())
 	if err != nil {
 		panic(err)
 	}
-	if config.Get().DB.DriverName == "sqlite" {
+	Mngtdb = db
+}
+
+// OpenMngtDB 根据配置创建并返回管理库连接。
+// 这是 InitMngtDbConn 的纯函数版本：不设置全局变量，调用方自行决定持有方式。
+// 用于 DI 容器等需要显式传递 *sqlx.DB 的场景。
+func OpenMngtDB(cfg *config.Config) (*sqlx.DB, error) {
+	if cfg == nil {
+		cfg = config.ReadConfig()
+	}
+	dsn := config.ResolveDSN(cfg.DB.DataSourceName)
+	if cfg.DB.DriverName == "sqlite" {
+		dsn = WithSQLitePragmas(dsn, true)
+	}
+	log.Printf("管理库连接 - driver=%s, dsn=%s", cfg.DB.DriverName, dsn)
+	sqlxDb, err := sqlx.Connect(cfg.DB.DriverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("管理库连接失败: %w", err)
+	}
+	if cfg.DB.DriverName == "sqlite" {
 		sqlxDb.SetMaxOpenConns(10)
 		sqlxDb.SetMaxIdleConns(3)
 		sqlxDb.SetConnMaxLifetime(0)
 		sqlxDb.SetConnMaxIdleTime(5 * time.Minute)
 		initSQLitePragma(sqlxDb)
 	} else {
-		mngtMaxOpen := config.Get().DB.MaxOpenConns
+		mngtMaxOpen := cfg.DB.MaxOpenConns
 		if mngtMaxOpen <= 0 {
 			mngtMaxOpen = 20
 		}
-		mngtMaxIdle := config.Get().DB.MaxIdleConns
+		mngtMaxIdle := cfg.DB.MaxIdleConns
 		if mngtMaxIdle <= 0 {
 			mngtMaxIdle = 10
 		}
@@ -72,7 +84,7 @@ func InitMngtDbConn() {
 		sqlxDb.SetMaxIdleConns(mngtMaxIdle)
 		sqlxDb.SetConnMaxLifetime(30 * time.Minute)
 	}
-	Mngtdb = sqlxDb
+	return sqlxDb, nil
 }
 
 // WithSQLitePragmas 通过 DSN 的 _pragma 参数为连接池中的【每个】连接设置 PRAGMA。

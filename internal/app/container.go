@@ -2,9 +2,6 @@ package app
 
 import (
 	"websql/internal/ai/agent"
-	"websql/internal/audit"
-	"websql/internal/config"
-	"websql/internal/database"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
 	"websql/internal/app/conn"
@@ -16,6 +13,9 @@ import (
 	"websql/internal/app/storage"
 	"websql/internal/app/system"
 	tree "websql/internal/app/treehandler"
+	"websql/internal/audit"
+	"websql/internal/config"
+	"websql/internal/database"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -43,16 +43,27 @@ func GetContainer() *Container {
 // 并将管理库 *sqlx.DB 注入到尚未完成 repo 分层迁移的包，
 // 使其 getDB() 返回注入实例而非已废弃的 database.Mngtdb 全局变量。
 func NewContainer() *Container {
-	cfg := config.Get()
-	if cfg == nil {
-		cfg = config.ReadConfig()
-	}
-	config.SetActive(cfg)
 	if database.Mngtdb == nil {
 		database.InitMngtDbConn()
 	}
+	return NewContainerWithDB(database.Mngtdb)
+}
 
-	db := database.Mngtdb
+// NewContainerWithDB 使用显式传入的 *sqlx.DB 构建容器。
+// 这是推荐的构建方式：调用方通过 database.OpenMngtDB 获取 DB 后传入，
+// 避免依赖全局变量。
+func NewContainerWithDB(db *sqlx.DB) *Container {
+	cfg := config.Get()
+	if cfg == nil {
+		cfg = config.ReadConfig()
+		config.SetActive(cfg)
+	}
+
+	// 同步设置 Mngtdb（过渡期兼容：部分代码仍通过 Holder fallback 依赖它）
+	if database.Mngtdb == nil {
+		database.Mngtdb = db
+	}
+
 	// 注入到各业务包；未调用时各包 getDB() 回退到全局 database.Mngtdb（向后兼容）。
 	// 顺序无依赖：各包 injectedDB 为独立包级变量。
 	audit.Init(db)
