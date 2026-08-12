@@ -465,14 +465,16 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	currentDateInfoTool, dErr := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
 	// read_file_data 为只读工具，用于分析用户上传的数据文件，不依赖写权限，常驻核心工具
 	readFileTool, rfErr := utils.InferTool("read_file_data", "读取已上传的数据文件内容（只读，用于数据分析，不会导入数据库）。可传 limit(默认100,最大500)/offset 分页读取", NewReadFileDataFunc())
+	// cross_db_join 为跨库关联分析工具：服务端完成两侧表 Hash Join，只返回统计与少量样本，避免大量明细进入上下文
+	crossJoinTool, cjErr := utils.InferTool("cross_db_join", "跨库关联分析：在服务端对两个连接（connId 可传 Schema 名或连接 ID）的表执行 Hash Join，仅返回匹配统计（matched/leftOnly/rightOnly 行数）、可选聚合指标（metrics: count/sum/avg/min/max，column 用 left./right. 前缀）和少量样本行（sampleLimit 默认30）。支持：joinKey/joinKeys 复合 key（多列联合匹配）、leftWhere/rightWhere 过滤（仅支持「列 操作符 字面量」+ AND/OR/NOT/IN/BETWEEN/LIKE/IS NULL，如 status='ACTIVE' AND amount>100）。两侧各取前 limit 行（默认10000），结果属抽样关联。适用于跨库/跨连接的表关联分析，避免海量数据进入上下文", NewCrossDBJoinFunc(connID, schemas, auditCtx, scope.UserID))
 
-	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool, readFileTool} {
+	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool, readFileTool, crossJoinTool} {
 		if t != nil {
 			coreTools = append(coreTools, t)
 		}
 	}
-	if qErr != nil || sErr != nil || lErr != nil || dErr != nil || rfErr != nil {
-		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v", qErr, sErr, lErr, dErr, rfErr)
+	if qErr != nil || sErr != nil || lErr != nil || dErr != nil || rfErr != nil || cjErr != nil {
+		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v crossJoin=%v", qErr, sErr, lErr, dErr, rfErr, cjErr)
 	}
 
 	// 导出工具均为 Go 原生兜底实现：当 Python Skill 不可用或失败时使用。

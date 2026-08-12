@@ -12,8 +12,6 @@ import (
 	"sync"
 
 	"websql/internal/config"
-
-	"github.com/forgoer/openssl"
 )
 
 // gcmPrefix 用于区分新版 GCM 密文与旧版 ECB 密文。
@@ -140,12 +138,40 @@ func AESDecode(ciphertext string) (string, error) {
 		log.Printf("[Security] Base64解码失败 - err=%v\n", err)
 		return "", errors.New("无效密文")
 	}
-	dst, err := openssl.AesECBDecrypt(decodeString, key, openssl.PKCS7_PADDING)
+	dst, err := aesECBDecrypt(decodeString, key)
 	if err != nil {
 		log.Printf("[Security] ECB 解密失败 - err=%v\n", err)
 		return "", errors.New("解密失败")
 	}
 	return string(dst), nil
+}
+
+// aesECBDecrypt 使用 AES-ECB 模式解密并去除 PKCS7 填充，
+// 仅用于兼容旧版 ECB 密文（存量数据），不再用于新加密。
+func aesECBDecrypt(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	blockSize := block.BlockSize()
+	if len(ciphertext) == 0 || len(ciphertext)%blockSize != 0 {
+		return nil, errors.New("密文长度非法")
+	}
+	dst := make([]byte, len(ciphertext))
+	for start := 0; start < len(ciphertext); start += blockSize {
+		block.Decrypt(dst[start:start+blockSize], ciphertext[start:start+blockSize])
+	}
+	// PKCS7 去填充
+	padLen := int(dst[len(dst)-1])
+	if padLen == 0 || padLen > blockSize {
+		return nil, errors.New("填充长度非法")
+	}
+	for _, b := range dst[len(dst)-padLen:] {
+		if int(b) != padLen {
+			return nil, errors.New("填充校验失败")
+		}
+	}
+	return dst[:len(dst)-padLen], nil
 }
 
 // AESDecodePanic 保留 panic 语义的包装函数，供不便处理 error 的调用方过渡使用。

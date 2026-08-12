@@ -233,6 +233,7 @@ func buildCrossDBRules(schemas []SchemaRef, defaultConnID string) string {
 ### 操作方式
 - **同连接跨 schema 读**：直接 JOIN，如 schemaA.t1 JOIN schemaB.t2
 - **跨连接读**：分步 query_data，每步指定 connId，你综合分析结果
+- **跨连接关联（join）**：优先用 cross_db_join 工具（服务端 Hash Join，只返回统计与少量样本，避免大量明细进上下文）；仅当数据量小（单侧 ≤ 500 行）时才用 query_data 分步拉数 + 内存关联
 - **跨连接写**：分步 exec_sql，每步指定 connId。事务不跨连接
 - **connId 参数**：不填=默认连接，填 Schema 名=自动路由，填连接 ID=直接使用
 
@@ -241,6 +242,7 @@ func buildCrossDBRules(schemas []SchemaRef, defaultConnID string) string {
   ✅ query_data(sql="... Schema_A.t1 JOIN Schema_B.t2 ...", connId="Schema_A")
   ✅ query_data(sql="... Schema_C.t3 ...", connId="Schema_C")
   ❌ query_data(sql="... Schema_A.t1 JOIN Schema_C.t3 ...") → 报错
+  ✅ cross_db_join(leftConnId="Schema_A", leftTable="t1", leftKey="id", rightConnId="Schema_C", rightTable="t3", rightKey="id")
 
 ### 注意事项
 - 跨库综合分析时标注数据来源（"来自 Schema_A 的数据..."）

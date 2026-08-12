@@ -120,6 +120,9 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.postFilterSync(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
 		case "query_data":
 			return m.checkQueryAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "cross_db_join":
+			// 跨库 join 工具：结构化参数（非自由 SQL），程序化校验两侧表/列权限后放行
+			return m.checkCrossDBJoinAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
@@ -386,6 +389,171 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return "", err
 	}
 	return m.applyQueryResultFilter(result, tables)
+}
+
+// checkCrossDBJoinAccess 校验 cross_db_join 工具的表级/列级权限。
+// 该工具为结构化参数（非自由 SQL），无需 Permission Agent 语义分析，
+// 程序化校验两侧表与显式引用的列即可（与 query_data fallback 同一套权限模型）。
+func (m *PermissionMiddleware) checkCrossDBJoinAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	if m.Scope.SkipChecks() {
+		m.logAllow("cross_db_join", "skip(conn_full)")
+		return endpoint(ctx, args, opts...)
+	}
+
+	var input CrossDBJoinInput
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		m.logDeny("cross_db_join", "参数解析失败", nil)
+		return "", err
+	}
+
+	// 表级校验（支持 schema.table 形式，取表名部分判断）
+	var deniedTables []string
+	for _, t := range []struct {
+		table string
+		label string
+	}{{input.LeftTable, "leftTable"}, {input.RightTable, "rightTable"}} {
+		if t.table == "" {
+			continue
+		}
+		_, tableName := splitSchemaTable(t.table, "")
+		if !m.Scope.IsTableAllowedIgnoreCase(tableName) {
+			deniedTables = append(deniedTables, tableName)
+		}
+	}
+	if len(deniedTables) > 0 {
+		m.logDeny("cross_db_join", "无权访问表", deniedTables)
+		return "", &PermissionError{
+			Message: fmt.Sprintf("权限不足：无权访问表 %v，请使用您有权限的表重新发起关联分析。", deniedTables),
+			Objects: deniedTables,
+		}
+	}
+
+	// 列级校验：显式 select 列、join key、metrics 列
+	if err := m.checkCrossDBJoinColumns(&input); err != nil {
+		if pe, ok := err.(*PermissionError); ok {
+			m.logDeny("cross_db_join", "无权访问字段", pe.Objects)
+		} else {
+			m.logDeny("cross_db_join", "列权限校验失败", nil)
+		}
+		return "", err
+	}
+
+	m.logAllow("cross_db_join", "scope_filter")
+	return endpoint(ctx, args, opts...)
+}
+
+// checkCrossDBJoinColumns 校验 cross_db_join 中显式引用的列（column 级权限表）。
+// 注意：column 级权限表必须显式列出 select 列（禁止省略或 *），否则工具内部会
+// 取全列并绕过列级过滤（query_data 有结果列过滤兜底，本工具没有）。
+func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) error {
+	check := func(table, col string) error {
+		if col == "" || col == "*" {
+			return nil
+		}
+		if m.Scope.GetTableAccessLevel(table) == "column" && !m.Scope.IsColumnAllowed(table, col) {
+			return &PermissionError{
+				Message: fmt.Sprintf("无权访问字段 %s.%s", table, col),
+				Objects: []string{table + "." + col},
+			}
+		}
+		return nil
+	}
+
+	_, leftTable := splitSchemaTable(input.LeftTable, "")
+	_, rightTable := splitSchemaTable(input.RightTable, "")
+
+	// column 级权限表禁止隐式全列/星号（防列级过滤绕过）
+	for _, t := range []struct {
+		table      string
+		selectCols []string
+		label      string
+	}{{leftTable, input.LeftSelect, "leftSelect"}, {rightTable, input.RightSelect, "rightSelect"}} {
+		if m.Scope.GetTableAccessLevel(t.table) != "column" {
+			continue
+		}
+		if len(t.selectCols) == 0 || containsStarColumn(t.selectCols) {
+			return &PermissionError{
+				Message: fmt.Sprintf("表 %s 存在列级权限限制，必须通过 %s 显式列出有权限的列（禁止省略或使用 *）", t.table, t.label),
+				Objects: []string{t.table},
+			}
+		}
+	}
+
+	// join key（单列或多列数组）
+	leftKeys, err := resolveJoinKeys(input.LeftKeys, input.LeftKey)
+	if err != nil {
+		return err
+	}
+	rightKeys, err := resolveJoinKeys(input.RightKeys, input.RightKey)
+	if err != nil {
+		return err
+	}
+	for _, k := range leftKeys {
+		if err := check(leftTable, k); err != nil {
+			return err
+		}
+	}
+	for _, k := range rightKeys {
+		if err := check(rightTable, k); err != nil {
+			return err
+		}
+	}
+	for _, c := range input.LeftSelect {
+		if err := check(leftTable, c); err != nil {
+			return err
+		}
+	}
+	for _, c := range input.RightSelect {
+		if err := check(rightTable, c); err != nil {
+			return err
+		}
+	}
+
+	// where 过滤条件：先做语法白名单校验，再校验引用的列
+	for _, w := range []struct {
+		where string
+		table string
+	}{{input.LeftWhere, leftTable}, {input.RightWhere, rightTable}} {
+		if strings.TrimSpace(w.where) == "" {
+			continue
+		}
+		if err := validateWhereClause(w.where); err != nil {
+			return &PermissionError{
+				Message: err.Error(),
+				Objects: []string{w.table},
+			}
+		}
+		for _, col := range extractWhereColumns(w.where) {
+			if err := check(w.table, col); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, mt := range input.Metrics {
+		prefix, col := splitMetricColumn(mt.Column)
+		switch prefix {
+		case "left":
+			if err := check(leftTable, col); err != nil {
+				return err
+			}
+		case "right":
+			if err := check(rightTable, col); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// containsStarColumn 判断列列表中是否包含 "*"
+func containsStarColumn(cols []string) bool {
+	for _, c := range cols {
+		if c == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
