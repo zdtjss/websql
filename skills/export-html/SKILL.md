@@ -1,21 +1,17 @@
 ---
 name: export-html
 description: 生成交互式 HTML 数据分析报告。支持 Markdown 渲染、Mermaid 图表（可缩放/全屏）、代码高亮、数学公式。Agent 负责组织 Markdown 内容，调用 export_html 工具生成。当用户需要 HTML 报告或可交互文档时使用。
-version: "1.1.0"
+version: "1.2.0"
 min_agent_version: "1.0.0"
-dependencies:
-  - type: context
-    name: connection_id
-    description: 若使用 sql 模式需已建立数据库连接
 error_hints:
+  - pattern: "template:"
+    hint: "HTML 模板渲染失败。可能是 Markdown 中包含未转义的特殊字符"
+    suggestion: "简化 Markdown 内容后重试，或检查 < > & 等特殊字符"
   - pattern: "syntax error"
-    hint: "Markdown 语法错误。请检查表格格式、代码块闭合、Mermaid 语法"
-    suggestion: "简化 Markdown 内容后重试"
-  - pattern: "template"
-    hint: "HTML 模板渲染失败。可能是 Markdown 中包含特殊字符"
-    suggestion: "移除 Markdown 中的 < > & 等特殊字符或用反引号包裹"
-  - pattern: "memory"
-    hint: "内存不足。可能是 Markdown 内容过大"
+    hint: "sql 模式下可能是 SQL 语法错误；content 模式下可能是 Markdown 结构问题"
+    suggestion: "检查 SQL 语法或简化 Markdown 内容后重试"
+  - pattern: "out of memory"
+    hint: "内容过大导致内存不足"
     suggestion: "减少内容量或拆分为多个报告"
 command_blacklist:
   - DROP DATABASE
@@ -37,7 +33,7 @@ Agent 负责组织 Markdown 内容，export_html 工具负责渲染为交互式 
    { "content": "<Markdown>", "fileName": "report", "title": "报告标题" }
    ```
 
-### 场景 B：用户提供了 SQL（sql 模式）
+### 场景 B：用户提供了 SQL（sql 模式，需已建立数据库连接）
 
 1. 调用 `export_html` 工具，传入 SQL：
    ```json

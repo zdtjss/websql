@@ -8,9 +8,9 @@
 //   - command_blacklist：命令黑名单（禁止执行的 SQL 命令模式）
 //
 // 设计原则：
-//   1. 向后兼容：所有扩展字段均为可选，旧 SKILL.md 仍能正常工作
-//   2. 不侵入 Eino：独立解析 front matter，不修改 Eino skill 库
-//   3. 零值安全：字段为零值时跳过对应检查
+//  1. 向后兼容：所有扩展字段均为可选，旧 SKILL.md 仍能正常工作
+//  2. 不侵入 Eino：独立解析 front matter，不修改 Eino skill 库
+//  3. 零值安全：字段为零值时跳过对应检查
 package agent
 
 import (
@@ -48,9 +48,9 @@ type SkillMeta struct {
 //   - context    ：依赖运行时上下文中存在特定字段（如 connection_id、schema）
 //   - permission ：依赖特定权限（如 write、ddl）
 type SkillDependency struct {
-	Type        string `yaml:"type"`         // skill | context | permission
-	Name        string `yaml:"name"`         // 依赖名（见下方各类型的可用名称）
-	Description string `yaml:"description"`  // 人类可读的依赖说明
+	Type        string `yaml:"type"`        // skill | context | permission
+	Name        string `yaml:"name"`        // 依赖名（见下方各类型的可用名称）
+	Description string `yaml:"description"` // 人类可读的依赖说明
 }
 
 // SkillErrorHint 错误提示映射：将错误信息模式映射到友好提示和恢复建议
@@ -62,12 +62,12 @@ type SkillErrorHint struct {
 
 // SkillCheckContext 依赖检查的运行时上下文
 type SkillCheckContext struct {
-	ConnID          string          // 当前连接 ID
+	ConnID          string           // 当前连接 ID
 	Scope           *PermissionScope // 用户权限范围
-	Schemas         []SchemaRef     // 可用的 schema 列表
-	DBType          string          // 数据库类型
-	DBSchema        string          // 当前 schema
-	AvailableSkills []string        // 已注册的 Skill 名列表
+	Schemas         []SchemaRef      // 可用的 schema 列表
+	DBType          string           // 数据库类型
+	DBSchema        string           // 当前 schema
+	AvailableSkills []string         // 已注册的 Skill 名列表
 }
 
 // ──────────────────────────────────────────────
@@ -100,6 +100,9 @@ func (r *SkillMetaRegistry) loadAll() {
 	if r.skillsDir == "" {
 		return
 	}
+
+	// 重置已加载的元信息，避免磁盘上已删除的 Skill 残留旧 meta
+	r.metas = make(map[string]*SkillMeta)
 
 	entries, err := os.ReadDir(r.skillsDir)
 	if err != nil {
@@ -185,6 +188,10 @@ func (r *SkillMetaRegistry) GlobalCommandBlacklist() []string {
 func parseSkillMeta(filePath string) (*SkillMeta, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// 目录下无 SKILL.md（如 skills/lib 工具目录），静默跳过
+			return nil, nil
+		}
 		return nil, err
 	}
 	content := string(data)
@@ -364,7 +371,7 @@ var defaultCommandBlacklist = []string{
 	"DROP DATABASE",
 	"DROP SCHEMA",
 	"SHUTDOWN",
-	"KILL ",        // MySQL KILL 连接
+	"KILL ",            // MySQL KILL 连接
 	"LOAD DATA INFILE", // 可能读取服务端文件
 }
 
@@ -405,11 +412,35 @@ func matchesBlacklistPattern(upperSQL, pattern string) bool {
 		return false
 	}
 	// 对以命令关键字开头的模式，使用前缀匹配（避免误判包含该字符串的注释）
+	// 匹配前剥离前导空白与注释，防止 `/* x */ DROP ...` 绕过
 	// 对其他模式，使用包含匹配
 	if isCommandPrefix(pattern) {
-		return strings.HasPrefix(upperSQL, pattern)
+		return strings.HasPrefix(stripLeadingSQLNoise(upperSQL), pattern)
 	}
 	return strings.Contains(upperSQL, pattern)
+}
+
+// stripLeadingSQLNoise 剥离 SQL 前导空白与注释，返回首条有效语句的开头。
+// 支持 -- 行注释与 /* */ 块注释；无法剥离时返回空字符串。
+func stripLeadingSQLNoise(sql string) string {
+	s := strings.TrimSpace(sql)
+	for {
+		switch {
+		case strings.HasPrefix(s, "--"):
+			if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+				s = strings.TrimSpace(s[idx+1:])
+				continue
+			}
+			return ""
+		case strings.HasPrefix(s, "/*"):
+			if idx := strings.Index(s, "*/"); idx >= 0 {
+				s = strings.TrimSpace(s[idx+2:])
+				continue
+			}
+			return ""
+		}
+		return s
+	}
 }
 
 // isCommandPrefix 判断模式是否为 SQL 命令前缀（以大写字母开头）

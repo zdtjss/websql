@@ -149,10 +149,13 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB) func(ctx context.Context, input 
 	}
 }
 
-// NewExportAnalysisDocxFunc 创建 Word 导出工具（Go 原生兜底实现）
-// 注意：此工具为 Go 原生实现，输出为基础版 Word 文档。
-// 若需专业科技感 Word 报告（含封面/目录/KPI/图表），Agent 应优先调用
-// skill 工具加载 export-word 技能，由 Python 脚本生成。
+// NewExportAnalysisDocxFunc 创建 Word 导出工具（双路径，保证导出不失败）。
+//   - 路径 1：Python 模板驱动渲染（专业版：封面/目录/样式集/自动图表）
+//   - 路径 2：Python 不可用或渲染失败时，自动降级 Go 基础版渲染器
+//     （手拼 OOXML 基础实现，无 Python 依赖，保证任何环境均可导出）
+//
+// 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
+// skill 工具加载 export-word 技能自行编排。
 func NewExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
 	return func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
 		title := input.Title
@@ -162,16 +165,29 @@ func NewExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, input *E
 
 		fileName := SanitizeFileName(input.FileName, "report")
 		EnsureExportsDir()
+		url := "/exports/" + fileName + ".docx"
 
+		// 路径 1：Python 模板驱动渲染（专业版）
 		if input.Content != "" {
+			req := buildDocxContentJSON(title, input.Content, url)
+			if result, err := runPythonRenderer(ctx,
+				filepath.Join("export-word", "scripts", "word_generator.py"), req); err == nil {
+				log.Printf("[Tool:export_docx] 成功（模板版）- url=%s\n", result.OutputPath)
+				return &ExportAnalysisDocxOutput{
+					Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", result.OutputPath),
+					DownloadURL: result.OutputPath,
+					FileType:    "docx",
+				}, nil
+			} else {
+				log.Printf("[Tool:export_docx] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
+			}
+			// 路径 2：Go 基础版兜底（无 Python 依赖，保证导出不失败）
 			docxPath := filepath.Join("exports", fileName+".docx")
 			if err := GenerateDocxFromContent(input.Content, title, docxPath); err != nil {
 				return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
 			}
-			url := fmt.Sprintf("/exports/%s.docx", fileName)
-			log.Printf("[Tool:export_docx] 成功 (content) - url=%s\n", url)
 			return &ExportAnalysisDocxOutput{
-				Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", url),
+				Message:     fmt.Sprintf("已生成 Word 分析报告（基础版），[点击下载](%s)", url),
 				DownloadURL: url,
 				FileType:    "docx",
 			}, nil
@@ -182,32 +198,45 @@ func NewExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, input *E
 			return nil, err
 		}
 
+		req := buildDocxDataJSON(qr, title, url)
+		if result, err := runPythonRenderer(ctx,
+			filepath.Join("export-word", "scripts", "word_generator.py"), req); err == nil {
+			log.Printf("[Tool:export_docx] 成功（模板版）- url=%s\n", result.OutputPath)
+			return &ExportAnalysisDocxOutput{
+				Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", result.OutputPath),
+				DownloadURL: result.OutputPath,
+				FileType:    "docx",
+			}, nil
+		} else {
+			log.Printf("[Tool:export_docx] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
+		}
+
 		var chartImagePaths []string
 		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
 			chartImagePaths = GenerateDocxCharts(qr, title, fileName)
 		}
-
 		docxPath := filepath.Join("exports", fileName+".docx")
 		if err := GenerateDocx(qr, title, chartImagePaths, docxPath); err != nil {
+			cleanupFiles(chartImagePaths)
 			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
 		}
 		cleanupFiles(chartImagePaths)
 
-		url := fmt.Sprintf("/exports/%s.docx", fileName)
-		log.Printf("[Tool:export_docx] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
-
 		return &ExportAnalysisDocxOutput{
-			Message:     fmt.Sprintf("已生成 Word 报告（%d 条数据），[点击下载](%s)", len(qr.Data), url),
+			Message:     fmt.Sprintf("已生成 Word 分析报告（%d 条数据，基础版），[点击下载](%s)", len(qr.Data), url),
 			DownloadURL: url,
 			FileType:    "docx",
 		}, nil
 	}
 }
 
-// NewExportPPTFunc 创建 PPT 导出工具（Go 原生兜底实现）
-// 注意：此工具为 Go 原生实现，输出为基础版 PPT。
-// 若需专业科技感 PPT（含封面/目录/图表页/深色主题），Agent 应优先调用
-// skill 工具加载 export-ppt 技能，由 Python 脚本生成。
+// NewExportPPTFunc 创建 PPT 导出工具（双路径，保证导出不失败）。
+//   - 路径 1：Python 模板驱动渲染（专业版：母版/版式/深色主题）
+//   - 路径 2：Python 不可用或渲染失败时，自动降级 Go 基础版渲染器
+//     （手拼 OOXML 基础实现，无 Python 依赖，保证任何环境均可导出）
+//
+// 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
+// skill 工具加载 export-ppt 技能自行编排。
 func NewExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
 	return func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
 		title := input.Title
@@ -217,17 +246,31 @@ func NewExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportPPTI
 
 		fileName := SanitizeFileName(input.FileName, "slides")
 		EnsureExportsDir()
+		url := "/exports/" + fileName + ".pptx"
 
+		// 路径 1：Python 模板驱动渲染（专业版）
 		if input.Content != "" {
+			req := buildPPTContentJSON(title, input.Content, url)
+			if result, err := runPythonRenderer(ctx,
+				filepath.Join("export-ppt", "scripts", "export_ppt.py"), req); err == nil {
+				log.Printf("[Tool:export_ppt] 成功（模板版）- slides=%d, url=%s\n", result.SlideCount, result.OutputPath)
+				return &ExportPPTOutput{
+					Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", result.SlideCount, result.OutputPath),
+					SlideCount:  result.SlideCount,
+					DownloadURL: result.OutputPath,
+					FileType:    "ppt",
+				}, nil
+			} else {
+				log.Printf("[Tool:export_ppt] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
+			}
+			// 路径 2：Go 基础版兜底（无 Python 依赖，保证导出不失败）
 			pptxPath := filepath.Join("exports", fileName+".pptx")
 			slideCount, err := GeneratePptxFromContent(input.Content, title, pptxPath)
 			if err != nil {
 				return nil, fmt.Errorf("生成 PPT 失败：%w", err)
 			}
-			url := fmt.Sprintf("/exports/%s.pptx", fileName)
-			log.Printf("[Tool:export_ppt] 成功 (content) - slides=%d, url=%s\n", slideCount, url)
 			return &ExportPPTOutput{
-				Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
+				Message:     fmt.Sprintf("已生成 PPT（%d 页，基础版），[点击下载](%s)", slideCount, url),
 				SlideCount:  slideCount,
 				DownloadURL: url,
 				FileType:    "ppt",
@@ -239,8 +282,21 @@ func NewExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportPPTI
 			return nil, err
 		}
 
-		chartPaths := GeneratePptCharts(qr, title, fileName)
+		req := buildPPTDataJSON(qr, title, url)
+		if result, err := runPythonRenderer(ctx,
+			filepath.Join("export-ppt", "scripts", "export_ppt.py"), req); err == nil {
+			log.Printf("[Tool:export_ppt] 成功（模板版）- slides=%d, url=%s\n", result.SlideCount, result.OutputPath)
+			return &ExportPPTOutput{
+				Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", result.SlideCount, result.OutputPath),
+				SlideCount:  result.SlideCount,
+				DownloadURL: result.OutputPath,
+				FileType:    "ppt",
+			}, nil
+		} else {
+			log.Printf("[Tool:export_ppt] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
+		}
 
+		chartPaths := GeneratePptCharts(qr, title, fileName)
 		pptxPath := filepath.Join("exports", fileName+".pptx")
 		slideCount, err := GeneratePptx(qr, title, chartPaths, pptxPath)
 		cleanupFiles(chartPaths)
@@ -248,11 +304,8 @@ func NewExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportPPTI
 			return nil, fmt.Errorf("生成 PPT 失败：%w", err)
 		}
 
-		url := fmt.Sprintf("/exports/%s.pptx", fileName)
-		log.Printf("[Tool:export_ppt] 成功 - slides=%d, url=%s\n", slideCount, url)
-
 		return &ExportPPTOutput{
-			Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
+			Message:     fmt.Sprintf("已生成 PPT（%d 页，基础版），[点击下载](%s)", slideCount, url),
 			SlideCount:  slideCount,
 			DownloadURL: url,
 			FileType:    "ppt",

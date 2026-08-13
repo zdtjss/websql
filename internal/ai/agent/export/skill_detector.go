@@ -12,8 +12,9 @@ import (
 	"sync"
 	"time"
 
-	skill "github.com/cloudwego/eino/adk/middlewares/skill"
 	"websql/internal/config"
+
+	skill "github.com/cloudwego/eino/adk/middlewares/skill"
 )
 
 // SkillEnv 封装 Eino Skill Backend 与 Filesystem Backend 的运行环境。
@@ -76,7 +77,7 @@ func GetSkillEnv() *SkillEnv {
 // logSkillStatus 启动时打印 Python 与 Skill 发现状态。
 func logSkillStatus(ctx context.Context) {
 	if !IsPythonAvailable() {
-		log.Println("[SkillEnv] Python 未安装，Skill 脚本将无法执行，Agent 会回退 Go 原生工具")
+		log.Println("[SkillEnv] Python 未安装，Skill 脚本不可用；export_ppt/export_analysis_docx 导出工具将自动降级 Go 基础版（导出不失败）")
 		return
 	}
 

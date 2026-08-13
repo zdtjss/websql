@@ -1,28 +1,24 @@
 ---
 name: export-word
-description: 生成专业数据分析 Word 报告（.docx）。Agent 负责用 query_data 取数并计算统计指标，本 Skill 的 Python 脚本负责渲染成带封面、目录、图表、表格的科技感 Word 文档。当用户需要 Word/PDF 报告时使用。
-version: "1.2.0"
+description: 生成专业数据分析 Word 报告（.docx，模板驱动）。Agent 负责用 query_data 取数并计算统计指标，本 Skill 的 Python 脚本将结构化数据渲染到 report_template.docx 模板（封面/目录/样式集/图表/表格）。当用户需要 Word/PDF 报告时使用。
+version: "2.0.0"
 min_agent_version: "1.0.0"
-dependencies:
-  - type: context
-    name: connection_id
-    description: 需要 query_data 已建立数据库连接
 error_hints:
   - pattern: "ModuleNotFoundError"
-    hint: "Python 依赖缺失。请先用 execute 工具运行 pip install -r requirements.txt 安装依赖后重试"
-    suggestion: "或回退到 export_analysis_docx 工具（Go 原生兜底）"
+    hint: "Python 依赖缺失。依赖应随部署预装（pip install -r scripts/requirements.txt，含 python-docx/docxtpl/matplotlib）"
+    suggestion: "告知用户部署环境缺少 Python 依赖，不要反复尝试运行时安装"
   - pattern: "UnicodeEncodeError"
-    hint: "Python 编码错误（Windows 常见 gbk 问题）。建议在脚本头部添加 # -*- coding: utf-8 -*- 并设置 PYTHONIOENCODING=utf-8"
-    suggestion: "或回退到 export_analysis_docx 工具"
+    hint: "Python 编码错误（Windows 常见 gbk 问题）"
+    suggestion: "检查脚本是否以 UTF-8 输出（脚本已内置 reconfigure，若仍报错请反馈）"
   - pattern: "PermissionError"
-    hint: "文件写入权限不足。请确认 outputPath 以 /exports/ 开头，且后端有写入权限"
+    hint: "文件写入权限不足。请确认 outputPath 以 /exports/ 开头"
     suggestion: "检查输出目录是否存在，或联系管理员"
-  - pattern: "timeout"
-    hint: "脚本执行超时。可能是数据量过大导致图表生成缓慢"
-    suggestion: "减少数据量或在输入 JSON 中设置 includeCharts: false"
   - pattern: "SyntaxError"
     hint: "Python 脚本语法错误。可能是 Python 版本不兼容"
-    suggestion: "回退到 export_analysis_docx 工具（Go 原生兜底）"
+    suggestion: "重新加载 skill 后重试"
+  - pattern: "ZeroDivisionError"
+    hint: "脚本 bug 已修复，请确认使用的是最新版脚本"
+    suggestion: "重新加载 skill"
 command_blacklist:
   - DROP DATABASE
   - DROP SCHEMA
@@ -30,32 +26,37 @@ command_blacklist:
   - SHUTDOWN
 ---
 
-# Word 报告生成 Skill
+# Word 报告生成 Skill（模板驱动）
 
-本 Skill 将结构化数据渲染为专业 Word 文档。**Agent 负责取数与统计计算，Python 脚本只负责文档渲染**。
+本 Skill 将结构化数据渲染到**模板文件** `templates/report_template.docx`（docxtpl 模板：封面占位、目录域、样式集、正文骨架）。**Agent 负责取数与统计计算，Python 脚本负责模板填充与表格/图片插入。**
+
+## 模板与换肤
+
+- 模板位置：`skills/export-word/templates/report_template.docx`
+- **换肤/换版式**：直接用 Word 编辑模板文件（改样式集、封面布局、配色），或修改 `skills/lib/build_templates.py` 后重新生成——渲染脚本零代码改动
+- 样式集：Normal（微软雅黑 11pt）/ Heading 1-4 / List Bullet / 表格斑马纹 / 页眉页脚页码
 
 ## 工作流（Agent 必须按序执行）
 
 1. **取数**：用 `query_data` 工具执行用户的 SELECT SQL，获得 `columns` 和 `data`
 2. **计算统计**：Agent 自行计算以下字段（规则见下文）
-3. **组装 JSON**：按"输入数据契约"组装 stdin JSON
+3. **组装 JSON**：按"输入数据契约"组装 JSON
 4. **执行脚本**：用 `execute` 工具（Eino Filesystem Middleware 提供）运行：
    ```
-   python <本 SKILL 目录>/scripts/word_generator.py
+   python <skills 目录>/export-word/scripts/word_generator.py
    ```
-   JSON 通过 stdin 传入（execute 工具支持 stdin）
+   JSON 传入方式二选一（execute 工具不支持直接向子进程 stdin 写入）：
+   - **重定向**：先用 `write_file` 把 JSON 写入临时文件（如 /tmp/word_input.json），再执行 `python <脚本路径> < /tmp/word_input.json`
+   - **位置参数**：直接执行 `python <脚本路径> /tmp/word_input.json`（脚本自动读取首参数文件）
 5. **解析输出**：脚本 stdout 返回 `{"success":true,"outputPath":"..."}` 或 `{"success":false,"error":"..."}`
 6. **返回链接**：把 outputPath 转成下载链接 `/exports/<文件名>.docx` 返回用户
 
-## 依赖安装（首次执行前）
+## 依赖说明
 
-若 Python 脚本报 `ModuleNotFoundError`，先用 `execute` 工具安装依赖：
-```
-pip install -r <本 SKILL 目录>/scripts/requirements.txt
-```
-安装完成后重试脚本执行。
+依赖（python-docx/docxtpl/matplotlib/numpy/Pillow，精确版本见 scripts/requirements.txt）应随部署预装。
+若报 `ModuleNotFoundError`，说明部署不完整，告知用户补充安装依赖，不要反复尝试运行时安装。
 
-## 输入数据契约（stdin JSON）
+## 输入数据契约（JSON）
 
 ### data 模式（从 SQL 取数）
 
@@ -82,8 +83,20 @@ pip install -r <本 SKILL 目录>/scripts/requirements.txt
 {
   "mode": "content",
   "title": "报告标题",
+  "markdown": "# 摘要\n\n正文...\n\n## 数据明细\n\n| 列A | 列B |\n|---|---|\n| 1 | 2 |\n",
+  "outputPath": "/exports/report_20260619.docx"
+}
+```
+
+`markdown` 字段（推荐）：脚本内置 Markdown 解析（skills/lib/md_blocks.py），支持标题分节、段落、列表、表格、代码块。
+也可使用 `sections` 字段（兼容旧契约）：
+
+```json
+{
+  "mode": "content",
+  "title": "报告标题",
   "sections": [
-    {"title": "章节标题", "blocks": [{"type": "paragraph", "content": "正文"}]}
+    {"title": "章节标题", "level": 2, "blocks": [{"type": "paragraph", "content": "正文"}]}
   ],
   "outputPath": "/exports/report_20260619.docx"
 }
@@ -94,8 +107,7 @@ pip install -r <本 SKILL 目录>/scripts/requirements.txt
 | type | content 字段 | 说明 |
 |------|-------------|------|
 | `text` / `paragraph` | 字符串 | 普通段落 |
-| `heading` | 字符串 | 标题，需额外提供 `level`（1-4） |
-| `h1` / `h2` / `h3` | 字符串 | 快捷标题（h1→1级, h2→2级, h3→3级） |
+| `heading` | 字符串 | 子标题 |
 | `bullet` / `list` | 字符串（`\n` 分隔） | 无序列表 |
 | `table` | 字符串（Markdown 表格）或 list（`[[表头...], [行...]]`） | 数据表格 |
 | `chart` | 无需 content | 图表，需提供 `chartType`（bar/pie/horizontal_bar/line）、`title`、`data: {labels:[], values:[]}` |
@@ -111,22 +123,18 @@ pip install -r <本 SKILL 目录>/scripts/requirements.txt
 - **findings**：基于 numericStats 生成 3-5 条洞察，例如：
   - "amount 平均值 1234.56，峰值 9999.0，波动较大"
   - "数据分布右偏，存在极端高值"
-- **chartPaths**：预留字段，当前 word_generator.py 已内置 matplotlib 图表生成，无需单独生成 PNG。如需图表，在 `includeCharts: true` 时脚本会自动根据数据生成
+- **chartPaths**：可选。指向已存在的 PNG 文件路径（配合 `includeCharts: true` 插入）
 
-## 图表生成（内置）
+## 图表生成
 
-word_generator.py 已内置 matplotlib 图表生成能力，无需单独执行图表脚本。
-在输入 JSON 中设置 `includeCharts: true`，脚本会根据数据自动生成合适的图表并嵌入报告。
-支持的图表类型：line / bar / horizontal_bar / pie / donut / scatter / radar / heatmap / area / stacked_bar
+- data 模式：脚本自动检测数值列生成柱状图（无需外部 PNG）
+- content 模式：`chart` block 由内置 matplotlib 渲染（实现见 skills/lib/chart_common.py 共享模块）
+- 外部 PNG：`chartPaths` 配合 `includeCharts: true` 插入
 
 ## 失败处理
 
-- 脚本返回 `success: false` → 告知用户失败原因，建议改用 `export_html` 工具（Go 原生 HTML 报告）
-- Python 不可用 → 直接回退到 `export_analysis_docx` 工具（Go 原生 Word 生成）
-
-## 依赖
-
-`pip install python-docx matplotlib numpy Pillow`
+- 脚本返回 `success: false` → 改用 export_analysis_docx 工具（Python 优先、无 Python 时自动降级 Go 基础版，导出不失败）
+- Python 不可用 → 改用 export_analysis_docx 工具（工具内置 Go 基础版兜底，无 Python 依赖）
 
 ## 输出路径规则
 

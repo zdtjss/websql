@@ -477,14 +477,14 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v crossJoin=%v", qErr, sErr, lErr, dErr, rfErr, cjErr)
 	}
 
-	// 导出工具均为 Go 原生兜底实现：当 Python Skill 不可用或失败时使用。
-	// Agent 生成 Word/PPT/HTML 报告时，应优先调用 skill 工具加载对应 SKILL.md，
-	// 按其指引组装数据并执行 Python 脚本生成专业产物；
-	// 若 Python 不可用或脚本执行失败，再回退到这些原生工具。
+	// 导出工具：export_ppt / export_analysis_docx 为双路径导出工具——
+	// Python 可用时走模板驱动专业版，Python 不可用/渲染失败时自动降级
+	// Go 基础版（无 Python 依赖，保证导出永不失败）；需要更细粒度的
+	// 自定义（sections/blocks）时可改用 skill 工具加载对应 SKILL.md。
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据（Go 原生实现），须传入 sql 参数", export.NewExportExcelFunc(conn))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（Go 原生实现），图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（Go 原生兜底实现，基础版）。若需专业科技感 PPT，请优先用 skill 工具加载 export-ppt 技能。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告 Word（Go 原生兜底实现，基础版）。若需专业科技感 Word 报告（含封面/目录/KPI/图表），请优先用 skill 工具加载 export-word 技能。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（模板驱动，科技感深色主题，含封面/目录/图表/表格页；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-ppt 技能。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告 Word（模板驱动，含封面/目录/KPI/图表；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-word 技能。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn))
 	exportHTMLTool, _ := utils.InferTool("export_html", "生成 HTML 报告（Go 原生实现，支持 Markdown、Mermaid 图表交互、代码高亮、数学公式）。优先使用 content 模式。也可先用 skill 工具加载 export-html 技能获取高级用法", export.NewExportHTMLFunc(conn))
 
 	for _, t := range []tool.BaseTool{exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, exportHTMLTool} {

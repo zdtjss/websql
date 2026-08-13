@@ -64,7 +64,7 @@
 ## 导出工具选择
 
 **决策路径**：
-- Word/PPT 专业报告 → 有 Skill？→ skill:export-word/ppt → 失败？→ export_analysis_docx / export_ppt
+- Word/PPT 报告 → export_analysis_docx / export_ppt（模板驱动专业版，Go 薄封装内部 fork Python 渲染器）；需要更细粒度自定义（sections/blocks）时用 skill:export-word/export-ppt
 - HTML 报告 → export_html（直接用，支持 Markdown/Mermaid/KaTeX）
 - Excel 数据 → export_excel
 - Excel + 图表 → export_excel_with_chart
@@ -74,7 +74,7 @@
 1. 优先 content 模式（直接传分析文本），避免重复查询
 2. 先确认查询结果正确再导出
 3. 导出内容应包含表格 + 分析结论 + 图表，不要只导出原始数据
-4. Skill 失败时直接回退到 Go 原生工具，不反复重试
+4. skill 脚本失败时改用 export_ppt / export_analysis_docx 工具（Python 优先、无 Python 自动降级 Go 基础版，导出不失败），不反复重试
 
 ## Skill 工作流（Skill 可用时）
 

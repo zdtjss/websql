@@ -1,772 +1,491 @@
-"""
-Word 文档生成器 - 科技感数据分析风格
-依赖: pip install python-docx matplotlib numpy Pillow
-用法: from tools.word_generator import WordBuilder
+# -*- coding: utf-8 -*-
+"""word_generator.py — 模板驱动的 Word 报告导出脚本（渲染层唯一引擎）。
+
+版式定义在 skills/export-word/templates/report_template.docx（docxtpl 模板：
+封面占位、目录域、样式集、正文骨架），本脚本组装渲染上下文 + 渲染 +
+表格/图片后处理插入。
+换肤/换版式：直接编辑模板文件（或改 skills/lib/build_templates.py 后重新生成）。
+
+JSON 契约（与 SKILL.md 一致）：
+    data 模式:    {mode, title, columns, data, numericColumns, numericStats,
+                   findings, chartPaths, includeCharts, outputPath}
+    content 模式: {mode, title, sections:[{title, level, blocks:[...]}]},
+                   markdown?, outputPath}
 """
 
+import json
 import os
+import re
+import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
-import matplotlib
 import matplotlib.pyplot as plt
-import numpy as np
 from docx import Document
-from docx.shared import Inches, Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
+from docxtpl import DocxTemplate
 
-# 中文字体配置
-matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-matplotlib.rcParams['axes.unicode_minus'] = False
+# lib 目录加入 sys.path（兼容从任意工作目录执行）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "lib"))
+
+from chart_common import LightChartStyle, create_chart  # noqa: E402
+from md_blocks import markdown_to_sections, normalize_sections  # noqa: E402
+
+_CHART_STYLE = LightChartStyle()
+
+# 后处理标记：模板中的 table/image 块渲染为标记段落，渲染后替换为真实内容
+TABLE_TAG_RE = re.compile(r'%%WEBSQL_TABLE:(\d+)%%')
+IMAGE_TAG_RE = re.compile(r'%%WEBSQL_IMAGE:(\d+)%%')
 
 
-# ═══════════════════════════════════════════════════════════════
-# 配色主题（与 PPT 保持一致的科技感）
-# ═══════════════════════════════════════════════════════════════
 class Theme:
-    # Word 文档颜色（深色系用于强调，浅色系用于正文）
-    PRIMARY = RGBColor(0x00, 0xA8, 0xFF)       # 科技蓝 - 标题
-    SECONDARY = RGBColor(0x0A, 0x16, 0x28)     # 深空蓝 - 正文
-    ACCENT = RGBColor(0x00, 0xF5, 0xD4)        # 电光青 - 强调
-    HEADING1 = RGBColor(0x0A, 0x16, 0x28)      # 一级标题
-    HEADING2 = RGBColor(0x00, 0xA8, 0xFF)      # 二级标题
-    HEADING3 = RGBColor(0x1E, 0x4D, 0x8C)      # 三级标题
-    BODY = RGBColor(0x2C, 0x2C, 0x2C)          # 正文
-    GRAY = RGBColor(0x66, 0x66, 0x66)          # 辅助文字
-    TABLE_HEADER_BG = '0A1628'                  # 表头背景
-    TABLE_HEADER_FG = 'FFFFFF'                  # 表头文字
-    TABLE_ROW_ALT = 'F0F7FF'                    # 表格交替行
-
-    # matplotlib 图表配色（Word 用浅色背景）
-    CHART_COLORS = ['#00A8FF', '#00F5D4', '#7B61FF', '#FF6B35', '#E63946', '#FFD700', '#00E696']
+    """Word 浅色主题配色（与模板样式集保持一致）。"""
+    HEADING1 = RGBColor(0x1A, 0x23, 0x7E)
+    HEADING2 = RGBColor(0x28, 0x35, 0x93)
+    HEADING3 = RGBColor(0x00, 0x71, 0xB8)
+    PRIMARY = RGBColor(0x00, 0x71, 0xB8)
+    BODY = RGBColor(0x2C, 0x2C, 0x2C)
+    GRAY = RGBColor(0x80, 0x80, 0x80)
+    TABLE_HEADER_BG = "1A237E"
+    TABLE_ROW_ALT = "F0F4FF"
     CHART_BG = '#FFFFFF'
     CHART_FACE = '#FFFFFF'
-    CHART_GRID = '#E0E0E0'
+    CHART_GRID = '#D0D7E2'
+
+
+def _set_ea(run, typeface='微软雅黑'):
+    run.font.name = typeface
+    run._element.rPr.rFonts.set(qn('w:eastAsia'), typeface)
 
 
 # ═══════════════════════════════════════════════════════════════
-# WordBuilder 主类
+# 渲染上下文组装
 # ═══════════════════════════════════════════════════════════════
-class WordBuilder:
-    def __init__(self, title="数据分析报告"):
-        self.doc = Document()
-        self._temp_files = []
-        self._title = title
-        self._setup_styles()
-        self._setup_matplotlib()
 
-    def _setup_matplotlib(self):
-        plt.rcParams.update({
-            'figure.facecolor': Theme.CHART_FACE,
-            'axes.facecolor': Theme.CHART_BG,
-            'text.color': '#2C2C2C',
-            'axes.labelcolor': '#2C2C2C',
-            'xtick.color': '#2C2C2C',
-            'ytick.color': '#2C2C2C',
-            'axes.edgecolor': Theme.CHART_GRID,
-            'grid.color': Theme.CHART_GRID,
-            'grid.alpha': 0.5,
-        })
+GROUP_COLUMNS = {"表名", "table_name", "TABLE_NAME", "表名称"}
 
-    def _setup_styles(self):
-        """配置文档默认样式"""
-        style = self.doc.styles['Normal']
-        style.font.name = '微软雅黑'
-        style.font.size = Pt(11)
-        style.font.color.rgb = Theme.BODY
-        style.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
 
-        # 设置页边距
-        sections = self.doc.sections
-        for section in sections:
-            section.top_margin = Cm(2.5)
-            section.bottom_margin = Cm(2.5)
-            section.left_margin = Cm(2.8)
-            section.right_margin = Cm(2.8)
+def _fmt_num(v):
+    """数值安全格式化：None/字符串等异常值不崩溃。"""
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return str(v) if v is not None else "N/A"
 
-    def _set_heading_style(self, paragraph, level, color):
-        """设置标题样式"""
-        run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
-        run.font.color.rgb = color
-        run.font.bold = True
-        if level == 1:
-            run.font.size = Pt(22)
-        elif level == 2:
-            run.font.size = Pt(16)
-        elif level == 3:
-            run.font.size = Pt(13)
 
-    def _save_chart(self, fig):
-        """保存图表为临时文件"""
-        path = os.path.join(tempfile.gettempdir(), f'word_chart_{len(self._temp_files)}.png')
-        fig.savefig(path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
-        plt.close(fig)
-        self._temp_files.append(path)
-        return path
+def _is_number(s):
+    t = s.replace(",", "").replace("%", "")
+    try:
+        float(t)
+        return True
+    except ValueError:
+        return False
 
-    # ─── 文档结构 ───────────────────────────────────────────────
 
-    def add_cover(self, title, subtitle="", date="", author="", org=""):
-        """封面页"""
-        # 空行留白
-        for _ in range(4):
-            self.doc.add_paragraph()
+def _to_float(v):
+    try:
+        return float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
 
-        # 主标题
-        p = self.doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(title)
-        run.font.size = Pt(28)
-        run.font.bold = True
-        run.font.color.rgb = Theme.HEADING1
 
-        # 副标题
-        if subtitle:
-            p = self.doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(subtitle)
-            run.font.size = Pt(14)
-            run.font.color.rgb = Theme.PRIMARY
+def _blank_block(kind):
+    return {"kind": kind, "content": "", "items": [], "lines": []}
 
-        # 空行
-        self.doc.add_paragraph()
-        self.doc.add_paragraph()
 
-        # 作者/机构/日期
-        info_lines = []
-        if org:
-            info_lines.append(org)
-        if author:
-            info_lines.append(author)
-        if date:
-            info_lines.append(date)
-        for line in info_lines:
-            p = self.doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(line)
-            run.font.size = Pt(12)
-            run.font.color.rgb = Theme.GRAY
+def _image_block(index):
+    return {"kind": "image", "content": "", "items": [], "lines": [],
+            "index": index}
 
-        # 分页
-        self.doc.add_page_break()
 
-    def add_toc_placeholder(self):
-        """目录占位（Word 需手动更新域）"""
-        p = self.doc.add_paragraph()
-        run = p.add_run("目  录")
-        run.font.size = Pt(18)
-        run.font.bold = True
-        run.font.color.rgb = Theme.HEADING1
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+def _table_block(index):
+    return {"kind": "table", "content": "", "items": [], "lines": [],
+            "index": index}
 
-        self.doc.add_paragraph()
-        p = self.doc.add_paragraph()
-        run = p.add_run("（请在 Word 中右键此处 → 更新域 以生成目录）")
-        run.font.size = Pt(10)
-        run.font.color.rgb = Theme.GRAY
-        run.font.italic = True
 
-        # 插入 TOC 域代码
-        paragraph = self.doc.add_paragraph()
-        run = paragraph.add_run()
-        fldChar1 = run._r.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'begin'})
-        run._r.append(fldChar1)
-        run2 = paragraph.add_run()
-        instrText = run2._r.makeelement(qn('w:instrText'), {})
-        instrText.text = ' TOC \\o "1-3" \\h \\z \\u '
-        run2._r.append(instrText)
-        run3 = paragraph.add_run()
-        fldChar2 = run3._r.makeelement(qn('w:fldChar'), {qn('w:fldCharType'): 'end'})
-        run3._r.append(fldChar2)
+def _section(title, level=1, blocks=None):
+    return {"title": title, "level": level, "blocks": blocks or []}
 
-        self.doc.add_page_break()
 
-    def add_heading(self, text, level=1):
-        """添加标题"""
-        p = self.doc.add_heading(text, level=level)
-        colors = {1: Theme.HEADING1, 2: Theme.HEADING2, 3: Theme.HEADING3}
-        color = colors.get(level, Theme.BODY)
-        for run in p.runs:
-            run.font.color.rgb = color
-            run.font.name = '微软雅黑'
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
-        return p
+def build_context_data(data, title):
+    """data 模式：组装 docxtpl 上下文 + 表格/图片后处理数据。
 
-    def add_paragraph(self, text, bold=False, color=None, indent=False):
-        """添加正文段落"""
-        p = self.doc.add_paragraph()
-        if indent:
-            p.paragraph_format.first_line_indent = Cm(0.7)
-        run = p.add_run(text)
-        run.font.size = Pt(11)
-        run.font.bold = bold
-        run.font.color.rgb = color or Theme.BODY
-        return p
+    返回 (context, tables_map, images_map, temp_files)
+    """
+    columns = data.get("columns", [])
+    rows = data.get("data", [])
+    findings = data.get("findings", [])
+    numeric_stats = data.get("numericStats", [])
+    chart_paths = data.get("chartPaths", [])
+    include_charts = data.get("includeCharts", False)
 
-    def add_bullet_list(self, items, highlight_indices=None):
-        """添加要点列表"""
-        highlight_indices = highlight_indices or []
-        for i, item in enumerate(items):
-            p = self.doc.add_paragraph(style='List Bullet')
-            run = p.add_run(item)
-            run.font.size = Pt(11)
-            run.font.color.rgb = Theme.PRIMARY if i in highlight_indices else Theme.BODY
+    tables_map = {}   # index -> (headers, rows)
+    images_map = {}   # index -> (png_path, caption)
+    temp_files = []
 
-    def add_numbered_list(self, items):
-        """添加编号列表"""
-        for item in items:
-            p = self.doc.add_paragraph(style='List Number')
-            run = p.add_run(item)
-            run.font.size = Pt(11)
-            run.font.color.rgb = Theme.BODY
+    sections = []
 
-    def add_quote(self, text):
-        """添加引用块"""
-        p = self.doc.add_paragraph()
-        p.paragraph_format.left_indent = Cm(1.5)
-        run = p.add_run(f"「{text}」")
-        run.font.size = Pt(11)
-        run.font.italic = True
-        run.font.color.rgb = Theme.GRAY
+    # 数据概览
+    overview_blocks = [_blank_block("paragraph")]
+    overview_blocks[0]["content"] = (
+        f"本次分析共返回 {len(rows)} 条记录，包含 {len(columns)} 个字段。")
+    sections.append(_section("数据概览", 1, overview_blocks))
 
-    def add_code_block(self, code):
-        """添加代码块"""
-        for line in code.split("\n"):
-            p = self.doc.add_paragraph()
-            pPr = p._element.get_or_add_pPr()
-            shd = pPr.makeelement(qn('w:shd'), {
-                qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): 'F5F5F5'
-            })
-            pPr.append(shd)
-            ind = pPr.makeelement(qn('w:ind'), {qn('w:left'): '360'})
-            pPr.append(ind)
-            spacing = pPr.makeelement(qn('w:spacing'), {
-                qn('w:before'): '20', qn('w:after'): '20'
-            })
-            pPr.append(spacing)
-            run = p.add_run(line)
-            run.font.size = Pt(9)
-            run.font.name = 'Courier New'
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+    # 关键指标
+    if numeric_stats:
+        blocks = []
+        for ns in numeric_stats:
+            col_name = ns.get("column", "")
+            b = _blank_block("paragraph")
+            b["content"] = (
+                f"{col_name}: 计数={ns.get('count', 0)}, "
+                f"均值={_fmt_num(ns.get('avg', 0))}, "
+                f"最小={_fmt_num(ns.get('min', 0))}, "
+                f"最大={_fmt_num(ns.get('max', 0))}, "
+                f"标准差={_fmt_num(ns.get('stddev', 0))}")
+            blocks.append(b)
+        sections.append(_section("关键指标", 2, blocks))
 
-    def add_kpi_table(self, kpis):
-        """添加 KPI 指标表格，kpis: list of {label, value, change, trend}"""
-        n = len(kpis)
-        table = self.doc.add_table(rows=2, cols=n)
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.style = 'Table Grid'
+    # 分析洞察
+    if findings:
+        sections.append(_section(
+            "分析洞察", 2, [{"kind": "bullets", "content": "",
+                            "items": [str(f) for f in findings], "lines": []}]))
 
-        tbl = table._tbl
-        tblPr = tbl.tblPr if tbl.tblPr is not None else tbl._add_tblPr()
-        existing = tblPr.find(qn('w:tblLayout'))
-        if existing is not None:
-            tblPr.remove(existing)
-        tblLayout = tblPr.makeelement(qn('w:tblLayout'), {qn('w:type'): 'autofit'})
-        tblPr.append(tblLayout)
+    # 数据明细（分组或整体表格）
+    if columns and rows:
+        group_col = next((c for c in columns if c in GROUP_COLUMNS), None)
+        detail_blocks = []
+        if group_col:
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for row in rows:
+                gk = str(row.get(group_col, ""))
+                groups.setdefault(gk, []).append(row)
+            detail_blocks.append({
+                "kind": "paragraph",
+                "content": (f"共 {len(rows)} 条记录，按「{group_col}」"
+                            f"分为 {len(groups)} 组展示。"),
+                "items": [], "lines": []})
+            other_cols = [c for c in columns if c != group_col]
+            for gk, gk_rows in groups.items():
+                sub = _blank_block("subheading")
+                sub["content"] = f"{group_col}: {gk}（{len(gk_rows)} 条）"
+                detail_blocks.append(sub)
+                tb = _table_block(len(tables_map))
+                detail_blocks.append(tb)
+                tables_map[tb["index"]] = (
+                    other_cols,
+                    [[str(row.get(c, "")) for c in other_cols] for row in gk_rows])
+        else:
+            tb = _table_block(len(tables_map))
+            detail_blocks.append(tb)
+            tables_map[tb["index"]] = (
+                columns,
+                [[str(row.get(c, "")) for c in columns] for row in rows])
+        sections.append(_section("数据明细", 2, detail_blocks))
 
-        # 表头行（指标名）
-        for i, kpi in enumerate(kpis):
-            cell = table.rows[0].cells[i]
-            cell.text = ''
-            p = cell.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(kpi['label'])
-            run.font.size = Pt(10)
-            run.font.color.rgb = Theme.GRAY
-            # 背景色
-            shading = cell._element.makeelement(qn('w:shd'), {
-                qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): Theme.TABLE_HEADER_BG
-            })
-            cell._element.get_or_add_tcPr().append(shading)
-            for r in p.runs:
-                r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-
-        # 数据行
-        for i, kpi in enumerate(kpis):
-            cell = table.rows[1].cells[i]
-            cell.text = ''
-            p = cell.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            # 大数字
-            run = p.add_run(kpi['value'])
-            run.font.size = Pt(16)
-            run.font.bold = True
-            run.font.color.rgb = Theme.HEADING1
-            # 换行 + 变化
-            p.add_run('\n')
-            arrow = "▲" if kpi.get('trend') == 'up' else "▼" if kpi.get('trend') == 'down' else "─"
-            trend_color = RGBColor(0x00, 0xB8, 0x5C) if kpi.get('trend') == 'up' else RGBColor(0xE6, 0x39, 0x46) if kpi.get('trend') == 'down' else Theme.GRAY
-            run2 = p.add_run(f"{arrow} {kpi.get('change', '')}")
-            run2.font.size = Pt(10)
-            run2.font.color.rgb = trend_color
-
-        self.doc.add_paragraph()  # 间距
-
-    def add_table(self, headers, rows, caption=""):
-        """添加数据表格"""
-        if caption:
-            p = self.doc.add_paragraph()
-            run = p.add_run(caption)
-            run.font.size = Pt(10)
-            run.font.bold = True
-            run.font.color.rgb = Theme.GRAY
-
-        table = self.doc.add_table(rows=1 + len(rows), cols=len(headers))
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.style = 'Table Grid'
-
-        tbl = table._tbl
-        tblPr = tbl.tblPr if tbl.tblPr is not None else tbl._add_tblPr()
-        existing = tblPr.find(qn('w:tblLayout'))
-        if existing is not None:
-            tblPr.remove(existing)
-        tblLayout = tblPr.makeelement(qn('w:tblLayout'), {qn('w:type'): 'autofit'})
-        tblPr.append(tblLayout)
-
-        for i, h in enumerate(headers):
-            cell = table.rows[0].cells[i]
-            cell.text = ''
-            p = cell.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(h)
-            run.font.size = Pt(10)
-            run.font.bold = True
-            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-            run.font.name = '微软雅黑'
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
-            shading = cell._element.makeelement(qn('w:shd'), {
-                qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): Theme.TABLE_HEADER_BG
-            })
-            cell._element.get_or_add_tcPr().append(shading)
-
-        for r_idx, row in enumerate(rows):
-            for c_idx, val in enumerate(row):
-                cell = table.rows[r_idx + 1].cells[c_idx]
-                cell.text = ''
-                p = cell.paragraphs[0]
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = p.add_run(str(val))
-                run.font.size = Pt(10)
-                run.font.name = '微软雅黑'
-                run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
-                if r_idx % 2 == 1:
-                    shading = cell._element.makeelement(qn('w:shd'), {
-                        qn('w:val'): 'clear', qn('w:color'): 'auto', qn('w:fill'): Theme.TABLE_ROW_ALT
-                    })
-                    cell._element.get_or_add_tcPr().append(shading)
-
-        self.doc.add_paragraph()
-
-    def add_chart(self, chart_type, data, width=Inches(5.5), caption=""):
-        """插入图表"""
-        fig = self._create_chart(chart_type, data)
-        img_path = self._save_chart(fig)
-        if caption:
-            p = self.doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run(caption)
-            run.font.size = Pt(9)
-            run.font.color.rgb = Theme.GRAY
-            run.font.italic = True
-        p = self.doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run()
-        run.add_picture(img_path, width=width)
-        self.doc.add_paragraph()
-
-    def add_page_break(self):
-        """分页"""
-        self.doc.add_page_break()
-
-    # ─── 图表生成（与 PPT 共用逻辑，白色背景版）─────────────────
-
-    def _create_chart(self, chart_type, data):
-        creators = {
-            'line': self._chart_line,
-            'bar': self._chart_bar,
-            'horizontal_bar': self._chart_hbar,
-            'pie': self._chart_pie,
-            'donut': self._chart_donut,
-            'scatter': self._chart_scatter,
-            'radar': self._chart_radar,
-            'heatmap': self._chart_heatmap,
-            'area': self._chart_area,
-            'stacked_bar': self._chart_stacked_bar,
-        }
-        fn = creators.get(chart_type, self._chart_bar)
-        return fn(data)
-
-    def _chart_line(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        for i, s in enumerate(data['series']):
-            ax.plot(data['categories'], s['values'], marker='o', linewidth=2,
-                    color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)], label=s['name'])
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        ax.legend(loc='upper left', framealpha=0.8)
-        ax.grid(True, alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        fig.tight_layout()
-        return fig
-
-    def _chart_bar(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        cats = data['categories']
-        n_series = len(data['series'])
-        width = 0.7 / n_series
-        x = np.arange(len(cats))
-        for i, s in enumerate(data['series']):
-            offset = (i - n_series/2 + 0.5) * width
-            bars = ax.bar(x + offset, s['values'], width, label=s['name'],
-                          color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)], alpha=0.85)
-            for bar, val in zip(bars, s['values']):
-                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-                        str(val), ha='center', va='bottom', fontsize=8, color='#333')
-        ax.set_xticks(x)
-        ax.set_xticklabels(cats)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        if n_series > 1:
-            ax.legend(framealpha=0.8)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.grid(axis='y', alpha=0.3)
-        fig.tight_layout()
-        return fig
-
-    def _chart_hbar(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        cats = data['categories']
-        values = data['series'][0]['values']
-        colors = [Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)] for i in range(len(cats))]
-        ax.barh(cats, values, color=colors, alpha=0.85)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        fig.tight_layout()
-        return fig
-
-    def _chart_pie(self, data):
-        fig, ax = plt.subplots(figsize=(6, 5))
-        colors = Theme.CHART_COLORS[:len(data['labels'])]
-        ax.pie(data['values'], labels=data['labels'], colors=colors, autopct='%1.1f%%',
-               textprops={'fontsize': 10}, startangle=90)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        fig.tight_layout()
-        return fig
-
-    def _chart_donut(self, data):
-        fig, ax = plt.subplots(figsize=(6, 5))
-        colors = Theme.CHART_COLORS[:len(data['labels'])]
-        ax.pie(data['values'], labels=data['labels'], colors=colors, autopct='%1.1f%%',
-               textprops={'fontsize': 10}, startangle=90, pctdistance=0.8,
-               wedgeprops={'width': 0.4})
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        fig.tight_layout()
-        return fig
-
-    def _chart_scatter(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        ax.scatter(data['x'], data['y'], c=Theme.CHART_COLORS[0], alpha=0.7, s=50, edgecolors='white', linewidth=0.5)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        ax.set_xlabel(data.get('x_label', ''))
-        ax.set_ylabel(data.get('y_label', ''))
-        ax.grid(True, alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        fig.tight_layout()
-        return fig
-
-    def _chart_radar(self, data):
-        fig, ax = plt.subplots(figsize=(6, 5), subplot_kw=dict(polar=True))
-        cats = data['categories']
-        n = len(cats)
-        angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
-        angles += angles[:1]
-        for i, s in enumerate(data['series']):
-            vals = s['values'] + s['values'][:1]
-            ax.plot(angles, vals, 'o-', linewidth=2,
-                    color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)], label=s['name'])
-            ax.fill(angles, vals, alpha=0.1, color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)])
-        ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(cats, fontsize=9)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=20)
-        ax.legend(loc='upper right', framealpha=0.8)
-        fig.tight_layout()
-        return fig
-
-    def _chart_heatmap(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        values = np.array(data['values'])
-        im = ax.imshow(values, cmap='YlOrRd', aspect='auto')
-        ax.set_xticks(range(len(data['x_labels'])))
-        ax.set_xticklabels(data['x_labels'], fontsize=9)
-        ax.set_yticks(range(len(data['y_labels'])))
-        ax.set_yticklabels(data['y_labels'], fontsize=9)
-        fig.colorbar(im, ax=ax, shrink=0.8)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        fig.tight_layout()
-        return fig
-
-    def _chart_area(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        for i, s in enumerate(data['series']):
-            ax.fill_between(data['categories'], s['values'], alpha=0.25,
-                            color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)])
-            ax.plot(data['categories'], s['values'], linewidth=2,
-                    color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)], label=s['name'])
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        ax.legend(framealpha=0.8)
-        ax.grid(True, alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        fig.tight_layout()
-        return fig
-
-    def _chart_stacked_bar(self, data):
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        cats = data['categories']
-        x = np.arange(len(cats))
-        bottom = np.zeros(len(cats))
-        for i, s in enumerate(data['series']):
-            ax.bar(x, s['values'], bottom=bottom, label=s['name'],
-                   color=Theme.CHART_COLORS[i % len(Theme.CHART_COLORS)], alpha=0.85)
-            bottom += np.array(s['values'])
-        ax.set_xticks(x)
-        ax.set_xticklabels(cats)
-        ax.set_title(data.get('title', ''), fontsize=13, pad=10)
-        ax.legend(framealpha=0.8)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        fig.tight_layout()
-        return fig
-
-    # ─── 保存 ──────────────────────────────────────────────────
-
-    def save(self, filepath):
-        """保存文档并清理临时文件"""
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        self.doc.save(filepath)
-        for f in self._temp_files:
+    # 图表：data 模式自动生成柱状图（补齐原"data 模式不自动生成图表"的缺口）
+    chart_section_blocks = []
+    auto_chart_made = False
+    if columns and rows and len(columns) >= 2:
+        y_col = next((c for c in columns[1:] if _is_number(str(rows[0].get(c, "")))),
+                     None)
+        if y_col and len(rows) > 1:
             try:
-                os.remove(f)
-            except OSError:
-                pass
-        self._temp_files.clear()
+                fig = create_chart(_CHART_STYLE, "bar", {
+                    "title": f"{y_col} 分布",
+                    "categories": [str(r.get(columns[0], ""))[:12] for r in rows[:10]],
+                    "series": [{"name": y_col, "values": [
+                        _to_float(r.get(y_col, 0)) for r in rows[:10]]}],
+                })
+                png = os.path.join(tempfile.gettempdir(),
+                                   f"word_chart_auto_{len(temp_files)}.png")
+                fig.savefig(png, dpi=150, bbox_inches='tight',
+                            facecolor='white', edgecolor='none')
+                plt.close(fig)
+                temp_files.append(png)
+                img = _image_block(len(images_map))
+                chart_section_blocks.append(img)
+                images_map[img["index"]] = (png, f"{y_col} 分布")
+                auto_chart_made = True
+            except Exception:
+                auto_chart_made = False
+
+    # 外部图表 PNG（Go 薄封装不再生成，兼容 skill 路径的 chartPaths）
+    if include_charts and chart_paths:
+        for cp in chart_paths:
+            if os.path.exists(cp):
+                img = _image_block(len(images_map))
+                chart_section_blocks.append(img)
+                images_map[img["index"]] = (cp, "")
+    if chart_section_blocks:
+        sections.append(_section("图表分析", 2, chart_section_blocks))
+    _ = auto_chart_made  # 记录行为供日志，暂不输出
+
+    context = {
+        "title": title, "subtitle": "数据分析报告",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "author": "", "org": "",
+        "sections": sections,
+    }
+    return context, tables_map, images_map, temp_files
 
 
-def parse_markdown_table(md_text):
-    """解析 Markdown 表格文本为 [headers, ...rows] 格式"""
-    lines = [l.strip() for l in md_text.strip().split("\n") if l.strip()]
-    if len(lines) < 2:
-        return None
+def build_context_content(data, title):
+    """content 模式：组装 docxtpl 上下文。
 
-    def split_cells(line):
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        return cells
+    markdown 字段优先（原始 Markdown 文本），否则用 sections 旧契约。
+    """
+    if data.get("markdown"):
+        sections = markdown_to_sections(data["markdown"])
+    else:
+        sections = normalize_sections(data.get("sections", []))
 
-    headers = split_cells(lines[0])
-    if not headers:
-        return None
+    tables_map = {}
+    images_map = {}
+    temp_files = []
 
-    data_start = 1
-    # 跳过分隔行 (|---|---|)
-    if data_start < len(lines):
-        sep = split_cells(lines[data_start])
-        if all(c.replace("-", "").replace(":", "").replace(" ", "") == "" for c in sep):
-            data_start += 1
+    # 为 table/image block 分配 index，并生成图表 PNG
+    out_sections = []
+    for sec in sections:
+        out_blocks = []
+        for b in sec.get("blocks", []):
+            kind = b.get("kind", "paragraph")
+            nb = {"kind": kind, "content": b.get("content", ""),
+                  "items": b.get("items", []), "lines": b.get("lines", [])}
+            if kind == "table":
+                headers = b.get("headers", [])
+                rows = b.get("rows", [])
+                if headers and rows:
+                    nb["index"] = len(tables_map)
+                    tables_map[nb["index"]] = (headers, rows)
+                else:
+                    nb = None  # 空表格丢弃
+            elif kind == "image":
+                labels = b.get("labels", [])
+                values = b.get("values", [])
+                if labels and values:
+                    try:
+                        fig = create_chart(_CHART_STYLE, b.get("chart_type", "bar"), {
+                            "title": b.get("chart_title", ""),
+                            "categories": labels,
+                            "series": [{"name": b.get("chart_title", ""),
+                                        "values": values}],
+                        })
+                        png = os.path.join(
+                            tempfile.gettempdir(),
+                            f"word_chart_{len(temp_files)}.png")
+                        fig.savefig(png, dpi=150, bbox_inches='tight',
+                                    facecolor='white', edgecolor='none')
+                        plt.close(fig)
+                        temp_files.append(png)
+                        nb["index"] = len(images_map)
+                        images_map[nb["index"]] = (png, b.get("chart_title", ""))
+                    except Exception:
+                        nb = _blank_block("paragraph")
+                        nb["content"] = f"[图表渲染失败: {b.get('chart_title', '')}]"
+                else:
+                    nb = None
+            if nb is not None:
+                out_blocks.append(nb)
+        out_sections.append({"title": sec.get("title", ""),
+                             "level": sec.get("level", 2),
+                             "blocks": out_blocks})
 
-    rows = []
-    for line in lines[data_start:]:
-        cells = split_cells(line)
-        rows.append(cells)
+    context = {
+        "title": title, "subtitle": "数据分析报告",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "author": "", "org": "",
+        "sections": out_sections,
+    }
+    return context, tables_map, images_map, temp_files
 
-    return [headers] + rows
+
+# ═══════════════════════════════════════════════════════════════
+# 后处理：标记段落 → 表格 / 图片
+# ═══════════════════════════════════════════════════════════════
+
+def _build_table(doc, headers, rows):
+    """构造数据表格（表头底纹、斑马纹），返回已插入文档的 Table。"""
+    n_cols = max(1, len(headers))
+    table = doc.add_table(rows=1 + len(rows), cols=n_cols)
+    table.alignment = 1  # CENTER
+    table.style = 'Table Grid'
+    for i, h in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.text = ''
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(str(h))
+        run.font.size = Pt(10)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        _set_ea(run)
+        from docx.oxml import OxmlElement
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'), Theme.TABLE_HEADER_BG)
+        cell._element.get_or_add_tcPr().append(shd)
+    for r_idx, row in enumerate(rows):
+        for c_idx, val in enumerate(row[:n_cols]):
+            cell = table.rows[r_idx + 1].cells[c_idx]
+            cell.text = ''
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(str(val))
+            run.font.size = Pt(10)
+            _set_ea(run)
+            if r_idx % 2 == 1:
+                from docx.oxml import OxmlElement
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:color'), 'auto')
+                shd.set(qn('w:fill'), Theme.TABLE_ROW_ALT)
+                cell._element.get_or_add_tcPr().append(shd)
+    return table
 
 
+def _postprocess(doc, tables_map, images_map):
+    """把标记段落替换为真实表格/图片。"""
+    for para in list(doc.paragraphs):
+        text = para.text.strip()
+
+        m = TABLE_TAG_RE.fullmatch(text)
+        if m:
+            idx = int(m.group(1))
+            headers, rows = tables_map.get(idx, ([], []))
+            if headers:
+                tbl = _build_table(doc, headers, rows)
+                para._p.addprevious(tbl._tbl)
+            para._p.getparent().remove(para._p)
+            continue
+
+        m = IMAGE_TAG_RE.fullmatch(text)
+        if m:
+            idx = int(m.group(1))
+            img_path, caption = images_map.get(idx, (None, ""))
+            if img_path and os.path.exists(img_path):
+                for r in list(para.runs):
+                    r.text = ""
+                run = para.add_run()
+                run.add_picture(img_path, width=Inches(5.5))
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if caption:
+                    cp = para.insert_paragraph_before()
+                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    cr = cp.add_run(caption)
+                    cr.font.size = Pt(9)
+                    cr.font.color.rgb = Theme.GRAY
+                    cr.font.italic = True
+                    _set_ea(cr)
+            else:
+                para._p.getparent().remove(para._p)
+            continue
+
+
+def _cleanup_empty_tags(doc):
+    """移除渲染后残留的空标签段落（Tiny 字号的 for/endfor 段）。"""
+    for para in list(doc.paragraphs):
+        if para.text.strip() in ("",) and para.style.name == "Normal":
+            # 仅清理由标签段产生的空段：字体极小且无其他格式
+            runs = para.runs
+            if runs and all((r.font.size or Pt(11)).pt <= 1 for r in runs):
+                para._p.getparent().remove(para._p)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 入口
+# ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    import json
-    import sys
-    from datetime import datetime
-
-    # Windows 下默认 stdin/stdout 编码可能为 GBK（cp936），导致中文路径/内容乱码或
-    # surrogate 编码异常。显式重配置为 UTF-8，与 Go 端 chcp 65001 + PYTHONIOENCODING=utf-8 对齐。
+    # Windows 下默认 stdin/stdout 编码可能为 GBK（cp936），显式重配置为 UTF-8
     try:
         sys.stdin.reconfigure(encoding='utf-8')
         sys.stdout.reconfigure(encoding='utf-8')
     except (AttributeError, ValueError):
-        pass  # Python < 3.7 或已重配置，忽略
+        pass
 
     try:
         raw = sys.stdin.read()
+        # execute 工具不支持直接向子进程 stdin 写入，Agent 可能通过
+        # `python xxx.py < input.json` 重定向或位置参数传入 JSON 文件
+        if not raw and len(sys.argv) > 1:
+            try:
+                with open(sys.argv[1], "r", encoding="utf-8-sig") as f:
+                    raw = f.read()
+            except OSError as e:
+                print(json.dumps({"success": False,
+                                  "error": f"读取输入文件失败: {e}"},
+                                 ensure_ascii=False))
+                sys.exit(1)
         if not raw:
-            print(json.dumps({"success": False, "error": "stdin 为空"}, ensure_ascii=False))
+            print(json.dumps({"success": False, "error": "stdin 为空"},
+                             ensure_ascii=False))
             sys.exit(1)
         data = json.loads(raw)
     except Exception as e:
-        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"}, ensure_ascii=False))
+        print(json.dumps({"success": False, "error": f"解析输入失败: {e}"},
+                         ensure_ascii=False))
         sys.exit(1)
 
+    temp_files = []
     try:
         mode = data.get("mode", "data")
         title = data.get("title", "数据分析报告")
         output_path = data.get("outputPath", "exports/output.docx")
-        # 规范化输出路径：去掉前导 / 使其成为相对路径，确保 Windows 下保存到项目 exports/ 目录
-        # （/exports/x.docx 在 Windows 下会解析到驱动器根 D:\exports\，而非项目目录）
+        # 规范化输出路径：去掉前导 / 使其成为相对路径，确保 Windows 下
+        # 保存到项目 exports/ 目录（/exports/x.docx 会解析到驱动器根）
         if output_path.startswith("/"):
             output_path = output_path.lstrip("/")
-        builder = WordBuilder(title=title)
 
-        builder.add_cover(title, date=datetime.now().strftime("%Y-%m-%d"))
-        builder.add_toc_placeholder()
+        template_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "templates", "report_template.docx")
 
         if mode == "content":
-            sections = data.get("sections", [])
-            for sec in sections:
-                sec_title = sec.get("title", "")
-                builder.add_heading(sec_title, level=2)
-                blocks = sec.get("blocks", [])
-                for b in blocks:
-                    content = b.get("content", "")
-                    block_type = b.get("type", "text")
-                    if block_type == "text" or block_type == "paragraph":
-                        builder.add_paragraph(content)
-                    elif block_type == "heading":
-                        level = b.get("level", 2)
-                        builder.add_heading(content, level=min(max(int(level), 1), 4))
-                    elif block_type == "bullet":
-                        items = [item for item in content.split("\n") if item.strip()]
-                        builder.add_bullet_list(items)
-                    elif block_type == "list":
-                        items = [item for item in content.split("\n") if item.strip()]
-                        builder.add_bullet_list(items)
-                    elif block_type == "h1" or block_type == "h2":
-                        builder.add_heading(content, level=2 if block_type == "h2" else 1)
-                    elif block_type == "h3":
-                        builder.add_heading(content, level=3)
-                    elif block_type == "table":
-                        # 支持两种格式：markdown 字符串 或 list-of-lists（[[header...], [row...], ...]）
-                        if isinstance(content, list):
-                            rows_data = content if content else None
-                        else:
-                            rows_data = parse_markdown_table(content)
-                        if rows_data and len(rows_data) >= 1:
-                            headers = [str(h) for h in rows_data[0]]
-                            body = [[str(c) for c in row] for row in rows_data[1:]]
-                            builder.add_table(headers, body, caption="")
-                    elif block_type == "chart":
-                        # content 模式图表：支持 {labels, values} 简单格式
-                        chart_type = b.get("chartType", "bar")
-                        chart_title = b.get("title", "")
-                        chart_data = b.get("data", {})
-                        labels = chart_data.get("labels", [])
-                        values = chart_data.get("values", [])
-                        if labels and values:
-                            internal_data = {
-                                "categories": [str(l) for l in labels],
-                                "series": [{"name": chart_title, "values": list(values)}],
-                                "title": chart_title,
-                            }
-                            try:
-                                builder.add_chart(chart_type, internal_data, caption=chart_title)
-                            except Exception:
-                                builder.add_paragraph(f"[图表渲染失败: {chart_title}]")
-                    elif block_type == "code":
-                        builder.add_code_block(content)
-                    else:
-                        builder.add_paragraph(content)
+            context, tables_map, images_map, temp_files = \
+                build_context_content(data, title)
         else:
-            columns = data.get("columns", [])
-            rows = data.get("data", [])
-            findings = data.get("findings", [])
-            numeric_stats = data.get("numericStats", [])
-            chart_paths = data.get("chartPaths", [])
-            include_charts = data.get("includeCharts", False)
+            context, tables_map, images_map, temp_files = \
+                build_context_data(data, title)
 
-            builder.add_heading("数据概览", level=1)
-            builder.add_paragraph(f"本次分析共返回 {len(rows)} 条记录，包含 {len(columns)} 个字段。")
+        tpl = DocxTemplate(template_path)
+        tpl.render(context)
 
-            if numeric_stats:
-                builder.add_heading("关键指标", level=2)
-                for ns in numeric_stats:
-                    col_name = ns.get("column", "")
-                    builder.add_paragraph(
-                        f"{col_name}: 计数={ns.get('count', 0)}, "
-                        f"均值={ns.get('avg', 0):.2f}, "
-                        f"最小={ns.get('min', 0):.2f}, "
-                        f"最大={ns.get('max', 0):.2f}, "
-                        f"标准差={ns.get('stddev', 0):.2f}"
-                    )
+        # docxtpl 的 map_tree 把 lxml 裸元素替换进 python-docx 元素树，
+        # 与 python-docx 1.2 的自定义元素类不兼容（访问 .paragraphs 会报
+        # 'lxml._Element' has no attribute 'p_lst'）。改为落盘重载获得
+        # 渲染后的 python-docx Document，与库内部实现解耦。
+        tmp_out = os.path.join(tempfile.gettempdir(),
+                               f"word_rendered_{os.getpid()}.docx")
+        tpl.save(tmp_out)
+        doc = Document(tmp_out)
+        try:
+            os.remove(tmp_out)
+        except OSError:
+            pass
 
-            if findings:
-                builder.add_heading("分析洞察", level=2)
-                builder.add_bullet_list(findings)
+        _postprocess(doc, tables_map, images_map)
+        _cleanup_empty_tags(doc)
 
-            if columns and rows:
-                GROUP_COLUMNS = {"表名", "table_name", "TABLE_NAME", "表名称"}
-                group_col = None
-                for c in columns:
-                    if c in GROUP_COLUMNS:
-                        group_col = c
-                        break
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        doc.save(output_path)
 
-                if group_col:
-                    from collections import OrderedDict
-                    groups = OrderedDict()
-                    for row in rows:
-                        gk = str(row.get(group_col, ""))
-                        groups.setdefault(gk, []).append(row)
-
-                    builder.add_heading("数据明细", level=2)
-                    builder.add_paragraph(
-                        f"共 {len(rows)} 条记录，按「{group_col}」分为 {len(groups)} 组展示。"
-                    )
-
-                    other_cols = [c for c in columns if c != group_col]
-                    for gk, gk_rows in groups.items():
-                        builder.add_heading(f"{group_col}: {gk}（{len(gk_rows)} 条）", level=3)
-                        display_rows = []
-                        for row in gk_rows:
-                            display_rows.append([str(row.get(c, "")) for c in other_cols])
-                        if other_cols and display_rows:
-                            builder.add_table(other_cols, display_rows, caption="")
-                else:
-                    builder.add_heading("数据明细", level=2)
-                    headers = columns
-                    display_rows = []
-                    for row in rows:
-                        display_rows.append([str(row.get(c, "")) for c in columns])
-                    max_display = 8000
-                    if len(display_rows) > max_display:
-                        display_rows = display_rows[:max_display]
-                        builder.add_paragraph(f"（仅展示前 {max_display} 条记录，共 {len(rows)} 条）")
-                    if headers and display_rows:
-                        builder.add_table(headers, display_rows, caption="数据明细表")
-
-            if include_charts and chart_paths:
-                builder.add_heading("图表分析", level=2)
-                for cp in chart_paths:
-                    if os.path.exists(cp):
-                        builder.add_chart("bar", {
-                            "title": "",
-                            "categories": [],
-                            "series": []
-                        }, caption=os.path.basename(cp))
-                        # 实际图表通过 Go 端生成的图片文件插入
-                        p = builder.doc.add_paragraph()
-                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        run = p.add_run()
-                        run.add_picture(cp, width=Inches(5.5))
-                        builder.doc.add_paragraph()
-
-        builder.save(output_path)
-        # 返回 URL 路径（/exports/...），供前端下载链接使用
         url_path = "/" + output_path.replace("\\", "/").lstrip("/")
-        print(json.dumps({"success": True, "outputPath": url_path}, ensure_ascii=False))
+        print(json.dumps({"success": True, "outputPath": url_path},
+                         ensure_ascii=False))
     except Exception as e:
-        # 异常消息可能含 surrogate 字符（如 matplotlib 字体错误），需清理后再输出
         safe_err = str(e).encode('utf-8', errors='replace').decode('utf-8')
-        print(json.dumps({"success": False, "error": safe_err}, ensure_ascii=False))
+        print(json.dumps({"success": False, "error": safe_err},
+                         ensure_ascii=False))
         sys.exit(1)
+    finally:
+        for f in temp_files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass

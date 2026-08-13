@@ -43,7 +43,7 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 8. **结果验证**：检查结果合理性（行数、数值范围、NULL），异常时先排查 SQL 再输出
 `)
 	if skillAvailable {
-		sb.WriteString(`9. **Skill 优先**：专业 Word/PPT 报告优先用 skill 工具加载 SKILL.md 生成；失败时回退到 Go 原生工具。HTML 报告直接用 export_html
+		sb.WriteString(`9. **导出工具**：Word/PPT 报告用 export_analysis_docx / export_ppt（模板驱动专业版）；需要更细粒度自定义（sections/blocks）时用 skill 工具加载 export-word/export-ppt 技能；HTML 报告直接用 export_html
 `)
 	} else {
 		sb.WriteString(`9. **导出工具**：Word/PPT 报告用 export_analysis_docx / export_ppt；HTML 报告用 export_html
@@ -116,7 +116,7 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 2. 同一错误出现 2 次 → 停止重试，换策略
 3. 能用一条 JOIN 完成的不拆多次单表查询
 4. 已有结果时优先分析，不重复查询
-5. 超过 35 次迭代 → 立即整合已有结果输出
+5. 接近上限（≥ ` + fmt.Sprint(maxIterations*7/10) + ` 次）→ 立即整合已有结果输出
 6. 禁止猜测表名变体（_bak/_old/_temp），尝试不超过 2 次即放弃
 
 > 数据导入、文件分析、Mermaid 可视化、导出工具选择、HTML 报告编写等参考规范
@@ -382,35 +382,6 @@ func getForbiddenBehaviors(dbType string) string {
 	}
 }
 
-// getErrorHints 返回按数据库类型定制的错误码速查（供动态注入）
-func getErrorHints(dbType string) string {
-	common := "| 方言不兼容 | 使用了其他数据库专有语法 | 阅读替代方案重写 SQL |\n"
-	switch strings.ToLower(dbType) {
-	case "mysql", "mariadb":
-		return common +
-			"| 1064 | SQL 语法错误 | 检查函数兼容性、引号、关键字拼写 |\n" +
-			"| 1146 | 表不存在 | 调 list_tables 确认 |\n" +
-			"| 1054 | 字段不存在 | 调 get_table_schema 确认 |\n" +
-			"| 1052 | 列名歧义 | 加表别名前缀 |\n" +
-			"| 1140 | GROUP BY 错误 | 非聚合列加入 GROUP BY |\n"
-	case "oracle":
-		return common +
-			"| ORA-00942 | 表/视图不存在 | 调 list_tables 确认，注意大写 |\n" +
-			"| ORA-00904 | 标识符无效 | 调 get_table_schema 确认字段名 |\n" +
-			"| ORA-00918 | 列定义不明确 | 加表别名前缀 |\n" +
-			"| ORA-00979 | GROUP BY 表达式错误 | 非聚合列加入 GROUP BY |\n"
-	case "sqlite":
-		return common +
-			"| no such table | 表不存在 | 调 list_tables 确认 |\n" +
-			"| no such column | 字段不存在 | 调 get_table_schema 确认 |\n" +
-			"| ambiguous column | 列名歧义 | 加表别名前缀 |\n"
-	default:
-		return common +
-			"| 表不存在 | 表名错误 | 调 list_tables 确认 |\n" +
-			"| 字段不存在 | 字段名错误 | 调 get_table_schema 确认 |\n"
-	}
-}
-
 // ──────────────────────────────────────────────
 // 辅助函数
 // ──────────────────────────────────────────────
@@ -429,15 +400,4 @@ func getDatabaseProductName(dbType string) string {
 	default:
 		return dbType
 	}
-}
-
-// hasCrossConnection 检查 schemas 是否跨越多个不同连接
-func hasCrossConnection(schemas []SchemaRef) bool {
-	connSet := make(map[string]bool)
-	for _, s := range schemas {
-		if s.ConnID != "" {
-			connSet[s.ConnID] = true
-		}
-	}
-	return len(connSet) > 1
 }

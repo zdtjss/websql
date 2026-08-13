@@ -62,7 +62,7 @@ func renderLineChartFile(filePath string, seriesList []ChartSeries, title string
 		Height:     540,
 		Background: chartBackStyle(),
 		Canvas: chart.Style{
-			FillColor: drawing.ColorFromHex("FFFFFF"),
+			FillColor:   drawing.ColorFromHex("FFFFFF"),
 			StrokeColor: drawing.ColorFromHex("E8ECF1"),
 			StrokeWidth: 1.0,
 		},

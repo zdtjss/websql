@@ -312,9 +312,14 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 
 var (
 	tailPipeRegex = regexp.MustCompile(`\s*2>&1\s*\|\s*tail\s+-?\d+\s*`)
-	pythonCRegex   = regexp.MustCompile(`python(?:3|\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
-	python3Regex   = regexp.MustCompile(`(^|\s)python3(\s|$)`)
+	pythonCRegex  = regexp.MustCompile(`python(?:3|\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
+	python3Regex  = regexp.MustCompile(`(^|\s)python3(\s|$)`)
 )
+
+// executeDefaultTimeout execute 子进程默认执行上限。
+// LLM 生成的 Python 脚本可能死循环或长时间运行，必须设置服务端兜底超时，
+// 避免会话被挂死且进程不回收（超时后 CommandContext 会自动 Kill 进程）。
+const executeDefaultTimeout = 300 * time.Second
 
 // unescapeShellCode 对从 python -c "..." 中提取的代码进行 shell 反转义。
 // LLM 生成的 python -c "code" 中，code 内部的双引号会被转义为 \"，
@@ -451,12 +456,15 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 	// 跨平台命令预处理
 	command := b.preprocessCommand(input.Command)
 
+	// 服务端兜底超时：防止脚本死循环/长任务把会话挂死
+	execCtx, cancel := context.WithTimeout(ctx, executeDefaultTimeout)
+
 	// 根据操作系统选择正确的 shell
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+		cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		cmd = exec.CommandContext(execCtx, "sh", "-c", command)
 	}
 	hideWindow(cmd)
 
@@ -482,14 +490,17 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
@@ -526,6 +537,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 		<-stderrDone
 
 		err := cmd.Wait()
+		cancel() // 释放超时计时器（子进程已结束或已被 Kill）
 		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {

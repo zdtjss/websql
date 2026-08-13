@@ -363,11 +363,11 @@ func recoveryHint(toolName, args string, err error) string {
 		strings.Contains(args, "check_deps")
 
 	if isPipOrPython && (isEncodingOrSyntax || isSkillExport) {
-		return "Python skill execution failed on Windows. You have two options: (1) retry the skill workflow with corrected parameters, or (2) fall back to Go native tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. Go native tools require no Python and produce basic but valid output."
+		return "Python skill execution failed on Windows. Retry the skill workflow with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' tools instead (they try the same Python renderer first but automatically fall back to a built-in Go renderer, so export never fails without Python)."
 	}
 
 	if isSkillExport {
-		return "Skill script execution failed. You can retry with corrected parameters, or fall back to Go native tools: 'export_ppt' for PPT, 'export_analysis_docx' for Word. Go native tools produce basic but valid output without Python dependency."
+		return "Skill script execution failed. Retry with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' tools instead (they automatically fall back to a built-in Go renderer when Python is unavailable, so export never fails)."
 	}
 
 	return "Please adjust parameters and retry."

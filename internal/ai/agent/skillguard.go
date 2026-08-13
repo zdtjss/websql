@@ -1,9 +1,9 @@
 // skillguard.go — Skill 安全守卫中间件
 //
 // 在 Skill 执行链中集成三项检查（提升 AI 分析的可靠性和强大性）：
-//   1. 依赖检测：skill 工具被调用时，先检查 dependencies（skill/context/permission）
-//   2. 命令黑名单：exec_sql / query_data 工具被调用时，先检查 command_blacklist
-//   3. 活跃 Skill 追踪：记录当前加载的 Skill 名，供 ToolErrorRecoveryMiddleware 匹配 errorHints
+//  1. 依赖检测：skill 工具被调用时，先检查 dependencies（skill/context/permission）
+//  2. 命令黑名单：exec_sql / query_data 工具被调用时，先检查 command_blacklist
+//  3. 活跃 Skill 追踪：记录当前加载的 Skill 名，供 ToolErrorRecoveryMiddleware 匹配 errorHints
 //
 // 设计原则：
 //   - 检查失败时返回 JSON 结果（而非 error），让 LLM 能看到提示并调整策略
@@ -46,6 +46,12 @@ func (t *skillContextTracker) get() string {
 	return t.activeSkill
 }
 
+func (t *skillContextTracker) clear() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.activeSkill = ""
+}
+
 type contextKeySkillTracker struct{}
 
 // ──────────────────────────────────────────────
@@ -85,6 +91,8 @@ func (m *SkillGuardMiddleware) WrapInvokableToolCall(
 			if blocked := m.checkSkillDependencies(ctx, argumentsInJSON); blocked != "" {
 				log.Printf("[SkillGuard] 依赖检查未通过 - args=%s, reason=%s\n",
 					truncateArgsForLog(argumentsInJSON), blocked)
+				// 依赖不满足时清除活跃 Skill，避免其 errorHints 串到后续场景
+				m.clearActiveSkill(ctx)
 				return blocked, nil
 			}
 			m.trackActiveSkill(ctx, argumentsInJSON)
@@ -115,6 +123,8 @@ func (m *SkillGuardMiddleware) WrapStreamableToolCall(
 			if blocked := m.checkSkillDependencies(ctx, argumentsInJSON); blocked != "" {
 				log.Printf("[SkillGuard:Stream] 依赖检查未通过 - args=%s, reason=%s\n",
 					truncateArgsForLog(argumentsInJSON), blocked)
+				// 依赖不满足时清除活跃 Skill，避免其 errorHints 串到后续场景
+				m.clearActiveSkill(ctx)
 				return schema.StreamReaderFromArray([]string{blocked}), nil
 			}
 			m.trackActiveSkill(ctx, argumentsInJSON)
@@ -184,6 +194,13 @@ func (m *SkillGuardMiddleware) trackActiveSkill(ctx context.Context, argumentsIn
 	if tracker, ok := ctx.Value(contextKeySkillTracker{}).(*skillContextTracker); ok {
 		tracker.set(skillName)
 		log.Printf("[SkillGuard] 活跃 Skill 已记录 - name=%s\n", skillName)
+	}
+}
+
+// clearActiveSkill 清除当前活跃 Skill（依赖检查失败或 Skill 名缺失时调用）
+func (m *SkillGuardMiddleware) clearActiveSkill(ctx context.Context) {
+	if tracker, ok := ctx.Value(contextKeySkillTracker{}).(*skillContextTracker); ok {
+		tracker.clear()
 	}
 }
 

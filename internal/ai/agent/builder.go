@@ -192,6 +192,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
+		// 构造期的初始 Instruction 不携带表范围上下文（tableContext=nil）；
+		// RunStream 会在每次请求时按 req.TableContext 重新构建完整系统提示词
 		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas, skillEnv != nil),
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{

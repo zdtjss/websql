@@ -1,7 +1,7 @@
 ---
 name: cross-db-analysis
 description: 跨数据库/多 Schema 数据分析与对比。当查询结果可能超过单次 500 行上限，或需要跨库/跨 Schema 关联、对比统计时使用。Agent 用 query_data 取数（聚合下推）、用 cross_db_join 完成跨库服务端关联，仅将紧凑统计结果写入上下文。用户涉及多个 schema 或数据库的分析、对比、统计且数据量较大时必须使用此技能。
-version: "2.5.0"
+version: "2.6.0"
 min_agent_version: "1.0.0"
 dependencies:
   - type: context
@@ -45,7 +45,7 @@ command_blacklist:
 1. **聚合下推**：在数据库端执行 COUNT/SUM/AVG/GROUP BY，只返回统计结果
 2. **分库查询**：用 `query_data` 的 `connId` 参数分别查多个库
 3. **服务端关联**：跨库 JOIN 由 `cross_db_join` 工具在服务端完成 Hash Join，只返回统计与少量样本
-4. **结果精简**：单次返回不超过 500 行（工具强制），始终用 LIMIT/聚合控制结果量
+4. **结果精简**：未带 LIMIT 的查询自动追加 LIMIT 500；显式 LIMIT 可提高取数上限但需控制上下文占用
 
 ## 数据契约（query_data 工具）
 
@@ -73,7 +73,7 @@ SELECT COUNT(*) AS cnt FROM <schema>.<table>
 
 判断标准：
 - 预估返回行数 > 500 → **必须聚合下推**，禁止全量拉取
-- 大表 COUNT 本身可能超时，可改用 `SELECT COUNT(*) FROM <table> WHERE <唯一索引> > 0` 或先 `LIMIT 1` 探活
+- 大表 COUNT 本身可能超时，可先 `SELECT ... LIMIT 1` 探活，或用 `WHERE <时间列> >= <近期时间>` 缩小计数范围做近似评估
 - GROUP BY 场景：先确认分组数规模，超过 500 组需加 WHERE 缩小范围或按维度拆批
 
 ### 步骤 2：选择任务类型
@@ -184,6 +184,7 @@ Agent 执行：
 
 ## 变更记录
 
+- **v2.6**：修正行数上限表述（工具仅对未带 LIMIT 的查询追加 500，显式 LIMIT 不被覆盖）；修正大表 COUNT 建议（唯一索引>0 会漏计 0/负值，改用 LIMIT 1 探活或时间列近似评估）
 - **v2.5**：异构库支持加固——大整数 key 规范化（MySQL s:%f 与 Oracle s:%d 匹配）、FETCH 关键字入 where 黑名单（防行数限制绕过）；补充异构库注意事项
 - **v2.4**：cross_db_join 支持复合 key（leftKeys/rightKeys 多列联合匹配）、两侧 WHERE 过滤（白名单校验防注入）、schema-connId 一致性校验
 - **v2.3**：新增 cross_db_join 服务端跨库关联工具（服务端 Hash Join + 紧凑输出），跨库 join 不再依赖 Agent 内存关联
