@@ -57,6 +57,9 @@
                   <span class="tree-node-actions">
                     <template v-if="data.type === 'conn'">
                       <!-- 树节点图标操作：仅图标无文字，补充 aria-label 和 role/键盘支持（复用 tooltip 文本） -->
+                      <el-tooltip v-if="canManageDbResources(node)" content="库与用户管理" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="库与用户管理" @click.stop="openDbUserManager(node)" @keyup.enter.stop="openDbUserManager(node)"><UserFilled /></el-icon>
+                      </el-tooltip>
                       <el-tooltip content="服务器状态" placement="top" :show-after="400">
                         <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="服务器状态" @click.stop="viewServerStatus(node)" @keyup.enter.stop="viewServerStatus(node)"><Monitor /></el-icon>
                       </el-tooltip>
@@ -238,6 +241,10 @@
     <BackupRestoreDialog v-model="backupDialogVisible" :conn-id="backupConnId" :schema="backupSchema" />
     <DataDictDialog v-model="dictDialogVisible" :conn-id="dictConnId" :schema="dictSchema" />
     <SchemaCompareDialog v-model="compareDialogVisible" :conn-id="compareConnId" :schema="compareSchema" />
+
+    <!-- 库与用户管理：连接内数据库用户、库/schema 管理（仅 MySQL/MariaDB/Oracle） -->
+    <DbUserSchemaManager v-model="dbMgntDialogVisible" :conn-id="dbMgntConnId" :db-type="dbMgntDbType"
+      :conn-name="dbMgntConnName" @schemas-changed="refreshTree" />
   </div>
 </template>
 
@@ -259,7 +266,7 @@ import { useStorage } from '@/composables/useStorage'
 const dbSchemaProxy = useDbSchemaStore()
 const storage = useStorage()
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts } from '@element-plus/icons-vue'
+import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts, UserFilled } from '@element-plus/icons-vue'
 import { MagicStick, SwitchButton, User } from '@element-plus/icons-vue'
 import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
@@ -277,6 +284,7 @@ import BackupRestoreDialog from '@/components/db-tools/BackupRestoreDialog.vue'
 import DataDictDialog from '@/components/db-tools/DataDictDialog.vue'
 import SchemaCompareDialog from '@/components/db-tools/SchemaCompareDialog.vue'
 import GlobalSearchDialog from '@/components/db-tools/GlobalSearchDialog.vue'
+import DbUserSchemaManager from '@/components/db-tools/DbUserSchemaManager.vue'
 import { useTheme } from '@/utils/useTheme.ts'
 
 const router = useRouter()
@@ -348,6 +356,11 @@ const dictSchema = ref('')
 const compareDialogVisible = ref(false)
 const compareConnId = ref('')
 const compareSchema = ref('')
+// 库与用户管理对话框状态
+const dbMgntDialogVisible = ref(false)
+const dbMgntConnId = ref('')
+const dbMgntDbType = ref('')
+const dbMgntConnName = ref('')
 const searchPopoverRef = useTemplateRef('searchPopoverRef')
 const searchPopoverVisible = ref(false)
 const searchConnId = ref('')
@@ -1077,6 +1090,24 @@ function openCompareDialog(node) {
   compareConnId.value = conn.id
   compareSchema.value = node.data.label
   compareDialogVisible.value = true
+}
+
+// ===== 库与用户管理 =====
+// 支持库/用户管理的数据库类型
+const DB_MANAGE_TYPES = ['mysql', 'mariadb', 'oracle']
+
+// 是否显示"库与用户管理"入口：远程模式仅管理员，本地/桌面模式无限制；且仅 MySQL/MariaDB/Oracle 连接
+function canManageDbResources(node) {
+  if (!(currentUser.value.isAdmin || !isRemote.value)) return false
+  const dbType = (node.data?.data?.dbType || '').toLowerCase()
+  return DB_MANAGE_TYPES.includes(dbType)
+}
+
+function openDbUserManager(node) {
+  dbMgntConnId.value = node.data.id
+  dbMgntDbType.value = (node.data.data?.dbType || '').toLowerCase()
+  dbMgntConnName.value = node.data.label
+  dbMgntDialogVisible.value = true
 }
 
 function handleTreeDropdownAction(node, command) {

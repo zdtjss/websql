@@ -55,6 +55,9 @@ func InitMngtDbConn() {
 func OpenMngtDB(cfg *config.Config) (*sqlx.DB, error) {
 	if cfg == nil {
 		cfg = config.ReadConfig()
+		// 写回全局活跃配置：main 流程后续 config.Get() 依赖此处完成初始化；
+		// 桌面入口已预加载配置时不会进入此分支，不会覆盖 IsRemote/IsDesktop 标志
+		config.SetActive(cfg)
 	}
 	dsn := config.ResolveDSN(cfg.DB.DataSourceName)
 	if cfg.DB.DriverName == "sqlite" {

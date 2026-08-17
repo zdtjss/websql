@@ -15,6 +15,7 @@ import (
 	"websql/internal/app/backup"
 	"websql/internal/app/conn"
 	"websql/internal/app/datadict"
+	"websql/internal/app/dbadmin"
 	"websql/internal/app/dbops"
 	"websql/internal/app/modeler"
 	"websql/internal/app/monitor"
@@ -104,6 +105,14 @@ func MainRegister(router *gin.Engine) {
 	// 数据库对象管理 - 列出对象 / 获取对象 DDL（视图、存储过程、函数、触发器、事件、表）
 	routerGroup.GET("/db/objects", dbops.ListObjects)
 	routerGroup.GET("/db/object/ddl", dbops.GetObjectDDL)
+
+	// 数据库用户与库管理（仅 MySQL/MariaDB/Oracle；本地/桌面模式无限制，非本地仅管理员）
+	routerGroup.GET("/db/admin/users", dbadmin.ListDbUsers)
+	routerGroup.POST("/db/admin/user/save", dbadmin.SaveDbUser)
+	routerGroup.POST("/db/admin/user/drop", dbadmin.DropDbUser)
+	routerGroup.GET("/db/admin/schemas", dbadmin.ListAdminSchemas)
+	routerGroup.POST("/db/admin/schema/create", dbadmin.CreateSchema)
+	routerGroup.POST("/db/admin/schema/drop", dbadmin.DropSchema)
 
 	routerGroup.POST("/saveTree", permission.SaveTree)
 	routerGroup.GET("/listDirTree", permission.ListDirTree)

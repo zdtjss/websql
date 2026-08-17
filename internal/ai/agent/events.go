@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"websql/internal/pkg/strutil"
+
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
@@ -207,7 +209,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				if chunkIdx <= 5 || contentLen > 0 || reasoningLen > 0 || tcCount > 0 || chunkIdx%20 == 0 {
 					contentPreview := chunk.Content
 					if len(contentPreview) > 80 {
-						contentPreview = contentPreview[:80] + "..."
+						contentPreview = strutil.TruncateBytes(contentPreview, 80) + "..."
 					}
 					log.Printf("[Agent] MessageStream chunk[%d] - contentLen=%d, reasoningLen=%d, toolCalls=%d, content=%q\n",
 						chunkIdx, contentLen, reasoningLen, tcCount, contentPreview)
@@ -249,7 +251,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 				contentLen := len(msg.Content)
 				contentPreview := msg.Content
 				if len(contentPreview) > 200 {
-					contentPreview = contentPreview[:200] + "...(truncated)"
+					contentPreview = strutil.TruncateBytes(contentPreview, 200) + "...(truncated)"
 				}
 				contentPreview = strings.ReplaceAll(contentPreview, "\n", " ")
 				log.Printf("[Agent] 工具结果 - eventIdx=%d, toolName=%s, callID=%s, contentLen=%d, preview=%s\n",

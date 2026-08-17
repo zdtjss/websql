@@ -163,6 +163,7 @@ func ImportXlsx(c *gin.Context) {
 
 	count := -1
 	maxLines := 100
+	totalRows := 0
 
 	totalValues := make([][]string, maxLines)
 
@@ -204,6 +205,7 @@ func ImportXlsx(c *gin.Context) {
 					return
 				}
 			}
+			totalRows += count + 1
 			count = -1
 		}
 	}
@@ -222,6 +224,7 @@ func ImportXlsx(c *gin.Context) {
 				return
 			}
 		}
+		totalRows += count + 1
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -231,10 +234,10 @@ func ImportXlsx(c *gin.Context) {
 	} else {
 		if strings.EqualFold(operType, "insert") {
 			log.Println("导入完成")
-			response.WriteOK(c, "导入完成")
+			response.WriteOK(c, map[string]any{"msg": "导入完成", "total": totalRows})
 		} else {
 			log.Println("更新完成")
-			response.WriteOK(c, "更新完成")
+			response.WriteOK(c, map[string]any{"msg": "更新完成", "total": totalRows})
 		}
 	}
 }

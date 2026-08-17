@@ -10,6 +10,7 @@ import (
 	"time"
 
 	system "websql/internal/app/system"
+	"websql/internal/pkg/strutil"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -228,7 +229,7 @@ func callPermissionAgent(ctx context.Context, permAgent tool.BaseTool, sql, tool
 	startTime := time.Now()
 	sqlPreview := sql
 	if len(sqlPreview) > 200 {
-		sqlPreview = sqlPreview[:200] + "...(truncated)"
+		sqlPreview = strutil.TruncateBytes(sqlPreview, 200) + "...(truncated)"
 	}
 	sqlPreview = strings.ReplaceAll(sqlPreview, "\n", " ")
 	log.Printf("[PermAgent] 开始权限检查 - tool=%s, sqlLen=%d, sql=%s\n", toolName, len(sql), sqlPreview)
@@ -246,7 +247,7 @@ func callPermissionAgent(ctx context.Context, permAgent tool.BaseTool, sql, tool
 	if err != nil {
 		rawPreview := result
 		if len(rawPreview) > 300 {
-			rawPreview = rawPreview[:300] + "...(truncated)"
+			rawPreview = strutil.TruncateBytes(rawPreview, 300) + "...(truncated)"
 		}
 		log.Printf("[PermAgent] 结果解析失败 - tool=%s, duration=%v, err=%v, raw=%s\n", toolName, elapsed, err, rawPreview)
 		return nil, fmt.Errorf("parse permission agent result failed: %w, raw=%s", err, result)

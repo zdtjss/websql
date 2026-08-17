@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/app/conn"
@@ -1330,14 +1331,52 @@ func collectAllMetrics() {
 		if r.DbType == "sqlite" {
 			continue // SQLite 无 QPS/TPS/缓冲池指标
 		}
-		db := conn.GetConnNoCheck(r.Id)
-		if db == nil {
-			continue
+		if isConnCoolingDown(r.Id) {
+			continue // 近期采集失败的连接冷却中，跳过重试避免高频重连刷日志
 		}
-		persistMetrics(r.Id, collectMetricsSnapshot(db, r.DbType), r.DbType)
-		if r.DbType == "mysql" || r.DbType == "mariadb" {
-			bp := collectBufferPoolStats(db, r.DbType)
-			persistSingleMetric(r.Id, MetricBufferPoolHitRate, bp.HitRate)
-		}
+		collectOneConnMetrics(r.Id, r.DbType)
 	}
+}
+
+// connFailSkip 记录采集失败连接的冷却截止时间（connId -> 放行时间）。
+// 不可达连接的 GetConnNoCheck 会 panic（由下方 recover 捕获），
+// 若不冷却，后台任务会每轮（60s）重连失败连接并打印失败日志与堆栈。
+var (
+	connFailMu    sync.Mutex
+	connFailSkip  = make(map[string]time.Time)
+	connRetryWait = 10 * time.Minute // 采集失败后的冷却时长
+)
+
+func isConnCoolingDown(connId string) bool {
+	connFailMu.Lock()
+	defer connFailMu.Unlock()
+	return time.Now().Before(connFailSkip[connId])
+}
+
+// collectOneConnMetrics 采集单个连接的指标。
+// GetConnNoCheck 对连接失败会 panic（供 HTTP 中间件透传），
+// 此处逐连接 recover 隔离：坏连接仅跳过自身并进入冷却，不中断本轮其余连接的采集。
+func collectOneConnMetrics(connId, dbType string) {
+	defer func() {
+		if r := recover(); r != nil {
+			connFailMu.Lock()
+			connFailSkip[connId] = time.Now().Add(connRetryWait)
+			connFailMu.Unlock()
+			// 只打单行日志，不打堆栈：采集失败属预期场景（连接配置失效/网络不通），堆栈无诊断价值
+			log.Printf("[monitor] 连接 %s 指标采集失败，%s 后重试: %v", connId, connRetryWait, r)
+		}
+	}()
+	db := conn.GetConnNoCheck(connId)
+	if db == nil {
+		return
+	}
+	persistMetrics(connId, collectMetricsSnapshot(db, dbType), dbType)
+	if dbType == "mysql" || dbType == "mariadb" {
+		bp := collectBufferPoolStats(db, dbType)
+		persistSingleMetric(connId, MetricBufferPoolHitRate, bp.HitRate)
+	}
+	// 采集成功则解除冷却，尽快恢复该连接的指标记录
+	connFailMu.Lock()
+	delete(connFailSkip, connId)
+	connFailMu.Unlock()
 }

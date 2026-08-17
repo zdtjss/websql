@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"websql/internal/pkg/strutil"
+
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -108,7 +110,7 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 						seenToolCallIDs[tc.ID] = true
 						argsPreview := tc.Function.Arguments
 						if len(argsPreview) > 120 {
-							argsPreview = argsPreview[:120] + "..."
+							argsPreview = strutil.TruncateBytes(argsPreview, 120) + "..."
 						}
 						log.Printf("[Model:Stream] 工具调用 - callID=%s, func=%s, args=%s\n",
 							tc.ID, tc.Function.Name, argsPreview)
@@ -166,7 +168,7 @@ func summarizeOutputMessage(msg *schema.Message) string {
 	}
 	preview := msg.Content
 	if len(preview) > 100 {
-		preview = preview[:100] + "..."
+		preview = strutil.TruncateBytes(preview, 100) + "..."
 	}
 	preview = strings.ReplaceAll(preview, "\n", " ")
 	return fmt.Sprintf("contentLen=%d, reasoningLen=%d, toolCalls=%d(%v), preview=%q",

@@ -11,6 +11,7 @@ import (
 	conn "websql/internal/app/conn"
 	appperm "websql/internal/app/permission"
 	"websql/internal/audit"
+	"websql/internal/pkg/strutil"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -1042,7 +1043,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 
 func truncateForLog(s string) string {
 	if len(s) > 300 {
-		return s[:300] + "..."
+		return strutil.TruncateBytes(s, 300) + "..."
 	}
 	return strings.ReplaceAll(s, "\n", " ")
 }
@@ -1145,7 +1146,7 @@ func (m *PermissionMiddleware) auditExecute(command, status, errorMsg string) {
 // truncateForAudit 截断审计内容，避免巨大命令撑爆数据库字段
 func truncateForAudit(s string) string {
 	if len(s) > 2000 {
-		return s[:2000] + "...(truncated)"
+		return strutil.TruncateBytes(s, 2000) + "...(truncated)"
 	}
 	return s
 }

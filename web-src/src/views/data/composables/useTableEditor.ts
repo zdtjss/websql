@@ -849,15 +849,18 @@ export function useTableEditor(params: TableEditorParams) {
   }
 
   // ===== Row operations =====
-  function insertBlankRowAt(idx: number) {
-    const blank: Record<string, any> = { _rowUid: nextRowUid++ }
-    dataColumns.value.forEach((col) => {
-      blank[col.name] = ''
-    })
-    rows.value.splice(idx, 0, blank)
-    const key = getRowKey(blank)
-    newRowUids.value = new Set([...newRowUids.value, blank._rowUid])
-    originalRows.value[key] = {}
+  function insertBlankRowAt(idx: number, count = 1) {
+    const uids: number[] = []
+    for (let i = 0; i < count; i++) {
+      const blank: Record<string, any> = { _rowUid: nextRowUid++ }
+      dataColumns.value.forEach((col) => {
+        blank[col.name] = ''
+      })
+      rows.value.splice(idx + i, 0, blank)
+      uids.push(blank._rowUid)
+      originalRows.value[getRowKey(blank)] = {}
+    }
+    newRowUids.value = new Set([...newRowUids.value, ...uids])
   }
 
   function removeNewRow(row: Record<string, any>) {
@@ -977,18 +980,28 @@ export function useTableEditor(params: TableEditorParams) {
     }
   }
 
+  // 右键菜单内嵌的插入行数（WPS 风格，默认 1，菜单中直接修改；清空输入框时为 undefined）
+  const insertRowCount = ref<number | undefined>(1)
+
+  /** 取有效插入行数（输入框被清空/越界时回退为 1，并夹紧到 1-1000） */
+  function clampInsertCount(): number {
+    const n = Number(insertRowCount.value)
+    if (!Number.isFinite(n)) return 1
+    return Math.min(1000, Math.max(1, Math.floor(n)))
+  }
+
   function ctxInsertRowAbove() {
     closeContextMenu()
     const bounds = selectionBounds.value
     const idx = bounds ? bounds.rowMin : activeCellIndex.value >= 0 ? activeCellIndex.value : rows.value.length
-    insertBlankRowAt(idx)
+    insertBlankRowAt(idx, clampInsertCount())
   }
 
   function ctxInsertRowBelow() {
     closeContextMenu()
     const bounds = selectionBounds.value
     const idx = bounds ? bounds.rowMax + 1 : activeCellIndex.value >= 0 ? activeCellIndex.value + 1 : rows.value.length
-    insertBlankRowAt(idx)
+    insertBlankRowAt(idx, clampInsertCount())
   }
 
   function ctxDeleteRows() {
@@ -1266,6 +1279,7 @@ export function useTableEditor(params: TableEditorParams) {
     ctxPaste,
     ctxClearCells,
     ctxSetNull,
+    insertRowCount,
     ctxInsertRowAbove,
     ctxInsertRowBelow,
     ctxDeleteRows,

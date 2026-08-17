@@ -75,13 +75,16 @@
           <span v-else class="cell-text">{{ scope.row.url }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120" fixed="right" resizable>
+      <el-table-column label="操作" width="150" fixed="right" resizable>
         <template #default="scope">
           <el-tooltip v-if="isRowEditing(scope.row)" content="保存" placement="top">
             <span class="action-icon" @mousedown.prevent @click.stop="saveConnCfg(scope.row)"><el-icon><CircleCheck /></el-icon></span>
           </el-tooltip>
           <el-tooltip content="测试连接" placement="top">
             <el-icon class="action-icon" :class="{ 'is-loading': scope.row.testing }" @click="testDbConnRow(scope.row)"><Connection /></el-icon>
+          </el-tooltip>
+          <el-tooltip v-if="canManageDbResources(scope.row)" content="库与用户管理" placement="top">
+            <el-icon class="action-icon" @click="openDbUserManager(scope.row)"><UserFilled /></el-icon>
           </el-tooltip>
           <el-popconfirm title="确定要删除这个连接吗？" @confirm="delConnCfg(scope.row)">
             <template #reference>
@@ -102,6 +105,10 @@
       @size-change="handleSizeChange"
       @current-change="handleCurrentChange"
     />
+
+    <!-- 库与用户管理：管理连接内数据库用户、库/schema（仅 MySQL/MariaDB/Oracle） -->
+    <DbUserSchemaManager v-model="dbMgntDialogVisible" :conn-id="dbMgntConnId" :db-type="dbMgntDbType"
+      :conn-name="dbMgntConnName" />
   </div>
 </template>
 
@@ -109,7 +116,8 @@
 import { ref } from 'vue'
 import { listConn, saveConn, testDbConn, delConn, listDirTree } from '@/api/conn'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, Connection, Delete } from '@element-plus/icons-vue'
+import { CircleCheck, Connection, Delete, UserFilled } from '@element-plus/icons-vue'
+import DbUserSchemaManager from '@/components/db-tools/DbUserSchemaManager.vue'
 
 const emit = defineEmits(['conn-saved', 'conn-deleted'])
 
@@ -271,6 +279,25 @@ const delConnCfg = (row) => {
     connList.value = connList.value.filter(item => item != row)
     emit('conn-deleted', row)
   }
+}
+
+// ===== 库与用户管理 =====
+// 支持库/用户管理的数据库类型；连接需已保存（有 id）才能操作
+const DB_MANAGE_TYPES = ['mysql', 'mariadb', 'oracle']
+const dbMgntDialogVisible = ref(false)
+const dbMgntConnId = ref('')
+const dbMgntDbType = ref('')
+const dbMgntConnName = ref('')
+
+const canManageDbResources = (row) => {
+  return !!row.id && DB_MANAGE_TYPES.includes((row.dbType || '').toLowerCase())
+}
+
+const openDbUserManager = (row) => {
+  dbMgntConnId.value = row.id
+  dbMgntDbType.value = (row.dbType || '').toLowerCase()
+  dbMgntConnName.value = row.name || ''
+  dbMgntDialogVisible.value = true
 }
 
 listDirTreeData()

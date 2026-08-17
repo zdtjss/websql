@@ -52,7 +52,7 @@ func FilterConnsWithPermission(parentId string, userPower *admin.UserPower) []*c
 		if cfg.Name != nil {
 			label = *cfg.Name
 		}
-		tree = append(tree, &conn.Tree{Label: label, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_CONN})
+		tree = append(tree, &conn.Tree{Label: label, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_CONN, Data: map[string]any{"dbType": cfg.DbType}})
 	}
 	return tree
 }
@@ -80,7 +80,7 @@ func filterConnsAll(parentId string) []*conn.Tree {
 		if cfg.Name != nil {
 			label = *cfg.Name
 		}
-		tree = append(tree, &conn.Tree{Label: label, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_CONN})
+		tree = append(tree, &conn.Tree{Label: label, Id: cfg.Id, Type: conn.TREE_NODE_TYPE_CONN, Data: map[string]any{"dbType": cfg.DbType}})
 	}
 	return tree
 }

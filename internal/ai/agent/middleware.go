@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"websql/internal/pkg/strutil"
+
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
@@ -490,7 +492,7 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 // truncateArgsForLog 截断工具调用参数，用于日志输出。
 func truncateArgsForLog(args string) string {
 	if len(args) > 300 {
-		return args[:300] + "...(truncated)"
+		return strutil.TruncateBytes(args, 300) + "...(truncated)"
 	}
 	return strings.ReplaceAll(args, "\n", " ")
 }
@@ -498,7 +500,7 @@ func truncateArgsForLog(args string) string {
 // truncateResultForLog 截断工具调用结果，用于日志输出。
 func truncateResultForLog(result string) string {
 	if len(result) > 500 {
-		return result[:500] + "...(truncated)"
+		return strutil.TruncateBytes(result, 500) + "...(truncated)"
 	}
 	return strings.ReplaceAll(result, "\n", " ")
 }

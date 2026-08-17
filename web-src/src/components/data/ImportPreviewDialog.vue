@@ -109,6 +109,9 @@
     <template #footer>
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <div style="display: flex; gap: 12px;">
+          <el-tag type="info" size="small">
+            共 {{ excelData.length }} 条数据<template v-if="importCount < excelData.length">，本次导入 {{ importCount }} 条</template>
+          </el-tag>
           <el-tag type="success" size="small">
             <el-icon><CircleCheck /></el-icon>
             已匹配 {{ mappingStatus.matched > 0 ? mappingStatus.matched : '0' }}
@@ -132,7 +135,7 @@
 <script setup>
 import { CircleCheck, Refresh, RefreshLeft, Upload, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import http from '@/api/index'
 
 const visible = defineModel({ default: false })
@@ -161,6 +164,14 @@ const mappingStatus = ref({
   matched: 0,
   unmatchedExcel: [],
   unmatchedDb: []
+})
+
+// 实际导入数量：Excel 走后端时受"数据起始行"影响，CSV/JSON 为全量
+const importCount = computed(() => {
+  if (importFormat === 'xlsx' && dataStartRow.value > 1) {
+    return Math.max(0, excelData.value.length - (dataStartRow.value - 1))
+  }
+  return excelData.value.length
 })
 
 // 监听 dbColumns 变化
@@ -295,7 +306,8 @@ function executeImport() {
   }).then((res) => {
     if (res && res.status === 200) {
       const modeText = importMode.value === 'insert' ? '新增' : '修改'
-      ElMessage({ message: `导入${modeText}成功`, type: 'success' })
+      const total = res.data?.data?.total
+      ElMessage({ message: `导入${modeText}成功${total != null ? `，共 ${total} 条` : ''}`, type: 'success' })
       visible.value = false
       emit('success')
       if (onImportSuccess) {

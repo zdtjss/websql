@@ -2,11 +2,25 @@ package strutil
 
 import (
 	"encoding/json"
-	"strings"
 	"strconv"
+	"strings"
 	"unicode"
 	"websql/internal/logger"
 )
+
+// TruncateBytes 按字节上限截断字符串，但保证截断点落在完整的 UTF-8 字符边界上，
+// 避免把多字节字符（如中文）拦腰截断产生 U+FFFD 乱码。常用于日志预览截断。
+func TruncateBytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	// 0x80-0xBF 为 UTF-8 续字节，向前回退到字符起始字节
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
 
 func ExtractSql(s string) string {
 	relSql := strings.TrimSpace(s)

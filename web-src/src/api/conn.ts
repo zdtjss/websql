@@ -278,3 +278,75 @@ export function getSlowQueries(connId: string, limit = 20): Promise<AxiosRespons
 export function getTopTables(connId: string, schema: string, limit = 20): Promise<AxiosResponse> {
   return http.get('/monitor/top-tables', { params: { connId, schema, limit } })
 }
+
+// ===== 数据库用户与库管理（仅 MySQL/MariaDB/Oracle；非本地模式仅管理员） =====
+
+/** 数据库用户信息 */
+export interface DbUserItem {
+  username: string
+  host?: string
+}
+
+/** 数据库用户列表响应：restricted=true 表示连接账号无系统表权限，仅返回当前账号 */
+export interface DbUserListResult {
+  users: DbUserItem[]
+  restricted: boolean
+}
+
+/** 创建/重置数据库用户密码参数 */
+export interface DbUserSaveParams {
+  connId: string
+  username: string
+  /** MySQL 主机模式，如 localhost、%，仅 MySQL/MariaDB 使用 */
+  host?: string
+  password: string
+}
+
+/** 创建库/schema 参数 */
+export interface DbSchemaCreateParams {
+  connId: string
+  schema: string
+  /** Oracle 创建 schema 等价于创建用户，需指定密码 */
+  password?: string
+  /** MySQL 字符集，可空 */
+  charset?: string
+  /** MySQL 排序规则，可空 */
+  collation?: string
+  /** Oracle 默认表空间，可空（默认 users） */
+  tableSpace?: string
+}
+
+/** 列出连接内数据库用户，对应 GET /db/admin/users */
+export function listDbUsers(connId: string): Promise<AxiosResponse<ApiResponse<DbUserListResult>>> {
+  return http.get('/db/admin/users', { params: { connId } })
+}
+
+/** 创建数据库用户，对应 POST /db/admin/user/save */
+export function createDbUser(params: DbUserSaveParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/user/save', params, { params: { mode: 'create' } })
+}
+
+/** 重置数据库用户密码，对应 POST /db/admin/user/save?mode=resetpwd */
+export function resetDbUserPassword(params: DbUserSaveParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/user/save', params, { params: { mode: 'resetpwd' } })
+}
+
+/** 删除数据库用户，对应 POST /db/admin/user/drop */
+export function dropDbUser(params: DbUserSaveParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/user/drop', params)
+}
+
+/** 列出连接内所有库/schema（管理员视角，不过滤），对应 GET /db/admin/schemas */
+export function listAdminSchemas(connId: string): Promise<AxiosResponse<ApiResponse<string[]>>> {
+  return http.get('/db/admin/schemas', { params: { connId } })
+}
+
+/** 创建库/schema，对应 POST /db/admin/schema/create */
+export function createDbSchema(params: DbSchemaCreateParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/schema/create', params)
+}
+
+/** 删除库/schema，对应 POST /db/admin/schema/drop */
+export function dropDbSchema(connId: string, schema: string): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/schema/drop', { connId, schema })
+}

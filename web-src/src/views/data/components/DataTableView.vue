@@ -136,8 +136,30 @@
       <div class="ctx-item" @click="editor.ctxClearCells"><span class="ctx-icon">🗑️</span>清空单元格 <span class="ctx-shortcut">Delete</span></div>
       <div class="ctx-item" @click="editor.ctxSetNull"><span class="ctx-icon">∅</span>设为 NULL</div>
       <div class="ctx-divider"></div>
-      <div class="ctx-item" @click="editor.ctxInsertRowAbove"><span class="ctx-icon">⬆️</span>上方插入行</div>
-      <div class="ctx-item" @click="editor.ctxInsertRowBelow"><span class="ctx-icon">⬇️</span>下方插入行</div>
+      <div class="ctx-item" @click="editor.ctxInsertRowAbove"><span class="ctx-icon">⬆️</span>上方插入<el-input-number
+        :model-value="editor.insertRowCount.value"
+        @update:model-value="editor.insertRowCount.value = $event"
+        class="ctx-count-input"
+        size="small"
+        :min="1"
+        :max="1000"
+        :step="1"
+        step-strictly
+        controls-position="right"
+        @click.stop
+      />行</div>
+      <div class="ctx-item" @click="editor.ctxInsertRowBelow"><span class="ctx-icon">⬇️</span>下方插入<el-input-number
+        :model-value="editor.insertRowCount.value"
+        @update:model-value="editor.insertRowCount.value = $event"
+        class="ctx-count-input"
+        size="small"
+        :min="1"
+        :max="1000"
+        :step="1"
+        step-strictly
+        controls-position="right"
+        @click.stop
+      />行</div>
       <div class="ctx-item" @click="editor.ctxDeleteRows"><span class="ctx-icon">❌</span>删除选中行</div>
       <div class="ctx-divider"></div>
       <div class="ctx-item" :class="{ disabled: !editor.canFillDown.value }" @click="editor.ctxFillDown"><span class="ctx-icon">⬇️</span>向下填充 <span class="ctx-shortcut">Ctrl+D</span></div>
@@ -349,7 +371,7 @@ function getSortIconComponent(colName: string) {
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   padding: 4px 0;
-  min-width: 200px;
+  min-width: 230px;
   font-size: 13px;
 }
 
@@ -397,6 +419,17 @@ function getSortIconComponent(colName: string) {
   margin-left: auto;
   color: #909399;
   font-size: 11px;
+}
+
+/* Inline insert-count input (WPS style) inside context menu items */
+.db-context-menu .ctx-item .ctx-count-input {
+  width: 64px;
+  margin: 0 2px;
+}
+
+.db-context-menu .ctx-item .ctx-count-input .el-input__inner {
+  padding: 0 18px 0 6px;
+  font-size: 12px;
 }
 
 .db-context-menu .ctx-divider {

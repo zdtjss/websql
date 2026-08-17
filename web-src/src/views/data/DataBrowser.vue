@@ -25,10 +25,8 @@
           </template>
         </el-dropdown>
         <el-upload
-          :file-list="fileList"
           :http-request="handleFileSelect"
           :show-file-list="false"
-          :limit="1"
           :accept="importAccept"
         >
           <el-dropdown @command="handleImportCommand">
@@ -432,7 +430,6 @@ async function insertData() {
 }
 
 // ===== Import =====
-const fileList = ref<any[]>([])
 const importPreviewVisible = ref(false)
 const dbColumns = ref<string[]>([])
 const importDialogRef = useTemplateRef<InstanceType<typeof ImportPreviewDialog>>('importDialogRef')
@@ -645,9 +642,9 @@ async function handleCsvJsonImport({ data, mode }: { data: Record<string, any>[]
       params.append('sql', batchSql)
       try {
         await http.post('/execSQL', params)
-        successCount += batch.length
+        successCount += sqlStatements.length
       } catch {
-        errorCount += batch.length - sqlStatements.length
+        errorCount += sqlStatements.length
       }
     }
   } finally {
