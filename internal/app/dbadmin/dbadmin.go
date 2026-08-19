@@ -487,6 +487,318 @@ func DropSchema(c *gin.Context) {
 	response.WriteOK(c, nil)
 }
 
+// ===== 用户权限管理 =====
+
+// PrivilegeParam 权限授予/撤销请求参数
+type PrivilegeParam struct {
+	ConnId      string `json:"connId"`
+	Username    string `json:"username"`
+	Host        string `json:"host"`        // MySQL 主机
+	Privileges  string `json:"privileges"`  // 逗号分隔的权限列表，如 "SELECT,INSERT,UPDATE"
+	Object      string `json:"object"`      // 权限对象：*.* / db.* / db.table
+	GrantOption bool   `json:"grantOption"` // WITH GRANT OPTION
+}
+
+// privilegeItem 用户权限条目
+type privilegeItem struct {
+	Privilege   string `json:"privilege"`
+	Object      string `json:"object"`
+	GrantOption bool   `json:"grantOption"`
+}
+
+// ListUserPrivileges 列出用户权限。GET /api/db/admin/user/privileges?connId=xxx&username=xxx&host=xxx
+func ListUserPrivileges(c *gin.Context) {
+	if !admin.CheckAdminPower(c) {
+		return
+	}
+	authorization := appctx.Ctx.GetAuthorization(c)
+	connId := appctx.Ctx.GetConnID(c)
+	username := c.Query("username")
+	host := c.Query("host")
+	if username == "" {
+		response.WriteErr(c, 200, 500, "缺少用户名参数")
+		return
+	}
+	if err := sanitize.ValidateIdentifier(username, "用户名"); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+
+	dc, err := getDBOrErr(connId, authorization)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	dbType, err := checkSupported(dc)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+
+	privs := make([]privilegeItem, 0)
+
+	switch dbType {
+	case "mysql", "mariadb":
+		if host != "" {
+			if err := validateHost(host); err != nil {
+				response.WriteErr(c, 200, 500, err.Error())
+				return
+			}
+		}
+		grantee := "'" + username + "'@'" + host + "'"
+		// 全局权限
+		privs = appendGlobalPrivs(dc, grantee, privs)
+		// 库级权限
+		privs = appendSchemaPrivs(dc, grantee, privs)
+		// 表级权限
+		privs = appendTablePrivs(dc, grantee, privs)
+	case "oracle":
+		privs = appendOraclePrivs(dc, username, privs)
+	}
+
+	response.WriteOK(c, gin.H{"privileges": privs})
+}
+
+func appendGlobalPrivs(dc *sqlx.DB, grantee string, privs []privilegeItem) []privilegeItem {
+	rows, err := dc.Queryx("SELECT privilege_type, is_grantable FROM information_schema.user_privileges WHERE grantee = ?", grantee)
+	if err != nil {
+		return privs
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var privType, isGrantable string
+		if err := rows.Scan(&privType, &isGrantable); err != nil {
+			continue
+		}
+		privs = append(privs, privilegeItem{Privilege: privType, Object: "*.*", GrantOption: isGrantable == "YES"})
+	}
+	return privs
+}
+
+func appendSchemaPrivs(dc *sqlx.DB, grantee string, privs []privilegeItem) []privilegeItem {
+	rows, err := dc.Queryx("SELECT privilege_type, table_schema, is_grantable FROM information_schema.schema_privileges WHERE grantee = ?", grantee)
+	if err != nil {
+		return privs
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var privType, schema, isGrantable string
+		if err := rows.Scan(&privType, &schema, &isGrantable); err != nil {
+			continue
+		}
+		privs = append(privs, privilegeItem{Privilege: privType, Object: schema + ".*", GrantOption: isGrantable == "YES"})
+	}
+	return privs
+}
+
+func appendTablePrivs(dc *sqlx.DB, grantee string, privs []privilegeItem) []privilegeItem {
+	rows, err := dc.Queryx("SELECT privilege_type, table_schema, table_name, is_grantable FROM information_schema.table_privileges WHERE grantee = ?", grantee)
+	if err != nil {
+		return privs
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var privType, schema, table, isGrantable string
+		if err := rows.Scan(&privType, &schema, &table, &isGrantable); err != nil {
+			continue
+		}
+		privs = append(privs, privilegeItem{Privilege: privType, Object: schema + "." + table, GrantOption: isGrantable == "YES"})
+	}
+	return privs
+}
+
+func appendOraclePrivs(dc *sqlx.DB, username string, privs []privilegeItem) []privilegeItem {
+	// 系统权限
+	rows, err := dc.Queryx("SELECT privilege, admin_option FROM dba_sys_privs WHERE grantee = ?", username)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var priv, adminOption string
+			if err := rows.Scan(&priv, &adminOption); err != nil {
+				continue
+			}
+			privs = append(privs, privilegeItem{Privilege: priv, Object: "", GrantOption: adminOption == "YES"})
+		}
+	}
+	// 对象权限
+	rows2, err2 := dc.Queryx("SELECT owner, table_name, privilege, grantable FROM dba_tab_privs WHERE grantee = ?", username)
+	if err2 == nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var owner, table, priv, grantable string
+			if err := rows2.Scan(&owner, &table, &priv, &grantable); err != nil {
+				continue
+			}
+			privs = append(privs, privilegeItem{Privilege: priv, Object: owner + "." + table, GrantOption: grantable == "YES"})
+		}
+	}
+	// 角色权限
+	rows3, err3 := dc.Queryx("SELECT granted_role, admin_option FROM dba_role_privs WHERE grantee = ?", username)
+	if err3 == nil {
+		defer rows3.Close()
+		for rows3.Next() {
+			var role, adminOption string
+			if err := rows3.Scan(&role, &adminOption); err != nil {
+				continue
+			}
+			privs = append(privs, privilegeItem{Privilege: role, Object: "[ROLE]", GrantOption: adminOption == "YES"})
+		}
+	}
+	return privs
+}
+
+// GrantPrivilege 授予用户权限。POST /api/db/admin/user/privilege/grant
+func GrantPrivilege(c *gin.Context) {
+	if !admin.CheckAdminPower(c) {
+		return
+	}
+	authorization := appctx.Ctx.GetAuthorization(c)
+	param := PrivilegeParam{}
+	if err := c.ShouldBindJSON(&param); err != nil {
+		response.WriteErr(c, 200, 500, "参数错误")
+		return
+	}
+	dc, err := getDBOrErr(param.ConnId, authorization)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	dbType, err := checkSupported(dc)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	if err := sanitize.ValidateIdentifier(param.Username, "用户名"); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	if err := validatePrivilegeParam(param.Privileges, param.Object); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+
+	sqlStr := buildGrantSQL(dbType, param)
+	if sqlStr == "" {
+		response.WriteErr(c, 200, 500, "无法构建授权语句")
+		return
+	}
+	if _, err := dc.Exec(sqlStr); err != nil {
+		response.WriteErr(c, 200, 500, "授权失败，请检查权限与对象是否存在")
+		return
+	}
+	response.WriteOK(c, nil)
+}
+
+// RevokePrivilege 撤销用户权限。POST /api/db/admin/user/privilege/revoke
+func RevokePrivilege(c *gin.Context) {
+	if !admin.CheckAdminPower(c) {
+		return
+	}
+	authorization := appctx.Ctx.GetAuthorization(c)
+	param := PrivilegeParam{}
+	if err := c.ShouldBindJSON(&param); err != nil {
+		response.WriteErr(c, 200, 500, "参数错误")
+		return
+	}
+	dc, err := getDBOrErr(param.ConnId, authorization)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	dbType, err := checkSupported(dc)
+	if err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	if err := sanitize.ValidateIdentifier(param.Username, "用户名"); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+	if err := validatePrivilegeParam(param.Privileges, param.Object); err != nil {
+		response.WriteErr(c, 200, 500, err.Error())
+		return
+	}
+
+	sqlStr := buildRevokeSQL(dbType, param)
+	if sqlStr == "" {
+		response.WriteErr(c, 200, 500, "无法构建撤销语句")
+		return
+	}
+	if _, err := dc.Exec(sqlStr); err != nil {
+		response.WriteErr(c, 200, 500, "撤销权限失败，请检查权限是否存在")
+		return
+	}
+	response.WriteOK(c, nil)
+}
+
+// privilegePattern 权限名白名单（字母、数字、空格，1-30 字符）
+var privilegePattern = regexp.MustCompile(`^[A-Za-z0-9 ]{1,30}$`)
+
+// objectPattern 对象标识白名单：*、数据库名、表名、schema 名，支持 . 分隔
+var objectPattern = regexp.MustCompile(`^[A-Za-z0-9_*.-]{1,128}$`)
+
+func validatePrivilegeParam(privileges, object string) error {
+	// 校验每个权限名
+	for _, p := range strings.Split(privileges, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" || !privilegePattern.MatchString(p) {
+			return errSafe("非法的权限名")
+		}
+	}
+	if object != "" {
+		// 角色权限（Oracle）object 为 [ROLE]，跳过 object 校验
+		if object == "[ROLE]" {
+			return nil
+		}
+		if !objectPattern.MatchString(object) {
+			return errSafe("非法的权限对象")
+		}
+	}
+	return nil
+}
+
+func buildGrantSQL(dbType string, param PrivilegeParam) string {
+	privs := strings.TrimSpace(param.Privileges)
+	obj := strings.TrimSpace(param.Object)
+
+	switch dbType {
+	case "mysql", "mariadb":
+		grantee := quoteMySQLString(param.Username) + "@" + quoteMySQLString(param.Host)
+		sql := "GRANT " + privs + " ON " + obj + " TO " + grantee
+		if param.GrantOption {
+			sql += " WITH GRANT OPTION"
+		}
+		return sql
+	case "oracle":
+		user := sanitize.QuoteIdentifier(param.Username, "oracle")
+		if obj == "" || obj == "[ROLE]" {
+			// 系统权限或角色
+			return "GRANT " + privs + " TO " + user
+		}
+		// 对象权限：GRANT SELECT ON owner.table TO user
+		return "GRANT " + privs + " ON " + obj + " TO " + user
+	}
+	return ""
+}
+
+func buildRevokeSQL(dbType string, param PrivilegeParam) string {
+	privs := strings.TrimSpace(param.Privileges)
+	obj := strings.TrimSpace(param.Object)
+
+	switch dbType {
+	case "mysql", "mariadb":
+		grantee := quoteMySQLString(param.Username) + "@" + quoteMySQLString(param.Host)
+		return "REVOKE " + privs + " ON " + obj + " FROM " + grantee
+	case "oracle":
+		user := sanitize.QuoteIdentifier(param.Username, "oracle")
+		if obj == "" || obj == "[ROLE]" {
+			return "REVOKE " + privs + " FROM " + user
+		}
+		return "REVOKE " + privs + " ON " + obj + " FROM " + user
+	}
+	return ""
+}
+
 // friendlyExecErr 将执行错误转换为用户友好的提示（不透出原始 SQL 细节）
 func friendlyExecErr(op string, err error) string {
 	msg := "操作失败，请检查名称是否已存在或当前账号是否有权限"

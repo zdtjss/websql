@@ -981,11 +981,13 @@ export function useTableEditor(params: TableEditorParams) {
   }
 
   // 右键菜单内嵌的插入行数（WPS 风格，默认 1，菜单中直接修改；清空输入框时为 undefined）
-  const insertRowCount = ref<number | undefined>(1)
+  // 上方/下方两个输入框互相独立，各自记忆取值
+  const insertAboveCount = ref<number | undefined>(1)
+  const insertBelowCount = ref<number | undefined>(1)
 
   /** 取有效插入行数（输入框被清空/越界时回退为 1，并夹紧到 1-1000） */
-  function clampInsertCount(): number {
-    const n = Number(insertRowCount.value)
+  function clampInsertCount(count: number | undefined): number {
+    const n = Number(count)
     if (!Number.isFinite(n)) return 1
     return Math.min(1000, Math.max(1, Math.floor(n)))
   }
@@ -994,14 +996,14 @@ export function useTableEditor(params: TableEditorParams) {
     closeContextMenu()
     const bounds = selectionBounds.value
     const idx = bounds ? bounds.rowMin : activeCellIndex.value >= 0 ? activeCellIndex.value : rows.value.length
-    insertBlankRowAt(idx, clampInsertCount())
+    insertBlankRowAt(idx, clampInsertCount(insertAboveCount.value))
   }
 
   function ctxInsertRowBelow() {
     closeContextMenu()
     const bounds = selectionBounds.value
     const idx = bounds ? bounds.rowMax + 1 : activeCellIndex.value >= 0 ? activeCellIndex.value + 1 : rows.value.length
-    insertBlankRowAt(idx, clampInsertCount())
+    insertBlankRowAt(idx, clampInsertCount(insertBelowCount.value))
   }
 
   function ctxDeleteRows() {
@@ -1279,7 +1281,8 @@ export function useTableEditor(params: TableEditorParams) {
     ctxPaste,
     ctxClearCells,
     ctxSetNull,
-    insertRowCount,
+    insertAboveCount,
+    insertBelowCount,
     ctxInsertRowAbove,
     ctxInsertRowBelow,
     ctxDeleteRows,

@@ -137,8 +137,8 @@
       <div class="ctx-item" @click="editor.ctxSetNull"><span class="ctx-icon">∅</span>设为 NULL</div>
       <div class="ctx-divider"></div>
       <div class="ctx-item" @click="editor.ctxInsertRowAbove"><span class="ctx-icon">⬆️</span>上方插入<el-input-number
-        :model-value="editor.insertRowCount.value"
-        @update:model-value="editor.insertRowCount.value = $event"
+        :model-value="editor.insertAboveCount.value"
+        @update:model-value="editor.insertAboveCount.value = $event"
         class="ctx-count-input"
         size="small"
         :min="1"
@@ -149,8 +149,8 @@
         @click.stop
       />行</div>
       <div class="ctx-item" @click="editor.ctxInsertRowBelow"><span class="ctx-icon">⬇️</span>下方插入<el-input-number
-        :model-value="editor.insertRowCount.value"
-        @update:model-value="editor.insertRowCount.value = $event"
+        :model-value="editor.insertBelowCount.value"
+        @update:model-value="editor.insertBelowCount.value = $event"
         class="ctx-count-input"
         size="small"
         :min="1"
@@ -421,15 +421,18 @@ function getSortIconComponent(colName: string) {
   font-size: 11px;
 }
 
-/* Inline insert-count input (WPS style) inside context menu items */
+/* Inline insert-count input (WPS style) inside context menu items.
+   is-controls-right 下 wrapper 已为步进按钮预留 padding-right:42px，
+   总宽需 ≥ 42px + 文本宽度，且内边距不可再挤占文本区 */
 .db-context-menu .ctx-item .ctx-count-input {
-  width: 64px;
+  width: 88px;
   margin: 0 2px;
 }
 
 .db-context-menu .ctx-item .ctx-count-input .el-input__inner {
-  padding: 0 18px 0 6px;
+  padding: 0 2px;
   font-size: 12px;
+  text-align: center;
 }
 
 .db-context-menu .ctx-divider {

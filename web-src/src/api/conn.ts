@@ -350,3 +350,48 @@ export function createDbSchema(params: DbSchemaCreateParams): Promise<AxiosRespo
 export function dropDbSchema(connId: string, schema: string): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/db/admin/schema/drop', { connId, schema })
 }
+
+// ===== 数据库用户权限管理 =====
+
+/** 用户权限条目 */
+export interface DbUserPrivilege {
+  /** 权限名，如 SELECT、INSERT；Oracle 角色权限时为角色名 */
+  privilege: string
+  /** 权限对象：*.* / db.* / db.table；Oracle 系统权限为空、角色权限为 [ROLE] */
+  object: string
+  /** 是否可转授 */
+  grantOption: boolean
+}
+
+/** 用户权限列表响应 */
+export interface DbUserPrivilegeListResult {
+  privileges: DbUserPrivilege[]
+}
+
+/** 授予/撤销权限参数 */
+export interface DbUserPrivilegeParams {
+  connId: string
+  username: string
+  host?: string
+  /** 逗号分隔的权限列表，如 "SELECT,INSERT,UPDATE" */
+  privileges: string
+  /** 权限对象：*.* / db.* / db.table；Oracle 系统权限为空、角色权限为 [ROLE] */
+  object?: string
+  /** MySQL 是否 WITH GRANT OPTION */
+  grantOption?: boolean
+}
+
+/** 列出用户权限，对应 GET /db/admin/user/privileges */
+export function listDbUserPrivileges(connId: string, username: string, host?: string): Promise<AxiosResponse<ApiResponse<DbUserPrivilegeListResult>>> {
+  return http.get('/db/admin/user/privileges', { params: { connId, username, host } })
+}
+
+/** 授予用户权限，对应 POST /db/admin/user/privilege/grant */
+export function grantDbUserPrivilege(params: DbUserPrivilegeParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/user/privilege/grant', params)
+}
+
+/** 撤销用户权限，对应 POST /db/admin/user/privilege/revoke */
+export function revokeDbUserPrivilege(params: DbUserPrivilegeParams): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/db/admin/user/privilege/revoke', params)
+}

@@ -113,6 +113,9 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/db/admin/schemas", dbadmin.ListAdminSchemas)
 	routerGroup.POST("/db/admin/schema/create", dbadmin.CreateSchema)
 	routerGroup.POST("/db/admin/schema/drop", dbadmin.DropSchema)
+	routerGroup.GET("/db/admin/user/privileges", dbadmin.ListUserPrivileges)
+	routerGroup.POST("/db/admin/user/privilege/grant", dbadmin.GrantPrivilege)
+	routerGroup.POST("/db/admin/user/privilege/revoke", dbadmin.RevokePrivilege)
 
 	routerGroup.POST("/saveTree", permission.SaveTree)
 	routerGroup.GET("/listDirTree", permission.ListDirTree)

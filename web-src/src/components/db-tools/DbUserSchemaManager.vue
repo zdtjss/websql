@@ -97,8 +97,11 @@
               <el-tag size="small" effect="plain">{{ row.host }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="170" align="center">
+          <el-table-column label="操作" width="210" align="center">
             <template #default="{ row }">
+              <el-button type="primary" link size="small" @click="openPrivilege(row)">
+                <el-icon><Lock /></el-icon><span>权限</span>
+              </el-button>
               <el-button type="primary" link size="small" @click="openResetPwd(row)">
                 <el-icon><Key /></el-icon><span>重置密码</span>
               </el-button>
@@ -214,7 +217,7 @@
       </template>
     </el-dialog>
 
-    <!-- 重置密码对话框 -->
+    <!-- 重置换密码对话框 -->
     <el-dialog v-model="resetDlgVisible" width="480px" :draggable="true" append-to-body destroy-on-close
       :close-on-click-modal="false" @close="resetPwdForm" @opened="() => pwdInputRef?.focus()">
       <template #header>
@@ -239,13 +242,82 @@
         <el-button type="primary" :loading="saving" @click="onResetPwd">确认重置</el-button>
       </template>
     </el-dialog>
+
+    <!-- 用户权限管理对话框 -->
+    <el-dialog v-model="privDlgVisible" width="700px" :draggable="true" append-to-body destroy-on-close
+      :close-on-click-modal="false" @close="resetPrivForm">
+      <template #header>
+        <div class="dlg-header">
+          <el-icon class="dlg-header-icon primary"><Lock /></el-icon>
+          <span>权限管理</span>
+        </div>
+      </template>
+      <el-form label-position="top" class="dlg-form">
+        <el-form-item label="用户">
+          <el-tag effect="plain" class="target-tag">{{ userLabel(privTarget) }}</el-tag>
+        </el-form-item>
+      </el-form>
+      <div class="priv-section">
+        <div class="priv-section-title">当前权限</div>
+        <el-table :data="privList" v-loading="privLoading" size="small" max-height="250" stripe>
+          <el-table-column prop="privilege" label="权限" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.object === '[ROLE]' ? 'success' : ''">{{ row.privilege }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="object" label="对象" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="grantOption" label="可转授" width="80" align="center">
+            <template #default="{ row }">
+              <el-icon v-if="row.grantOption" class="grant-option-yes"><Check /></el-icon>
+              <span v-else class="grant-option-no">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="70" align="center">
+            <template #default="{ row }">
+              <el-popconfirm :title="`确定撤销 ${row.privilege}${row.object ? ' ON ' + row.object : ''} 吗？`"
+                :icon="WarningFilled" icon-color="#E6A23C" :width="280"
+                confirm-button-text="撤销" confirm-button-type="danger"
+                @confirm="onRevokePriv(row)">
+                <template #reference>
+                  <el-button type="danger" link size="small" :loading="revokingPriv === privKey(row)">撤销</el-button>
+                </template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty :description="privLoading ? '正在加载...' : '暂无权限'" :image-size="50" />
+          </template>
+        </el-table>
+      </div>
+      <div class="priv-section">
+        <div class="priv-section-title">授予权限</div>
+        <div class="grant-row">
+          <el-select v-model="grantForm.privileges" multiple :placeholder="isOracle ? '选择系统权限或角色' : '选择权限类型'"
+            style="width: 220px" filterable allow-create>
+            <el-option v-for="p in privilegeOptions" :key="p" :label="p" :value="p" />
+          </el-select>
+          <el-input v-model="grantForm.object" :placeholder="objectPlaceholder" style="width: 220px" clearable />
+          <el-checkbox v-model="grantForm.grantOption">{{ isOracle ? 'WITH ADMIN OPTION' : 'WITH GRANT OPTION' }}</el-checkbox>
+          <el-button type="primary" size="small" :loading="grantLoading" @click="onGrantPriv">
+            <el-icon><Plus /></el-icon><span>授予</span>
+          </el-button>
+        </div>
+        <div class="form-tip">
+          <el-icon><InfoFilled /></el-icon>
+          <span>{{ grantTip }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="privDlgVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Coin, User, UserFilled, Plus, Refresh, InfoFilled, WarningFilled, Key, FolderAdd, Check } from '@element-plus/icons-vue'
+import { Coin, User, UserFilled, Plus, Refresh, InfoFilled, WarningFilled, Key, FolderAdd, Check, Lock } from '@element-plus/icons-vue'
 import {
   listDbUsers,
   createDbUser,
@@ -254,6 +326,9 @@ import {
   listAdminSchemas,
   createDbSchema,
   dropDbSchema,
+  listDbUserPrivileges,
+  grantDbUserPrivilege,
+  revokeDbUserPrivilege,
 } from '@/api/conn'
 
 const props = defineProps({
@@ -514,6 +589,100 @@ function onResetPwd() {
     })
   })
 }
+
+// ===== 用户权限管理 =====
+
+const privDlgVisible = ref(false)
+const privTarget = ref(null)
+const privList = ref([])
+const privLoading = ref(false)
+const grantLoading = ref(false)
+const revokingPriv = ref('')
+
+const grantForm = ref({ privileges: [], object: '', grantOption: false })
+
+const mysqlPrivilegeOptions = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'INDEX', 'REFERENCES', 'EXECUTE', 'ALL PRIVILEGES']
+const oraclePrivilegeOptions = ['CREATE SESSION', 'CREATE TABLE', 'CREATE VIEW', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'CREATE SEQUENCE', 'CREATE SYNONYM', 'UNLIMITED TABLESPACE', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CONNECT', 'RESOURCE', 'DBA']
+
+const privilegeOptions = computed(() => isOracle.value ? oraclePrivilegeOptions : mysqlPrivilegeOptions)
+
+const objectPlaceholder = computed(() => isOracle.value
+  ? '对象名，如 SCOTT.EMP；系统权限/角色留空'
+  : '对象，如 mydb.* 或 *.*')
+
+const grantTip = computed(() => isOracle.value
+  ? '多选授予系统权限或角色；对象权限（如 SELECT）需填写对象名（OWNER.TABLE）'
+  : '多选授予权限；对象示例：*.*（全局）、mydb.*（库级）、mydb.users（表级）')
+
+function openPrivilege(row) {
+  privTarget.value = row
+  resetPrivForm()
+  loadPrivileges()
+  privDlgVisible.value = true
+}
+
+function resetPrivForm() {
+  grantForm.value = { privileges: [], object: '', grantOption: false }
+  privList.value = []
+  revokingPriv.value = ''
+}
+
+function loadPrivileges() {
+  if (!privTarget.value) return
+  privLoading.value = true
+  listDbUserPrivileges(
+    props.connId,
+    privTarget.value.username,
+    isMysql.value ? privTarget.value.host : undefined,
+  ).then(resp => {
+    privList.value = resp.data?.data?.privileges || []
+  }).catch(() => {
+    privList.value = []
+  }).finally(() => {
+    privLoading.value = false
+  })
+}
+
+function privKey(row) {
+  return `${row.privilege}|${row.object || ''}`
+}
+
+function onGrantPriv() {
+  if (!grantForm.value.privileges.length) {
+    ElMessage.warning('请选择权限')
+    return
+  }
+  grantLoading.value = true
+  grantDbUserPrivilege({
+    connId: props.connId,
+    username: privTarget.value.username,
+    host: isMysql.value ? privTarget.value.host : undefined,
+    privileges: grantForm.value.privileges.join(','),
+    object: grantForm.value.object || undefined,
+    grantOption: grantForm.value.grantOption,
+  }).then(() => {
+    ElMessage.success('授权成功')
+    loadPrivileges()
+  }).finally(() => {
+    grantLoading.value = false
+  })
+}
+
+function onRevokePriv(row) {
+  revokingPriv.value = privKey(row)
+  revokeDbUserPrivilege({
+    connId: props.connId,
+    username: privTarget.value.username,
+    host: isMysql.value ? privTarget.value.host : undefined,
+    privileges: row.privilege,
+    object: row.object || undefined,
+  }).then(() => {
+    ElMessage.success('撤销成功')
+    loadPrivileges()
+  }).finally(() => {
+    revokingPriv.value = ''
+  })
+}
 </script>
 
 <style scoped>
@@ -565,6 +734,7 @@ function onResetPwd() {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+  margin-top: 8px;
 }
 
 .toolbar-tip {
@@ -633,5 +803,31 @@ function onResetPwd() {
 
 .target-tag {
   font-weight: 500;
+}
+
+.priv-section {
+  margin-top: 8px;
+}
+
+.priv-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+}
+
+.grant-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.grant-option-yes {
+  color: var(--el-color-success);
+}
+
+.grant-option-no {
+  color: var(--el-text-color-placeholder);
 }
 </style>

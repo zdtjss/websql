@@ -458,6 +458,18 @@ def _dir_size_mb(path):
     return total / 1024 / 1024
 
 
+def cleanup_python_bundle():
+    """打包完成后清理 dist-pack/python/ 暂存目录。
+
+    捆绑 Python 已写入 zip（zip 内 python/ 与可执行文件同级），dist-pack/python/
+    仅为打包中间产物、无运行时复用价值；保留会残留数百 MB 且可能被下次
+    构建误复用为陈旧缓存。仅在打包成功后调用（见 build_platform）。
+    """
+    if os.path.isdir(BUNDLE_PYTHON_DIR):
+        shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
+        print(f"[Cleanup] 已清理捆绑运行时暂存目录: {BUNDLE_PYTHON_DIR}")
+
+
 def create_release_zip(binary_path, platform_key, include_python=True):
     """将桌面版二进制 + skills + 捆绑 Python 打包为独立可发行 zip。"""
     cfg = DESKTOP_PLATFORMS[platform_key]
@@ -553,6 +565,9 @@ def build_platform(platform_key, skip_frontend, package, skip_python=False, rebu
         binary_path = build_go(platform_key)
         print("\n[Build] 打包 zip ...")
         create_release_zip(binary_path, platform_key, include_python=include_python)
+
+    # 打包完成后清理 python/ 暂存目录（已写入 zip，无复用价值）
+    cleanup_python_bundle()
 
 
 def main():
