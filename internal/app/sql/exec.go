@@ -15,7 +15,6 @@ import (
 	"websql/internal/app/permission"
 	"websql/internal/audit"
 	"websql/internal/database"
-	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
@@ -302,66 +301,78 @@ func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
 }
 
 func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
-	operationType := ""
-	backupSql := bytes.NewBufferString("select * from ")
-	lowerSql := strings.ToLower(ddlSql)
+	// 备份数据仅作回滚参考。无论备份是否成功，都必须记录历史，否则
+	// DELETE/UPDATE 在备份失败或无法解析表名/where 时会丢失历史记录。
+	operationType, backupSQL := buildBackupSQL(ddlSql)
 
-	if strings.HasPrefix(lowerSql, "update ") {
-		operationType = "update"
-		tmp := strings.TrimSpace(strings.TrimPrefix(lowerSql, "update "))
-		tableName := extractTableToken(tmp)
-		if tableName == "" {
-			return
-		}
-		backupSql.WriteString(ddlSql[len("update ") : len("update ")+len(tableName)])
-	} else if strings.HasPrefix(lowerSql, "delete ") {
-		operationType = "delete"
-		tmp := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(lowerSql, "delete ")), "from ")
-		tableName := extractTableToken(tmp)
-		if tableName == "" {
-			return
-		}
-		// 找到原始 SQL 中对应的表名位置
-		fromIdx := strings.Index(lowerSql, "from ")
-		if fromIdx == -1 {
-			return
-		}
-		tableStart := fromIdx + 5
-		origTmp := strings.TrimSpace(ddlSql[tableStart:])
-		origTableName := extractTableToken(origTmp)
-		if origTableName == "" {
-			return
-		}
-		backupSql.WriteString(origTableName)
-	}
-
-	whereIdx := strings.Index(lowerSql, " where ")
-	if whereIdx == -1 {
-		return
-	}
-	backupSql.WriteString(ddlSql[whereIdx:])
-
-	rows, err := conn.Queryx(backupSql.String())
-	if err != nil {
-		logger.PrintErrf("备份数据查询失败", err)
-		return
-	}
-	defer rows.Close()
-	data, dataErr := database.GetResultRows(conn.DriverName(), rows)
-	if dataErr != nil {
-		logger.PrintErrf("备份数据读取失败", dataErr)
-		return
-	}
-
-	historyWriter.enqueue(&historyRecord{
+	record := &historyRecord{
 		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
 		User:          user.LoginName,
 		ConnId:        connId,
 		OperationType: operationType,
 		ExecTime:      time.Now(),
 		ExecSql:       ddlSql,
-		Data:          string(jsonutil.ToJsonString(data)),
-	})
+	}
+
+	if backupSQL != "" {
+		rows, err := conn.Queryx(backupSQL)
+		if err == nil {
+			data, dataErr := database.GetResultRows(conn.DriverName(), rows)
+			rows.Close()
+			if dataErr == nil {
+				record.Data = string(jsonutil.ToJsonString(data))
+			}
+		}
+	}
+
+	historyWriter.enqueue(record)
+}
+
+// buildBackupSQL 解析 update/delete 语句，返回操作类型与可用于备份的查询 SQL。
+// 当无法可靠提取表名或 where 条件时，backupSQL 为空（历史照常记录，仅无备份数据）。
+func buildBackupSQL(ddlSql string) (operationType, backupSQL string) {
+	lowerSql := strings.ToLower(ddlSql)
+	buf := bytes.NewBufferString("select * from ")
+
+	var prefixLen int
+	switch {
+	case strings.HasPrefix(lowerSql, "update "):
+		operationType, prefixLen = "update", len("update ")
+	case strings.HasPrefix(lowerSql, "delete "), strings.HasPrefix(lowerSql, "delete\n"), strings.HasPrefix(lowerSql, "delete\t"):
+		operationType, prefixLen = "delete", len("delete ")
+	default:
+		// 多行等非常规写法（例如 update\nset ...），无法可靠解析备份目标，仅标记类型
+		return detectWriteType(lowerSql), ""
+	}
+
+	tmp := strings.TrimSpace(ddlSql[prefixLen:])
+	if operationType == "delete" {
+		tmp = strings.TrimPrefix(tmp, "from ")
+	}
+	tableName := extractTableToken(tmp)
+	if tableName == "" {
+		return operationType, ""
+	}
+	buf.WriteString(tableName)
+
+	whereIdx := strings.Index(lowerSql, " where ")
+	if whereIdx == -1 {
+		return operationType, ""
+	}
+	buf.WriteString(ddlSql[whereIdx:])
+	return operationType, buf.String()
+}
+
+// detectWriteType 识别非常规换行/制表符写法下的 update/delete 类型，无法识别时返回空串。
+func detectWriteType(lowerSql string) string {
+	switch {
+	case strings.HasPrefix(lowerSql, "update\n"), strings.HasPrefix(lowerSql, "update\t"):
+		return "update"
+	case strings.HasPrefix(lowerSql, "delete\n"), strings.HasPrefix(lowerSql, "delete\t"):
+		return "delete"
+	default:
+		return ""
+	}
 }
 
 // extractTableToken 从 SQL 片段中提取表名 token，支持反引号包裹的 schema.table 格式

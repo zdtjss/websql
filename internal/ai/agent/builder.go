@@ -137,7 +137,14 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		}
 	}
 
+	// promptMW 持有 per-run 系统提示词，RunStream 每次调用前 SetPrompt
+	promptMW := NewDynamicPromptMiddleware()
+
 	handlers := []adk.ChatModelAgentMiddleware{
+		// DynamicPromptMiddleware 必须最先注册：在每次 Run 前将 RunStream 按请求构建的
+		// 系统提示词（含 tableContext / 上传文件 / 历史引导等 per-run 上下文）覆盖到 Instruction。
+		// Agent 构造期不再设置 Instruction，避免与动态提示词双份注入。
+		promptMW,
 		// patchtoolcalls 必须在最外层，确保每次 LLM 调用前 dangling tool_calls 被补占位
 		// 防止历史会话（崩溃/cancel 后）发送 dangling tool_calls 给 LLM
 		// 使用自定义 PatchedContentGenerator，把"工具未完成"信息以更友好的
@@ -192,9 +199,10 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "SQLAgent",
 		Description: "专业 SQL 助手，支持跨库查询、多 Schema 数据组合分析、数据导入导出和报告生成",
-		// 构造期的初始 Instruction 不携带表范围上下文（tableContext=nil）；
-		// RunStream 会在每次请求时按 req.TableContext 重新构建完整系统提示词
-		Instruction: buildSystemPrompt(connID, dbType, dbSchema, dbVersion, nil, scope, schemas, skillEnv != nil),
+		// Instruction 留空：系统提示词按请求动态构建，由 DynamicPromptMiddleware
+		// 在 BeforeAgent 阶段注入（见 promptmw.go）。避免构造期静态 Instruction
+		// 与运行期动态提示词双份发送、以及 tableContext 缺失导致的矛盾描述。
+		Instruction: "",
 		Model:       cm,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: coreTools},
@@ -227,7 +235,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		resolvedCtxTokens = defaultContextTokens
 	}
 
-	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, dbVersion: dbVersion, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW}, nil
+	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, dbVersion: dbVersion, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW, promptMW: promptMW}, nil
 }
 
 // buildShouldRetryFunc 构建 v0.9 ShouldRetry 决策函数。

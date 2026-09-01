@@ -127,7 +127,8 @@ type SQLAgent struct {
 	maxContextTokens int
 	cancelMu         sync.Mutex
 	cancelFuncs      map[string]adk.AgentCancelFunc // runID -> cancel
-	sessionSync      *SessionSyncMiddleware         // Eino v0.9 会话同步中间件
+	sessionSync      *SessionSyncMiddleware        // Eino v0.9 会话同步中间件
+	promptMW         *DynamicPromptMiddleware       // per-run 动态系统提示词中间件
 }
 
 // registerCancel 注册当前 run 的 cancelFunc。
@@ -247,10 +248,16 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		}
 	}
 
-	// 构建 Eino 消息列表
-	messages := []adk.Message{
-		&schema.Message{Role: schema.System, Content: sysPrompt},
+	// 通过动态提示词中间件注入（BeforeAgent 覆盖 Instruction）：
+	// 不再在输入消息中手动携带 System 消息，避免与 Instruction 双份注入。
+	// 必须在 sysPrompt 全部追加（历史引导/上传文件）完成后设置。
+	if a.promptMW != nil {
+		a.promptMW.SetPrompt(sysPrompt)
 	}
+	log.Printf("[Agent] 系统提示词已构建并注入 - len=%d\n", len(sysPrompt))
+
+	// 构建 Eino 消息列表：仅用户/助手/工具消息，系统提示词已由 promptMW 注入 Instruction
+	messages := make([]adk.Message, 0, len(allMsgs))
 	for _, msg := range allMsgs {
 		switch msg.Role {
 		case "user":
@@ -271,7 +278,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		}
 	}
 
-	log.Printf("[Agent] LLM 输入消息 - total=%d\n", len(messages))
+	log.Printf("[Agent] LLM 输入消息 - total=%d（系统提示词 %d 字符经由 Instruction 注入）\n", len(messages), len(sysPrompt))
 	for i, msg := range messages {
 		role := msg.Role
 		contentLen := len(msg.Content)

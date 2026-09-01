@@ -113,6 +113,49 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
 
     // ── 辅助方法 ──
 
+    /**
+     * 按分号拆分 SQL 语句，但忽略字符串字面量内的分号。
+     * 支持 '' 两个连续引号转义及反斜杠转义，避免 'DP;已支付' 这类
+     * 含分号的值把一条语句错误拆成两条。
+     */
+    function splitStatements(sql: string): string[] {
+        const statements: string[] = []
+        let current = ''
+        let quote: string | null = null
+        for (let i = 0; i < sql.length; i++) {
+            const ch = sql[i]
+            if (quote) {
+                current += ch
+                if (ch === '\\') {
+                    if (i + 1 < sql.length) {
+                        current += sql[i + 1]
+                        i++
+                    }
+                } else if (ch === quote) {
+                    // 两个连续引号是字符串内部的转义引号，字符串尚未结束
+                    if (i + 1 < sql.length && sql[i + 1] === quote) {
+                        current += sql[i + 1]
+                        i++
+                    } else {
+                        quote = null
+                    }
+                }
+            } else if (ch === "'" || ch === '"') {
+                quote = ch
+                current += ch
+            } else if (ch === ';') {
+                statements.push(current)
+                current = ''
+            } else {
+                current += ch
+            }
+        }
+        if (current.trim()) {
+            statements.push(current)
+        }
+        return statements
+    }
+
     function extractSqlStatements(sql: string): string[] {
         let cleanSql = sql.replace(/\/\*[\s\S]*?\*\//g, '')
         const lines = cleanSql.split('\n')
@@ -125,8 +168,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             cleanedLines.push(line.trimEnd())
         }
         cleanSql = cleanedLines.join('\n').trim()
-        return cleanSql
-            .split(';')
+        return splitStatements(cleanSql)
             .map((s: string) => s.trim())
             .filter((s: string) => s.length > 0)
     }
@@ -177,7 +219,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
 
     function checkSql(sql: string) {
         let hasInvalid = false
-        const sqlArr = sql.split(';')
+        const sqlArr = splitStatements(sql)
         for (let i = 0; i < sqlArr.length; i++) {
             const sqlLowerCase = sqlArr[i].toLowerCase().trimStart()
             if (

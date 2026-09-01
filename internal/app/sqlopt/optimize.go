@@ -313,8 +313,9 @@ func OptimizeSQLStream(c *gin.Context) {
 	})
 
 	userPrompt := fmt.Sprintf("请分析并优化以下 SQL：\n\n```sql\n%s\n```", sqlStr)
+	// 系统提示词已通过 AgentConfig.Instruction 注入（ADK 会自动转为 System 消息），
+	// 这里只需传入用户消息，避免双份系统提示词
 	messages := []adk.Message{
-		&schema.Message{Role: schema.System, Content: sysPrompt},
 		&schema.Message{Role: schema.User, Content: userPrompt},
 	}
 

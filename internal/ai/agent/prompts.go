@@ -43,17 +43,17 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 8. **结果验证**：检查结果合理性（行数、数值范围、NULL），异常时先排查 SQL 再输出
 `)
 	if skillAvailable {
-		sb.WriteString(`9. **导出工具**：Word/PPT 报告用 export_analysis_docx / export_ppt（模板驱动专业版）；需要更细粒度自定义（sections/blocks）时用 skill 工具加载 export-word/export-ppt 技能；HTML 报告直接用 export_html
+		sb.WriteString(`9. **导出工具**：报告导出用 export_analysis_docx / export_ppt / export_html（优先 content 模式）；需更细粒度自定义时先调 skill 工具加载对应技能。完整决策路径见 Agents.md
 `)
 	} else {
-		sb.WriteString(`9. **导出工具**：Word/PPT 报告用 export_analysis_docx / export_ppt；HTML 报告用 export_html
+		sb.WriteString(`9. **导出工具**：报告导出用 export_analysis_docx / export_ppt / export_html（优先 content 模式，避免重复查询）
 `)
 	}
 	sb.WriteString(`10. **禁止猜测表名**：用户未指定时必须先调 list_tables 通过注释判断目标表
 11. **写操作自动确认**：说明意图后立即调用 exec_sql，系统自动推送前端确认弹窗
 `)
 
-	// ─── 禁止行为（利用负面示例强化约束）───
+	// ─── 禁止行为（利用负面示例强化约束；方言禁用语法见下方「SQL 规范」对照表，不在此重复）───
 	sb.WriteString(`
 ## ❌ 禁止行为（违反将被系统拦截）
 `)
@@ -103,17 +103,16 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 	sb.WriteString(`
 ## 错误恢复
 1. 仔细阅读错误信息和 recovery_hint
-2. 检查方言兼容性
+2. 检查方言兼容性（对照下方禁用语法表）
 3. 调整 SQL 后重试，最多 3 次
 4. 3 次均失败 → 向用户解释原因并建议替代方案
-- 同一错误出现 2 次 → 禁止相同参数重试，换策略或告知用户
 `)
 
 	// ─── 迭代效率（精简版）───
 	sb.WriteString(`
 ## 迭代效率（上限 ` + fmt.Sprint(maxIterations) + ` 次）
 1. get_table_schema 一次传入所有表，不逐表查
-2. 同一错误出现 2 次 → 停止重试，换策略
+2. 同一错误出现 2 次 → 禁止相同参数重试，换策略或告知用户
 3. 能用一条 JOIN 完成的不拆多次单表查询
 4. 已有结果时优先分析，不重复查询
 5. 接近上限（≥ ` + fmt.Sprint(maxIterations*7/10) + ` 次）→ 立即整合已有结果输出
@@ -359,27 +358,15 @@ func getDialectSpec(dbType string) string {
 	}
 }
 
-// getForbiddenBehaviors 返回按数据库类型定制的禁止行为列表
+// getForbiddenBehaviors 返回禁止行为列表。
+// 方言禁用语法不在此重复——已由 getDialectSpec 的「禁用语法对照表」集中呈现，
+// 且方言预检会在程序层面拦截，提示词中只需保留一份对照表。
 func getForbiddenBehaviors(dbType string) string {
-	common := `- 禁止不调 get_table_schema 直接猜测字段名
+	return `- 禁止不调 get_table_schema 直接猜测字段名
 - 禁止对未确认数据执行导出
 - 禁止在同一条 SQL 中引用不同连接的 schema
 - 禁止连续 2 次用相同参数重试失败的工具调用
 `
-	switch strings.ToLower(dbType) {
-	case "mysql", "mariadb":
-		return common + `- 禁止使用 PERCENTILE_CONT、STRING_AGG、LISTAGG、MEDIAN、DATE_TRUNC
-- 禁止用 ` + "||" + ` 连接字符串（用 CONCAT）
-`
-	case "oracle":
-		return common + `- 禁止使用反引号、GROUP_CONCAT、IFNULL、LIMIT
-`
-	case "sqlite":
-		return common + `- 禁止使用 PERCENTILE_CONT、STRING_AGG、DATE_FORMAT
-`
-	default:
-		return common
-	}
 }
 
 // ──────────────────────────────────────────────
