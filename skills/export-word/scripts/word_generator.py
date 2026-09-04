@@ -23,7 +23,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from docxtpl import DocxTemplate
@@ -32,7 +32,7 @@ from docxtpl import DocxTemplate
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "lib"))
 
 from chart_common import LightChartStyle, create_chart  # noqa: E402
-from md_blocks import markdown_to_sections, normalize_sections  # noqa: E402
+from md_blocks import markdown_to_sections, normalize_sections, parse_inline_segments  # noqa: E402
 
 _CHART_STYLE = LightChartStyle()
 
@@ -59,6 +59,79 @@ class Theme:
 def _set_ea(run, typeface='微软雅黑'):
     run.font.name = typeface
     run._element.rPr.rFonts.set(qn('w:eastAsia'), typeface)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 后处理：行内 Markdown → 真实格式（**加粗** / *斜体* / `代码`）
+# ═══════════════════════════════════════════════════════════════
+
+# 模板代码块段落特征：pPr 带浅灰底纹（见 report_template.docx 中 {{ line }} 段）
+_CODE_SHADING_FILL = "F5F5F5"
+
+
+def _is_code_paragraph(p):
+    pPr = p._p.pPr
+    if pPr is None:
+        return False
+    shd = pPr.find(qn('w:shd'))
+    return shd is not None and shd.get(qn('w:fill')) == _CODE_SHADING_FILL
+
+
+def _iter_all_paragraphs(container):
+    """遍历正文 + 表格（含嵌套表格）中的所有段落。"""
+    for p in container.paragraphs:
+        yield p
+    for tbl in container.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                yield from _iter_all_paragraphs(cell)
+
+
+def _apply_fmt(run, fmt):
+    if fmt == "bold":
+        run.font.bold = True
+    elif fmt == "italic":
+        run.font.italic = True
+    elif fmt == "code":
+        run.font.name = 'Courier New'
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+        run.font.highlight_color = WD_COLOR_INDEX.GRAY_25
+
+
+def _apply_inline_markdown(doc):
+    """把段落 run 文本中的行内 Markdown 标记拆分为真实格式的 run。
+
+    在渲染完成后执行：每个块级占位符渲染为单个 run，先按行内标记切段，
+    首段留在原 run，其余段深拷贝原 run（继承字号/颜色等）后逐段插入。
+    代码块段落（浅灰底纹）保持字面原文，不做转换。
+    """
+    from copy import deepcopy
+    from docx.text.run import Run
+
+    for p in _iter_all_paragraphs(doc):
+        if _is_code_paragraph(p):
+            continue
+        for run in list(p.runs):
+            text = run.text
+            if ('*' not in text) and ('`' not in text):
+                continue
+            segs = parse_inline_segments(text)
+            if len(segs) == 1 and segs[0][1] == "normal":
+                continue
+            orig_r = deepcopy(run._r)  # 原始格式副本：普通段须还原为原始样式
+            first_text, first_fmt = segs[0]
+            run.text = first_text
+            if first_fmt != "normal":
+                _apply_fmt(run, first_fmt)
+            anchor = run._r
+            for seg_text, fmt in segs[1:]:
+                new_r = deepcopy(orig_r)
+                new_run = Run(new_r, p)
+                new_run.text = seg_text
+                if fmt != "normal":
+                    _apply_fmt(new_run, fmt)
+                anchor.addnext(new_r)
+                anchor = new_r
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -471,6 +544,7 @@ if __name__ == "__main__":
 
         _postprocess(doc, tables_map, images_map)
         _cleanup_empty_tags(doc)
+        _apply_inline_markdown(doc)
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)

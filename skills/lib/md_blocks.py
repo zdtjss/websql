@@ -151,6 +151,41 @@ def markdown_to_sections(md_text):
     return sections
 
 
+# ─── 行内 Markdown（**加粗** / *斜体* / `代码`） ────────────────
+
+# 依次匹配：**加粗** → `代码` → *斜体*；斜体要求首尾字符非空白且不与 ** 混淆
+_INLINE_MD_RE = re.compile(
+    r'\*\*(?!\s)(.+?)(?<!\s)\*\*'
+    r'|`([^`\n]+)`'
+    r'|(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)'
+)
+
+
+def parse_inline_segments(text):
+    """把行内 Markdown 解析为 [(文本, 格式)] 段列表，格式 ∈ normal|bold|italic|code。
+
+    无任何行内标记时返回 [(原文, "normal")]。
+    """
+    text = str(text)
+    segs = []
+    pos = 0
+    for m in _INLINE_MD_RE.finditer(text):
+        if m.start() > pos:
+            segs.append((text[pos:m.start()], "normal"))
+        if m.group(1) is not None:
+            segs.append((m.group(1), "bold"))
+        elif m.group(2) is not None:
+            segs.append((m.group(2), "code"))
+        else:
+            segs.append((m.group(3), "italic"))
+        pos = m.end()
+    if not segs:
+        return [(text, "normal")]
+    if pos < len(text):
+        segs.append((text[pos:], "normal"))
+    return segs
+
+
 # ─── 块构造辅助 ─────────────────────────────────────────────────
 
 

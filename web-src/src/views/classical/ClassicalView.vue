@@ -673,6 +673,9 @@ function loadTree(node, resolve) {
   showTree({ connId: conn.id, key: node.data.type === 'dir' ? node.data.id : node.data.label, type: node.data.type, level: node.level })
     .then((resp) => {
       if (resp.data.data) {
+        // 懒加载目录时收集展开出的连接节点(目录下的连接不在 treeData 中)
+        cacheConnNames(resp.data.data)
+        patchTabConnNames()
         resolve(resp.data.data)
       }
     })
@@ -909,6 +912,9 @@ function refreshTree() {
   showTree({ connId: "", key: "", type: "dir", level: 0 })
     .then((resp) => {
       treeData.value = resp.data.data
+      // 收集一级节点中的连接名,并为缺少连接名的数据浏览页签补充(兼容旧存储恢复的页签)
+      cacheConnNames(treeData.value)
+      patchTabConnNames()
     })
     .finally(() => {
       treeLoading.value = false
@@ -995,12 +1001,37 @@ function openTableManager(node) {
   restoreTab()
 }
 
-function openDataBrowser({ connId, schema, tableName, dbType }) {
+// connId → 连接名 映射：树节点懒加载，目录下的连接不在 treeData 中，
+// 因此在每次加载/刷新树节点时收集连接节点，供页签 tooltip 等场景查询
+const connNameMap = {}
+
+function cacheConnNames(nodes) {
+  for (const n of nodes || []) {
+    if (n.type === 'conn' && n.id) {
+      connNameMap[n.id] = n.label
+    }
+    cacheConnNames(n.children)
+  }
+}
+
+function patchTabConnNames() {
+  editableTabs.value.forEach(tab => {
+    if (tab.tabId && tab.tabId.startsWith('databrowser-') && !tab.connName) {
+      tab.connName = connNameMap[tab.connId] || ''
+    }
+  })
+}
+
+function openDataBrowser({ connId, schema, tableName, dbType, connName }) {
   const tabId = 'databrowser-' + connId + '-' + schema + '-' + tableName
+  const resolvedConnName = connName || connNameMap[connId] || ''
   const existing = editableTabs.value.find(t => t.tabId === tabId)
   if (existing) {
     if (dbType && !existing.dbType) {
       existing.dbType = dbType
+    }
+    if (!existing.connName) {
+      existing.connName = resolvedConnName
     }
     editableTabsValue.value = tabId
     return
@@ -1009,6 +1040,7 @@ function openDataBrowser({ connId, schema, tableName, dbType }) {
     tabId: tabId,
     title: '📋 ' + tableName,
     connId: connId,
+    connName: resolvedConnName,
     schema: schema,
     tableName: tableName,
     dbType: dbType || dbSchemaProxy.getDbType(schema) || '',
@@ -1025,7 +1057,7 @@ function openDataBrowserFromNode(node) {
   const schema = schemaNode?.data.label || ''
   const tableName = node.label
   const dbType = schemaNode?.data.data?.dbType || dbSchemaProxy.getDbType(schema) || ''
-  openDataBrowser({ connId, schema, tableName, dbType })
+  openDataBrowser({ connId, schema, tableName, dbType, connName: conn.label })
 }
 
 function openTableManagerFromChild({ connId, schema, schemaPath }) {

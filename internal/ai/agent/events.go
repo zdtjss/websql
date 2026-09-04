@@ -203,7 +203,7 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 					break
 				}
 				chunkIdx++
-				contentLen := len(chunk.Content)
+				/*contentLen := len(chunk.Content)
 				reasoningLen := len(chunk.ReasoningContent)
 				tcCount := len(chunk.ToolCalls)
 				if chunkIdx <= 5 || contentLen > 0 || reasoningLen > 0 || tcCount > 0 || chunkIdx%20 == 0 {
@@ -211,9 +211,9 @@ func (a *SQLAgent) processEvents(iter *adk.AsyncIterator[*adk.AgentEvent], flush
 					if len(contentPreview) > 80 {
 						contentPreview = strutil.TruncateBytes(contentPreview, 80) + "..."
 					}
-					log.Printf("[Agent] MessageStream chunk[%d] - contentLen=%d, reasoningLen=%d, toolCalls=%d, content=%q\n",
-						chunkIdx, contentLen, reasoningLen, tcCount, contentPreview)
-				}
+					 log.Printf("[Agent] MessageStream chunk[%d] - contentLen=%d, reasoningLen=%d, toolCalls=%d, content=%q\n",
+					chunkIdx, contentLen, reasoningLen, tcCount, contentPreview)
+				}*/
 				if chunk.ReasoningContent != "" {
 					flush(StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
 				}

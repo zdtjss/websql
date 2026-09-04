@@ -3,26 +3,35 @@
     <div class="ai-sql-panel-container">
       <div class="container">
         <!-- 会话历史消息 -->
-        <ChatMessageList
-          ref="msgListRef"
-          :visible-messages="chatHistory.visibleChatHistory.value"
-          :hidden-msg-count="chatHistory.hiddenMsgCount.value"
-          :loading="loading"
-          :thinking-text="chatStream.thinkingText.value"
-          :thinking-html="chatStream.thinkingHtml.value"
-          :streaming-content="chatStream.streamingContent.value"
-          :streaming-html="chatStream.streamingHtml.value"
-          :streaming-exec-content="streamingExecContent"
-          :streaming-exec-html="chatStream.streamingExecHtml.value"
-          :retrying-msg="chatStream.retryingMsg.value"
-          :can-retry="chatStream.canRetryMessage"
-          :get-cached-html="mdRenderer.getCachedHtml"
-          :highlight-sql="mdRenderer.highlightSql"
-          @show-all="chatHistory.showAllHistory.value = true"
-          @toggle-thinking="chatStream.toggleThinking"
-          @copy="chatStream.copyMessage"
-          @retry="chatStream.retryAssistantMessage"
-        />
+        <div class="msg-list-wrapper">
+          <ChatMessageList
+            ref="msgListRef"
+            :visible-messages="chatHistory.visibleChatHistory.value"
+            :hidden-msg-count="chatHistory.hiddenMsgCount.value"
+            :loading="loading"
+            :thinking-text="chatStream.thinkingText.value"
+            :thinking-html="chatStream.thinkingHtml.value"
+            :streaming-content="chatStream.streamingContent.value"
+            :streaming-html="chatStream.streamingHtml.value"
+            :streaming-exec-content="streamingExecContent"
+            :streaming-exec-html="chatStream.streamingExecHtml.value"
+            :retrying-msg="chatStream.retryingMsg.value"
+            :can-retry="chatStream.canRetryMessage"
+            :get-cached-html="mdRenderer.getCachedHtml"
+            :highlight-sql="mdRenderer.highlightSql"
+            @show-all="chatHistory.showAllHistory.value = true"
+            @toggle-thinking="chatStream.toggleThinking"
+            @copy="chatStream.copyMessage"
+            @retry="chatStream.retryAssistantMessage"
+          />
+          <!-- 悬浮「回到底部」按钮：用户上滚离开底部时显示，AI 输出中带新消息红点 -->
+          <Transition name="fade-up">
+            <div v-if="showBackToBottom" class="back-to-bottom" title="回到底部并继续跟随" @click="scrollToBottom(true)">
+              <span v-if="loading" class="new-msg-dot"></span>
+              <el-icon :size="16"><Bottom /></el-icon>
+            </div>
+          </Transition>
+        </div>
 
         <!-- 内联 SQL 确认区域 -->
         <SqlConfirmDialog
@@ -311,7 +320,7 @@ import { useMarkdownRenderer } from './composables/useMarkdownRenderer'
 import { useChatHistory } from './composables/useChatHistory'
 import { useSqlConfirm } from './composables/useSqlConfirm'
 import { useChatStream, type UploadedExcel } from './composables/useChatStream'
-import { BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -399,6 +408,11 @@ let doRenderMermaidBlocksFn = async (_scroll?: boolean): Promise<void> => { }
 let resetCurrentSessionFn = (_showMsg?: boolean): void => { }
 
 // ── 辅助函数 ──
+/** 贴底状态：true 时流式内容更新自动滚动到底部；用户手动上滚后解除，发起新提问时恢复 */
+const stickToBottom = ref(true)
+/** 是否显示悬浮「回到底部」按钮（用户已离开底部） */
+const showBackToBottom = computed(() => !stickToBottom.value)
+
 /** 判断用户是否已滚动到底部附近（80px 容差） */
 function isNearBottom(): boolean {
   const el = msgContainer.value
@@ -406,11 +420,21 @@ function isNearBottom(): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 80
 }
 
+/**
+ * 滚动事件处理：同步贴底状态。
+ * 用户上滚离开底部 → 解除自动滚动；滚回底部（滚轮/拖滚动条/键盘/触屏）→ 自动恢复。
+ * 程序滚动到底部时同样触发本事件，此时必然 near-bottom，状态保持 true，不会误判。
+ */
+function handleMsgScroll(): void {
+  stickToBottom.value = isNearBottom()
+}
+
 function scrollToBottom(force?: boolean): void {
+  if (force) stickToBottom.value = true
   nextTick(() => {
-    if (msgContainer.value && (force || isNearBottom())) {
-      msgContainer.value.scrollTop = msgContainer.value.scrollHeight
-    }
+    const el = msgContainer.value
+    if (!el || (!force && !stickToBottom.value)) return
+    el.scrollTop = el.scrollHeight
   })
 }
 
@@ -979,12 +1003,14 @@ function attachMsgContainerEvents(el: HTMLElement | null): void {
   if (!el || el === _prevMsgEl) return
   detachMsgContainerEvents(_prevMsgEl)
   _prevMsgEl = el
+  el.addEventListener('scroll', handleMsgScroll, { passive: true })
   el.addEventListener('wheel', mdRenderer.handleMermaidWheel, { passive: false })
   el.addEventListener('mousedown', mdRenderer.handleMermaidMouseDown)
   el.addEventListener('mousedown', mdRenderer.handleMermaidResizeDown)
 }
 function detachMsgContainerEvents(el: HTMLElement | null): void {
   if (!el) return
+  el.removeEventListener('scroll', handleMsgScroll)
   el.removeEventListener('wheel', mdRenderer.handleMermaidWheel)
   el.removeEventListener('mousedown', mdRenderer.handleMermaidMouseDown)
   el.removeEventListener('mousedown', mdRenderer.handleMermaidResizeDown)
@@ -1082,6 +1108,70 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+/* 消息列表包裹层：承载贴底跟随的悬浮按钮 */
+.msg-list-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* 悬浮「回到底部」按钮 */
+.back-to-bottom {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-primary);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  color: var(--text-secondary, #606266);
+  transition: color 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+
+.back-to-bottom:hover {
+  color: var(--accent-color, #007acc);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0, 122, 204, 0.25);
+}
+
+/* AI 输出中且用户已离开底部时的新消息提示红点 */
+.new-msg-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--el-color-danger, #f56c6c);
+  animation: msg-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes msg-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* 悬浮按钮出入场动画 */
+.fade-up-enter-active,
+.fade-up-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.fade-up-enter-from,
+.fade-up-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 /* 登录按钮容器 - 固定在左下角 */
