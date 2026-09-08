@@ -262,12 +262,12 @@ func IsAlphaNumeric(str string) bool {
 }
 
 func page(dbtype string, sql string) string {
-	if dbtype == "oracle" {
-		return "select a.* from (" + sql + ") a where rownum <= :1"
-	} else if dbtype == "mysql" {
-		return sql + " limit ?"
-	}
-	return sql
+    if dbtype == "oracle" {
+            return "select a.* from (" + sql + ") a where rownum <= :1"
+    } else if dbtype == "mysql" || dbtype == "mariadb" || dbtype == "sqlite" {
+            return sql + " limit ?"
+    }
+    return sql
 }
 
 func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {

@@ -48,6 +48,8 @@ def markdown_to_sections(md_text):
     返回 [{title, level, blocks}]：
       - `#`~`###` 行 → 新节（title/level）
       - `####` 及以上 → 节内 subheading block
+      - `---` 等分隔线 → 跳过
+      - `> ` 引用行 → 剥离前缀后按普通段落处理
       - `- ` / `* ` / 编号项 → bullets block（items 列表）
       - ``` 代码块 → code block（lines 列表）
       - `|` 表格块 → table block（headers/rows）
@@ -72,6 +74,20 @@ def markdown_to_sections(md_text):
     i, n = 0, len(lines)
     while i < n:
         stripped = lines[i].rstrip().strip()
+
+        # 引用块：剥离 "> " 前缀，内容按普通段落解析（行内格式由渲染层处理）
+        while stripped.startswith(">"):
+            stripped = stripped[1:].lstrip()
+        if not stripped:
+            flush_paras()
+            flush_bullets()
+            i += 1
+            continue
+
+        # 分隔线（--- / *** / ___）：跳过不渲染
+        if re.fullmatch(r'([-*_])\s*(?:\1\s*){2,}', stripped):
+            i += 1
+            continue
 
         # 代码块
         if stripped.startswith("```"):
@@ -129,13 +145,6 @@ def markdown_to_sections(md_text):
         if m:
             flush_paras()
             pending_bullets.append(m.group(2))
-            i += 1
-            continue
-
-        # 空行
-        if not stripped:
-            flush_paras()
-            flush_bullets()
             i += 1
             continue
 
