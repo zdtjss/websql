@@ -171,6 +171,22 @@ func IsDML(sql string) bool {
 		strings.HasPrefix(upper, "DELETE FROM")
 }
 
+// ValidateNoFileSideEffects 仅执行「文件/权限副作用」危险模式检查，不校验语句类型。
+//
+// 用途：AI Agent 的 exec_sql 工具已在上层做语句类型白名单（DDL/DML 分别走 ValidateDDL/
+// ValidateDML），此处对**所有**语句统一拦截读写文件、加载数据、权限变更等副作用写法
+// （SELECT ... INTO OUTFILE、LOAD DATA、LOAD_FILE、GRANT 等），确保 AI 路径与
+// 同步/备份/建模复用同一份黑名单，避免规则漂移。
+func ValidateNoFileSideEffects(sql string) error {
+	upper := normalize(sql)
+	for _, d := range dmlDangerousPatterns {
+		if strings.Contains(upper, d) {
+			return fmt.Errorf("SQL包含危险操作: %s", d)
+		}
+	}
+	return nil
+}
+
 // checkDangerous 检查危险模式
 func checkDangerous(upper string) error {
 	for _, d := range dangerousPatterns {

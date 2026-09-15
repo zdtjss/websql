@@ -28,8 +28,11 @@ type ExportHTMLOutput struct {
 }
 
 // NewExportHTMLFunc 创建 HTML 导出工具函数
-func NewExportHTMLFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportHTMLInput) (*ExportHTMLOutput, error) {
-	return func(ctx context.Context, input *ExportHTMLInput) (*ExportHTMLOutput, error) {
+func NewExportHTMLFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportHTMLInput) (*ExportHTMLOutput, error) {
+	return func(ctx context.Context, input *ExportHTMLInput) (out *ExportHTMLOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_html", start, err) }()
+
 		var markdownContent string
 
 		if input.Content != "" {

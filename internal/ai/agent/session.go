@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -246,6 +247,13 @@ func (s *Session) scheduleSave() {
 	}
 	s.pendingSave = true
 	s.debounceTimer = time.AfterFunc(sessionDebounceInterval, func() {
+		// 定时器回调运行在独立 goroutine 中，panic 会直接终止进程，
+		// 因此这里必须自兜底（DB 未初始化/连接被替换等异常场景）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[SessionStore] debounce 保存 panic 已恢复 - session=%s, err=%v\n", s.ID, r)
+			}
+		}()
 		s.mu.Lock()
 		s.pendingSave = false
 		_ = s.doSave()
@@ -391,11 +399,15 @@ func (s *Session) doSave() error {
 	if ctx == "" {
 		ctx = "{}"
 	}
-	_, err = getDB().Exec(`
+	db := getDBOrNil()
+	if db == nil {
+		return nil // 管理库不可用（启动期/测试环境）：跳过持久化，不阻断对话
+	}
+	_, err = db.Exec(`
 		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ? WHERE id = ?
 	`, string(data), title, ctx, time.Now(), s.ID)
 	if err != nil && dberr.IsColumnNotExist(err) {
-		_, err = getDB().Exec(`
+		_, err = db.Exec(`
 			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
 		`, string(data), title, time.Now(), s.ID)
 	}
@@ -418,16 +430,14 @@ const (
 type SessionStore struct {
 	mu      sync.Mutex
 	cache   map[string]*Session
-	cancels map[string]context.CancelFunc
 	stopCh  chan struct{}
 	stopped sync.Once
 }
 
 func NewSessionStore() (*SessionStore, error) {
 	ss := &SessionStore{
-		cache:   make(map[string]*Session),
-		cancels: make(map[string]context.CancelFunc),
-		stopCh:  make(chan struct{}),
+		cache:  make(map[string]*Session),
+		stopCh: make(chan struct{}),
 	}
 	safego.GoWithName("session-clean", ss.cleanLoop)
 	return ss, nil
@@ -480,12 +490,34 @@ func (s *SessionStore) Close() {
 	})
 }
 
+// ErrSessionForbidden 表示会话不存在或不属于当前用户。
+// 两种情况返回同一错误，避免通过响应差异枚举他人会话 ID。
+var ErrSessionForbidden = errors.New("会话不存在或无权访问")
+
+// sessionBelongsTo 判断会话归属是否匹配请求用户。
+// 存量数据 user_id 为空时记为“无归属”，仅告警并放行（避免历史会话全部不可用），
+// 其余情况严格比对，防止跨用户读写/删除会话。
+func sessionBelongsTo(ownerID, requesterID string) bool {
+	if requesterID == "" {
+		return false
+	}
+	if ownerID == "" {
+		log.Printf("[SessionStore] 会话缺少归属用户，按兼容策略放行 - requester=%s\n", requesterID)
+		return true
+	}
+	return ownerID == requesterID
+}
+
 // GetOrCreate 获取或创建会话
 func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if sess, ok := s.cache[id]; ok {
+		if !sessionBelongsTo(sess.UserID, userID) {
+			log.Printf("[SessionStore] 拒绝跨用户访问缓存会话 - id=%s, owner=%s, requester=%s\n", id, sess.UserID, userID)
+			return nil, ErrSessionForbidden
+		}
 		sess.mu.Lock()
 		sess.lastAccess = time.Now()
 		sess.mu.Unlock()
@@ -509,6 +541,10 @@ func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 			log.Printf("[SessionStore] 创建会话记录失败 - id=%s, err=%v\n", id, err)
 		}
 	} else {
+		if !sessionBelongsTo(sess.UserID, userID) {
+			log.Printf("[SessionStore] 拒绝跨用户加载会话 - id=%s, owner=%s, requester=%s\n", id, sess.UserID, userID)
+			return nil, ErrSessionForbidden
+		}
 		sess.lastAccess = time.Now()
 	}
 
@@ -554,8 +590,30 @@ func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
 	return metas, nil
 }
 
-// Delete 删除会话
-func (s *SessionStore) Delete(id string) error {
+// checkOwnership 校验会话归属：缓存命中时用内存态判断，未命中时回源数据库。
+// 返回 ErrSessionForbidden 表示会话不存在或不属于该用户。
+func (s *SessionStore) checkOwnership(id, userID string) error {
+	s.mu.Lock()
+	sess, ok := s.cache[id]
+	s.mu.Unlock()
+	if ok && sessionBelongsTo(sess.UserID, userID) {
+		return nil
+	}
+	sessDB, err := getSessionByID(id)
+	if err != nil {
+		return err
+	}
+	if sessDB == nil || !sessionBelongsTo(sessDB.UserID, userID) {
+		return ErrSessionForbidden
+	}
+	return nil
+}
+
+// Delete 删除会话（仅允许删除归属 userID 的会话）
+func (s *SessionStore) Delete(id, userID string) error {
+	if err := s.checkOwnership(id, userID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if sess, ok := s.cache[id]; ok {
 		sess.Cancel()
@@ -565,29 +623,11 @@ func (s *SessionStore) Delete(id string) error {
 	return deleteSessionInDB(id)
 }
 
-func (s *SessionStore) RegisterCancel(id string, cancel context.CancelFunc) {
-	s.mu.Lock()
-	s.cancels[id] = cancel
-	s.mu.Unlock()
-}
-
-func (s *SessionStore) Cancel(id string) {
-	s.mu.Lock()
-	if cancel, ok := s.cancels[id]; ok {
-		cancel()
-		delete(s.cancels, id)
+// GetDetail 获取会话详情（含完整消息和上下文），仅允许读取归属 userID 的会话
+func (s *SessionStore) GetDetail(id, userID string) (*SessionDetail, error) {
+	if err := s.checkOwnership(id, userID); err != nil {
+		return nil, err
 	}
-	s.mu.Unlock()
-}
-
-func (s *SessionStore) UnregisterCancel(id string) {
-	s.mu.Lock()
-	delete(s.cancels, id)
-	s.mu.Unlock()
-}
-
-// GetDetail 获取会话详情（含完整消息和上下文）
-func (s *SessionStore) GetDetail(id string) (*SessionDetail, error) {
 	sessDB, err := getSessionByID(id)
 	if err != nil {
 		return nil, err

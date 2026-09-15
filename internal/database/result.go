@@ -71,7 +71,9 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) ([]map[string]any, error) {
 	return dataMaps, nil
 }
 
-func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) ([]map[string]any, error) {
+// GetResultRowsForExport 读取全部结果行并转换为 map 列表。
+// limit > 0 时最多读取 limit 行（用于导出场景的行数上限保护，防止大表导出打爆内存）。
+func GetResultRowsForExport(dbtype string, rows *sqlx.Rows, limit int) ([]map[string]any, error) {
 	dataMaps := make([]map[string]any, 0)
 	cts, err := rows.ColumnTypes()
 	if err != nil {
@@ -88,6 +90,9 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows) ([]map[string]any, e
 	count := len(columns)
 
 	for rows.Next() {
+		if limit > 0 && len(dataMaps) >= limit {
+			break
+		}
 		values, valuesPoints := make([]any, count), make([]any, count)
 
 		for i := range count {

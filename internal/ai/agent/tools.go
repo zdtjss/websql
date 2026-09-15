@@ -16,18 +16,34 @@ import (
 	"websql/internal/database"
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/jmoiron/sqlx"
 )
 
 var validTableNameRegex = regexp.MustCompile("^[a-zA-Z0-9_`\".]+$")
 
-var dangerousTableNamePatterns = []string{
-	";", "--", "/*", "*/", "'", "\\",
-	"xp_", "sp_", "0x", "char(", "exec(",
-	"union", "select", "insert", "update", "delete",
-	"drop", "alter", "create", "truncate", "exec",
+// 工具返回量的服务端上限（此前完全依赖 reduction/summarization 事后兜底）
+const (
+	// maxListTables 单次 list_tables 返回的表数量上限
+	maxListTables = 500
+	// maxSchemaOutputChars 单次 get_table_schema 返回的 DDL 字符上限
+	maxSchemaOutputChars = 60_000
+	// maxMarkdownFileChars 上传 Markdown 文档单次读取的字符上限
+	maxMarkdownFileChars = 30_000
+)
+
+// dangerousTableTokens 表名中禁止出现的 SQL 关键字。
+// 按「标识符段」精确匹配（而非子串匹配），避免把正常表名误判为非法，
+// 例如 user_selection（含 select 子串）、product_updates（含 update 子串）都应合法。
+var dangerousTableTokens = map[string]bool{
+	"union": true, "select": true, "insert": true, "update": true,
+	"delete": true, "drop": true, "alter": true, "create": true,
+	"truncate": true, "exec": true, "merge": true, "grant": true,
 }
+
+// dangerousTableSubstrings 与标识符段无关的危险片段（十六进制字面量等）
+var dangerousTableSubstrings = []string{"0x"}
 
 func isValidTableName(name string) bool {
 	name = strings.TrimSpace(name)
@@ -35,8 +51,19 @@ func isValidTableName(name string) bool {
 		return false
 	}
 	lower := strings.ToLower(name)
-	for _, pattern := range dangerousTableNamePatterns {
+	for _, pattern := range dangerousTableSubstrings {
 		if strings.Contains(lower, pattern) {
+			return false
+		}
+	}
+	// 系统过程前缀（SQL Server 遗留约定），仅前缀匹配，避免误伤 tsp_log 这类正常表名
+	if strings.HasPrefix(lower, "xp_") || strings.HasPrefix(lower, "sp_") {
+		return false
+	}
+	// 逐段比对（支持 schema.table / `schema`.`table`），段内精确匹配关键字
+	normalized := strings.NewReplacer("`", " ", `"`, " ", ".", " ").Replace(lower)
+	for _, seg := range strings.Fields(normalized) {
+		if dangerousTableTokens[seg] {
 			return false
 		}
 	}
@@ -74,8 +101,10 @@ type ListTablesInput struct {
 	ConnID string `json:"connId,omitempty"`
 }
 type ListTablesOutput struct {
-	Tables []TableInfo `json:"tables"`
-	Count  int         `json:"count"`
+	Tables     []TableInfo `json:"tables"`
+	Count      int         `json:"count"`
+	TotalCount int         `json:"totalCount,omitempty"`
+	Truncated  bool        `json:"truncated,omitempty"`
 }
 type TableInfo struct {
 	TableName    string `json:"tableName"`
@@ -209,10 +238,11 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		}
 		sql := strings.TrimSpace(input.SQL)
 		stripped := sqlutil.StripSQLComments(sql)
-		upper := strings.ToUpper(stripped)
-		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "SHOW") &&
-			!strings.HasPrefix(upper, "DESCRIBE") && !strings.HasPrefix(upper, "EXPLAIN") &&
-			!strings.HasPrefix(upper, "WITH") {
+		// 语句类型白名单：用词级首关键字判断（而非前缀匹配），
+		// 避免 "SELECTX ..." 之类被误判为合法 SELECT
+		switch sqlutil.FirstKeyword(sql) {
+		case "SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH":
+		default:
 			err := errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, err
@@ -233,17 +263,15 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), errMsg)
 			return nil, errors.New(errMsg)
 		}
-		if strings.HasPrefix(upper, "WITH") {
-			writeKW := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "REPLACE ", "MERGE "}
-			for _, kw := range writeKW {
-				if strings.Contains(strings.ToUpper(stripped), kw) {
-					err := fmt.Errorf("query_data does not allow write operations (%s) in WITH, use exec_sql", strings.TrimSpace(kw))
-					recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
-					return nil, err
-				}
+		if sqlutil.FirstKeyword(sql) == "WITH" {
+			// 词级扫描写关键字：可识别 CTE 包裹的写操作，且不受空白字符变体（制表符/换行）影响
+			if sqlutil.HasWriteKeyword(stripped) {
+				err := errors.New("query_data does not allow write operations in WITH, use exec_sql")
+				recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
+				return nil, err
 			}
 		}
-		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
+		if sqlutil.FirstKeyword(sql) == "SELECT" || sqlutil.FirstKeyword(sql) == "WITH" {
 			sql = applyRowLimit(sql, conn.DriverName(), 500)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -276,7 +304,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 					altSQL := qualifyBareTableNames(altRawSQL, altConn.DriverName(), altSchema)
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
-					if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
+					if kw := sqlutil.FirstKeyword(sql); kw == "SELECT" || kw == "WITH" {
 						altSQL = applyRowLimit(altSQL, altConn.DriverName(), 500)
 					}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, altSQL)
@@ -309,16 +337,18 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 	}
 }
 
-func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affectedRows, execTimeMs int, errorMsg string) {
+// recordToolAudit 通用 Agent 工具审计出口：ToolName / SQLType 由调用方指定，
+// 风险等级统一为 low（只读类工具）。
+func recordToolAudit(auditCtx *ExecAuditCtx, toolName, sqlType, sql, connID, status string, affectedRows, execTimeMs int, errorMsg string) {
 	if auditCtx == nil {
 		return
 	}
 	connName, schemaName := connpkg.GetConnInfo(connID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "agent",
-		ToolName:     "query_data",
+		ToolName:     toolName,
 		SQLText:      sql,
-		SQLType:      "SELECT",
+		SQLType:      sqlType,
 		RiskLevel:    "low",
 		Status:       status,
 		ConnID:       connID,
@@ -331,6 +361,11 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 		ExecTimeMs:   execTimeMs,
 		ErrorMsg:     errorMsg,
 	})
+}
+
+// recordQueryAudit 保持 query_data 既有审计行为不变（ToolName=query_data，SQLType=SELECT）。
+func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affectedRows, execTimeMs int, errorMsg string) {
+	recordToolAudit(auditCtx, "query_data", "SELECT", sql, connID, status, affectedRows, execTimeMs, errorMsg)
 }
 
 // tryAlternativeConn 在用户没有显式传 connId 时，尝试把 SQL 自动路由到其他连接。
@@ -599,7 +634,37 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 		sqlType := string(sqlutil.DetectSQLType(sql))
 		riskLevel := string(sqlutil.DetectRiskLevel(sql))
 
-		result, err := conn.ExecContext(ctx, sql)
+		// 多语句防护：写操作一次只允许一条语句，
+		// 防止模型在一次调用里夹带未经过审批确认的额外写操作
+		if sqlutil.ContainsMultipleStatements(sql) {
+			err := errors.New("exec_sql 不支持多语句执行（检测到分号分隔的多条SQL），请拆分为单条语句分别执行")
+			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			return nil, err
+		}
+
+		// 统一接入项目级 SQL 安全校验（与结构同步/备份恢复/建模同一份规则），
+		// 避免 AI 路径自成一套校验栈导致规则漂移
+		if err := sqlguard.ValidateNoFileSideEffects(sql); err != nil {
+			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			return nil, err
+		}
+		switch sqlutil.DetectSQLType(sql) {
+		case sqlutil.SQLTypeCreate, sqlutil.SQLTypeAlter, sqlutil.SQLTypeDrop:
+			if err := sqlguard.ValidateDDL(sql); err != nil {
+				recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+				return nil, fmt.Errorf("DDL 未通过安全校验：%w", err)
+			}
+		case sqlutil.SQLTypeInsert, sqlutil.SQLTypeUpdate, sqlutil.SQLTypeDelete:
+			if err := sqlguard.ValidateDML(sql); err != nil {
+				recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+				return nil, fmt.Errorf("DML 未通过安全校验：%w", err)
+			}
+		}
+
+		// 执行超时：与 query_data 对齐（60s），避免长事务/锁等待把 SSE 连接拖满 30 分钟
+		execCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		result, err := conn.ExecContext(execCtx, sql)
 		if err != nil {
 			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
 			return nil, fmt.Errorf("exec failed on conn=%s: %w", targetConnID, err)
@@ -730,6 +795,8 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef, userId 
 		for _, table := range input.Tables {
 			if !isValidTableName(table) {
 				logger.PrintErr(fmt.Errorf("invalid table name: %s", table))
+				// 显式反馈给模型，避免「无输出」导致模型误判为表不存在而反复尝试
+				fmt.Fprintf(&sb, "-- 表名 %q 非法，已跳过（仅允许字母/数字/下划线/点，且不得为 SQL 关键字，需用 `` 或 \"\" 包裹特殊名称）。\n\n", table)
 				continue
 			}
 			schemaName, tableName := splitSchemaTable(table, dbSchema)
@@ -741,6 +808,7 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef, userId 
 					msg += fmt.Sprintf("。可用 schema 名：%v", schemaNames)
 				}
 				logger.PrintErr(fmt.Errorf("%s", msg))
+				fmt.Fprintf(&sb, "-- 表 %q 所属连接不可用，已跳过。%s\n\n", table, msg)
 				continue
 			}
 
@@ -774,7 +842,14 @@ func NewSchemaFunc(connId, dbType, dbSchema string, schemas []SchemaRef, userId 
 			logger.PrintErr(fmt.Errorf("get schema failed %s: not found on any connection", table))
 			sb.WriteString(fallbackColumnInfo(tableConn, actualDBType, schemaName, tableName))
 		}
-		return &SchemaOutput{Schema: sb.String()}, nil
+		result := sb.String()
+		if utf8.RuneCountInString(result) > maxSchemaOutputChars {
+			runes := []rune(result)
+			log.Printf("[Tool:get_table_schema] 输出超过上限 %d 字符，已截断\n", maxSchemaOutputChars)
+			result = string(runes[:maxSchemaOutputChars]) +
+				fmt.Sprintf("\n\n...(结果过长，已截断至 %d 字符。请分批传入表名以获取完整结构)", maxSchemaOutputChars)
+		}
+		return &SchemaOutput{Schema: result}, nil
 	}
 }
 
@@ -847,7 +922,13 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef, use
 			tables = append(tables, ti)
 		}
 
-		return &ListTablesOutput{Tables: tables, Count: len(tables)}, nil
+		totalTables := len(tables)
+		truncated := totalTables > maxListTables
+		if truncated {
+			log.Printf("[Tool:list_tables] 表数量超过上限 %d，已截断 - total=%d\n", maxListTables, totalTables)
+			tables = tables[:maxListTables]
+		}
+		return &ListTablesOutput{Tables: tables, Count: len(tables), TotalCount: totalTables, Truncated: truncated}, nil
 	}
 }
 
@@ -931,12 +1012,18 @@ func NewReadFileDataFunc() func(ctx context.Context, input *ReadFileDataInput) (
 			return nil, err
 		}
 
-		// 文本类（Markdown）：不做数据量限制，返回全文
+		// 文本类（Markdown）：返回全文，但超过 maxMarkdownChars 时截断并明确告知模型
 		if upload.Type == "text" {
+			total := utf8.RuneCountInString(upload.Text)
+			text := upload.Text
+			if total > maxMarkdownFileChars {
+				text = string([]rune(upload.Text)[:maxMarkdownFileChars]) +
+					fmt.Sprintf("\n\n...(文档过长，仅返回前 %d 字符。如需后续内容请让用户在提问中指明要分析的章节)", maxMarkdownFileChars)
+			}
 			return &ReadFileDataOutput{
 				Type:      "text",
-				Text:      upload.Text,
-				CharCount: utf8.RuneCountInString(upload.Text),
+				Text:      text,
+				CharCount: total,
 			}, nil
 		}
 

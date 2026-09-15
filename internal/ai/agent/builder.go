@@ -156,7 +156,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		handlers = append(handlers, tsMiddleware)
 	}
 	handlers = append(handlers,
-		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool},
+		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool, ConnID: connID, Schemas: schemas},
 		&DangerousSQLApprovalMiddleware{},
 		&SkillGuardMiddleware{
 			Scope:    scope,
@@ -167,11 +167,17 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		},
 		&ToolErrorRecoveryMiddleware{},
 	)
+	resolvedCtxTokens := cfg.MaxContextTokens
+	if resolvedCtxTokens <= 0 {
+		resolvedCtxTokens = defaultContextTokens
+	}
+
 	// 替换自定义 ReductionMiddleware 为 eino 官方的 reduction 中间件
 	// 官方实现支持 Offload to File + 完整的 clear 策略，既能裁剪大结果，
 	// 又能保留流式语义（解决自实现 ReductionMiddleware "Recv 全部再切片"
 	// 破坏流式 UX 的问题）。
-	if reductionMW := buildEinoReductionMiddleware(); reductionMW != nil {
+	// clear 阈值与模型上下文窗口联动（见 buildEinoReductionMiddleware）。
+	if reductionMW := buildEinoReductionMiddleware(resolvedCtxTokens); reductionMW != nil {
 		handlers = append(handlers, reductionMW)
 	}
 	handlers = append(handlers, summarizationMW)
@@ -228,11 +234,6 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 
 	if sessions == nil {
 		sessions, _ = NewSessionStore()
-	}
-
-	resolvedCtxTokens := cfg.MaxContextTokens
-	if resolvedCtxTokens <= 0 {
-		resolvedCtxTokens = defaultContextTokens
 	}
 
 	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, dbVersion: dbVersion, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW, promptMW: promptMW}, nil

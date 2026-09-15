@@ -14,10 +14,23 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// containsDangerousSQL 判断 SQL（可能含多条语句）是否包含写操作。
+//
+// 判定策略：
+//  1. 以分号切分多语句，逐条判断首关键字是否为写关键字
+//     （词级匹配，`DROP\tTABLE` / `DELETE\nFROM` 均可命中）
+//  2. 首关键字为 WITH（CTE）的语句额外做整句写关键字扫描，
+//     防止 `WITH x AS (SELECT 1) DELETE FROM t` 这类 CTE 包裹的写操作绕过审批
 func containsDangerousSQL(sql string) bool {
 	for _, line := range strings.Split(sql, ";") {
 		line = strings.TrimSpace(line)
-		if line != "" && sqlutil.IsDangerousSQL(line) {
+		if line == "" {
+			continue
+		}
+		if sqlutil.IsDangerousSQL(line) {
+			return true
+		}
+		if sqlutil.FirstKeyword(line) == "WITH" && sqlutil.HasWriteKeyword(line) {
 			return true
 		}
 	}

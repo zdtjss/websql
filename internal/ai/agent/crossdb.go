@@ -861,5 +861,7 @@ func recordCrossDBJoinAudit(auditCtx *ExecAuditCtx, out *CrossDBJoinOutput, inpu
 		status = "failed"
 		errorMsg = runErr.Error()
 	}
-	recordQueryAudit(auditCtx, truncateForAudit(summary), connID, status, 0, int(time.Since(start).Milliseconds()), errorMsg)
+	// 跨库 join 是独立工具，必须与 query_data 区分（ToolName/SQLType 均不同），
+	// 否则审计上无法识别跨库关联行为。
+	recordToolAudit(auditCtx, "cross_db_join", "CROSS_DB_JOIN", truncateForAudit(summary), connID, status, 0, int(time.Since(start).Milliseconds()), errorMsg)
 }

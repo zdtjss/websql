@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	conn "websql/internal/app/conn"
 	appperm "websql/internal/app/permission"
@@ -22,6 +23,67 @@ type PermissionMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 	Scope     *PermissionScope
 	PermAgent tool.BaseTool
+	// ConnID / Schemas 为本次会话被授权的连接集合：
+	// 工具参数里的 connId 只允许命中「默认连接」或「会话选中的 schema 所属连接」，
+	// 避免模型（或提示注入）把查询切到未授权的连接上，而表/列校验仍按默认连接的 Scope 判定。
+	ConnID  string
+	Schemas []SchemaRef
+}
+
+// checkConnScope 校验工具参数中的 connId 是否在本次会话授权范围内。
+// 返回 nil 表示允许；否则返回拒绝原因。
+func (m *PermissionMiddleware) checkConnScope(args string) error {
+	if m.Scope.SkipChecks() || len(m.Schemas) == 0 && m.ConnID == "" {
+		return nil
+	}
+	raw := extractConnIDFromArgs(args)
+	if raw == "" {
+		return nil // 未指定 → 使用默认连接，必然在授权范围内
+	}
+	allowed := map[string]bool{}
+	if m.ConnID != "" {
+		allowed[strings.ToUpper(m.ConnID)] = true
+	}
+	// schema 名 → 连接 ID（与 tools.go 的 resolveConnID 同一规则）
+	schemaConn := map[string]string{}
+	for _, s := range m.Schemas {
+		if s.ConnID == "" {
+			continue
+		}
+		allowed[strings.ToUpper(s.ConnID)] = true
+		schemaConn[strings.ToUpper(s.Schema)] = s.ConnID
+	}
+	target := raw
+	if connID, ok := schemaConn[strings.ToUpper(raw)]; ok {
+		target = connID
+	}
+	if allowed[strings.ToUpper(target)] {
+		return nil
+	}
+	log.Printf("%s [拒绝] connId=%s 不在会话授权连接范围内（授权：%v）\n", m.logPrefix(), raw, keysOf(allowed))
+	return fmt.Errorf("连接 %s 不在本次会话授权范围内，请仅使用会话已选择的连接（%v）", raw, keysOf(allowed))
+}
+
+// extractConnIDFromArgs 从工具参数 JSON 中提取 connId（大小写兼容）。
+func extractConnIDFromArgs(args string) string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return ""
+	}
+	for _, key := range []string{"connId", "connID", "conn_id"} {
+		if v, ok := raw[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // BeforeModelRewriteState 在模型调用前根据权限动态过滤 ToolInfos（Eino v0.9 新增）。
@@ -35,12 +97,12 @@ func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, stat
 		return ctx, state, nil
 	}
 
-	// 如果不允许修改数据，从工具列表中移除写操作工具
+	// 如果不允许修改数据，从工具列表中移除写操作/命令执行工具
 	if !m.Scope.AllowModify {
 		filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
 		for _, ti := range state.ToolInfos {
-			if ti.Name == "exec_sql" {
-				log.Printf("%s [ToolInfos] 移除写操作工具 - tool=%s\n", m.logPrefix(), ti.Name)
+			if isPrivilegedWriteTool(ti.Name) {
+				log.Printf("%s [ToolInfos] 移除写操作/命令执行工具 - tool=%s\n", m.logPrefix(), ti.Name)
 				continue
 			}
 			filtered = append(filtered, ti)
@@ -53,6 +115,84 @@ func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, stat
 
 func (m *PermissionMiddleware) logPrefix() string {
 	return fmt.Sprintf("[PermMW] user=%s conn=%s", m.Scope.UserID, m.Scope.ConnID)
+}
+
+// privilegedWriteTools 需要「数据修改权限（AllowModify）」才能使用的工具。
+//
+// 除数据写入（exec_sql）外，还包括：
+//   - write_file / edit_file：任意文件落盘，可被提示注入用于写出恶意脚本或覆盖配置
+//   - execute：任意命令执行（Skills 的 python 渲染入口）
+//
+// 只读角色必须一并失去这些能力，否则可通过执行代码/写盘绕过数据权限约束。
+var privilegedWriteTools = map[string]bool{
+	"exec_sql":   true,
+	"write_file": true,
+	"edit_file":  true,
+	"execute":    true,
+}
+
+func isPrivilegedWriteTool(name string) bool {
+	return privilegedWriteTools[name]
+}
+
+// fsWriteTools 文件写入类工具：路径已由 export 包沙箱限制，但「写了什么文件」必须留痕，
+// 否则提示注入写出脚本/覆盖文件的行为在审计中不可见。
+var fsWriteTools = map[string]bool{"write_file": true, "edit_file": true}
+
+func isFsWriteTool(name string) bool {
+	return fsWriteTools[name]
+}
+
+// withFsWriteAudit 对文件写入类工具补审计记录（工具名 + 目标路径 + 成败 + 耗时）。
+func (m *PermissionMiddleware) withFsWriteAudit(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, opts ...tool.Option) (string, error) {
+	start := time.Now()
+	result, err := endpoint(ctx, args, opts...)
+	status, errMsg := "success", ""
+	if err != nil {
+		status, errMsg = "failed", err.Error()
+	}
+	connName, schemaName := conn.GetConnInfo(m.Scope.ConnID)
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:     "agent",
+		ToolName:   toolName,
+		SQLText:    extractFilePathFromArgs(args),
+		SQLType:    "FS_WRITE",
+		RiskLevel:  "medium",
+		Status:     status,
+		ConnID:     m.Scope.ConnID,
+		ConnName:   connName,
+		SchemaName: schemaName,
+		UserID:     m.Scope.UserID,
+		ErrorMsg:   errMsg,
+		ExecTimeMs: int(time.Since(start).Milliseconds()),
+	})
+	m.logAllow(toolName, "fs_write(audited)")
+	return result, err
+}
+
+// extractFilePathFromArgs 从文件工具参数中提取目标路径（兼容 filePath / file_path / path 三种命名）。
+// 解析失败时退化为参数前 200 字符，保证审计可读且不会把大段文件内容入库。
+func extractFilePathFromArgs(args string) string {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return strutil.TruncateBytes(args, 200)
+	}
+	for _, key := range []string{"filePath", "file_path", "path"} {
+		if v, ok := raw[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return strutil.TruncateBytes(args, 200)
+}
+
+// permErrorObjects 安全提取 PermissionError 携带的对象列表。
+// 使用 errors.As 而非裸类型断言，避免断言失败 panic 打断工具调用链路。
+func permErrorObjects(err error) []string {
+	var pe *PermissionError
+	if errors.As(err, &pe) {
+		return pe.Objects
+	}
+	return nil
 }
 
 func (m *PermissionMiddleware) logDeny(toolName, reason string, objects []string) {
@@ -93,11 +233,11 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
+		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
 			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
 			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 				return "", &PermissionError{
-					Message: "当前角色禁止修改数据，无法执行写操作",
+					Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
 					Objects: []string{},
 				}
 			}, nil
@@ -107,10 +247,10 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
+		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
 			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
 			return "", &PermissionError{
-				Message: "当前角色禁止修改数据，无法执行写操作",
+				Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
 				Objects: []string{},
 			}
 		}
@@ -126,7 +266,7 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.checkCrossDBJoinAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
-		case "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
+		case "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "skill":
 			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
@@ -137,6 +277,9 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			// 此处增加审计记录 + 间接危险命令检测
 			return m.checkExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
+			if isFsWriteTool(tCtx.Name) {
+				return m.withFsWriteAudit(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+			}
 			m.logAllow(tCtx.Name, "unmonitored_tool")
 			return endpoint(ctx, argumentsInJSON, opts...)
 		}
@@ -149,11 +292,11 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
 	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
+		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
 			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
 			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 				return nil, &PermissionError{
-					Message: "当前角色禁止修改数据，无法执行写操作",
+					Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
 					Objects: []string{},
 				}
 			}, nil
@@ -163,10 +306,10 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	}
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		if !m.Scope.AllowModify && tCtx.Name == "exec_sql" {
+		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
 			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
 			return nil, &PermissionError{
-				Message: "当前角色禁止修改数据，无法执行写操作",
+				Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
 				Objects: []string{},
 			}
 		}
@@ -175,7 +318,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return m.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "list_tables":
 			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
-		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_image", "export_analysis_docx", "export_ppt", "export_html":
+		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "skill":
 			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
@@ -337,6 +480,10 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 }
 
 func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	if err := m.checkConnScope(args); err != nil {
+		m.logDeny("query_data", err.Error(), nil)
+		return "", &PermissionError{Message: err.Error(), Objects: []string{}}
+	}
 	sql := m.extractSQLFromArgs(args)
 	if sql == "" {
 		return "", m.denyEmptySQL("query_data", args)
@@ -384,12 +531,54 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return "", m.buildPermError(decision)
 	}
 
-	m.logAllow("query_data", "agent")
+	// 双重验证：Permission Agent（LLM）允许后，追加程序化表级校验。
+	// 与 exec_sql 的 doubleCheckHighRiskExec 同一设计目的——防止 LLM 误判或
+	// 被 SQL 内嵌文本（注释/字面量）注入诱导放行导致越权读取。
+	if err := m.doubleCheckReadAccess(sql, tables); err != nil {
+		objects := permErrorObjects(err)
+		m.logDeny("query_data", "双重验证拦截(agent允许但程序化拒绝)", objects)
+		m.auditPermDenied("query_data", "double_check_blocked: "+err.Error(), objects)
+		return "", err
+	}
+
+	m.logAllow("query_data", "agent+double_check")
 	result, err := endpoint(ctx, args, opts...)
 	if err != nil {
 		return "", err
 	}
 	return m.applyQueryResultFilter(result, tables)
+}
+
+// doubleCheckReadAccess 对 query_data 做程序化表级双重验证。
+//
+// 设计原则与 doubleCheckHighRiskExec 一致：
+//   - 仅做表级验证（轻量且确定），列级由 Permission Agent + 结果列过滤协同完成
+//   - 提取不到表名时（如 SELECT 1 / SHOW TABLES）无法做表级验证，
+//     记录日志并放行，由 applyQueryResultFilter 的 fail-closed 策略兜底
+func (m *PermissionMiddleware) doubleCheckReadAccess(sql string, tables []string) error {
+	if len(tables) == 0 {
+		tables = appperm.ExtractTablesFromSQL(sql)
+	}
+	if len(tables) == 0 {
+		m.logInfo("query_data", "双重验证：无法从 SQL 提取表名，跳过表级校验（结果列过滤兜底）")
+		return nil
+	}
+
+	var deniedTables []string
+	for _, table := range tables {
+		if !m.Scope.IsTableAllowedIgnoreCase(table) {
+			deniedTables = append(deniedTables, table)
+		}
+	}
+	if len(deniedTables) > 0 {
+		log.Printf("%s [双重验证] query_data Permission Agent 允许但程序化检查拦截 - sql=%s, deniedTables=%v\n",
+			m.logPrefix(), truncateForLog(sql), deniedTables)
+		return &PermissionError{
+			Message: fmt.Sprintf("双重验证拦截：无权限访问表 %v，请改用您有权限的表重新生成查询。", deniedTables),
+			Objects: deniedTables,
+		}
+	}
+	return nil
 }
 
 // checkCrossDBJoinAccess 校验 cross_db_join 工具的表级/列级权限。
@@ -585,6 +774,10 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 }
 
 func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	if err := m.checkConnScope(args); err != nil {
+		m.logDeny("exec_sql", err.Error(), nil)
+		return "", &PermissionError{Message: err.Error(), Objects: []string{}}
+	}
 	sql := m.extractSQLFromArgs(args)
 	if sql == "" {
 		return "", m.denyEmptySQL("exec_sql", args)
@@ -628,8 +821,9 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 	// 仅做表级验证（轻量），不重复做列级验证（已由 Agent 完成）。
 	if containsDangerousSQL(sql) {
 		if err := m.doubleCheckHighRiskExec(sql, tables); err != nil {
-			m.logDeny("exec_sql", "双重验证拦截(agent允许但程序化拒绝)", err.(*PermissionError).Objects)
-			m.auditPermDenied("exec_sql", "double_check_blocked: "+err.Error(), err.(*PermissionError).Objects)
+			objects := permErrorObjects(err)
+			m.logDeny("exec_sql", "双重验证拦截(agent允许但程序化拒绝)", objects)
+			m.auditPermDenied("exec_sql", "double_check_blocked: "+err.Error(), objects)
 			return "", err
 		}
 		m.logAllow("exec_sql", "agent+double_check")

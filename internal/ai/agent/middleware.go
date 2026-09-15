@@ -57,9 +57,10 @@ func buildPatchToolCallsMiddleware() adk.ChatModelAgentMiddleware {
 //  2. 大结果自动 Offload 到文件，LLM 看到的不再是巨大 JSON
 //  3. ReadFile 工具与 LLM 协同工作
 //
-// 替换了项目自实现的 ReductionMiddleware（middleware.go:407-431），后者
-// 的"Recv 全部再切片"会破坏流式 UX。
-func buildEinoReductionMiddleware() adk.ChatModelAgentMiddleware {
+// 阈值与模型上下文窗口联动：clear 阈值取配置上下文窗口的 70%。
+// 历史实现硬编码 160_000，而默认窗口只有 128_000，导致 clear 永不触发，
+// 小窗口模型（32k/64k）更是一直靠 summarization 兜底。
+func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddleware {
 	dir := os.Getenv("REDUCTION_OFFLOAD_DIR")
 	if dir == "" {
 		dir = filepath.Join("data", "reduction")
@@ -69,27 +70,31 @@ func buildEinoReductionMiddleware() adk.ChatModelAgentMiddleware {
 		dir = os.TempDir()
 	}
 
+	ctxTokens := maxContextTokens
+	if ctxTokens <= 0 {
+		ctxTokens = defaultContextTokens
+	}
+	clearTokens := int64(ctxTokens) * 70 / 100
+	if clearTokens < 8_000 {
+		clearTokens = 8_000
+	}
+
 	backend := &osfsReductionBackend{rootDir: dir}
 
 	mw, err := reduction.New(context.Background(), &reduction.Config{
 		Backend:                   backend,
 		MaxLengthForTrunc:         30_000, // 单条 tool result 超过 30k 字符触发 truncate + offload 到文件
 		TokenCounter:              reductionTokenCounter,
-		MaxTokensForClear:         160_000, // 总 token 超 160k 触发 clear
-		ClearRetentionSuffixLimit: 4,       // 保留最近 4 条不 clear
-		ClearExcludeTools: []string{ // 永不 clear 这些工具的结果
-			"dangerous_sql_approval",
-			"interrupt",
-		},
-		TruncExcludeTools: []string{ // 永不 truncate 这些工具的结果（与 ClearExcludeTools 保持一致）
-			"dangerous_sql_approval",
-			"interrupt",
-		},
+		MaxTokensForClear:         clearTokens, // 总 token 超过窗口 70% 触发 clear
+		ClearRetentionSuffixLimit: 4,          // 保留最近 4 条不 clear
+		// 说明：危险 SQL 确认走 eino interrupt 状态而非工具结果，
+		// 不在 reduction 的处理范围内，因此无需（也无法）通过工具名排除。
 	})
 	if err != nil {
 		log.Printf("[Reduction] 创建 eino reduction 中间件失败 - err=%v，使用 noop\n", err)
 		return nil
 	}
+	log.Printf("[Reduction] 已启用 - offloadDir=%s, clearTokenThreshold=%d（上下文窗口 %d）\n", dir, clearTokens, ctxTokens)
 	return mw
 }
 

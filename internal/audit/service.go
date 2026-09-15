@@ -3,6 +3,7 @@ package audit
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"websql/internal/database"
@@ -98,7 +99,7 @@ func (s *AuditService) Record(entry *AuditEntry) {
 		ConnName:     entry.ConnName,
 		SchemaName:   entry.SchemaName,
 		SessionID:    entry.SessionID,
-		SQLText:      entry.SQLText,
+		SQLText:      MaskSQL(entry.SQLText),
 		SQLType:      entry.SQLType,
 		RiskLevel:    entry.RiskLevel,
 		Status:       entry.Status,
@@ -114,6 +115,11 @@ func (s *AuditService) Record(entry *AuditEntry) {
 	s.writer.enqueue(log)
 }
 
+// DroppedCount 返回因队列满被丢弃的审计记录累计条数，供运行时可观测性使用。
+func (s *AuditService) DroppedCount() int64 {
+	return s.writer.dropped.Load()
+}
+
 func (s *AuditService) Shutdown() {
 	s.writer.shutdown()
 }
@@ -121,10 +127,11 @@ func (s *AuditService) Shutdown() {
 // ─── async writer ───
 
 type asyncWriter struct {
-	ch     chan *AuditLog
-	once   sync.Once
-	closed bool
-	mu     sync.Mutex
+	ch      chan *AuditLog
+	once    sync.Once
+	closed  bool
+	mu      sync.Mutex
+	dropped atomic.Int64
 }
 
 func newAsyncWriter() *asyncWriter {
@@ -146,7 +153,14 @@ func (w *asyncWriter) enqueue(record *AuditLog) {
 	select {
 	case w.ch <- record:
 	default:
-		logger.PrintErrf("审计日志队列已满，丢弃记录: %s", nil, record.SQLText)
+		// 队列满：累计丢弃条数（原子计数，可观测），
+		// 首次丢弃与之后每累计 100 条告警一次，避免刷日志。
+		// 告警只带元信息（toolName/userId/source），不带 SQL 正文。
+		n := w.dropped.Add(1)
+		if n == 1 || n%100 == 0 {
+			log.Printf("[Audit] 审计日志队列已满，丢弃记录（累计 %d 条）- toolName=%s userId=%s source=%s\n",
+				n, record.ToolName, record.UserID, record.Source)
+		}
 	}
 }
 
@@ -211,8 +225,9 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 		defer stmt.Close()
 
 		for _, r := range batch {
+			// 落库边界二次脱敏（MaskSQL 幂等），确保任何调用方写入的 SQL 均不落明文
 			_, err := stmt.Exec(r.ID, r.UserID, r.UserName, r.ConnID, r.ConnName, r.SchemaName,
-				r.SessionID, r.SQLText, r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
+				r.SessionID, MaskSQL(r.SQLText), r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
 				r.AffectedRows, r.ExecTimeMs, r.ExecTime, r.ErrorMsg, r.ClientIP)
 			if err != nil {
 				tx.Rollback()

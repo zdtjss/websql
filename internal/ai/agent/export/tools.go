@@ -5,13 +5,58 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/xuri/excelize/v2"
+
+	"websql/internal/audit"
 )
 
-func NewExportExcelFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
-	return func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
+// AuditCtx 导出工具所需的最小审计上下文。
+// export 包不能反向依赖 internal/ai/agent（会形成循环导入），
+// 因此这里定义本地最小结构，由 agent 包在构造导出工具时注入。
+type AuditCtx struct {
+	ConnID    string
+	UserID    string
+	UserName  string
+	SessionID string
+}
+
+// recordExportAudit 记录一次导出工具调用（成功/失败各一条），
+// SQLType 固定为 EXPORT、RiskLevel 固定为 low。
+// auditCtx 为 nil 时仍记录（不含用户上下文），保证导出行为始终可追溯。
+func recordExportAudit(auditCtx *AuditCtx, toolName string, start time.Time, err error) {
+	status := "success"
+	errorMsg := ""
+	if err != nil {
+		status = "failed"
+		errorMsg = err.Error()
+	}
+
+	entry := &audit.AuditEntry{
+		Source:     "agent",
+		ToolName:   toolName,
+		SQLType:    "EXPORT",
+		RiskLevel:  "low",
+		Status:     status,
+		ExecTimeMs: int(time.Since(start).Milliseconds()),
+		ErrorMsg:   errorMsg,
+	}
+	if auditCtx != nil {
+		entry.ConnID = auditCtx.ConnID
+		entry.UserID = auditCtx.UserID
+		entry.UserName = auditCtx.UserName
+		entry.SessionID = auditCtx.SessionID
+	}
+	audit.GetAuditService().Record(entry)
+}
+
+func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
+	return func(ctx context.Context, input *ExportExcelInput) (out *ExportExcelOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_excel", start, err) }()
+
 		qr, err := QueryForExport(conn, input.SQL)
 		if err != nil {
 			return nil, err
@@ -41,8 +86,11 @@ func NewExportExcelFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportEx
 	}
 }
 
-func NewExportExcelWithChartFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
-	return func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
+func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
+	return func(ctx context.Context, input *ExportExcelWithChartInput) (out *ExportExcelWithChartOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_excel_with_chart", start, err) }()
+
 		qr, err := QueryForExport(conn, input.SQL)
 		if err != nil {
 			return nil, err
@@ -156,8 +204,11 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB) func(ctx context.Context, input 
 //
 // 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
 // skill 工具加载 export-word 技能自行编排。
-func NewExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
-	return func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
+func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
+	return func(ctx context.Context, input *ExportAnalysisDocxInput) (out *ExportAnalysisDocxOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_analysis_docx", start, err) }()
+
 		title := input.Title
 		if title == "" {
 			title = "数据分析报告"
@@ -237,8 +288,11 @@ func NewExportAnalysisDocxFunc(conn *sqlx.DB) func(ctx context.Context, input *E
 //
 // 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
 // skill 工具加载 export-ppt 技能自行编排。
-func NewExportPPTFunc(conn *sqlx.DB) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
-	return func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
+func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
+	return func(ctx context.Context, input *ExportPPTInput) (out *ExportPPTOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_ppt", start, err) }()
+
 		title := input.Title
 		if title == "" {
 			title = "数据报告"

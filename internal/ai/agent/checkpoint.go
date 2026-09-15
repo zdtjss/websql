@@ -6,7 +6,10 @@ import (
 )
 
 const (
-	checkpointMaxAge   = 15 * time.Minute
+	// checkpointMaxAge 中断状态（危险 SQL 待确认）的有效期。
+	// 与 SSE 请求超时（30 分钟）对齐：用户在确认弹窗停留过久后仍可恢复执行，
+	// 超时后 ResumeStream 会失败并提示重新发起操作。
+	checkpointMaxAge   = 30 * time.Minute
 	checkpointCleanSec = 3 * time.Minute
 )
 

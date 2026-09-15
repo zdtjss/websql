@@ -27,7 +27,8 @@ type OSFilesystemBackend struct {
 
 func NewOSFilesystemBackend() *OSFilesystemBackend {
 	b := &OSFilesystemBackend{}
-	b.SetValidateCommand(defaultCommandValidator)
+	// 使用沙箱校验器：在黑名单之上叠加「python/pip 白名单 + 绝对路径沙箱检查」
+	b.SetValidateCommand(validateSandboxedCommand)
 	return b
 }
 
@@ -88,7 +89,11 @@ func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfo
 		return nil, errors.New("path is required")
 	}
 
-	entries, err := os.ReadDir(req.Path)
+	dir, err := resolveReadPath(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory %s: %w", req.Path, err)
 	}
@@ -100,7 +105,7 @@ func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfo
 			continue
 		}
 		infos = append(infos, filesystem.FileInfo{
-			Path:       filepath.Join(req.Path, entry.Name()),
+			Path:       filepath.Join(dir, entry.Name()),
 			IsDir:      entry.IsDir(),
 			Size:       info.Size(),
 			ModifiedAt: info.ModTime().Format(time.RFC3339),
@@ -115,7 +120,11 @@ func (b *OSFilesystemBackend) Read(ctx context.Context, req *filesystem.ReadRequ
 		return nil, errors.New("filePath is required")
 	}
 
-	data, err := os.ReadFile(req.FilePath)
+	filePath, err := resolveReadPath(req.FilePath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %s: %w", req.FilePath, err)
 	}
@@ -164,8 +173,12 @@ func (b *OSFilesystemBackend) GrepRaw(ctx context.Context, req *filesystem.GrepR
 
 	var filesToSearch []string
 	if req.Path != "" {
+		searchDir, err := resolveReadPath(req.Path)
+		if err != nil {
+			return nil, err
+		}
 		if req.Glob != "" {
-			globPattern := filepath.Join(req.Path, req.Glob)
+			globPattern := filepath.Join(searchDir, req.Glob)
 			matches, _ := filepath.Glob(globPattern)
 			for _, m := range matches {
 				info, err := os.Stat(m)
@@ -174,7 +187,7 @@ func (b *OSFilesystemBackend) GrepRaw(ctx context.Context, req *filesystem.GrepR
 				}
 			}
 		} else {
-			err := filepath.WalkDir(req.Path, func(path string, d fs.DirEntry, err error) error {
+			err := filepath.WalkDir(searchDir, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return nil
 				}
@@ -231,7 +244,11 @@ func (b *OSFilesystemBackend) GlobInfo(ctx context.Context, req *filesystem.Glob
 		return nil, errors.New("pattern is required")
 	}
 
-	pattern := filepath.Join(req.Path, req.Pattern)
+	baseDir, err := resolveReadPath(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	pattern := filepath.Join(baseDir, req.Pattern)
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob pattern failed: %w", err)
@@ -259,12 +276,17 @@ func (b *OSFilesystemBackend) Write(ctx context.Context, req *filesystem.WriteRe
 		return errors.New("filePath is required")
 	}
 
-	dir := filepath.Dir(req.FilePath)
+	filePath, err := resolveWritePath(req.FilePath)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(req.FilePath, []byte(req.Content), 0644); err != nil {
+	if err := os.WriteFile(filePath, []byte(req.Content), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", req.FilePath, err)
 	}
 
@@ -282,7 +304,12 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 		return errors.New("newString must be different from oldString")
 	}
 
-	data, err := os.ReadFile(req.FilePath)
+	filePath, err := resolveWritePath(req.FilePath)
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
@@ -303,7 +330,7 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 		content = strings.Replace(content, req.OldString, req.NewString, 1)
 	}
 
-	if err := os.WriteFile(req.FilePath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write edited file: %w", err)
 	}
 
@@ -468,10 +495,14 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 	}
 	hideWindow(cmd)
 
+	// 沙箱：子进程工作目录固定为工作区，命令里的相对路径写入都会落在工作区内
+	if ws := getSandboxRoots().workspace; ws != "" {
+		cmd.Dir = ws
+	}
+
 	// 安全措施：设置环境变量
 	// PYTHONIOENCODING：统一 UTF-8 编码，避免 Windows GBK 编码问题
 	// PYTHONDONTWRITEBYTECODE：禁止生成 .pyc 文件，避免代码注入风险
-	// 注意：不设置 cmd.Dir，因为 execute 工具同时用于 skill 脚本（需要在其自身目录下运行）
 	// 注意：不设置 PYTHONNOUSERSITE，因为 Windows 上 pip install 默认安装到用户 site-packages
 	cmd.Env = append(os.Environ(),
 		"PYTHONIOENCODING=utf-8",

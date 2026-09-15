@@ -8,6 +8,7 @@ import (
 	"time"
 
 	agent "websql/internal/ai/agent"
+	admin "websql/internal/app/admin"
 	system "websql/internal/app/system"
 	"websql/internal/pkg/response"
 
@@ -52,6 +53,10 @@ func HandleSaveConfig(c *gin.Context) {
 }
 
 func HandleGetConfig(c *gin.Context) {
+	// AI 配置包含明文 apiKey，仅管理员可读取（与 SaveAIConfigHandler 保持一致）
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	cfg, err := GetAIConfig()
 	if err != nil {
 		log.Printf("[AI] 获取配置失败 - err=%v\n", err)

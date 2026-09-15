@@ -54,7 +54,13 @@ func (c *PermissionAgentCache) Close() {
 }
 
 func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, userID string, schemaNames []string) (tool.BaseTool, error) {
+	// 缓存 key 必须包含 schemaNames：权限 Agent 的表结构/权限查询范围由 schemaNames 决定，
+	// 同一 (conn, dbSchema, user) 在不同 schema 范围下会得到不同权限视图，
+	// 若不带该维度会复用错误配置导致越权判定（原实现遗漏此维度）。
 	key := fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
+	for _, s := range schemaNames {
+		key += "::" + s
+	}
 
 	if val, ok := c.cache.Get(key); ok {
 		return val.agentTool, nil

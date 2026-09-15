@@ -150,9 +150,9 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		return nil, errors.New("未认证或认证已过期")
 	}
 
-	if req.UserID == "" {
-		req.UserID = user.Id
-	}
+	// 安全：会话归属一律以认证态用户为准，忽略客户端传入的 userId，
+	// 防止伪造 userId 读写/续写他人会话（IDOR）。
+	req.UserID = user.Id
 
 	connID := req.ConnID
 	if connID == "" && len(req.Schemas) > 0 {
@@ -185,13 +185,16 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 	}, nil
 }
 
-func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFunc) (*Session, string) {
+func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFunc) (*Session, string, error) {
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = idgen.RandomStr()
 	}
 	req.SessionID = sessionID // 回写，避免 RunStream 重复生成新 ID
-	sess, _ := h.sessions.GetOrCreate(sessionID, req.UserID)
+	sess, err := h.sessions.GetOrCreate(sessionID, req.UserID)
+	if err != nil {
+		return nil, sessionID, err
+	}
 	sess.SetCancel(runnerCancel)
 
 	if len(req.Schemas) > 0 || len(req.TableContext) > 0 {
@@ -200,11 +203,13 @@ func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFu
 			Tables:  req.TableContext,
 		}
 		if ctxJSON, err := json.Marshal(ctxData); err == nil {
-			_ = sess.MergeContext(string(ctxJSON))
+			if err := sess.MergeContext(string(ctxJSON)); err != nil {
+				log.Printf("[Handler] 合并会话上下文失败 - sessionId=%s, err=%v\n", sessionID, err)
+			}
 		}
 	}
 
-	return sess, sessionID
+	return sess, sessionID, nil
 }
 
 func (h *Handler) createAgent(sse *sseContext, params *requestParams, schemas []SchemaRef) (*SQLAgent, error) {
@@ -245,7 +250,14 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	sse := setupSSE(c, c.Request.Context())
 	defer sse.runnerCancel()
 
-	sess, sessionID := h.prepareSession(&req, sse.runnerCancel)
+	sess, _, err := h.prepareSession(&req, sse.runnerCancel)
+	if err != nil {
+		log.Printf("[Handler] 会话归属校验失败 - sessionId=%s, userId=%s, err=%v\n", req.SessionID, req.UserID, err)
+		close(sse.kaStop)
+		sse.flush(StreamChunk{Type: "error", Content: "会话不存在或无权访问，请新建会话后重试"})
+		sse.flush(StreamChunk{Type: "done"})
+		return
+	}
 
 	agent, agentErr := h.createAgent(sse, params, req.Schemas)
 	if agentErr != nil {
@@ -264,19 +276,18 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		agent.Cancel(runID)
 	})
 
-	sessionID, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush)
-	close(sse.kaStop)
-	sess.ClearCancel()
-
-	if runErr != nil {
+	// RunStream 的会话 ID 已由 prepareSession 生成并回写到 req.SessionID，
+	// 这里只关心执行错误（业务错误已通过 SSE 事件推送给前端）
+	if _, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush); runErr != nil {
 		log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
 		if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
 			sse.flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		}
 	}
+	close(sse.kaStop)
+	sess.ClearCancel()
 
 	sse.flush(StreamChunk{Type: "done"})
-	_ = sessionID
 }
 
 func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
@@ -296,7 +307,14 @@ func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
 	sse := setupSSE(c, c.Request.Context())
 	defer sse.runnerCancel()
 
-	sess, _ := h.prepareSession(&req, sse.runnerCancel)
+	sess, _, err := h.prepareSession(&req, sse.runnerCancel)
+	if err != nil {
+		log.Printf("[Handler] 恢复执行会话归属校验失败 - sessionId=%s, userId=%s, err=%v\n", req.SessionID, req.UserID, err)
+		close(sse.kaStop)
+		sse.flush(StreamChunk{Type: "error", Content: "会话不存在或无权访问，请重新操作"})
+		sse.flush(StreamChunk{Type: "done"})
+		return
+	}
 
 	agent, agentErr := h.createAgent(sse, params, req.Schemas)
 	if agentErr != nil {
@@ -383,25 +401,18 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
-	detail, err := h.sessions.GetDetail(sessionID)
+	detail, err := h.sessions.GetDetail(sessionID, user.Id)
 	if err != nil {
+		if errors.Is(err, ErrSessionForbidden) {
+			log.Printf("[Handler] 会话越权访问被拒绝 - sessionId=%s, userId=%s\n", sessionID, user.Id)
+			response.WriteErr(c, http.StatusForbidden, 403, "会话不存在或无权访问")
+			return
+		}
 		log.Printf("[Handler] 获取会话详情失败 - sessionId=%s, err=%v\n", sessionID, err)
 		response.WriteErr(c, http.StatusInternalServerError, 500, "获取会话详情失败")
 		return
 	}
 	response.WriteOK(c, gin.H{"session": detail})
-}
-
-// HandleCancelAgent 主动取消正在运行的 Agent（Eino v0.9 Agent Cancel）
-func (h *Handler) HandleCancelAgent(c *gin.Context) {
-	sessionID := c.Query("sessionId")
-	if sessionID == "" {
-		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 sessionId 参数")
-		return
-	}
-	// 通过 session 的 cancel 机制触发取消
-	h.sessions.Cancel(sessionID)
-	response.WriteOK(c, gin.H{"message": "已发送取消请求"})
 }
 
 func (h *Handler) HandleDeleteSession(c *gin.Context) {
@@ -415,7 +426,12 @@ func (h *Handler) HandleDeleteSession(c *gin.Context) {
 		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
-	if err := h.sessions.Delete(sessionID); err != nil {
+	if err := h.sessions.Delete(sessionID, user.Id); err != nil {
+		if errors.Is(err, ErrSessionForbidden) {
+			log.Printf("[Handler] 会话越权删除被拒绝 - sessionId=%s, userId=%s\n", sessionID, user.Id)
+			response.WriteErr(c, http.StatusForbidden, 403, "会话不存在或无权访问")
+			return
+		}
 		log.Printf("[Handler] 删除会话失败 - sessionId=%s, err=%v\n", sessionID, err)
 		response.WriteErr(c, http.StatusInternalServerError, 500, "删除会话失败")
 		return

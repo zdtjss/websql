@@ -535,6 +535,10 @@ func SaveSystemConfigHandler(c *gin.Context) {
 }
 
 func GetAIConfigHandler(c *gin.Context) {
+	// AI 配置包含明文 apiKey，仅管理员可读取（与 SaveAIConfigHandler 保持一致）
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	cfg := GetAIConfigFromDB()
 	if cfg == nil {
 		response.WriteOK(c, map[string]any{

@@ -66,6 +66,8 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
   const confirmDescription = ref('')
   const confirmTableName = ref('')
   let hasShownConfirm = false
+  /** 确认执行是否正在进行（防止重复点击覆盖 abortController / streamingExecContent） */
+  let confirmExecuting = false
 
   // ── 多条 SQL 批量确认 ──
   const pendingSQLList = ref<SqlRiskItem[]>([]) as PendingSQLListWithMeta
@@ -122,6 +124,11 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
    * 如果 Agent 继续续执行后又遇到新的危险 SQL，会再次弹出确认框。
    */
   async function handleConfirmExec(_confirmedSql: string): Promise<void> {
+    // 守卫：确认执行与主发送互斥，且执行中不可重入。
+    // （重复进入会用后一次请求覆盖 abortController 与 streamingExecContent，
+    //   导致前一次请求无法中止、输出内容互相串写）
+    if (confirmExecuting || loading.value) return
+    confirmExecuting = true
     loading.value = true
     confirmVisible.value = false
 
@@ -136,8 +143,10 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
     const url = apiBase + '/ai/agent/chatStream'
     const auth = sessionStorage.getItem('authentication') || ''
 
+    // 在 try 外创建，便于 finally 判断当前 abortController 是否仍属于本次请求
+    const controller = new AbortController()
+
     try {
-      const controller = new AbortController()
       abortController.value = controller
 
       const schemas = buildRequestSchemas()
@@ -230,7 +239,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
 
       if (collectedDangerSQLs.length > 0) {
         loading.value = false
-        abortController.value = null
+        if (abortController.value === controller) abortController.value = null
         setBatchPendingSQL(collectedDangerSQLs)
         return
       }
@@ -246,7 +255,9 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       streamingExecContent.value = ''
     } finally {
       loading.value = false
-      abortController.value = null
+      // 仅当 abortController 仍指向本次请求时才清理，避免覆盖其他并发请求（如主发送已换新 controller）
+      if (abortController.value === controller) abortController.value = null
+      confirmExecuting = false
       scrollToBottom()
     }
   }

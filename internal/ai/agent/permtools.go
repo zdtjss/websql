@@ -12,7 +12,7 @@ import (
 )
 
 type PermTableStructureInput struct {
-	Tables []string `json:"tables" jsonschema:"required,description=要查询结构的表名列表"`
+	Tables []string `json:"tables" jsonschema:"required" jsonschema_description:"要查询结构的表名列表"`
 }
 
 type PermTableStructureOutput struct {
@@ -211,8 +211,8 @@ func newGetUserPermissionsFunc(userID, connID string, schemaNames []string) func
 }
 
 type PermDecisionInput struct {
-	SQL      string `json:"sql" jsonschema:"required,description=需要检查权限的SQL语句"`
-	ToolName string `json:"toolName" jsonschema:"required,description=调用该SQL的工具名称query_data/exec_sql/export_*等"`
+	SQL      string `json:"sql" jsonschema:"required" jsonschema_description:"需要检查权限的SQL语句"`
+	ToolName string `json:"toolName" jsonschema:"required" jsonschema_description:"调用该SQL的工具名称query_data/exec_sql/export_*等"`
 }
 
 type PermDecisionOutput struct {

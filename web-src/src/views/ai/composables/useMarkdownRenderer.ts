@@ -737,11 +737,30 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     })
   }
 
+  /**
+   * 对 mermaid 渲染出的 SVG 做最小化安全过滤。
+   *
+   * 背景：mermaid 的 SVG 通过 el.innerHTML 注入（不走 sanitizeHtml/DOMPurify，
+   * 因为 DOMPurify 会移除 <style>，导致 xychart-beta 等图表样式丢失）。
+   * SVG 内容源自模型输出，为避免注入向量随 innerHTML 直接生效，这里显式剥离：
+   *   - <script> 标签（含自闭合写法）
+   *   - 事件处理器属性（onclick / onload / onerror 等）
+   *   - javascript: 伪协议
+   * 只做这三类“可执行”向量的剥离，保留 SVG 结构与 <style>，不影响图表渲染。
+   */
+  function sanitizeMermaidSvg(svg: string): string {
+    return svg
+      .replace(/<script[\s\S]*?<\/script\s*>/gi, '')
+      .replace(/<script\b[^>]*\/?>/gi, '')
+      .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/javascript:/gi, '')
+  }
+
   /** 构造 mermaid 容器的 innerHTML（SVG + 工具栏 + 拖拽手柄） */
   function buildMermaidInnerHtml(svg: string, source: string): string {
     const escapedSource = source.replace(/</g, '&lt;').replace(/>/g, '&gt;')
     return `<div class="mermaid-content-wrapper">` +
-      `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${svg}</div>` +
+      `<div class="mermaid-svg-wrap" data-scale="1" data-translate-x="0" data-translate-y="0">${sanitizeMermaidSvg(svg)}</div>` +
       `<pre class="mermaid-source-preview" style="display:none;"><code>${escapedSource}</code></pre>` +
     `</div>` +
     `<div class="mermaid-resize-handle" title="拖拽调整高度">` +

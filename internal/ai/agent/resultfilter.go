@@ -78,9 +78,19 @@ func (m *PermissionMiddleware) filterListTablesResult(result string) string {
 }
 
 func (m *PermissionMiddleware) applyQueryResultFilter(result string, tables []string) (string, error) {
+	// 工具错误载荷（{"error":true,...}）不含数据行，原样透传给模型用于自我修复。
+	// 必须在反序列化前判断：错误载荷能被解析成空 QueryOutput，会把错误信息悄悄丢掉。
+	if strings.Contains(result, `"error":true`) {
+		return result, nil
+	}
 	var output QueryOutput
 	if err := json.Unmarshal([]byte(result), &output); err != nil {
-		return result, nil
+		// fail-closed：解析失败说明无法确认结果集内容，可能是异常/被篡改的载荷。
+		log.Printf("%s [过滤] query_data 结果解析失败，按 fail-closed 拒绝返回 - err=%v\n", m.logPrefix(), err)
+		return "", &PermissionError{
+			Message: "查询结果校验失败（结果格式异常），已阻止返回数据。请重试或联系管理员。",
+			Objects: []string{},
+		}
 	}
 	beforeColCount := len(output.Columns)
 	beforeRowCount := len(output.Data)
@@ -106,9 +116,14 @@ func (m *PermissionMiddleware) applyStreamQueryResultFilter(reader *schema.Strea
 	}
 	rawResult := sb.String()
 
+	// 与同步路径保持一致：错误载荷透传（需在反序列化前判断），其余解析失败按 fail-closed 拒绝
+	if strings.Contains(rawResult, `"error":true`) {
+		return schema.StreamReaderFromArray([]string{rawResult})
+	}
 	var output QueryOutput
 	if err := json.Unmarshal([]byte(rawResult), &output); err != nil {
-		return schema.StreamReaderFromArray([]string{rawResult})
+		log.Printf("%s [过滤] query_data(stream) 结果解析失败，按 fail-closed 拒绝返回 - err=%v\n", m.logPrefix(), err)
+		return schema.StreamReaderFromArray([]string{`{"error":true,"message":"查询结果校验失败（结果格式异常），已阻止返回数据，请重试。"}`})
 	}
 
 	beforeColCount := len(output.Columns)

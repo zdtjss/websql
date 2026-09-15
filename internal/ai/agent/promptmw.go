@@ -1,64 +1,58 @@
 // promptmw.go — per-run 动态系统提示词中间件
 //
-// 背景：SQLAgent 是工厂缓存中的共享实例，而系统提示词需要按每次请求动态构建
-// （tableContext、上传文件、历史执行引导等均为 per-run 上下文）。
-// eino ADK 提供的正统做法是通过 ChatModelAgentMiddleware.BeforeAgent 改写
-// ChatModelAgentContext.Instruction，框架会在 defaultGenModelInput 中将其转换为
-// 本次 Run 的系统消息（拼接在输入消息之前），而非在输入消息里手动携带 System 消息。
+// 背景：SQLAgent 是工厂缓存中的共享实例（同一 connID+dbSchema+userID+schemas 复用），
+// 而系统提示词需要按每次请求动态构建（tableContext、上传文件、历史执行引导等均为 per-run 上下文）。
+// eino ADK 的正统做法是通过 ChatModelAgentMiddleware.BeforeAgent 改写
+// ChatModelAgentContext.Instruction，框架会在 defaultGenModelInput 中将其转换为本次 Run 的系统消息。
 //
-// 好处：
-//   - 系统提示词只注入一次，不会出现「Instruction 一份 + 手动 System 消息一份」的双份冗余
-//   - per-run 上下文（如 tableContext）不会在构造期与运行期产生不一致的矛盾描述
-//
-// 并发说明：与 SessionSyncMiddleware 相同的模式——RunStream 在调用 runner.Run 前
-// SetPrompt，BeforeAgent 在 Run 内同步执行（getRunFunc → applyBeforeAgent 为同步调用，
-// Run 返回前已完成），SetPrompt 使用互斥锁保护读写。
+// 并发安全设计（重要）：
+// per-run 数据通过 **context 传递**，不再存放在中间件实例字段里。
+// 历史实现用 SetPrompt 把提示词存在中间件字段上，同一 Agent 被多标签/多请求并发使用时
+// 会互相覆盖（A 的 tableContext 被 B 的提示词覆盖），本次修复改为 context 穿透：
+//   - RunStream 用 WithRunPrompt(ctx, prompt) 注入
+//   - BeforeAgent 从 ctx 读取（eino 的 applyBeforeAgent/getRunFunc 使用调用方 ctx，见
+//     eino@v0.9.19/adk/chatmodel.go:812、:1421）
+// 中间件实例因此变为无状态，可被任意并发 Run 安全共享。
 package agent
 
 import (
 	"context"
-	"sync"
 
 	"github.com/cloudwego/eino/adk"
 )
 
-// DynamicPromptMiddleware 持有 per-run 系统提示词，在 BeforeAgent 阶段覆盖 Agent 的
-// Instruction。未 SetPrompt 时（如 Resume 恢复路径）不修改原 Instruction。
-type DynamicPromptMiddleware struct {
-	*adk.BaseChatModelAgentMiddleware
+type runPromptCtxKey struct{}
 
-	mu     sync.Mutex
-	prompt string
+// WithRunPrompt 返回携带「本次运行系统提示词」的 context。
+// prompt 为空时原样返回，保证 Resume 等路径不受影响。
+func WithRunPrompt(ctx context.Context, prompt string) context.Context {
+	if prompt == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, runPromptCtxKey{}, prompt)
 }
 
-// NewDynamicPromptMiddleware 创建动态提示词中间件
+// runPromptFrom 从 context 取出本次运行的系统提示词。
+func runPromptFrom(ctx context.Context) string {
+	if prompt, ok := ctx.Value(runPromptCtxKey{}).(string); ok {
+		return prompt
+	}
+	return ""
+}
+
+// DynamicPromptMiddleware 在 BeforeAgent 阶段用本次运行的系统提示词覆盖 Instruction。
+// 无状态：提示词来自 context；context 未携带时保持原 Instruction 不变
+// （Resume 恢复路径依赖 checkpoint 中已有的系统消息，无需重新注入）。
+type DynamicPromptMiddleware struct {
+	*adk.BaseChatModelAgentMiddleware
+}
+
 func NewDynamicPromptMiddleware() *DynamicPromptMiddleware {
 	return &DynamicPromptMiddleware{}
 }
 
-// SetPrompt 设置下一次 Run 使用的系统提示词（每次 RunStream 调用前设置，覆盖旧值）
-func (m *DynamicPromptMiddleware) SetPrompt(prompt string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.prompt = prompt
-}
-
-// GetPrompt 返回当前持有的提示词（用于诊断日志）
-func (m *DynamicPromptMiddleware) GetPrompt() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.prompt
-}
-
-// BeforeAgent 在每次 Run 前将持有的提示词覆盖到 Instruction。
-// 提示词为空时保持原 Instruction 不变（Resume 恢复路径依赖 checkpoint 中
-// 已有的系统消息，无需重新注入）。
 func (m *DynamicPromptMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
-	m.mu.Lock()
-	prompt := m.prompt
-	m.mu.Unlock()
-
-	if prompt != "" {
+	if prompt := runPromptFrom(ctx); prompt != "" {
 		runCtx.Instruction = prompt
 	}
 	return ctx, runCtx, nil

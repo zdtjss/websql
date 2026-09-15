@@ -114,65 +114,109 @@ export function useChatStream(deps: UseChatStreamDeps) {
   // ── 当前正在重试的 AI 消息引用（用于按钮 loading 状态） ──
   const retryingMsg = ref<ChatMessage | null>(null)
 
-  // ── 流式渲染节流计时器与 mermaid 增量计数 ──
-  let streamingRenderTimer: ReturnType<typeof setTimeout> | null = null
-  let streamingExecRenderTimer: ReturnType<typeof setTimeout> | null = null
-  let thinkingRenderTimer: ReturnType<typeof setTimeout> | null = null
+  // ── 流式渲染节流参数与 mermaid 增量计数 ──
+  /** 缓冲增长达到该字符数才重新渲染一次（避免长回答全量渲染累计开销接近 O(n²)） */
+  const STREAM_RENDER_CHARS_STEP = 80
+  /** 缓冲增长停滞该时长后渲染最后一次（首字 / 停顿 / 收尾时不丢帧） */
+  const STREAM_RENDER_IDLE_MS = 100
   let lastStreamingMermaidCount = 0
   let lastStreamingExecMermaidCount = 0
   let lastRenderedMermaidCount = 0
   let mermaidRenderTimer: ReturnType<typeof setTimeout> | null = null
 
-  // ── 流式内容变化时更新渲染缓存并触发 mermaid 渲染 ──
-  watch(streamingContent, () => {
-    if (streamingRenderTimer) clearTimeout(streamingRenderTimer)
-    streamingRenderTimer = setTimeout(() => {
-      streamingHtml.value = renderMarkdown(streamingContent.value)
-      nextTick(() => {
-        const content = streamingContent.value
-        if (content && content.includes('```mermaid')) {
-          const closedCount = countClosedMermaidBlocks(content)
-          if (closedCount > lastStreamingMermaidCount) {
-            lastStreamingMermaidCount = closedCount
-            void doRenderMermaidBlocks(true)
-          }
-        }
-        // 即使 countClosedMermaidBlocks 未检测到新块，也检查 DOM 中是否有未渲染的容器
-        // 这处理了 autoWrapMermaidCode 自动包裹的情况
-        const unprocessed = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
-        if (unprocessed.length > 0) {
-          void doRenderMermaidBlocks(true)
-        }
-      })
-      streamingRenderTimer = null
-    }, 50)
-  }, { immediate: true })
+  // ── 流式渲染节流：按帧合并 + 增量阈值 ──
+  /**
+   * 创建流式渲染调度器（按帧合并 + 增量阈值 + 空闲兜底）。
+   *
+   * 原实现每 50ms 对整段文本执行一次 renderMarkdown + DOMPurify，
+   * 长回答下渲染总量随文本长度线性增长，累计开销接近 O(n²)。
+   * 现改为：仅当缓冲比上次渲染增长 ≥ STREAM_RENDER_CHARS_STEP 时，
+   * 在下一帧渲染（requestAnimationFrame 合并同帧多次触发）；
+   * 增长未达阈值时推迟到空闲（STREAM_RENDER_IDLE_MS）渲染最后一次；
+   * 缓冲被清空（新会话 / 内容已落历史）时立即同步，保证结束时完整渲染。
+   */
+  function createStreamRenderScheduler(
+    source: Ref<string>,
+    target: Ref<string>,
+    afterRender?: (content: string) => void,
+  ): { schedule: () => void } {
+    let raf: number | null = null
+    let idleTimer: ReturnType<typeof setTimeout> | null = null
+    let renderedLength = 0
 
-  watch(streamingExecContent, () => {
-    if (streamingExecRenderTimer) clearTimeout(streamingExecRenderTimer)
-    streamingExecRenderTimer = setTimeout(() => {
-      streamingExecHtml.value = renderMarkdown(streamingExecContent.value)
-      nextTick(() => {
-        const content = streamingExecContent.value
-        if (content && content.includes('```mermaid')) {
-          const closedCount = countClosedMermaidBlocks(content)
-          if (closedCount > lastStreamingExecMermaidCount) {
-            lastStreamingExecMermaidCount = closedCount
-            void doRenderMermaidBlocks(true)
-          }
-        }
-      })
-      streamingExecRenderTimer = null
-    }, 50)
-  }, { immediate: true })
+    function flush(): void {
+      if (raf !== null) {
+        cancelAnimationFrame(raf)
+        raf = null
+      }
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+        idleTimer = null
+      }
+      const content = source.value
+      renderedLength = content.length
+      target.value = renderMarkdown(content)
+      // 内容为空时无需再做 mermaid 后置处理
+      if (!content) return
+      nextTick(() => { afterRender?.(content) })
+    }
 
-  watch(thinkingText, () => {
-    if (thinkingRenderTimer) clearTimeout(thinkingRenderTimer)
-    thinkingRenderTimer = setTimeout(() => {
-      thinkingHtml.value = renderMarkdown(thinkingText.value)
-      thinkingRenderTimer = null
-    }, 50)
-  }, { immediate: true })
+    return {
+      schedule(): void {
+        const len = source.value.length
+        // 缓冲被重置：立即同步，避免残留旧内容
+        if (len === 0) {
+          flush()
+          return
+        }
+        if (len - renderedLength >= STREAM_RENDER_CHARS_STEP) {
+          if (raf !== null) return
+          raf = requestAnimationFrame(() => {
+            raf = null
+            flush()
+          })
+          return
+        }
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          idleTimer = null
+          flush()
+        }, STREAM_RENDER_IDLE_MS)
+      },
+    }
+  }
+
+  // ── 流式内容变化时按节流策略更新渲染缓存并触发 mermaid 渲染 ──
+  const streamingRender = createStreamRenderScheduler(streamingContent, streamingHtml, (content) => {
+    if (content.includes('```mermaid')) {
+      const closedCount = countClosedMermaidBlocks(content)
+      if (closedCount > lastStreamingMermaidCount) {
+        lastStreamingMermaidCount = closedCount
+        void doRenderMermaidBlocks(true)
+      }
+    }
+    // 即使 countClosedMermaidBlocks 未检测到新块，也检查 DOM 中是否有未渲染的容器
+    // 这处理了 autoWrapMermaidCode 自动包裹的情况
+    const unprocessed = document.querySelectorAll('.mermaid-container[data-mermaid-processed="false"]')
+    if (unprocessed.length > 0) {
+      void doRenderMermaidBlocks(true)
+    }
+  })
+  watch(streamingContent, () => { streamingRender.schedule() }, { immediate: true })
+
+  const streamingExecRender = createStreamRenderScheduler(streamingExecContent, streamingExecHtml, (content) => {
+    if (content.includes('```mermaid')) {
+      const closedCount = countClosedMermaidBlocks(content)
+      if (closedCount > lastStreamingExecMermaidCount) {
+        lastStreamingExecMermaidCount = closedCount
+        void doRenderMermaidBlocks(true)
+      }
+    }
+  })
+  watch(streamingExecContent, () => { streamingExecRender.schedule() }, { immediate: true })
+
+  const thinkingRender = createStreamRenderScheduler(thinkingText, thinkingHtml)
+  watch(thinkingText, () => { thinkingRender.schedule() }, { immediate: true })
 
   /** 流式输出中检测已完成的 mermaid 代码块并立即渲染 */
   function tryRenderStreamingMermaid(): void {
@@ -339,6 +383,23 @@ export function useChatStream(deps: UseChatStreamDeps) {
                 break
               case 'done':
                 break
+              case 'cancelled':
+                // 后端主动取消（events.go 发送 cancelled，如超时/上游取消）：
+                // 保留已生成内容并给出普通提示（不是 error 气泡），同时结束 loading 与 abort 状态
+                if (thinkingText.value) {
+                  chatHistory.value.push({ role: 'thinking', content: thinkingText.value, collapsed: true })
+                  thinkingText.value = ''
+                }
+                if (streamingContent.value) {
+                  const content = streamingContent.value
+                  chatHistory.value.push({ role: 'assistant', content, hasSql: isSqlContent(content) })
+                  streamingContent.value = ''
+                }
+                chatHistory.value.push({ role: 'assistant', content: `⏹ ${chunk.content || '已停止生成'}` })
+                loading.value = false
+                abortController.value = null
+                scrollToBottom()
+                break
             }
           } catch (_) { /* ignore */ }
         }
@@ -379,11 +440,29 @@ export function useChatStream(deps: UseChatStreamDeps) {
         chatHistory.value.push({ role: 'assistant', content: '⏹ 对话已被手动终止' })
         scrollToBottom()
       } else {
-        ElMessage({ message: sanitizeError(e) || '请求失败', type: 'error' })
+        // 网络中断 / 服务端异常：已生成内容用户已看到，必须先落为历史消息，
+        // 否则刷新或切换会话后这段内容会凭空消失
+        const reason = sanitizeError(e) || '网络异常'
+        ElMessage({ message: reason, type: 'error' })
+        if (thinkingText.value) {
+          chatHistory.value.push({ role: 'thinking', content: thinkingText.value, collapsed: true })
+          thinkingText.value = ''
+        }
+        if (streamingContent.value) {
+          const content = streamingContent.value
+          chatHistory.value.push({
+            role: 'assistant',
+            content: `${content}\n\n> ⚠️ 响应中断：${reason}`,
+            hasSql: isSqlContent(content),
+          })
+          streamingContent.value = ''
+          scrollToBottom()
+        }
       }
     } finally {
       loading.value = false
-      abortController.value = null
+      // 仅当 abortController 仍指向本次请求时才清理，避免覆盖其他并发请求（如确认执行）
+      if (abortController.value === controller) abortController.value = null
       retryingMsg.value = null
       // 桌面模式：回复完成时闪烁任务栏图标（窗口未激活时才闪，获焦自动停止；web 模式 no-op）
       ;(window as unknown as { Flash?: () => void }).Flash?.()

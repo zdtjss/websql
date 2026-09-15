@@ -1,10 +1,16 @@
-// package agent 提供 SessionSyncMiddleware，将 Eino ADK 的内部消息状态
-// 与系统的 SessionStore 持久化层同步。
+// sessionmw.go — SessionSyncMiddleware：把 Eino ADK 的内部消息状态同步回 SessionStore。
 //
-// 这是"会话管理重构 → 对接 Eino Memory/Session"的核心实现：
-// 利用 Eino v0.9 的 AfterAgent 和 AfterModelRewriteState 钩子，
-// 在 Agent 运行过程中自动将状态变化（如 summarization 压缩后的消息）
-// 同步回 SessionStore，确保持久化层始终反映 Eino 内部的最新状态。
+// 用途：当 summarization 中间件压缩了对话历史后，本中间件确保持久化层也反映压缩后的状态，
+// 避免下次加载时历史重新膨胀。
+//
+// 并发安全设计（重要）：
+// per-run 状态（当前 Session、初始消息数、是否发生压缩）通过 **context 传递**，
+// 不再存放于中间件实例。历史实现用 SetSession 把 Session 绑定到中间件字段上，
+// 而 Agent 实例被工厂按 (connID, dbSchema, userID, schemas) 缓存共享，
+// 同用户多标签并发时会把 A 会话的压缩结果写到 B 会话，本次修复改为：
+//   - RunStream 用 WithRunSessionState(ctx, newRunSessionState(sess, len(allMsgs))) 注入
+//   - AfterAgent / AfterModelRewriteState 从 ctx 读取 per-run 状态
+// 中间件实例因此变为无状态，可被任意并发 Run 安全共享。
 package agent
 
 import (
@@ -16,92 +22,95 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// SessionSyncMiddleware 将 Eino Agent 的内部消息状态与 SessionStore 同步。
-// 当 summarization middleware 压缩了对话历史后，本 middleware 确保
-// 持久化层也反映压缩后的状态，避免下次加载时重新膨胀。
-//
-// 使用方式：在 Agent 创建时注册，通过 SetSession 在每次 Run 前绑定当前 Session。
-type SessionSyncMiddleware struct {
-	*adk.BaseChatModelAgentMiddleware
+type runSessionCtxKey struct{}
+
+// runSessionState 单次 Run 的会话同步状态（每个 Run 独立一份，由 context 持有）。
+type runSessionState struct {
 	mu               sync.Mutex
-	session          *Session
+	sess             *Session
 	initialMsgCount  int
 	summarizationHit bool
 }
 
-// SetSession 在每次 Agent Run 前绑定当前 Session
-func (m *SessionSyncMiddleware) SetSession(sess *Session, msgCount int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.session = sess
-	m.initialMsgCount = msgCount
-	m.summarizationHit = false
+func newRunSessionState(sess *Session, initialMsgCount int) *runSessionState {
+	return &runSessionState{sess: sess, initialMsgCount: initialMsgCount}
 }
 
-// ClearSession 在 Agent Run 结束后清除 Session 引用
-func (m *SessionSyncMiddleware) ClearSession() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.session = nil
-	m.initialMsgCount = 0
-	m.summarizationHit = false
+// WithRunSessionState 把本次运行的会话同步状态放入 context。
+func WithRunSessionState(ctx context.Context, st *runSessionState) context.Context {
+	if st == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runSessionCtxKey{}, st)
+}
+
+func runSessionStateFrom(ctx context.Context) *runSessionState {
+	if st, ok := ctx.Value(runSessionCtxKey{}).(*runSessionState); ok {
+		return st
+	}
+	return nil
+}
+
+// SessionSyncMiddleware 将 Eino Agent 的内部消息状态与 SessionStore 同步。
+// 无状态：per-run 绑定信息全部来自 context。
+type SessionSyncMiddleware struct {
+	*adk.BaseChatModelAgentMiddleware
 }
 
 // AfterAgent 在 Agent 成功结束后，检查消息是否被 summarization 压缩，
-// 如果是则同步压缩后的消息到 SessionStore。
+// 如果是则同步压缩后的消息到会话（仅写回本 Run 绑定的会话，不会串号）。
 func (m *SessionSyncMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
-	m.mu.Lock()
-	sess := m.session
-	hit := m.summarizationHit
-	m.mu.Unlock()
-
-	if sess == nil || state == nil {
+	st := runSessionStateFrom(ctx)
+	if st == nil || state == nil {
 		return ctx, nil
 	}
 
-	// 检测 summarization 是否发生
-	currentMsgCount := len(state.Messages)
-	if hit && currentMsgCount > 0 {
-		log.Printf("[SessionSync] 检测到 summarization 压缩 - 当前消息=%d\n", currentMsgCount)
+	st.mu.Lock()
+	sess := st.sess
+	hit := st.summarizationHit
+	st.mu.Unlock()
 
-		// 将 Eino 内部的压缩后消息同步回 Session（跳过 system 消息）
-		compressed := make([]SessionMessage, 0, currentMsgCount)
-		for _, msg := range state.Messages {
-			if msg.Role == schema.System {
-				continue // system prompt 不持久化
-			}
-			sm := schemaMessageToSession(msg)
-			if sm != nil {
-				compressed = append(compressed, *sm)
-			}
+	if sess == nil || !hit || len(state.Messages) == 0 {
+		return ctx, nil
+	}
+
+	log.Printf("[SessionSync] 检测到 summarization 压缩 - session=%s, 当前消息=%d\n", sess.ID, len(state.Messages))
+
+	// 将 Eino 内部的压缩后消息同步回 Session（跳过 system 消息）
+	compressed := make([]SessionMessage, 0, len(state.Messages))
+	for _, msg := range state.Messages {
+		if msg.Role == schema.System {
+			continue // system prompt 不持久化
 		}
-
-		if len(compressed) > 0 {
-			sess.ReplaceMessages(compressed)
-			log.Printf("[SessionSync] 已同步压缩后的消息到 Session - count=%d\n", len(compressed))
+		sm := schemaMessageToSession(msg)
+		if sm != nil {
+			compressed = append(compressed, *sm)
 		}
 	}
 
+	if len(compressed) > 0 {
+		sess.ReplaceMessages(compressed)
+		log.Printf("[SessionSync] 已同步压缩后的消息到 Session - session=%s, count=%d\n", sess.ID, len(compressed))
+	}
 	return ctx, nil
 }
 
-// AfterModelRewriteState 在每次模型调用后检查消息数量变化，
-// 用于检测 summarization 是否发生。
+// AfterModelRewriteState 在每次模型调用后检查消息数量变化，用于检测 summarization 是否发生。
 func (m *SessionSyncMiddleware) AfterModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.session == nil || state == nil {
+	st := runSessionStateFrom(ctx)
+	if st == nil || state == nil {
 		return ctx, state, nil
 	}
 
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	currentMsgCount := len(state.Messages)
-	if m.initialMsgCount > 0 && currentMsgCount < m.initialMsgCount {
-		m.summarizationHit = true
+	if st.initialMsgCount > 0 && currentMsgCount < st.initialMsgCount {
+		st.summarizationHit = true
 	}
 	// 更新跟踪计数
-	m.initialMsgCount = currentMsgCount
-
+	st.initialMsgCount = currentMsgCount
 	return ctx, state, nil
 }
 

@@ -251,9 +251,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	// 通过动态提示词中间件注入（BeforeAgent 覆盖 Instruction）：
 	// 不再在输入消息中手动携带 System 消息，避免与 Instruction 双份注入。
 	// 必须在 sysPrompt 全部追加（历史引导/上传文件）完成后设置。
-	if a.promptMW != nil {
-		a.promptMW.SetPrompt(sysPrompt)
-	}
+	// 提示词经 context 传入（而非中间件实例字段），保证同一共享 Agent 被并发 Run 时互不干扰。
+	ctx = WithRunPrompt(ctx, sysPrompt)
 	log.Printf("[Agent] 系统提示词已构建并注入 - len=%d\n", len(sysPrompt))
 
 	// 构建 Eino 消息列表：仅用户/助手/工具消息，系统提示词已由 promptMW 注入 Instruction
@@ -306,19 +305,14 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	a.registerCancel(runID, cancelFn)
 	defer a.unregisterCancel(runID)
 
-	// 绑定 SessionSyncMiddleware，使 summarization 压缩后的消息能同步到 Session
+	// 绑定本次 Run 的会话同步状态（经 context 传入，避免共享 Agent 上的状态串号）
 	if a.sessionSync != nil {
-		a.sessionSync.SetSession(sess, len(allMsgs))
+		ctx = WithRunSessionState(ctx, newRunSessionState(sess, len(allMsgs)))
 	}
 
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID), cancelOpt)
 
 	_, _ = a.processEvents(iter, flush, sess, checkPointID)
-
-	// 清理 session 绑定（cancelFunc 已经在 defer unregisterCancel 中清理）
-	if a.sessionSync != nil {
-		a.sessionSync.ClearSession()
-	}
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
@@ -398,15 +392,6 @@ func NewAuthClient(token string) *http.Client {
 // 模型与工具构建
 // ──────────────────────────────────────────────
 
-var ollamaURLPrefix = "https://ollama.com"
-
-func isOllamaURL(baseURL string) bool {
-	if strings.HasPrefix(strings.ToLower(baseURL), ollamaURLPrefix) {
-		return true
-	}
-	return false
-}
-
 func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallingChatModel, error) {
 	log.Printf("[ChatModel] 初始化 - provider=%s, model=%s\n", cfg.Provider, cfg.Model)
 
@@ -466,6 +451,8 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 
 func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
 	conn, _ := GetConn(connID, scope.UserID)
+	// 导出工具的最小审计上下文（export 包不能反向依赖 agent 包，故做一次转换）
+	exportAuditCtx := toExportAuditCtx(auditCtx)
 	queryTool, qErr := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
 	schemaTool, sErr := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
 	listTablesTool, lErr := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
@@ -488,11 +475,11 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	// Python 可用时走模板驱动专业版，Python 不可用/渲染失败时自动降级
 	// Go 基础版（无 Python 依赖，保证导出永不失败）；需要更细粒度的
 	// 自定义（sections/blocks）时可改用 skill 工具加载对应 SKILL.md。
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据（Go 原生实现），须传入 sql 参数", export.NewExportExcelFunc(conn))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（Go 原生实现），图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（模板驱动，科技感深色主题，含封面/目录/图表/表格页；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-ppt 技能。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告 Word（模板驱动，含封面/目录/KPI/图表；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-word 技能。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn))
-	exportHTMLTool, _ := utils.InferTool("export_html", "生成 HTML 报告（Go 原生实现，支持 Markdown、Mermaid 图表交互、代码高亮、数学公式）。优先使用 content 模式。也可先用 skill 工具加载 export-html 技能获取高级用法", export.NewExportHTMLFunc(conn))
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据（Go 原生实现），须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（Go 原生实现），图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn, exportAuditCtx))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（模板驱动，科技感深色主题，含封面/目录/图表/表格页；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-ppt 技能。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告 Word（模板驱动，含封面/目录/KPI/图表；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-word 技能。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn, exportAuditCtx))
+	exportHTMLTool, _ := utils.InferTool("export_html", "生成 HTML 报告（Go 原生实现，支持 Markdown、Mermaid 图表交互、代码高亮、数学公式）。优先使用 content 模式。也可先用 skill 工具加载 export-html 技能获取高级用法", export.NewExportHTMLFunc(conn, exportAuditCtx))
 
 	for _, t := range []tool.BaseTool{exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, exportHTMLTool} {
 		if t != nil {
@@ -508,4 +495,19 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	}
 
 	return coreTools, deferredTools, nil
+}
+
+// toExportAuditCtx 把 agent 的审计上下文转换为 export 包的最小审计上下文
+// （export 包不能依赖 agent 包，避免循环导入）。auditCtx 为 nil 时返回 nil，
+// 导出工具仍会写入不含用户上下文的审计记录。
+func toExportAuditCtx(auditCtx *ExecAuditCtx) *export.AuditCtx {
+	if auditCtx == nil {
+		return nil
+	}
+	return &export.AuditCtx{
+		ConnID:    auditCtx.ConnID,
+		UserID:    auditCtx.UserID,
+		UserName:  auditCtx.UserName,
+		SessionID: auditCtx.SessionID,
+	}
 }
