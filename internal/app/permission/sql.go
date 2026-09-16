@@ -9,6 +9,7 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
+	"websql/internal/pkg/sqlguard"
 )
 
 type SQLAnalysis struct {
@@ -96,46 +97,34 @@ func AnalyzeSQL(sqlStr string, defaultSchema string) *SQLAnalysis {
 	return analysis
 }
 
+// extractOperationType 判定语句类型（fail-closed 口径）。
+//
+// 安全性说明：历史实现用「关键字+空格」前缀匹配且不剥离注释，存在两类绕过：
+//  1. `DELETE\tFROM t`（制表符/换行分隔）不命中前缀，被判为 UNKNOWN；
+//  2. `WITH/*c*/x AS (...) DELETE FROM t`、`DELETE/*c*/FROM t` 因注释插在
+//     关键字中间无法识别首关键字，CTE 写操作也被当成 SELECT。
+//
+// 现改为：先剥离注释 → 取词级首关键字 → WITH 语句额外整句扫描写关键字
+// （与 AI 路径共用 sqlguard 的同一份判定实现）。
 func extractOperationType(sql string) string {
-	upper := strings.ToUpper(sql)
-	for strings.HasPrefix(upper, "/*") {
-		idx := strings.Index(upper, "*/")
-		if idx == -1 {
-			break
-		}
-		upper = strings.TrimSpace(upper[idx+2:])
+	// WriteKind：普通语句取首关键字；WITH 语句返回整句扫描到的首个写关键字
+	switch sqlguard.WriteKind(sql) {
+	case "SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "VALUES", "TABLE":
+		return "SELECT"
+	case "INSERT", "REPLACE", "MERGE":
+		return "INSERT"
+	case "UPDATE":
+		return "UPDATE"
+	case "DELETE":
+		return "DELETE"
+	case "WITH":
+		// 不含写关键字的 CTE：按只读查询处理
+		return "SELECT"
+	case "ALTER", "DROP", "CREATE", "TRUNCATE", "RENAME":
+		return "DDL"
+	default:
+		return "UNKNOWN"
 	}
-	for strings.HasPrefix(upper, "--") || strings.HasPrefix(upper, "#") {
-		idx := strings.Index(upper, "\n")
-		if idx == -1 {
-			break
-		}
-		upper = strings.TrimSpace(upper[idx+1:])
-	}
-
-	type opPattern struct {
-		prefix string
-		op     string
-	}
-	patterns := []opPattern{
-		{"SELECT", "SELECT"},
-		{"INSERT", "INSERT"},
-		{"UPDATE", "UPDATE"},
-		{"DELETE", "DELETE"},
-		{"WITH", "SELECT"},
-		{"ALTER", "DDL"},
-		{"DROP", "DDL"},
-		{"CREATE", "DDL"},
-		{"TRUNCATE", "DDL"},
-		{"RENAME", "DDL"},
-		{"REPLACE", "INSERT"},
-	}
-	for _, p := range patterns {
-		if strings.HasPrefix(upper, p.prefix+" ") || strings.HasPrefix(upper, p.prefix+"\n") || strings.HasPrefix(upper, p.prefix+"\t") {
-			return p.op
-		}
-	}
-	return "UNKNOWN"
 }
 
 func resolveTableName(name, defaultSchema string) (string, string) {
@@ -398,14 +387,11 @@ func CheckTableWritePermission(connId string, schemaName string, tableName strin
 	}
 }
 
+// StripComments 剥离 SQL 注释。
+// 实现已下沉到 internal/pkg/sqlguard.StripComments（项目内唯一实现），
+// 修复历史正则实现的缺陷：字符串字面量内的 -- / # 不再被误当作注释剥离。
 func StripComments(sql string) string {
-	re1 := regexp.MustCompile(`/\*[\s\S]*?\*/`)
-	sql = re1.ReplaceAllString(sql, " ")
-	re2 := regexp.MustCompile(`--[^\n]*`)
-	sql = re2.ReplaceAllString(sql, " ")
-	re3 := regexp.MustCompile(`#[^\n]*`)
-	sql = re3.ReplaceAllString(sql, " ")
-	return sql
+	return sqlguard.StripComments(sql)
 }
 
 func ExtractTablesFromSQL(sql string) []string {
@@ -577,6 +563,32 @@ func CheckUserCanModify(authorization string) bool {
 	return false
 }
 
+// requiresModifyPermission 判断语句是否必须持有「数据修改权限（allow_modify）」。
+//
+// 口径（fail-closed）：仅「明确只读」的语句（SELECT / SHOW / DESCRIBE / EXPLAIN /
+// 不含写关键字的 WITH）可跳过修改权限校验；其余语句——包括解析出的写表/写列、
+// CTE 包裹的写操作、注释变体、以及解析器无法识别的语句——一律要求修改权限，
+// 防止「解析失败 → 校验被跳过 → 写操作被放行」的权限绕过。
+func requiresModifyPermission(analysis *SQLAnalysis) bool {
+	if analysis == nil {
+		return true
+	}
+	if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
+		return true
+	}
+	return !sqlguard.IsReadOnlyStatement(analysis.OriginalSQL)
+}
+
+// truncateSQL 截断日志中的 SQL 文本（按 rune，避免截断出非法 UTF-8）。
+func truncateSQL(sql string) string {
+	sql = strings.ReplaceAll(sql, "\n", " ")
+	runes := []rune(sql)
+	if len(runes) > 200 {
+		return string(runes[:200]) + "..."
+	}
+	return sql
+}
+
 func CheckSQLFullPermission(sqlStr, connId, schema, authorization string) *SQLPermissionResult {
 	analysis := AnalyzeSQL(sqlStr, schema)
 	return CheckAnalysisPermission(analysis, connId, authorization)
@@ -608,13 +620,13 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 		analysis := AnalyzeSQL(sqlStr, schema)
 
 		// 写操作权限检查（延迟到第一次遇到写操作时）
-		if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
+		if requiresModifyPermission(analysis) {
 			if !writeCheckDone {
 				hasWritePermission = CheckUserCanModify(authorization)
 				writeCheckDone = true
 			}
 			if !hasWritePermission {
-				log.Printf("[PermCheck] 批量写权限拒绝 - conn=%s, user=%s\n", connId, userPower.UserId)
+				log.Printf("[PermCheck] 批量写权限拒绝 - conn=%s, user=%s, sql=%s\n", connId, userPower.UserId, truncateSQL(sqlStr))
 				return &SQLPermissionResult{
 					Allowed: false,
 					Message: "当前角色禁止修改数据，无法执行写操作",
@@ -653,12 +665,13 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
 
-	// 写操作的角色级修改权限检查（allow_modify 开关）
-	if len(analysis.WriteTables) > 0 || len(analysis.WriteColumns) > 0 {
+	// 写操作的角色级修改权限检查（allow_modify 开关，fail-closed 口径）
+	if requiresModifyPermission(analysis) {
 		if !CheckUserCanModify(authorization) {
 			result.Allowed = false
 			result.Message = "当前角色禁止修改数据，无法执行写操作"
-			log.Printf("[PermCheck] 写权限拒绝 - conn=%s, user=%s, writeTables=%v\n", connId, authorization, analysis.WriteTables)
+			log.Printf("[PermCheck] 写权限拒绝 - conn=%s, user=%s, writeTables=%v, sql=%s\n",
+				connId, authorization, analysis.WriteTables, truncateSQL(analysis.OriginalSQL))
 			return result
 		}
 	}

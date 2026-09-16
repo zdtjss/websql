@@ -46,9 +46,14 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 		args = append(args, "%"+keyword+"%")
 	}
 
+	db := getDB()
+	if db == nil {
+		return []AuditLog{}, 0, nil
+	}
+
 	total := 0
 	countSQL := "SELECT COUNT(*) FROM t_audit_log" + whereClause
-	err := getDB().Get(&total, countSQL, args...)
+	err := db.Get(&total, countSQL, args...)
 	if err != nil {
 		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil
@@ -70,7 +75,7 @@ func queryAuditLogs(userID, connID, sessionID, sqlType, riskLevel, source, start
 	dataArgs := append(args, pageSize, offset)
 
 	var logs []AuditLog
-	err = getDB().Select(&logs, dataSQL, dataArgs...)
+	err = db.Select(&logs, dataSQL, dataArgs...)
 	if err != nil {
 		if dberr.IsTableNotExist(err) {
 			return []AuditLog{}, 0, nil

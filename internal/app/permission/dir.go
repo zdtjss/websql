@@ -1,11 +1,13 @@
 package permission
 
 import (
+	"fmt"
 	"log"
 	"time"
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
+	"websql/internal/audit"
 	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
@@ -23,13 +25,24 @@ func SaveTree(c *gin.Context) {
 		return
 	}
 	doTreeInsert(tree)
+	// 目录树（连接/schema 可见范围）变更影响所有角色的数据权限，必须留痕
+	op := audit.OpFromContext(c, "permission", "saveTree", "PERMISSION_CHANGE", "high")
+	op.Detail = fmt.Sprintf("目录树节点数=%d", len(expendDirTreeAll(tree)))
+	audit.GetAuditService().RecordOp(op)
 }
 
 func DelTreeNode(c *gin.Context) {
 	if !admin.CheckAdminPower(c) {
 		return
 	}
-	getDB().Exec("delete from t_tree where id = ?", c.PostForm("id"))
+	nodeID := c.PostForm("id")
+	op := audit.OpFromContext(c, "permission", "delTreeNode", "PERMISSION_CHANGE", "high")
+	op.Detail = "删除目录树节点 id=" + nodeID
+	if _, err := getDB().Exec("delete from t_tree where id = ?", nodeID); err != nil {
+		op.Status = "failed"
+		op.ErrorMsg = err.Error()
+	}
+	audit.GetAuditService().RecordOp(op)
 	response.WriteOK(c, "")
 }
 

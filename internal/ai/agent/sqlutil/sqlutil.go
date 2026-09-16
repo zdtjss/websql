@@ -9,9 +9,16 @@
 // 任何需要"先剥离注释再解析表名/SQL 类型"的代码都应调用 sqlutil.StripSQLComments。
 package sqlutil
 
-import "strings"
+import (
+	"strings"
 
-// StripSQLComments 是项目内**唯一**的 SQL 注释剥离实现。
+	"websql/internal/pkg/sqlguard"
+)
+
+// StripSQLComments 剥离 SQL 注释。
+//
+// 实现已下沉到 internal/pkg/sqlguard.StripComments（项目内唯一实现），
+// 本包装保留给 AI 路径的历史调用点，行为不变。
 //
 // 正确处理：
 //   - 行注释：-- 直至换行（Postgres/Oracle/SQL Server/MySQL）
@@ -27,74 +34,7 @@ import "strings"
 //
 // 算法复杂度 O(n)，单次扫描，使用 Builder 避免额外分配。
 func StripSQLComments(sql string) string {
-	var b strings.Builder
-	b.Grow(len(sql))
-	inSingle, inDouble := false, false
-	i := 0
-	for i < len(sql) {
-		c := sql[i]
-		if inSingle {
-			b.WriteByte(c)
-			if c == '\'' {
-				// 检查转义：SQL 标准下 a''b 表示字面 a'b
-				if i+1 < len(sql) && sql[i+1] == '\'' {
-					b.WriteByte('\'')
-					i += 2
-					continue
-				}
-				inSingle = false
-			}
-			i++
-			continue
-		}
-		if inDouble {
-			b.WriteByte(c)
-			if c == '"' {
-				inDouble = false
-			}
-			i++
-			continue
-		}
-		// 进入字符串
-		if c == '\'' {
-			inSingle = true
-			b.WriteByte(c)
-			i++
-			continue
-		}
-		if c == '"' {
-			inDouble = true
-			b.WriteByte(c)
-			i++
-			continue
-		}
-		// 块注释
-		if c == '/' && i+1 < len(sql) && sql[i+1] == '*' {
-			idx := strings.Index(sql[i+2:], "*/")
-			if idx == -1 {
-				// 未闭合的块注释视为剩余全部是注释
-				return strings.TrimSpace(b.String())
-			}
-			// 块注释 → 替换为空格，避免 'SELECT/**/id' 被解析成 'SELECTid'
-			b.WriteByte(' ')
-			i += idx + 4
-			continue
-		}
-		// 行注释 -- / #（注意 # 不是 MySQL 标准但项目兼容）
-		if (c == '-' && i+1 < len(sql) && sql[i+1] == '-') || c == '#' {
-			idx := strings.Index(sql[i:], "\n")
-			if idx == -1 {
-				// 行注释直到末尾
-				return strings.TrimSpace(b.String())
-			}
-			i += idx
-			continue
-		}
-		// '--' 中第一个 '-' 后跟着的字符：若不是 '-' 仍要写回
-		b.WriteByte(c)
-		i++
-	}
-	return strings.TrimSpace(b.String())
+	return sqlguard.StripComments(sql)
 }
 
 // ContainsMultipleStatements 检测 SQL 是否包含多条语句（分号分隔）。

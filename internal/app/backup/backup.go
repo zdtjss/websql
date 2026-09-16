@@ -3,6 +3,7 @@ package backup
 import (
 	"net/http"
 
+	"websql/internal/audit"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 
@@ -61,11 +62,20 @@ func RestoreBackup(c *gin.Context) {
 	connId := appctx.Ctx.GetConnID(c)
 	authorization := appctx.Ctx.GetAuthorization(c)
 
+	// 备份恢复会整表/整库回写数据，属高危操作，必须留痕（成功与失败都记录）
+	op := audit.OpFromContext(c, "backup", "restore", "RESTORE", "high")
+	op.ConnID = connId
+	op.Detail = "backupId=" + backupId
+
 	result, err := getDefaultBackup().RestoreBackup(backupId, connId, authorization)
 	if err != nil {
+		op.Status = "failed"
+		op.ErrorMsg = err.Error()
+		audit.GetAuditService().RecordOp(op)
 		response.WriteErr(c, http.StatusOK, 400, err.Error())
 		return
 	}
+	audit.GetAuditService().RecordOp(op)
 	response.WriteOK(c, result)
 }
 

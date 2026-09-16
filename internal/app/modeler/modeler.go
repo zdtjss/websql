@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"websql/internal/app/conn"
+	"websql/internal/audit"
 	"websql/internal/dialect"
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
@@ -332,6 +333,12 @@ func ForwardEngineer(c *gin.Context) {
 		return
 	}
 
+	// 正向工程会按 DDL 直接改库结构：发起前留痕（成功/失败尝试均可追溯）
+	modelerOp := audit.OpFromContext(c, "modeler", "forwardEngineer", "DDL", "high")
+	modelerOp.ConnID = connId
+	modelerOp.Detail = ddlSql
+	modelerOp.Status = "executing"
+
 	statements := splitDDL(ddlSql)
 	results := make([]map[string]any, 0)
 	successCount := 0
@@ -375,6 +382,13 @@ func ForwardEngineer(c *gin.Context) {
 		"results":      results,
 		"allSuccess":   failCount == 0,
 	})
+
+	// 执行结果统计随后记录（detail 中的 DDL 落库前统一脱敏）
+	modelerOp.Detail = fmt.Sprintf("%s\n\n[结果] success=%d failed=%d", ddlSql, successCount, failCount)
+	if failCount > 0 {
+		modelerOp.Status = "failed"
+	}
+	audit.GetAuditService().RecordOp(modelerOp)
 }
 
 func splitDDL(ddl string) []string {

@@ -1,6 +1,10 @@
 package sqlutil
 
-import "strings"
+import (
+	"strings"
+
+	"websql/internal/pkg/sqlguard"
+)
 
 // SQLType 表示 SQL 语句类型。
 type SQLType string
@@ -29,20 +33,11 @@ const (
 )
 
 // writeKeywords 写操作关键字集合（词级匹配，大小写不敏感）。
+// 与 sqlguard.writeKeywords 同一份口径（分类实现已下沉到 sqlguard）。
 var writeKeywords = map[string]bool{
 	"DROP": true, "TRUNCATE": true, "DELETE": true, "ALTER": true,
 	"CREATE": true, "REPLACE": true, "INSERT": true, "UPDATE": true,
 	"MERGE": true,
-}
-
-func isIdentByte(b byte) bool {
-	return b == '_' || b == '$' ||
-		(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-}
-
-func isIdentRune(r rune) bool {
-	return r == '_' || r == '$' ||
-		(r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 }
 
 // FirstKeyword 返回 SQL 的首个关键字（剥离注释、跳过前导空白/标点，统一大写）。
@@ -52,16 +47,7 @@ func isIdentRune(r rune) bool {
 // 导致危险 SQL 审批被静默绕过。这里改为「词法切分取首词」，对任意空白
 // （空格/制表符/换行/回车）与任意前导括号、分号均保持一致判定。
 func FirstKeyword(sql string) string {
-	stripped := StripSQLComments(strings.TrimSpace(sql))
-	i := 0
-	for i < len(stripped) && !isIdentByte(stripped[i]) {
-		i++
-	}
-	j := i
-	for j < len(stripped) && isIdentByte(stripped[j]) {
-		j++
-	}
-	return strings.ToUpper(stripped[i:j])
+	return sqlguard.FirstKeyword(sql)
 }
 
 // DetectSQLType 检测 SQL 类型。基于首个关键字做词级匹配。
@@ -124,11 +110,5 @@ func IsDangerousSQL(sql string) bool {
 // 说明：采用词级匹配而非子串匹配，列名 `update_time` 不会被误判；
 // 未加引号的列名恰为 `update` 时可能误报，方向是「多一次确认」而非漏放行。
 func HasWriteKeyword(sql string) bool {
-	stripped := StripSQLComments(sql)
-	for _, tok := range strings.FieldsFunc(stripped, func(r rune) bool { return !isIdentRune(r) }) {
-		if writeKeywords[strings.ToUpper(tok)] {
-			return true
-		}
-	}
-	return false
+	return sqlguard.HasWriteKeyword(sql)
 }

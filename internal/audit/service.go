@@ -120,6 +120,53 @@ func (s *AuditService) DroppedCount() int64 {
 	return s.writer.dropped.Load()
 }
 
+// OpContext 描述一次操作审计。
+//
+// 用途：SQL 编辑器与 AI Agent 之外的执行入口（权限变更、数据导入导出、
+// 备份恢复、库账号/权限管理、建模正向工程等）在此之前没有审计记录，
+// 导致高危操作不可追溯。调用方用 OpFromContext 构造，再调用 RecordOp。
+type OpContext struct {
+	Source     string // 来源标识：permission / import / export / backup / dbadmin / modeler
+	ToolName   string // 操作名，如 saveTree / importXlsx / restore / grantPrivilege
+	SQLType    string // 事件类型；未在 ShouldRecord 中登记的类型不受 SQL 类型开关限制（仅受总开关与最低风险级别约束）
+	RiskLevel  string // low / medium / high，空值按 medium
+	Status     string // success / failed，空值按 success
+	UserID     string
+	UserName   string
+	ConnID     string
+	SchemaName string
+	Detail     string // 操作详情（对象名清单/SQL 文本），落库前统一经 MaskSQL 脱敏
+	ErrorMsg   string
+}
+
+// RecordOp 记录一次操作审计（Record 的语义化包装：补齐默认值，避免调用方遗漏风险级别与状态）。
+func (s *AuditService) RecordOp(op *OpContext) {
+	if op == nil {
+		return
+	}
+	status := op.Status
+	if status == "" {
+		status = "success"
+	}
+	risk := op.RiskLevel
+	if risk == "" {
+		risk = "medium"
+	}
+	s.Record(&AuditEntry{
+		Source:     op.Source,
+		ToolName:   op.ToolName,
+		SQLText:    op.Detail,
+		SQLType:    op.SQLType,
+		RiskLevel:  risk,
+		Status:     status,
+		UserID:     op.UserID,
+		UserName:   op.UserName,
+		ConnID:     op.ConnID,
+		SchemaName: op.SchemaName,
+		ErrorMsg:   op.ErrorMsg,
+	})
+}
+
 func (s *AuditService) Shutdown() {
 	s.writer.shutdown()
 }

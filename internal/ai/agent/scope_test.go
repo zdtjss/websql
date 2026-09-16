@@ -12,6 +12,51 @@ import (
 // 这些方法是整个 Agent 安全边界的基础，任何回归都可能导致越权。
 // ──────────────────────────────────────────────────────────────
 
+// ─── 跨 schema 同名表隔离 ─────────────────────────────────────
+
+// TestPermissionScope_CrossSchemaSameTableIsolation 多 schema 会话下同名表必须取交集，
+// 修复「schema A 的表级授权解除 schema B 同名表列级限制」的越权。
+func TestPermissionScope_CrossSchemaSameTableIsolation(t *testing.T) {
+	scope := &PermissionScope{
+		UserID:         "u1",
+		IsRemote:       true,
+		SchemaName:     "a",
+		AllowedTables:  map[string]bool{"a.orders": true},
+		AllowedColumns: map[string]map[string]bool{"b.orders": {"id": true}},
+	}
+
+	if got := scope.GetTableAccessLevel("orders"); got != "column" {
+		t.Errorf("GetTableAccessLevel(orders) = %q, want column（多 schema 同名表应取最严级别）", got)
+	}
+	if scope.IsColumnAllowed("orders", "amount") {
+		t.Error("b.orders 未授权 amount，不得因 a.orders 的表级授权而放行")
+	}
+	if !scope.IsColumnAllowed("orders", "id") {
+		t.Error("id 在命中的两个 schema 键中均可用，应放行")
+	}
+
+	// 限定名精确匹配
+	if got := scope.GetTableAccessLevel("a.orders"); got != "full" {
+		t.Errorf("GetTableAccessLevel(a.orders) = %q, want full", got)
+	}
+	if !scope.IsColumnAllowed("a.orders", "amount") {
+		t.Error("a.orders 为表级授权，任意列均应放行（列级键仅属于 b.orders）")
+	}
+	if scope.IsColumnAllowed("b.orders", "amount") {
+		t.Error("b.orders 未授权 amount，应拒绝")
+	}
+
+	// 结果集过滤只保留交集列
+	cols, _ := scope.FilterResultColumns(
+		[]string{"id", "amount"},
+		[]map[string]any{{"id": 1, "amount": 9}},
+		[]string{"orders"},
+	)
+	if len(cols) != 1 || cols[0] != "id" {
+		t.Errorf("结果集应过滤掉 amount，实际保留 %v", cols)
+	}
+}
+
 // ─── SkipChecks ─────────────────────────────────────────────
 
 func TestPermissionScope_SkipChecks(t *testing.T) {

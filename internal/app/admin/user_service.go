@@ -188,6 +188,9 @@ func (s *userService) Save(user *User, currentUserId, currentUserName string) er
 	if err := s.repo.Save(user); err != nil {
 		return err
 	}
+	// 用户角色绑定变更会影响其数据权限：立即失效该用户的权限缓存与外部缓存
+	// （Permission Agent / SQLAgent 缓存内含权限快照，不失效会导致最长 10 分钟旧权限仍生效）
+	authCache.InvalidateByUserId(user.Id)
 	recordPermissionAudit("save_user", fmt.Sprintf("用户 %s (id=%s, loginName=%s) 保存", user.Name, user.Id, user.LoginName), currentUserId, currentUserName)
 	return nil
 }
@@ -225,7 +228,12 @@ func (s *userService) InitUser() error {
 
 // Delete 删除用户
 func (s *userService) Delete(id string) error {
-	return s.repo.Delete(id)
+	if err := s.repo.Delete(id); err != nil {
+		return err
+	}
+	// 用户删除后立即失效其权限缓存与外部缓存（避免已删用户仍可按旧权限访问）
+	authCache.InvalidateByUserId(id)
+	return nil
 }
 
 // HashPassword 使用 bcrypt 加密密码

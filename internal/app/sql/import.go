@@ -14,6 +14,7 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
+	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
@@ -53,6 +54,14 @@ func ImportXlsx(c *gin.Context) {
 		return
 	}
 	defer file.Close()
+
+	// 数据导入是成批写库的高危操作：发起前留痕（成功/失败尝试均可追溯）
+	importOp := audit.OpFromContext(c, "import", "importXlsx", "IMPORT", "high")
+	importOp.ConnID = connId
+	importOp.SchemaName = schema
+	importOp.Detail = fmt.Sprintf("table=%s optType=%s file=%s", table, operType, fileHeader.Filename)
+	importOp.Status = "executing"
+	audit.GetAuditService().RecordOp(importOp)
 
 	if mappingStr == "" {
 		if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {

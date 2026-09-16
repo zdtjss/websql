@@ -45,6 +45,25 @@ func getAESKey() []byte {
 	return aesKey
 }
 
+// ValidateAESKey 校验安全配置中的 AES 密钥是否可用（启动阶段 fail-closed 使用）。
+//
+// 背景：密钥缺失时 getAESKey 会回退到内置默认密钥（源码公开），
+// 等同于把连接密码以可解密形式落库。远程部署（非本地/桌面模式）应拒绝启动，
+// 强制管理员显式配置密钥；本地/桌面模式保持兼容不强制。
+func ValidateAESKey(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("配置未加载，无法校验 security.aesKey")
+	}
+	if cfg.Security.AESKey == "" {
+		return errors.New("缺少 security.aesKey：连接密码将使用内置默认密钥加密（不安全）。请在 config.json 的 security.aesKey 配置 16/24/32 字节密钥的 base64（可用 openssl rand -base64 32 生成）")
+	}
+	k, err := base64.StdEncoding.DecodeString(cfg.Security.AESKey)
+	if err != nil || (len(k) != 16 && len(k) != 24 && len(k) != 32) {
+		return errors.New("security.aesKey 非法：需为 16/24/32 字节密钥的 base64 编码")
+	}
+	return nil
+}
+
 // aesGCMEncrypt 使用 AES-GCM 加密，返回 "g1:" + base64(nonce||ciphertext||tag)。
 func aesGCMEncrypt(plaintext string, key []byte) (string, error) {
 	block, err := aes.NewCipher(key)

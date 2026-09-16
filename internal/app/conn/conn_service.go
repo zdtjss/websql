@@ -427,7 +427,12 @@ func GetConnInfo(connId string) (name, schema string) {
 	if connId == "" {
 		return "", ""
 	}
-	repo := NewConnRepo(getDB())
+	// 管理库未初始化时返回空（审计/日志等旁路调用不得 panic 中断业务）
+	db := getDBOrNil()
+	if db == nil {
+		return "", ""
+	}
+	repo := NewConnRepo(db)
 	cfgList, err := repo.FindConnById(connId)
 	if err != nil || len(cfgList) == 0 {
 		return "", ""

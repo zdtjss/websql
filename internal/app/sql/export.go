@@ -14,10 +14,12 @@ import (
 	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
 	"websql/internal/app/permission"
+	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/sanitize"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -153,6 +155,12 @@ func queryAndWrite(c *gin.Context, table, schema string, connId string, authoriz
 		return
 	}
 	excel.Write(c.Writer)
+	// 整表导出会落盘全量数据，必须留痕（谁在何时导出了哪张表）
+	exportOp := audit.OpFromContext(c, "export", "exportXlsxTable", "SELECT", "medium")
+	exportOp.ConnID = connId
+	exportOp.SchemaName = schema
+	exportOp.Detail = "table=" + table
+	audit.GetAuditService().RecordOp(exportOp)
 	log.Println("导出完成: ", table)
 
 }
@@ -179,6 +187,13 @@ func ExportXlsxBySql(c *gin.Context) {
 		}
 	}
 
+	// 导出接口只允许只读查询：fail-closed 白名单判定（词级，剥离注释），
+	// 防止 CTE 包裹写操作（WITH ... DELETE/UPDATE）或注释变体在导出链路被执行
+	if !sqlguard.IsReadOnlyStatement(sqlStr) {
+		response.WriteErr(c, 200, 500, "导出仅支持只读查询（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH），不允许写操作")
+		return
+	}
+
 	analysis := permission.AnalyzeSQL(sqlStr, schema)
 	permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)
 	if !permResult.Allowed {
@@ -189,6 +204,12 @@ func ExportXlsxBySql(c *gin.Context) {
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
+	// 按 SQL 导出会落盘任意查询结果集，必须留痕（SQL 文本落库前统一脱敏）
+	exportOp := audit.OpFromContext(c, "export", "exportXlsxBySql", "SELECT", "medium")
+	exportOp.ConnID = connId
+	exportOp.SchemaName = schema
+	exportOp.Detail = sqlStr
+	audit.GetAuditService().RecordOp(exportOp)
 	queryAndWriteBySql(c, sqlStr, schema, filename, connId, authorization)
 }
 

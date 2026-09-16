@@ -49,6 +49,7 @@ func classifyUploadExt(ext string) (uploadFileType, bool) {
 
 type uploadMeta struct {
 	ID        string
+	UserID    string         // 上传者用户 ID（归属校验，防止跨用户读取）
 	FileName  string
 	DiskPath  string
 	Type      uploadFileType // excel | csv | markdown
@@ -75,10 +76,19 @@ type UploadedFile struct {
 	Text    string     // text（markdown 全文）
 }
 
-func GetUploadedFile(id string) (*UploadedFile, error) {
+// GetUploadedFile 读取已上传文件内容，仅允许文件所有者访问。
+//
+// 归属校验：fileId 为加密安全随机 token（不可枚举），且必须与上传者一致；
+// 两者缺一都会让任一登录用户通过枚举 fileId 读取他人上传的数据文件（IDOR）。
+// 不存在与无权访问返回同一提示，避免通过报错探测 fileId 是否存在。
+func GetUploadedFile(id, userID string) (*UploadedFile, error) {
 	meta, ok := uploadCache.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("上传文件不存在或已过期（id=%s），请重新上传", id)
+	}
+	if meta.UserID != "" && meta.UserID != userID {
+		log.Printf("[Upload] 拒绝跨用户读取上传文件 - id=%s, owner=%s, requester=%s\n", id, meta.UserID, userID)
+		return nil, fmt.Errorf("上传文件不存在或已过期，请重新上传")
 	}
 
 	switch meta.Type {
@@ -146,7 +156,31 @@ func RemoveUploadedFile(id string) {
 	uploadCache.Delete(id)
 }
 
+// IsUploadOwner 判断上传文件是否属于指定用户（供会话请求侧做归属校验）。
+// 文件不存在时返回 false（过期文件不再向提示词暴露元信息）。
+func IsUploadOwner(id, userID string) bool {
+	if id == "" {
+		return false
+	}
+	meta, ok := uploadCache.Get(id)
+	if !ok {
+		return false
+	}
+	return meta.UserID == "" || meta.UserID == userID
+}
+
+// uploaderID 从请求上下文取上传者用户 ID（AuthMiddleware 已注入 currentUser）。
+func uploaderID(c *gin.Context) string {
+	if v, ok := c.Get("currentUser"); ok {
+		if u, ok := v.(*admin.User); ok && u != nil {
+			return u.Id
+		}
+	}
+	return ""
+}
+
 func HandleUploadExcel(c *gin.Context) {
+	ownerID := uploaderID(c)
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		log.Printf("[Upload] 文件上传失败 - err=%v\n", err)
@@ -175,7 +209,9 @@ func HandleUploadExcel(c *gin.Context) {
 	}
 	defer src.Close()
 
-	fileID := idgen.RandomStr()
+	// fileId 必须使用加密安全随机 token：雪花 ID 单调可枚举，
+	// 会让任一登录用户通过递增猜测读取他人上传的文件
+	fileID := idgen.SecureRandomToken()
 	diskPath := filepath.Join(uploadDir, fileID+ext)
 
 	dst, err := os.Create(diskPath)
@@ -206,6 +242,7 @@ func HandleUploadExcel(c *gin.Context) {
 		charCount := utf8.RuneCountInString(text)
 		uploadCache.Set(fileID, &uploadMeta{
 			ID:        fileID,
+			UserID:    ownerID,
 			FileName:  fileHeader.Filename,
 			DiskPath:  diskPath,
 			Type:      ft,
@@ -260,6 +297,7 @@ func HandleUploadExcel(c *gin.Context) {
 
 	uploadCache.Set(fileID, &uploadMeta{
 		ID:        fileID,
+		UserID:    ownerID,
 		FileName:  fileHeader.Filename,
 		DiskPath:  diskPath,
 		Type:      ft,

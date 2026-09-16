@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -68,8 +69,12 @@ func SaveAuditConfigToDB(cfg *AuditConfig) {
 }
 
 func getConfigValue(key string) string {
+	db := getDB()
+	if db == nil {
+		return ""
+	}
 	var value string
-	err := getDB().Get(&value, "select config_value from t_system_config where config_key = ?", key)
+	err := db.Get(&value, "select config_value from t_system_config where config_key = ?", key)
 	if err != nil {
 		return ""
 	}
@@ -78,6 +83,10 @@ func getConfigValue(key string) string {
 
 func saveConfig(key, value, remark string) {
 	db := getDB()
+	if db == nil {
+		logger.PrintErrf("审计配置未保存（管理库未就绪）", errors.New("db not initialized"), key)
+		return
+	}
 	var existID string
 	err := db.Get(&existID, "select id from t_system_config where config_key = ?", key)
 	if err != nil {

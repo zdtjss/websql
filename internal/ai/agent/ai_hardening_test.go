@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"websql/internal/ai/agent/sqlutil"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -332,5 +335,135 @@ func TestSessionBelongsTo(t *testing.T) {
 		if got := sessionBelongsTo(c.owner, c.requester); got != c.want {
 			t.Errorf("sessionBelongsTo(%q,%q) = %v, want %v", c.owner, c.requester, got, c.want)
 		}
+	}
+}
+
+// ─── 9. 工具分发 fail-closed（未登记工具拒绝） ─────────────────
+
+func TestToolDispatch_UnregisteredToolDenied(t *testing.T) {
+	mw := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil)}
+	endpoint := func(_ context.Context, _ string, _ ...tool.Option) (string, error) { return "ok", nil }
+
+	cases := []struct {
+		name     string
+		wantDeny bool
+	}{
+		{"get_current_date_info", false}, // 只读白名单
+		{"ls", false},                    // 只读文件工具白名单
+		{"unknown_new_tool", true},       // 未登记 → 拒绝
+		{"mcp_sql_exec", true},           // 伪造工具名 → 拒绝
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, err := mw.WrapInvokableToolCall(context.Background(), endpoint, &adk.ToolContext{Name: tc.name})
+			if err != nil {
+				t.Fatalf("WrapInvokableToolCall 失败：%v", err)
+			}
+			_, callErr := ep(context.Background(), "{}")
+			if tc.wantDeny {
+				var pe *PermissionError
+				if callErr == nil || !errors.As(callErr, &pe) {
+					t.Errorf("未登记工具 %s 应按 fail-closed 拒绝，实际 err=%v", tc.name, callErr)
+				}
+				return
+			}
+			if callErr != nil {
+				t.Errorf("白名单工具 %s 不应报错，实际：%v", tc.name, callErr)
+			}
+		})
+	}
+}
+
+// ─── 10. 导出链路：只读强制 + 列级严格校验 ────────────────────
+
+func TestCheckExportAccess_RejectsWriteSQL(t *testing.T) {
+	mw := &PermissionMiddleware{Scope: newRemoteScope(nil, map[string][]string{"orders": {"id"}})}
+	endpoint := func(_ context.Context, _ string, _ ...tool.Option) (string, error) { return "ok", nil }
+
+	for _, sql := range []string{
+		"WITH x AS (SELECT 1) DELETE FROM orders",
+		"WITH/*c*/x AS (SELECT 1) DELETE FROM orders",
+		"DELETE/*c*/FROM orders",
+		"UPDATE orders SET id=1",
+	} {
+		args, _ := json.Marshal(ExportInput{SQL: sql})
+		if _, err := mw.checkExportAccess(context.Background(), string(args), endpoint, "export_excel"); err == nil {
+			t.Errorf("导出链路应拒绝写语句：%s", sql)
+		}
+	}
+}
+
+func TestCheckSelectColumnAccessStrict_RejectsStar(t *testing.T) {
+	mw := &PermissionMiddleware{Scope: newRemoteScope(nil, map[string][]string{"orders": {"id"}})}
+
+	// 非严格路径（query_data）：SELECT * 由结果列过滤兜底
+	if err := mw.checkSelectColumnAccess("SELECT * FROM orders", []string{"orders"}, "query_data"); err != nil {
+		t.Errorf("query_data 路径不应因 SELECT * 报错：%v", err)
+	}
+	// 严格路径（导出）：column 级表禁止 SELECT *
+	if err := mw.checkSelectColumnAccessStrict("SELECT * FROM orders", []string{"orders"}, "export_excel"); err == nil {
+		t.Error("导出路径应拒绝 column 级表上的 SELECT *")
+	}
+	// 显式列出授权字段：放行；列出未授权字段：拦截
+	if err := mw.checkSelectColumnAccessStrict("SELECT id FROM orders", []string{"orders"}, "export_excel"); err != nil {
+		t.Errorf("授权字段应放行：%v", err)
+	}
+	if err := mw.checkSelectColumnAccessStrict("SELECT amount FROM orders", []string{"orders"}, "export_excel"); err == nil {
+		t.Error("导出路径应拒绝未授权字段")
+	}
+}
+
+// ── 11. exec_sql 列级程序化复核 ──────────────────────────────
+
+func TestCheckWriteColumnAccess_DeniesUnauthorizedColumn(t *testing.T) {
+	mw := &PermissionMiddleware{Scope: newRemoteScope(nil, map[string][]string{"orders": {"id"}})}
+
+	if err := mw.checkWriteColumnAccess("UPDATE orders SET id=1 WHERE id=2"); err != nil {
+		t.Errorf("授权字段应放行：%v", err)
+	}
+	if err := mw.checkWriteColumnAccess("UPDATE orders SET amount=1 WHERE id=2"); err == nil {
+		t.Error("UPDATE 未授权字段应拦截")
+	}
+	if err := mw.checkWriteColumnAccess("INSERT INTO orders (amount) VALUES (1)"); err == nil {
+		t.Error("INSERT 未授权字段应拦截")
+	}
+
+	// 表级（full）授权不受列级限制
+	full := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil)}
+	if err := full.checkWriteColumnAccess("UPDATE orders SET amount=1"); err != nil {
+		t.Errorf("表级授权应放行：%v", err)
+	}
+}
+
+// ─── 12. 上传文件归属校验（IDOR） ─────────────────────────────
+
+func TestUploadOwnership(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.md")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("准备测试文件失败：%v", err)
+	}
+	uploadCache.Set("f-1", &uploadMeta{ID: "f-1", UserID: "u1", DiskPath: path, Type: fileTypeMarkdown})
+	defer uploadCache.Delete("f-1")
+
+	if !IsUploadOwner("f-1", "u1") {
+		t.Error("本人应可访问自己的上传文件")
+	}
+	if IsUploadOwner("f-1", "u2") {
+		t.Error("他人不得访问非本人上传的文件")
+	}
+	if IsUploadOwner("f-not-exist", "u1") {
+		t.Error("文件不存在应返回 false")
+	}
+
+	if _, err := GetUploadedFile("f-1", "u2"); err == nil {
+		t.Error("跨用户读取应被拒绝")
+	}
+	up, err := GetUploadedFile("f-1", "u1")
+	if err != nil {
+		t.Fatalf("本人读取失败：%v", err)
+	}
+	if up.Text != "hello" {
+		t.Errorf("读取内容错误，实际：%q", up.Text)
 	}
 }

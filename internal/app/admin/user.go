@@ -139,6 +139,14 @@ func DelUser(c *gin.Context) {
 	response.WriteOK(c, "")
 }
 
+// AuditUserName 供 audit 包通过接口读取操作人姓名（避免 audit → admin 循环依赖）
+func (u *User) AuditUserName() string {
+	if u == nil {
+		return ""
+	}
+	return u.Name
+}
+
 // recordPermissionAudit 记录权限变更审计日志
 func recordPermissionAudit(toolName, sqlText, userId, userName string) {
 	audit.GetAuditService().Record(&audit.AuditEntry{
@@ -155,5 +163,5 @@ func recordPermissionAudit(toolName, sqlText, userId, userName string) {
 
 func init() {
 	// 注入管理员权限校验函数，打破 admin ↔ audit 循环依赖
-	audit.SetAdminChecker(func(c *gin.Context) { CheckAdminPower(c) })
+	audit.SetAdminChecker(func(c *gin.Context) bool { return CheckAdminPower(c) })
 }

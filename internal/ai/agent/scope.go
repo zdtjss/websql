@@ -96,6 +96,8 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		}
 
 		// table/column 级权限：仅处理没有完整访问的 schema
+		// 权限键统一为「schema.table」：裸表名在跨 schema 场景会相互覆盖
+		// （如 A.orders 的表级授权会解除 B.orders 的列级限制），必须带 schema 维度
 		for s := range schemaSet {
 			if scope.FullAccessSchemas[s] {
 				continue
@@ -105,16 +107,17 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 				continue
 			}
 			for tableName, tp := range sp.ByTable {
+				key := scopeKey(s, tableName)
 				// 最具体优先：如果有 column 级配置，即使同时有 table 级也以 column 级为准
 				if len(tp.Columns) > 0 {
 					for col := range tp.Columns {
-						if scope.AllowedColumns[tableName] == nil {
-							scope.AllowedColumns[tableName] = make(map[string]bool)
+						if scope.AllowedColumns[key] == nil {
+							scope.AllowedColumns[key] = make(map[string]bool)
 						}
-						scope.AllowedColumns[tableName][col] = true // col 已由 ParseColumnName 转为小写
+						scope.AllowedColumns[key][col] = true // col 已由 ParseColumnName 转为小写
 					}
 				} else if tp.HasTableLevel {
-					scope.AllowedTables[tableName] = true
+					scope.AllowedTables[key] = true
 				}
 			}
 		}
@@ -162,6 +165,168 @@ func firstNonEmpty(ss []string) string {
 	return ""
 }
 
+// scopeKey 构造权限键「schema.table」（权限配置与判定共用同一规则，保留原始大小写）。
+func scopeKey(schema, table string) string {
+	schema = trimIdent(schema)
+	table = trimIdent(table)
+	if schema == "" {
+		return table
+	}
+	if table == "" {
+		return schema
+	}
+	return schema + "." + table
+}
+
+// trimIdent 去掉标识符两侧的引号/反引号/方括号与空白
+func trimIdent(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "`\"[]")
+}
+
+// qualifyKey 把权限键归一化为「schema.table」（三段式取后两段，保留大小写）
+func qualifyKey(key string) string {
+	key = trimIdent(key)
+	parts := strings.Split(key, ".")
+	if len(parts) >= 3 {
+		return parts[len(parts)-2] + "." + parts[len(parts)-1]
+	}
+	return key
+}
+
+// keyTablePart 返回权限键中的表名部分（保留大小写）
+func keyTablePart(key string) string {
+	key = qualifyKey(key)
+	if idx := strings.LastIndex(key, "."); idx >= 0 {
+		return key[idx+1:]
+	}
+	return key
+}
+
+// scopeKeys 返回该表名命中的权限配置键（表名部分严格大小写匹配，延续历史 fail-closed 口径）。
+//
+// 语义：裸表名在「多 schema 会话」下可能命中多个 schema 的同名表配置，
+// 调用方按「所有命中的键都允许才算允许」（交集，fail-closed）判定，
+// 避免一个 schema 的表级授权解除另一个 schema 同名表的列级限制。
+// 无任何配置时回退到裸键（历史上裸键即表名，查不到即拒绝）。
+func (s *PermissionScope) scopeKeys(table string) []string {
+	return s.collectKeys(table, false)
+}
+
+// scopeKeysFold 大小写不敏感版本：用于容忍 DB 元数据与权限配置的大小写差异
+// （如 Oracle 返回大写表名、MySQL 在部分平台保留建表时大小写）。
+// 仅用于「只可能增加限制」的判定路径（list_tables 过滤、结果列过滤）与显式 IgnoreCase 调用。
+func (s *PermissionScope) scopeKeysFold(table string) []string {
+	return s.collectKeys(table, true)
+}
+
+func (s *PermissionScope) collectKeys(table string, fold bool) []string {
+	t := trimIdent(table)
+	if t == "" {
+		return nil
+	}
+	eq := func(a, b string) bool {
+		if fold {
+			return strings.EqualFold(a, b)
+		}
+		return a == b
+	}
+
+	keys := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	add := func(k string) {
+		if k == "" || seen[k] {
+			return
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+
+	if strings.Contains(t, ".") {
+		// 已限定 schema（如 db1.orders）：按 schema.table 精确匹配
+		want := qualifyKey(t)
+		for k := range s.AllowedTables {
+			if eq(qualifyKey(k), want) {
+				add(k)
+			}
+		}
+		for k := range s.AllowedColumns {
+			if eq(qualifyKey(k), want) {
+				add(k)
+			}
+		}
+		if len(keys) == 0 {
+			add(want)
+		}
+		return keys
+	}
+
+	// 裸表名：收集所有 schema 下的同名配置键
+	for k := range s.AllowedTables {
+		if eq(keyTablePart(k), t) {
+			add(k)
+		}
+	}
+	for k := range s.AllowedColumns {
+		if eq(keyTablePart(k), t) {
+			add(k)
+		}
+	}
+	if len(keys) == 0 {
+		add(t)
+	}
+	return keys
+}
+
+// tableLevel 基于命中的权限键集合判定访问级别（全部键都允许才算允许，交集 fail-closed）
+func (s *PermissionScope) tableLevel(keys []string) string {
+	if len(keys) == 0 {
+		return "none"
+	}
+	hasColumn := false
+	for _, k := range keys {
+		if s.AllowedTables[k] {
+			continue // 该 schema 为表级（全列）授权
+		}
+		if len(s.AllowedColumns[k]) > 0 {
+			hasColumn = true
+			continue
+		}
+		return "none" // 任一命中的 schema 无该表授权 → 拒绝
+	}
+	if hasColumn {
+		return "column"
+	}
+	return "full"
+}
+
+// columnAllowed 基于命中的权限键集合判定列权限（全部键都允许该列才允许）
+func (s *PermissionScope) columnAllowed(keys []string, column string) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	col := strings.ToLower(column)
+	for _, k := range keys {
+		if s.AllowedTables[k] {
+			continue // 该 schema 为表级（全列）授权
+		}
+		if s.AllowedColumns[k][col] {
+			continue
+		}
+		return false // 任一命中的 schema 未授权该列 → 拒绝（fail-closed）
+	}
+	return true
+}
+
+// resolveKeys 返回结果过滤使用的键集合（大小写不敏感，只会增加限制方向）
+func (s *PermissionScope) resolveKeys(table string) []string {
+	if keys := s.scopeKeys(table); len(keys) > 0 {
+		if s.tableLevel(keys) != "none" {
+			return keys
+		}
+	}
+	return s.scopeKeysFold(table)
+}
+
 func (s *PermissionScope) SkipChecks() bool {
 	return !s.IsRemote || s.HasFullConnAccess
 }
@@ -177,45 +342,33 @@ func (s *PermissionScope) IsTableAllowed(table string) bool {
 	if s.SkipChecks() || s.AllSchemasFull {
 		return true
 	}
-	return s.AllowedTables[table] || len(s.AllowedColumns[table]) > 0
+	return s.tableLevel(s.scopeKeys(table)) != "none"
 }
 
+// IsTableAllowedIgnoreCase 大小写不敏感的表访问判定：
+// 用于表名来自 DB 元数据的场景（list_tables 结果过滤、get_table_schema 请求表名）。
 func (s *PermissionScope) IsTableAllowedIgnoreCase(table string) bool {
-	if s.IsTableAllowed(table) {
+	if s.SkipChecks() || s.AllSchemasFull {
 		return true
 	}
-	upper := strings.ToUpper(table)
-	for t := range s.AllowedTables {
-		if strings.ToUpper(t) == upper {
-			return true
-		}
+	if level := s.tableLevel(s.scopeKeys(table)); level != "none" {
+		return true
 	}
-	for t := range s.AllowedColumns {
-		if strings.ToUpper(t) == upper {
-			return true
-		}
-	}
-	return false
+	return s.tableLevel(s.scopeKeysFold(table)) != "none"
 }
 
 func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
-	if s.SkipChecks() || s.AllSchemasFull || s.AllowedTables[table] {
+	if s.SkipChecks() || s.AllSchemasFull {
 		return true
 	}
-	if cols, ok := s.AllowedColumns[table]; ok {
-		return cols[strings.ToLower(column)]
-	}
-	return false
+	return s.columnAllowed(s.scopeKeys(table), column)
 }
 
 func (s *PermissionScope) GetTableAccessLevel(table string) string {
-	if s.SkipChecks() || s.AllSchemasFull || s.AllowedTables[table] {
+	if s.SkipChecks() || s.AllSchemasFull {
 		return "full"
 	}
-	if len(s.AllowedColumns[table]) > 0 {
-		return "column"
-	}
-	return "none"
+	return s.tableLevel(s.scopeKeys(table))
 }
 
 func (s *PermissionScope) FilterResultColumns(columns []string, data []map[string]any, tables []string) ([]string, []map[string]any) {
@@ -225,7 +378,7 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 
 	hasRestrictions := false
 	for _, table := range tables {
-		if s.GetTableAccessLevel(table) == "column" {
+		if s.tableLevel(s.resolveKeys(table)) == "column" {
 			hasRestrictions = true
 			break
 		}
@@ -234,14 +387,35 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 		return columns, data
 	}
 
+	// 按「schema 键交集」收集允许列：多 schema 会话下同名表可能命中多个权限键，
+	// 必须所有命中的键都允许该列才保留（fail-closed）；跨表则取并集
 	allowedCols := make(map[string]bool)
-	for table, cols := range s.AllowedColumns {
-		for _, t := range tables {
-			if strings.EqualFold(t, table) {
-				for col := range cols {
-					allowedCols[strings.ToLower(col)] = true
+	for _, table := range tables {
+		keys := s.resolveKeys(table)
+		if s.tableLevel(keys) != "column" {
+			continue
+		}
+		tableCols := make(map[string]bool)
+		firstKey := true
+		for _, k := range keys {
+			if s.AllowedTables[k] {
+				continue // 该 schema 为表级（全列）授权，不构成限制
+			}
+			if firstKey {
+				for col := range s.AllowedColumns[k] {
+					tableCols[strings.ToLower(col)] = true
+				}
+				firstKey = false
+				continue
+			}
+			for col := range tableCols {
+				if !s.AllowedColumns[k][col] {
+					delete(tableCols, col)
 				}
 			}
+		}
+		for col := range tableCols {
+			allowedCols[col] = true
 		}
 	}
 

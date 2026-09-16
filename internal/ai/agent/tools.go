@@ -1001,13 +1001,14 @@ type ReadFileDataOutput struct {
 // NewReadFileDataFunc 返回读取已上传文件数据的工具函数（只读，供 LLM 分析文件内容）。
 // 它不会写入数据库，也不会删除暂存文件，可多次分页调用。
 // 表格类（excel/csv）按 limit/offset 分页返回行；文本类（markdown）不做数据量限制，返回全文。
-func NewReadFileDataFunc() func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
+// userID 为调用者身份，用于上传文件归属校验（仅能读取本人上传的文件）。
+func NewReadFileDataFunc(userID string) func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
 	return func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
 		log.Printf("[Tool:read_file_data] fileId=%s, limit=%d, offset=%d\n", input.FileID, input.Limit, input.Offset)
 		if input.FileID == "" {
 			return nil, errors.New("fileId is required")
 		}
-		upload, err := GetUploadedFile(input.FileID)
+		upload, err := GetUploadedFile(input.FileID, userID)
 		if err != nil {
 			return nil, err
 		}

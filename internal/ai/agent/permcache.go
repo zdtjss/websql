@@ -35,9 +35,13 @@ var globalPermAgentCache = &PermissionAgentCache{
 }
 
 func init() {
-	// 注册权限变更回调，当角色权限变更时清除 Permission Agent 缓存
+	// 注册权限变更回调，当角色权限变更时清除权限相关缓存：
+	//  1. Permission Agent 缓存（其权限视图由 schemaNames 决定）
+	//  2. SQLAgent 缓存（实例内烘焙了 PermissionScope 快照，若不清理，
+	//     权限回收/降级后旧权限最长可继续生效 agentCacheTTL=10 分钟）
 	admin.OnPermissionChanged(func() {
 		globalPermAgentCache.InvalidateAll()
+		GetAgentFactory().InvalidateAll()
 	})
 }
 

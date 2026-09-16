@@ -187,6 +187,178 @@ func ValidateNoFileSideEffects(sql string) error {
 	return nil
 }
 
+// ──────────────────────────────────────────────
+// SQL 语句分类（词级判定）
+//
+// 背景：项目历史实现中，SQL 类型判定存在「关键字+空格」前缀匹配（如
+// strings.HasPrefix(upper, "DELETE ")）与「不剥离注释」两处缺陷：
+//   - `DELETE\tFROM t`（制表符）、`DELETE\nFROM t`（换行）不命中前缀匹配；
+//   - `WITH/*c*/x AS (...) DELETE FROM t`、`DELETE/*c*/FROM t` 因注释
+//     插在关键字中间而无法识别首关键字，导致上层按「查询」处理并放行写入。
+//
+// 本组函数是项目内唯一的 SQL 语句分类实现（AI 路径的 sqlutil 与经典路径的
+// permission 均委托到这里），供权限校验、执行分支、审计分级共用，避免规则漂移。
+// ─────────────────────────────────────────────
+
+// writeKeywords 写操作关键字集合（词级匹配，大小写不敏感）。
+// 与 AI 路径 sqlutil 保持同一份口径。
+var writeKeywords = map[string]bool{
+	"DROP": true, "TRUNCATE": true, "DELETE": true, "ALTER": true,
+	"CREATE": true, "REPLACE": true, "INSERT": true, "UPDATE": true,
+	"MERGE": true,
+}
+
+// readOnlyKeywords 明确只读的首关键字白名单。
+// 白名单之外的一切语句（含 SET/USE/PRAGMA/事务控制等）在权限层按「需要修改权限」
+// 处理（fail-closed），避免解析器无法识别时被静默放行。
+var readOnlyKeywords = map[string]bool{
+	"SELECT": true, "SHOW": true, "DESCRIBE": true, "DESC": true,
+	"EXPLAIN": true, "VALUES": true, "TABLE": true,
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' ||
+		(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isIdentRune(r rune) bool {
+	return r == '_' || r == '$' ||
+		(r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+// StripComments 剥离 SQL 注释，是项目内唯一的注释剥离实现。
+//
+// 正确处理：
+//   - 行注释：-- 直至换行；#  直至换行（MySQL）
+//   - 块注释：/* ... */（可跨行、可内联，替换为空格避免 "SELECT/**/id" 粘连）
+//   - 字符串字面量内的 '--' / '#' / '/*' 不视为注释
+//   - 单引号字符串内 '' 转义、双引号标识符内不视为注释
+func StripComments(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+	inSingle, inDouble := false, false
+	i := 0
+	for i < len(sql) {
+		c := sql[i]
+		if inSingle {
+			b.WriteByte(c)
+			if c == '\'' {
+				if i+1 < len(sql) && sql[i+1] == '\'' {
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if inDouble {
+			b.WriteByte(c)
+			if c == '"' {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+		if c == '\'' {
+			inSingle = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c == '"' {
+			inDouble = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(sql) && sql[i+1] == '*' {
+			idx := strings.Index(sql[i+2:], "*/")
+			if idx == -1 {
+				return strings.TrimSpace(b.String())
+			}
+			b.WriteByte(' ')
+			i += idx + 4
+			continue
+		}
+		if (c == '-' && i+1 < len(sql) && sql[i+1] == '-') || c == '#' {
+			idx := strings.Index(sql[i:], "\n")
+			if idx == -1 {
+				return strings.TrimSpace(b.String())
+			}
+			i += idx
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// FirstKeyword 返回剥离注释后的首个关键字（跳过前导空白/标点，统一大写）。
+// 无关键字时返回空串。
+func FirstKeyword(sql string) string {
+	stripped := StripComments(strings.TrimSpace(sql))
+	i := 0
+	for i < len(stripped) && !isIdentByte(stripped[i]) {
+		i++
+	}
+	j := i
+	for j < len(stripped) && isIdentByte(stripped[j]) {
+		j++
+	}
+	return strings.ToUpper(stripped[i:j])
+}
+
+// HasWriteKeyword 判断剥离注释后的语句中是否出现写操作关键字（词级整句扫描）。
+// 用于识别 CTE 包裹的写操作（首关键字为 WITH）。
+func HasWriteKeyword(sql string) bool {
+	stripped := StripComments(sql)
+	for _, tok := range strings.FieldsFunc(stripped, func(r rune) bool { return !isIdentRune(r) }) {
+		if writeKeywords[strings.ToUpper(tok)] {
+			return true
+		}
+	}
+	return false
+}
+
+// WriteKind 返回语句的「有效写操作关键字」：
+//   - 普通语句：首关键字（如 DELETE FROM t → DELETE）
+//   - CTE 语句：整句词级扫描到的第一个写关键字（如 WITH x AS (...) DELETE FROM t → DELETE）
+//   - 非写语句：返回首关键字或空串
+func WriteKind(sql string) string {
+	kw := FirstKeyword(sql)
+	if kw != "WITH" {
+		return kw
+	}
+	stripped := StripComments(sql)
+	for _, tok := range strings.FieldsFunc(stripped, func(r rune) bool { return !isIdentRune(r) }) {
+		up := strings.ToUpper(tok)
+		if writeKeywords[up] {
+			return up
+		}
+	}
+	return kw
+}
+
+// IsWriteStatement 判断语句是否为写操作（含 CTE 包裹的写操作）。
+func IsWriteStatement(sql string) bool {
+	return writeKeywords[WriteKind(sql)]
+}
+
+// IsReadOnlyStatement 判断语句是否「明确只读」（fail-closed 白名单）：
+// 首关键字属于 SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/VALUES/TABLE，
+// 或首关键字为 WITH 且整句不含写关键字。
+// 返回 false 的语句在权限层一律要求「数据修改权限」。
+func IsReadOnlyStatement(sql string) bool {
+	kw := FirstKeyword(sql)
+	if kw == "WITH" {
+		return !HasWriteKeyword(sql)
+	}
+	return readOnlyKeywords[kw]
+}
+
 // checkDangerous 检查危险模式
 func checkDangerous(upper string) error {
 	for _, d := range dangerousPatterns {

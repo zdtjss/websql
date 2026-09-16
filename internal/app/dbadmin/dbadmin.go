@@ -4,6 +4,7 @@
 package dbadmin
 
 import (
+	"fmt"
 	"log"
 	"regexp"
 	"runtime/debug"
@@ -11,6 +12,7 @@ import (
 
 	"websql/internal/app/admin"
 	"websql/internal/app/conn"
+	"websql/internal/audit"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/sanitize"
@@ -18,6 +20,19 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+// recordDbAdminAudit 记录库账号/权限管理操作。
+//
+// 这些接口直接执行 CREATE/ALTER/DROP USER、GRANT/REVOKE、CREATE/DROP DATABASE，
+// 此前既不经 sqlguard 也无审计记录，属于最高危的不可追溯操作；
+// 统一在发起前记录（status=executing），确保成功与失败尝试都可追溯（detail 不含密码）。
+func recordDbAdminAudit(c *gin.Context, toolName, connID, detail string) {
+	op := audit.OpFromContext(c, "dbadmin", toolName, "DB_PRIVILEGE", "high")
+	op.ConnID = connID
+	op.Detail = detail
+	op.Status = "executing"
+	audit.GetAuditService().RecordOp(op)
+}
 
 // ===== 请求参数 =====
 
@@ -270,6 +285,8 @@ func SaveDbUser(c *gin.Context) {
 			sqlStr = "CREATE USER " + sanitize.QuoteIdentifier(param.Username, "oracle") + " IDENTIFIED BY " + quoteOraclePassword(param.Password)
 		}
 	}
+	recordDbAdminAudit(c, "saveDbUser", param.ConnId,
+		fmt.Sprintf("mode=%s user=%s host=%s", mode, param.Username, param.Host))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, friendlyExecErr(mode, err))
 		return
@@ -315,6 +332,8 @@ func DropDbUser(c *gin.Context) {
 	case "oracle":
 		sqlStr = "DROP USER " + sanitize.QuoteIdentifier(param.Username, "oracle") + " CASCADE"
 	}
+	recordDbAdminAudit(c, "dropDbUser", param.ConnId,
+		fmt.Sprintf("user=%s host=%s", param.Username, param.Host))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, friendlyExecErr("drop-user", err))
 		return
@@ -428,6 +447,8 @@ func CreateSchema(c *gin.Context) {
 			" IDENTIFIED BY " + quoteOraclePassword(param.Password) +
 			" DEFAULT TABLESPACE " + tableSpace
 	}
+	recordDbAdminAudit(c, "createSchema", param.ConnId,
+		fmt.Sprintf("schema/user=%s charset=%s collation=%s", param.Schema, param.Charset, param.Collation))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, friendlyExecErr("create-schema", err))
 		return
@@ -480,6 +501,7 @@ func DropSchema(c *gin.Context) {
 		}
 		sqlStr = "DROP USER " + sanitize.QuoteIdentifier(param.Schema, "oracle") + " CASCADE"
 	}
+	recordDbAdminAudit(c, "dropSchema", param.ConnId, fmt.Sprintf("schema/user=%s", param.Schema))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, friendlyExecErr("drop-schema", err))
 		return
@@ -682,6 +704,8 @@ func GrantPrivilege(c *gin.Context) {
 		response.WriteErr(c, 200, 500, "无法构建授权语句")
 		return
 	}
+	recordDbAdminAudit(c, "grantPrivilege", param.ConnId,
+		fmt.Sprintf("user=%s privileges=%v object=%s", param.Username, param.Privileges, param.Object))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, "授权失败，请检查权限与对象是否存在")
 		return
@@ -724,6 +748,8 @@ func RevokePrivilege(c *gin.Context) {
 		response.WriteErr(c, 200, 500, "无法构建撤销语句")
 		return
 	}
+	recordDbAdminAudit(c, "revokePrivilege", param.ConnId,
+		fmt.Sprintf("user=%s privileges=%v object=%s", param.Username, param.Privileges, param.Object))
 	if _, err := dc.Exec(sqlStr); err != nil {
 		response.WriteErr(c, 200, 500, "撤销权限失败，请检查权限是否存在")
 		return

@@ -25,6 +25,7 @@ import (
 	"websql/internal/https"
 	logutils "websql/internal/logger"
 	"websql/internal/migration"
+	"websql/internal/pkg/crypto"
 	"websql/internal/pkg/safego"
 	"websql/internal/store"
 	"websql/internal/version"
@@ -99,6 +100,14 @@ func main() {
 
 	// 从数据库加载系统配置（覆盖配置文件中的配置）
 	database.LoadConfigFromDB()
+
+	// 安全配置 fail-closed：远程部署缺少合法 AES 密钥时拒绝启动。
+	// 否则连接密码会用内置默认密钥加密，而默认密钥源码公开、等同于明文存储。
+	if !config.IsLocalMode() {
+		if err := crypto.ValidateAESKey(config.Get()); err != nil {
+			log.Fatalf("[Main] 安全配置校验失败: %v", err)
+		}
+	}
 
 	audit.GetAuditService()
 	audit.StartAuditLogCleaner()

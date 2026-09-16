@@ -12,6 +12,7 @@ import (
 	conn "websql/internal/app/conn"
 	appperm "websql/internal/app/permission"
 	"websql/internal/audit"
+	"websql/internal/pkg/sqlguard"
 	"websql/internal/pkg/strutil"
 
 	"github.com/cloudwego/eino/adk"
@@ -138,6 +139,35 @@ func isPrivilegedWriteTool(name string) bool {
 // fsWriteTools 文件写入类工具：路径已由 export 包沙箱限制，但「写了什么文件」必须留痕，
 // 否则提示注入写出脚本/覆盖文件的行为在审计中不可见。
 var fsWriteTools = map[string]bool{"write_file": true, "edit_file": true}
+
+// readOnlyUnmonitoredTools 免权限策略的只读工具白名单。
+//
+// 这些工具不访问数据库、不落盘，也不依赖 PermissionScope：
+//   - get_current_date_info：返回当前日期时间
+//   - read_file_data：读取本人上传的暂存文件（工具内部做 fileId 归属校验）
+//   - ls / read_file / glob / grep：Eino Filesystem 中间件的只读文件工具，
+//     路径由 export.OSFilesystemBackend 沙箱限制（工作区 / exports / skills 只读 / 临时目录），
+//     其中 write_file / edit_file / execute 已在其他分支按写权限处理
+//
+// 【安全约定】工具分发采用 fail-closed：未在 switch 中登记、也不在本白名单里的
+// 工具一律拒绝。新增数据/文件/命令类工具时必须显式登记权限策略，
+// 禁止依赖「默认放行」——否则新增工具会在无任何权限校验的情况下暴露给模型。
+var readOnlyUnmonitoredTools = map[string]bool{
+	"get_current_date_info": true,
+	"read_file_data":        true,
+	"ls":                    true,
+	"read_file":             true,
+	"glob":                  true,
+	"grep":                  true,
+}
+
+// unregisteredToolError 构造未登记工具的统一拒绝错误
+func unregisteredToolError(name string) *PermissionError {
+	return &PermissionError{
+		Message: fmt.Sprintf("工具 %s 未登记权限策略，已被安全策略拒绝执行", name),
+		Objects: []string{name},
+	}
+}
 
 func isFsWriteTool(name string) bool {
 	return fsWriteTools[name]
@@ -280,8 +310,12 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			if isFsWriteTool(tCtx.Name) {
 				return m.withFsWriteAudit(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 			}
-			m.logAllow(tCtx.Name, "unmonitored_tool")
-			return endpoint(ctx, argumentsInJSON, opts...)
+			if readOnlyUnmonitoredTools[tCtx.Name] {
+				m.logAllow(tCtx.Name, "read_only_allowlist")
+				return endpoint(ctx, argumentsInJSON, opts...)
+			}
+			m.logDeny(tCtx.Name, "工具未登记权限策略(fail-closed)", nil)
+			return "", unregisteredToolError(tCtx.Name)
 		}
 	}, nil
 }
@@ -329,8 +363,14 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			// 审计记录 + 间接危险命令检测（流式版本）
 			return m.checkStreamExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
-			m.logAllow(tCtx.Name+"(stream)", "unmonitored_tool")
-			return endpoint(ctx, argumentsInJSON, opts...)
+			// 只读白名单工具与文件写入类工具（写权限已由上方 privilegedWriteTools 拦截、
+			// 路径已由 export 沙箱限制）直接放行；其余未登记工具一律拒绝
+			if readOnlyUnmonitoredTools[tCtx.Name] || isFsWriteTool(tCtx.Name) {
+				m.logAllow(tCtx.Name+"(stream)", "read_only_allowlist")
+				return endpoint(ctx, argumentsInJSON, opts...)
+			}
+			m.logDeny(tCtx.Name+"(stream)", "工具未登记权限策略(fail-closed)", nil)
+			return nil, unregisteredToolError(tCtx.Name)
 		}
 	}, nil
 }
@@ -818,7 +858,7 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 
 	// 双重验证：Permission Agent 允许后，对高风险写操作（DDL + 无 WHERE 的 DELETE/UPDATE）
 	// 追加程序化表级校验。防止 Permission Agent（LLM）误放行导致越权操作。
-	// 仅做表级验证（轻量），不重复做列级验证（已由 Agent 完成）。
+	// 表级校验后统一追加列级复核（checkWriteColumnAccess），LLM 不承担唯一防线。
 	if containsDangerousSQL(sql) {
 		if err := m.doubleCheckHighRiskExec(sql, tables); err != nil {
 			objects := permErrorObjects(err)
@@ -827,8 +867,14 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 			return "", err
 		}
 		m.logAllow("exec_sql", "agent+double_check")
-	} else {
-		m.logAllow("exec_sql", "agent")
+	}
+
+	// 列级复核：与降级路径同一逻辑，防止 LLM 误判导致向未授权字段写入
+	if err := m.checkWriteColumnAccess(sql); err != nil {
+		objects := permErrorObjects(err)
+		m.logDeny("exec_sql", "列级校验拦截(agent允许但程序化拒绝)", objects)
+		m.auditPermDenied("exec_sql", "column_check_blocked: "+err.Error(), objects)
+		return "", err
 	}
 
 	return endpoint(ctx, args, opts...)
@@ -848,20 +894,8 @@ func (m *PermissionMiddleware) checkExecAccessFallback(ctx context.Context, args
 		}
 	}
 
-	analysis := appperm.AnalyzeSQL(input.SQL, m.Scope.SchemaName)
-	if len(analysis.WriteColumns) > 0 && len(analysis.WriteTables) > 0 {
-		writeTableName := analysis.WriteTables[0].Name
-		if m.Scope.GetTableAccessLevel(writeTableName) == "column" {
-			for _, col := range analysis.WriteColumns {
-				if !m.Scope.IsColumnAllowed(writeTableName, col.ColumnName) {
-					m.logDeny("exec_sql", "无权操作字段", []string{writeTableName + "." + col.ColumnName})
-					return "", &PermissionError{
-						Message: fmt.Sprintf("无权操作字段 %s.%s", writeTableName, col.ColumnName),
-						Objects: []string{writeTableName + "." + col.ColumnName},
-					}
-				}
-			}
-		}
+	if err := m.checkWriteColumnAccess(input.SQL); err != nil {
+		return "", err
 	}
 
 	m.logAllow("exec_sql", "fallback(programmatic)")
@@ -915,7 +949,18 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		return "", m.denyEmptySQL("export", args)
 	}
 
+	// 导出必须只读：导出链路没有审批与事务语义，写语句一律拒绝
+	// （同时阻止 CTE 包裹的写操作借导出链路执行）
+	if !sqlguard.IsReadOnlyStatement(sql) {
+		m.logDeny(toolName, "导出仅支持只读查询", nil)
+		return "", &PermissionError{
+			Message: "导出仅支持只读查询（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH），不允许写操作",
+			Objects: []string{},
+		}
+	}
+
 	m.logInfo("export", "sql=%s", truncateForLog(sql))
+	tables := appperm.ExtractTablesFromSQL(sql)
 
 	if m.Scope.AllSchemasFull {
 		m.logAllow("export", "schema_full(fast)")
@@ -933,7 +978,22 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		return "", m.buildPermError(decision)
 	}
 
-	m.logAllow("export", "agent")
+	// 双重验证：与 query_data 保持一致，Permission Agent 允许后追加程序化
+	// 表级 + 列级校验。导出结果直接落盘、没有结果过滤兜底，必须执行前拦截。
+	if err := m.doubleCheckReadAccess(sql, tables); err != nil {
+		objects := permErrorObjects(err)
+		m.logDeny(toolName, "双重验证拦截(agent允许但程序化拒绝)", objects)
+		m.auditPermDenied(toolName, "double_check_blocked: "+err.Error(), objects)
+		return "", err
+	}
+	if err := m.checkSelectColumnAccessStrict(sql, tables, toolName); err != nil {
+		objects := permErrorObjects(err)
+		m.logDeny(toolName, "列级校验拦截(agent允许但程序化拒绝)", objects)
+		m.auditPermDenied(toolName, "column_check_blocked: "+err.Error(), objects)
+		return "", err
+	}
+
+	m.logAllow(toolName, "agent+double_check")
 	return endpoint(ctx, args, opts...)
 }
 
@@ -952,7 +1012,7 @@ func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, ar
 		}
 	}
 
-	if err := m.checkSelectColumnAccess(input.SQL, tables, "export"); err != nil {
+	if err := m.checkSelectColumnAccessStrict(input.SQL, tables, "export"); err != nil {
 		return "", err
 	}
 
@@ -1117,9 +1177,32 @@ func (m *PermissionMiddleware) hasColumnRestrictions(tables []string) bool {
 }
 
 func (m *PermissionMiddleware) checkSelectColumnAccess(sql string, tables []string, toolName string) error {
+	return m.checkSelectColumnAccessWithStar(sql, tables, toolName, false)
+}
+
+// checkSelectColumnAccessStrict 列级校验的严格版本：额外拒绝 column 级表上的 SELECT *。
+// 用途：导出类工具会把全部列落盘且没有结果过滤兜底，不能像 query_data 那样
+// 依赖「结果列过滤」在返回前裁剪，必须在执行前拦截。
+func (m *PermissionMiddleware) checkSelectColumnAccessStrict(sql string, tables []string, toolName string) error {
+	return m.checkSelectColumnAccessWithStar(sql, tables, toolName, true)
+}
+
+func (m *PermissionMiddleware) checkSelectColumnAccessWithStar(sql string, tables []string, toolName string, rejectStar bool) error {
 	selectCols := appperm.ExtractSelectColumns(appperm.StripComments(strings.TrimSpace(sql)))
 	for _, sc := range selectCols {
 		if sc.IsStar {
+			if !rejectStar {
+				continue
+			}
+			for _, table := range tables {
+				if m.Scope.GetTableAccessLevel(table) == "column" {
+					m.logDeny(toolName, "column 级表禁止 SELECT *（导出无结果过滤）", []string{table})
+					return &PermissionError{
+						Message: fmt.Sprintf("表 %s 仅开放部分字段，导出时必须显式列出允许字段，禁止使用 SELECT *", table),
+						Objects: []string{table},
+					}
+				}
+			}
 			continue
 		}
 		colName := sc.ColumnName
@@ -1145,6 +1228,35 @@ func (m *PermissionMiddleware) checkSelectColumnAccess(sql string, tables []stri
 				Message: fmt.Sprintf("无权访问字段 %s", displayName),
 				Objects: []string{displayName},
 			}
+		}
+	}
+	return nil
+}
+
+// checkWriteColumnAccess 写操作的列级程序化校验。
+//
+// 用途：exec_sql 在 Permission Agent（LLM）允许后追加，与降级路径使用同一逻辑，
+// 防止 Agent 误判导致向未授权字段写入（此前 Agent 路径仅做表级复核）。
+func (m *PermissionMiddleware) checkWriteColumnAccess(sql string) error {
+	analysis := appperm.AnalyzeSQL(sql, m.Scope.SchemaName)
+	if len(analysis.WriteColumns) == 0 || len(analysis.WriteTables) == 0 {
+		return nil
+	}
+	writeTableName := analysis.WriteTables[0].Name
+	if m.Scope.GetTableAccessLevel(writeTableName) != "column" {
+		return nil
+	}
+	deniedCols := make([]string, 0)
+	for _, col := range analysis.WriteColumns {
+		if !m.Scope.IsColumnAllowed(writeTableName, col.ColumnName) {
+			deniedCols = append(deniedCols, writeTableName+"."+col.ColumnName)
+		}
+	}
+	if len(deniedCols) > 0 {
+		m.logDeny("exec_sql", "无权操作字段", deniedCols)
+		return &PermissionError{
+			Message: fmt.Sprintf("无权写入字段 %v", deniedCols),
+			Objects: deniedCols,
 		}
 	}
 	return nil

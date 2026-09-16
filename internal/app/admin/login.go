@@ -77,7 +77,7 @@ func (c *authLocalCache) remove(token string) {
 	c.mu.Unlock()
 }
 
-// InvalidateByUserId 清除指定用户的所有缓存条目（权限变更时调用）
+// InvalidateByUserId 清除指定用户的所有缓存条目（该用户权限/角色变更时调用）
 func (c *authLocalCache) InvalidateByUserId(userId string) {
 	c.mu.Lock()
 	for k, v := range c.entries {
@@ -88,6 +88,8 @@ func (c *authLocalCache) InvalidateByUserId(userId string) {
 	c.mu.Unlock()
 	// 同步清除该用户的权限详情缓存
 	powerCache.invalidateUser(userId)
+	// 通知外部缓存失效（Permission Agent / SQLAgent 缓存内含权限快照）
+	notifyPermissionChanged()
 }
 
 // InvalidateAll 清除所有缓存条目（角色权限变更时调用，因为无法确定影响哪些用户）
@@ -227,6 +229,9 @@ func CheckAdminPower(c *gin.Context) bool {
 		return true
 	}
 	response.WriteAuthErr(c, "无权访问")
+	// 必须中断后续 handler：仅写 401 响应不会阻止调用方继续执行，
+	// 曾导致忽略返回值的接口（如审计配置保存）在非管理员请求下继续落库
+	c.Abort()
 	return false
 }
 

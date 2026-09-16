@@ -154,6 +154,14 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 	// 防止伪造 userId 读写/续写他人会话（IDOR）。
 	req.UserID = user.Id
 
+	// 上传文件归属校验：fileId 由客户端传入，可能伪造/枚举他人文件。
+	// 非本人文件直接丢弃引用，避免他人文件的列名/行数等元信息经系统提示词泄露，
+	// read_file_data 工具内还有一层内容级归属校验（GetUploadedFile）。
+	if req.ExcelData != nil && req.ExcelData.FileID != "" && !IsUploadOwner(req.ExcelData.FileID, user.Id) {
+		log.Printf("[Handler] 丢弃非本人上传的文件引用 - user=%s, fileId=%s\n", user.Id, req.ExcelData.FileID)
+		req.ExcelData = nil
+	}
+
 	connID := req.ConnID
 	if connID == "" && len(req.Schemas) > 0 {
 		connID = req.Schemas[0].ConnID

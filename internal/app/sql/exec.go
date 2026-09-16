@@ -19,6 +19,7 @@ import (
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
 	"websql/internal/pkg/safego"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -134,7 +135,7 @@ func ExecSQL(c *gin.Context) {
 		nlIdx = len(sqlStr)
 	}
 
-	if checkPrefx(sqlStr, []string{"update", "delete"}) {
+	if sqlguard.WriteKind(sqlStr) == "UPDATE" || sqlguard.WriteKind(sqlStr) == "DELETE" {
 		safego.GoWithName("sql-async-backup", func() {
 			asyncBackup(sqlStr, user, connId, conn)
 		})
@@ -144,7 +145,9 @@ func ExecSQL(c *gin.Context) {
 
 	sqlStr = sqlStr[0:min(blankIdx, nlIdx)] + sqlStr[min(blankIdx, nlIdx):]
 
-	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
+	// 写操作判定统一走 sqlguard 词级分类（覆盖 CTE 包裹写操作与注释变体），
+	// 避免「关键字+空格」前缀匹配漏判导致写语句走查询分支执行
+	if sqlguard.IsWriteStatement(sqlStr) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
 		result, err := batchExec(sqlStr, conn)
 		if err != nil {
@@ -776,7 +779,7 @@ func execQuerySQL(result *SQLResultItem, sqlStr string, conn *sqlx.DB, tx *sqlx.
 func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableName, maxLine string, user *admin.User, connId, authorization string, queryCtx context.Context) *SQLResultItem {
 	result := &SQLResultItem{SQL: sqlStr}
 
-	if checkPrefx(sqlStr, []string{"update", "delete"}) {
+	if sqlguard.WriteKind(sqlStr) == "UPDATE" || sqlguard.WriteKind(sqlStr) == "DELETE" {
 		safego.GoWithName("sql-async-backup", func() {
 			asyncBackup(sqlStr, user, connId, conn)
 		})
@@ -784,7 +787,8 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 		asyncRecordHistory(sqlStr, user, connId)
 	}
 
-	if checkPrefx(sqlStr, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
+	// 写操作判定统一走 sqlguard 词级分类（覆盖 CTE 包裹写操作与注释变体）
+	if sqlguard.IsWriteStatement(sqlStr) {
 		execModifySQL(result, sqlStr, conn, tx, queryCtx)
 	} else {
 		execQuerySQL(result, sqlStr, conn, tx, schema, tableName, maxLine, connId, authorization, queryCtx)
@@ -809,7 +813,7 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 
 	hasWrite := false
 	for _, singleSQL := range sqlArr {
-		if checkPrefx(singleSQL, []string{"update", "delete", "alter", "drop", "insert", "create", "truncate", "replace", "merge"}) {
+		if sqlguard.IsWriteStatement(singleSQL) {
 			hasWrite = true
 			break
 		}

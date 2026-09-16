@@ -22,6 +22,15 @@ func (h *Holder) Init(db *sqlx.DB) {
 	h.db = db
 }
 
+// GetOrNil 返回注入的 DB；未初始化时返回 nil 而不是 panic。
+// 供审计、日志等旁路调用使用：这些路径不应因管理库未就绪而中断业务或崩溃。
+func (h *Holder) GetOrNil() *sqlx.DB {
+	if h.db != nil {
+		return h.db
+	}
+	return database.Mngtdb
+}
+
 // Get 返回注入的 DB。
 // 优先返回 Init 注入的实例；未注入时回退到 database.Mngtdb（过渡期兼容，会打印警告）。
 // 两者均为 nil 时 panic，表明应用初始化流程有错误。
