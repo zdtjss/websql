@@ -30,25 +30,15 @@ func requireAdmin(c *gin.Context) bool {
 	return adminChecker(c)
 }
 
-// userNameReader 可选接口：currentUser 实现了该方法时补充记录操作人姓名
-// （用接口而非直接依赖 admin 包的类型，避免 audit → admin 循环依赖）
-type userNameReader interface {
-	AuditUserName() string
-}
-
 // OpFromContext 构造带请求上下文的操作审计：
-// 用户标识取自 AuthMiddleware 注入的 userId / currentUser。
+// 用户标识取自 AuthMiddleware 注入的 userId / userName（字符串键，无需依赖 admin 包类型）。
 func OpFromContext(c *gin.Context, source, toolName, sqlType, riskLevel string) *OpContext {
 	op := &OpContext{Source: source, ToolName: toolName, SQLType: sqlType, RiskLevel: riskLevel}
 	if c == nil {
 		return op
 	}
 	op.UserID = c.GetString("userId")
-	if v, ok := c.Get("currentUser"); ok {
-		if u, ok := v.(userNameReader); ok {
-			op.UserName = u.AuditUserName()
-		}
-	}
+	op.UserName = c.GetString("userName")
 	return op
 }
 

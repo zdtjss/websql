@@ -333,11 +333,10 @@ func ForwardEngineer(c *gin.Context) {
 		return
 	}
 
-	// 正向工程会按 DDL 直接改库结构：发起前留痕（成功/失败尝试均可追溯）
+	// 正向工程会按 DDL 直接改库结构：执行结束后记录真实终态
 	modelerOp := audit.OpFromContext(c, "modeler", "forwardEngineer", "DDL", "high")
 	modelerOp.ConnID = connId
 	modelerOp.Detail = ddlSql
-	modelerOp.Status = "executing"
 
 	statements := splitDDL(ddlSql)
 	results := make([]map[string]any, 0)

@@ -80,6 +80,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		c.Set("currentUser", user)
 		c.Set("userId", user.Id)
+		c.Set("userName", user.Name)
 		c.Set("userPower", userPower)
 		c.Next()
 	}

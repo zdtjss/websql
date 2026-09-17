@@ -183,23 +183,24 @@ func trimIdent(s string) string {
 	return strings.Trim(strings.TrimSpace(s), "`\"[]")
 }
 
-// qualifyKey 把权限键归一化为「schema.table」（三段式取后两段，保留大小写）
-func qualifyKey(key string) string {
-	key = trimIdent(key)
-	parts := strings.Split(key, ".")
-	if len(parts) >= 3 {
-		return parts[len(parts)-2] + "." + parts[len(parts)-1]
-	}
-	return key
+// scopeKeyParts 权限键的两段（schema / table），保留原始大小写
+type scopeKeyParts struct {
+	schema string
+	table  string
 }
 
-// keyTablePart 返回权限键中的表名部分（保留大小写）
-func keyTablePart(key string) string {
-	key = qualifyKey(key)
-	if idx := strings.LastIndex(key, "."); idx >= 0 {
-		return key[idx+1:]
+// splitScopeKey 拆分权限键：去引号/空白，三段式（db.schema.table）取后两段
+func splitScopeKey(key string) scopeKeyParts {
+	key = trimIdent(key)
+	parts := strings.Split(key, ".")
+	switch len(parts) {
+	case 1:
+		return scopeKeyParts{table: parts[0]}
+	case 2:
+		return scopeKeyParts{schema: parts[0], table: parts[1]}
+	default:
+		return scopeKeyParts{schema: parts[len(parts)-2], table: parts[len(parts)-1]}
 	}
-	return key
 }
 
 // scopeKeys 返回该表名命中的权限配置键（表名部分严格大小写匹配，延续历史 fail-closed 口径）。
@@ -207,7 +208,7 @@ func keyTablePart(key string) string {
 // 语义：裸表名在「多 schema 会话」下可能命中多个 schema 的同名表配置，
 // 调用方按「所有命中的键都允许才算允许」（交集，fail-closed）判定，
 // 避免一个 schema 的表级授权解除另一个 schema 同名表的列级限制。
-// 无任何配置时回退到裸键（历史上裸键即表名，查不到即拒绝）。
+// 无任何配置时回退到查询表名本身（历史上裸键即表名，查不到即拒绝）。
 func (s *PermissionScope) scopeKeys(table string) []string {
 	return s.collectKeys(table, false)
 }
@@ -224,11 +225,25 @@ func (s *PermissionScope) collectKeys(table string, fold bool) []string {
 	if t == "" {
 		return nil
 	}
+	qualified := strings.Contains(t, ".")
+	want := splitScopeKey(t)
+	// 空表名或形如 ".orders" 的畸形限定名：不匹配任何配置（fail-closed）
+	if want.table == "" || (qualified && want.schema == "") {
+		return nil
+	}
 	eq := func(a, b string) bool {
 		if fold {
 			return strings.EqualFold(a, b)
 		}
 		return a == b
+	}
+	// 限定名（db1.orders）：schema 与表名都要匹配；裸表名：只比表名，保留该表名下所有 schema 的配置键
+	match := func(k string) bool {
+		p := splitScopeKey(k)
+		if !qualified {
+			return eq(p.table, want.table)
+		}
+		return eq(p.schema, want.schema) && eq(p.table, want.table)
 	}
 
 	keys := make([]string, 0, 2)
@@ -241,38 +256,18 @@ func (s *PermissionScope) collectKeys(table string, fold bool) []string {
 		keys = append(keys, k)
 	}
 
-	if strings.Contains(t, ".") {
-		// 已限定 schema（如 db1.orders）：按 schema.table 精确匹配
-		want := qualifyKey(t)
-		for k := range s.AllowedTables {
-			if eq(qualifyKey(k), want) {
-				add(k)
-			}
-		}
-		for k := range s.AllowedColumns {
-			if eq(qualifyKey(k), want) {
-				add(k)
-			}
-		}
-		if len(keys) == 0 {
-			add(want)
-		}
-		return keys
-	}
-
-	// 裸表名：收集所有 schema 下的同名配置键
 	for k := range s.AllowedTables {
-		if eq(keyTablePart(k), t) {
+		if match(k) {
 			add(k)
 		}
 	}
 	for k := range s.AllowedColumns {
-		if eq(keyTablePart(k), t) {
+		if match(k) {
 			add(k)
 		}
 	}
 	if len(keys) == 0 {
-		add(t)
+		add(scopeKey(want.schema, want.table))
 	}
 	return keys
 }
@@ -315,16 +310,6 @@ func (s *PermissionScope) columnAllowed(keys []string, column string) bool {
 		return false // 任一命中的 schema 未授权该列 → 拒绝（fail-closed）
 	}
 	return true
-}
-
-// resolveKeys 返回结果过滤使用的键集合（大小写不敏感，只会增加限制方向）
-func (s *PermissionScope) resolveKeys(table string) []string {
-	if keys := s.scopeKeys(table); len(keys) > 0 {
-		if s.tableLevel(keys) != "none" {
-			return keys
-		}
-	}
-	return s.scopeKeysFold(table)
 }
 
 func (s *PermissionScope) SkipChecks() bool {
@@ -376,9 +361,11 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 		return columns, data
 	}
 
+	// 结果过滤只需「判定是否存在列级限制」：统一用大小写不敏感的键匹配，
+	// 方向只会更严（多过滤列），不会放宽
 	hasRestrictions := false
 	for _, table := range tables {
-		if s.tableLevel(s.resolveKeys(table)) == "column" {
+		if s.tableLevel(s.scopeKeysFold(table)) == "column" {
 			hasRestrictions = true
 			break
 		}
@@ -391,7 +378,7 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 	// 必须所有命中的键都允许该列才保留（fail-closed）；跨表则取并集
 	allowedCols := make(map[string]bool)
 	for _, table := range tables {
-		keys := s.resolveKeys(table)
+		keys := s.scopeKeysFold(table)
 		if s.tableLevel(keys) != "column" {
 			continue
 		}

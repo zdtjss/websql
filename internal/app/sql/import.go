@@ -55,14 +55,6 @@ func ImportXlsx(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// 数据导入是成批写库的高危操作：发起前留痕（成功/失败尝试均可追溯）
-	importOp := audit.OpFromContext(c, "import", "importXlsx", "IMPORT", "high")
-	importOp.ConnID = connId
-	importOp.SchemaName = schema
-	importOp.Detail = fmt.Sprintf("table=%s optType=%s file=%s", table, operType, fileHeader.Filename)
-	importOp.Status = "executing"
-	audit.GetAuditService().RecordOp(importOp)
-
 	if mappingStr == "" {
 		if fileHeader.Filename[strings.LastIndex(fileHeader.Filename, "-")+1:len(fileHeader.Filename)-5] != table {
 			response.WriteErr(c, http.StatusBadRequest, 500, "表名不匹配（文件名中横线后为表名，如用户列数据导出: t_user.xlsx）")
@@ -236,19 +228,29 @@ func ImportXlsx(c *gin.Context) {
 		totalRows += count + 1
 	}
 
+	// 数据导入为成批写库的高危操作：在事务终态记录（成功/失败均可追溯）
+	importOp := audit.OpFromContext(c, "import", "importXlsx", "IMPORT", "high")
+	importOp.ConnID = connId
+	importOp.SchemaName = schema
+	importOp.Detail = fmt.Sprintf("table=%s optType=%s file=%s rows=%d", table, operType, fileHeader.Filename, totalRows)
+
 	if err = tx.Commit(); err != nil {
 		log.Printf("提交事务失败: %v", err)
+		importOp.Status = "failed"
+		importOp.ErrorMsg = err.Error()
+		audit.GetAuditService().RecordOp(importOp)
 		response.WriteErr(c, http.StatusInternalServerError, 500, "提交事务失败，请重试")
 		return
-	} else {
-		if strings.EqualFold(operType, "insert") {
-			log.Println("导入完成")
-			response.WriteOK(c, map[string]any{"msg": "导入完成", "total": totalRows})
-		} else {
-			log.Println("更新完成")
-			response.WriteOK(c, map[string]any{"msg": "更新完成", "total": totalRows})
-		}
 	}
+
+	audit.GetAuditService().RecordOp(importOp)
+	if strings.EqualFold(operType, "insert") {
+		log.Println("导入完成")
+		response.WriteOK(c, map[string]any{"msg": "导入完成", "total": totalRows})
+		return
+	}
+	log.Println("更新完成")
+	response.WriteOK(c, map[string]any{"msg": "更新完成", "total": totalRows})
 }
 
 func insertToDb(schema, table string, columns []string, data [][]string, tx *sqlx.Tx) error {

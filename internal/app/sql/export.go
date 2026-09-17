@@ -204,16 +204,19 @@ func ExportXlsxBySql(c *gin.Context) {
 	current := time.Now().Format(time.DateOnly)
 	c.Header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("content-disposition", "attachment;filename="+filename+"-"+current+".xlsx")
-	// 按 SQL 导出会落盘任意查询结果集，必须留痕（SQL 文本落库前统一脱敏）
+	// 按 SQL 导出会落盘任意查询结果集：按真实终态记录（SQL 文本落库前统一脱敏）
 	exportOp := audit.OpFromContext(c, "export", "exportXlsxBySql", "SELECT", "medium")
 	exportOp.ConnID = connId
 	exportOp.SchemaName = schema
 	exportOp.Detail = sqlStr
+	if err := queryAndWriteBySql(c, sqlStr, schema, filename, connId, authorization); err != nil {
+		exportOp.Status = "failed"
+		exportOp.ErrorMsg = err.Error()
+	}
 	audit.GetAuditService().RecordOp(exportOp)
-	queryAndWriteBySql(c, sqlStr, schema, filename, connId, authorization)
 }
 
-func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName string, connId string, authorization string) {
+func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName string, connId string, authorization string) error {
 	log.Println("正在导出SQL: ", sqlStr)
 
 	connCtx := conn.GetConn(connId, authorization)
@@ -221,21 +224,21 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 	if err != nil {
 		log.Printf("查询失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 
 	columns, err := rows.Columns()
 	if err != nil {
 		log.Printf("获取字段失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 
 	cts, err := rows.ColumnTypes()
 	if err != nil {
 		log.Printf("获取字段类型失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 
 	colTypeMap := map[string]string{}
@@ -254,7 +257,7 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 	if err != nil {
 		log.Printf("创建流写入器失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 
 	var columns2 = make([]any, len(columns))
@@ -292,7 +295,7 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 		if err != nil {
 			log.Printf("扫描行失败: %v", err)
 			response.WriteErr(c, 200, 500, "操作失败")
-			return
+			return err
 		}
 
 		var row = make([]any, 0, len(columns))
@@ -308,15 +311,16 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 	if err = rows.Err(); err != nil {
 		log.Printf("遍历行失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 	if err := streamWriter.Flush(); err != nil {
 		log.Printf("导出 excel 失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
-		return
+		return err
 	}
 	excel.Write(c.Writer)
 	log.Println("导出完成")
+	return nil
 }
 
 func handleExportDownload(c *gin.Context) {
