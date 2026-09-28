@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"websql/internal/ai/agent/export"
 	"websql/internal/ai/agent/sqlutil"
 
 	"github.com/cloudwego/eino/adk"
@@ -62,12 +63,12 @@ func TestIsDangerousSQL_WhitespaceBypass(t *testing.T) {
 
 func TestDetectSQLType_WhitespaceBypass(t *testing.T) {
 	cases := map[string]sqlutil.SQLType{
-		"DROP\tTABLE users":      sqlutil.SQLTypeDrop,
-		"DELETE\nFROM users":     sqlutil.SQLTypeDelete,
+		"DROP\tTABLE users":        sqlutil.SQLTypeDrop,
+		"DELETE\nFROM users":       sqlutil.SQLTypeDelete,
 		"ALTER\nTABLE t ADD c INT": sqlutil.SQLTypeAlter,
 		"INSERT\tINTO t VALUES(1)": sqlutil.SQLTypeInsert,
-		"SELECT 1":               sqlutil.SQLTypeUnknown,
-		"DELETEFROM t":           sqlutil.SQLTypeUnknown, // 非关键字整体
+		"SELECT 1":                 sqlutil.SQLTypeUnknown,
+		"DELETEFROM t":             sqlutil.SQLTypeUnknown, // 非关键字整体
 	}
 	for sql, want := range cases {
 		if got := sqlutil.DetectSQLType(sql); got != want {
@@ -225,10 +226,10 @@ func TestCheckConnScope(t *testing.T) {
 		Schemas: []SchemaRef{{ConnID: "conn1", Schema: "db1"}, {ConnID: "conn2", Schema: "db2"}},
 	}
 	allow := []string{
-		`{"sql":"select 1"}`,                          // 未指定 → 默认连接
-		`{"sql":"select 1","connId":"conn1"}`,         // 默认连接
-		`{"sql":"select 1","connId":"conn2"}`,         // 会话已授权的另一连接
-		`{"sql":"select 1","connId":"db2"}`,           // 用 schema 名路由
+		`{"sql":"select 1"}`,                  // 未指定 → 默认连接
+		`{"sql":"select 1","connId":"conn1"}`, // 默认连接
+		`{"sql":"select 1","connId":"conn2"}`, // 会话已授权的另一连接
+		`{"sql":"select 1","connId":"db2"}`,   // 用 schema 名路由
 	}
 	for _, args := range allow {
 		if err := mw.checkConnScope(args); err != nil {
@@ -465,5 +466,81 @@ func TestUploadOwnership(t *testing.T) {
 	}
 	if up.Text != "hello" {
 		t.Errorf("读取内容错误，实际：%q", up.Text)
+	}
+}
+
+// ─── 13. 导出 content 内嵌 SQL 的权限闭环 ─────────────────────
+
+// mdFence 生成 Markdown 代码块（Go 原始字符串无法包含反引号）
+func mdFence(lang, body string) string {
+	return "```" + lang + "\n" + body + "\n```\n"
+}
+
+func TestCheckExportAccess_ContentEmbeddedSQL(t *testing.T) {
+	mw := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil), ConnID: "conn1"}
+	endpoint := func(_ context.Context, _ string, _ ...tool.Option) (string, error) { return "ok", nil }
+	call := func(content string) error {
+		args, _ := json.Marshal(export.ExportReportInput{Content: content})
+		_, err := mw.checkExportAccess(context.Background(), string(args), endpoint, "export_html")
+		return err
+	}
+
+	// 纯文字 content（无内嵌 SQL）→ 放行
+	if err := call("## 摘要\n\n本季度经营良好。"); err != nil {
+		t.Errorf("纯文字 content 应放行：%v", err)
+	}
+
+	// 内嵌 SQL 访问有权表 → 放行
+	okMD := mdFence("table", `{"sql":"SELECT id FROM orders","title":"明细"}`)
+	if err := call(okMD); err != nil {
+		t.Errorf("内嵌有权 SQL 应放行：%v", err)
+	}
+
+	// 内嵌 SQL 访问无权表 → 整篇导出拒绝（防止「content 免检 + 内嵌 SQL 取数」越权通道）
+	badMD := mdFence("chart", `{"type":"line","sql":"SELECT amount FROM secret_table","x":"a","y":["amount"]}`)
+	if err := call(badMD); err == nil {
+		t.Error("content 内嵌越权 SQL 应被拒绝")
+	}
+
+	// 内嵌写语句 → 拒绝（导出链路必须只读）
+	writeMD := mdFence("table", `{"sql":"DELETE FROM orders","title":"x"}`)
+	if err := call(writeMD); err == nil {
+		t.Error("content 内嵌写语句应被拒绝")
+	}
+
+	// 内嵌 SQL 指向未授权连接 → 拒绝
+	foreignMD := mdFence("table", `{"sql":"SELECT id FROM orders","connId":"conn-other","title":"x"}`)
+	if err := call(foreignMD); err == nil {
+		t.Error("content 内嵌 SQL 使用未授权连接应被拒绝")
+	}
+
+	// 顶层 sql 与 content 同时存在：内嵌 SQL 同样被校验
+	args, _ := json.Marshal(export.ExportReportInput{SQL: "SELECT id FROM orders", Content: badMD})
+	if _, err := mw.checkExportAccess(context.Background(), string(args), endpoint, "export_html"); err == nil {
+		t.Error("同时提供 sql 与 content 时，content 内嵌越权 SQL 也应被拒绝")
+	}
+}
+
+func TestValidateExportReadSQL_ColumnLevel(t *testing.T) {
+	scope := newRemoteScope(nil, map[string][]string{"orders": {"id"}})
+
+	if err := validateExportReadSQL(scope, "SELECT id FROM orders"); err != nil {
+		t.Errorf("授权字段应放行：%v", err)
+	}
+	if err := validateExportReadSQL(scope, "SELECT * FROM orders"); err == nil {
+		t.Error("column 级表上的 SELECT * 应被拒绝")
+	}
+	if err := validateExportReadSQL(scope, "SELECT amount FROM orders"); err == nil {
+		t.Error("未授权字段应被拒绝")
+	}
+	if err := validateExportReadSQL(scope, "DELETE FROM orders"); err == nil {
+		t.Error("写语句应被拒绝")
+	}
+	if err := validateExportReadSQL(scope, "SELECT id FROM other_table"); err == nil {
+		t.Error("无权表应被拒绝")
+	}
+	// 无表名语句（如 SHOW）：无法做表级校验时放行（与既有 query 路径一致）
+	if err := validateExportReadSQL(scope, "SHOW TABLES"); err != nil {
+		t.Errorf("SHOW 语句应放行：%v", err)
 	}
 }

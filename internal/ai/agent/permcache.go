@@ -17,6 +17,8 @@ import (
 const (
 	permAgentCacheTTL = 5 * time.Minute
 	permAgentCleanSec = 2 * time.Minute
+	// maxCachedPermAgents 权限审核 Agent 缓存上限（按 连接+schema+用户 组合）
+	maxCachedPermAgents = 256
 )
 
 // permAgentValue 是 Permission Agent 缓存的值类型
@@ -30,9 +32,11 @@ type PermissionAgentCache struct {
 	stopped sync.Once
 }
 
-var globalPermAgentCache = &PermissionAgentCache{
-	cache: NewTTLCache[permAgentValue](permAgentCacheTTL, permAgentCleanSec),
-}
+var globalPermAgentCache = func() *PermissionAgentCache {
+	cache := NewTTLCache[permAgentValue](permAgentCacheTTL, permAgentCleanSec)
+	cache.SetMaxEntries(maxCachedPermAgents)
+	return &PermissionAgentCache{cache: cache}
+}()
 
 func init() {
 	// 注册权限变更回调，当角色权限变更时清除权限相关缓存：

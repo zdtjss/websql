@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"websql/internal/ai/agent/export"
 	conn "websql/internal/app/conn"
 	appperm "websql/internal/app/permission"
 	"websql/internal/audit"
@@ -34,10 +35,16 @@ type PermissionMiddleware struct {
 // checkConnScope 校验工具参数中的 connId 是否在本次会话授权范围内。
 // 返回 nil 表示允许；否则返回拒绝原因。
 func (m *PermissionMiddleware) checkConnScope(args string) error {
+	return m.checkConnAllowed(extractConnIDFromArgs(args))
+}
+
+// checkConnAllowed 校验连接标识（连接 ID 或 schema 名）是否在本次会话授权范围内。
+// 空标识表示使用默认连接（必然在授权范围内）。
+func (m *PermissionMiddleware) checkConnAllowed(raw string) error {
 	if m.Scope.SkipChecks() || len(m.Schemas) == 0 && m.ConnID == "" {
 		return nil
 	}
-	raw := extractConnIDFromArgs(args)
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil // 未指定 → 使用默认连接，必然在授权范围内
 	}
@@ -62,7 +69,10 @@ func (m *PermissionMiddleware) checkConnScope(args string) error {
 		return nil
 	}
 	log.Printf("%s [拒绝] connId=%s 不在会话授权连接范围内（授权：%v）\n", m.logPrefix(), raw, keysOf(allowed))
-	return fmt.Errorf("连接 %s 不在本次会话授权范围内，请仅使用会话已选择的连接（%v）", raw, keysOf(allowed))
+	return &PermissionError{
+		Message: fmt.Sprintf("连接 %s 不在本次会话授权范围内，请仅使用会话已选择的连接（%v）", raw, keysOf(allowed)),
+		Objects: []string{raw},
+	}
 }
 
 // extractConnIDFromArgs 从工具参数 JSON 中提取 connId（大小写兼容）。
@@ -404,14 +414,41 @@ func isContentModeExportTool(toolName string) bool {
 	return false
 }
 
-// hasContentArg 检查参数中是否包含非空 content 字段
-func hasContentArg(args string) bool {
+// contentArg 返回导出工具参数中的 content 正文（解析失败/缺失返回空串）。
+func contentArg(args string) string {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(args), &raw); err != nil {
-		return false
+		return ""
 	}
-	content, ok := raw["content"].(string)
-	return ok && strings.TrimSpace(content) != ""
+	content, _ := raw["content"].(string)
+	return content
+}
+
+// validateContentSQLBindings 扫描 content 正文中的 SQL 数据绑定（```chart sql / ```table sql）
+// 并逐条做程序化校验：只读 + 连接范围 + 表级/列级权限。
+//
+// 背景：content 模式此前不校验 SQL 即放行，而新的报告正文允许内嵌 SQL 由服务端取数，
+// 若不校验会形成「content 免检 + 内嵌 SQL 读任意表」的越权通道。
+func (m *PermissionMiddleware) validateContentSQLBindings(toolName, content string) error {
+	if m.Scope.SkipChecks() {
+		return nil
+	}
+	refs := export.ExtractDataRefs(content)
+	for _, ref := range refs {
+		if err := m.checkConnAllowed(ref.ConnID); err != nil {
+			m.logDeny(toolName, "内嵌SQL连接范围校验失败", []string{ref.ConnID})
+			m.auditPermDenied(toolName, "embedded_sql_conn_blocked: "+err.Error(), []string{ref.ConnID})
+			return err
+		}
+		if err := validateExportReadSQL(m.Scope, ref.SQL); err != nil {
+			objects := permErrorObjects(err)
+			m.logDeny(toolName, "内嵌SQL权限校验拦截", objects)
+			m.auditPermDenied(toolName, "embedded_sql_blocked: "+err.Error(), objects)
+			return err
+		}
+		m.logInfo(toolName, "内嵌SQL校验通过 - sql=%s", truncateForLog(ref.SQL))
+	}
+	return nil
 }
 
 func (m *PermissionMiddleware) buildPermError(decision *PermDecisionOutput) *PermissionError {
@@ -939,10 +976,24 @@ func (m *PermissionMiddleware) doubleCheckHighRiskExec(sql string, tables []stri
 
 func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, toolName string, opts ...tool.Option) (string, error) {
 	sql := m.extractSQLFromArgs(args)
+	content := ""
+	if isContentModeExportTool(toolName) {
+		content = contentArg(args)
+	}
+
+	// content 模式的正文可能内嵌 SQL 绑定（```chart sql / ```table sql），这些 SQL
+	// 会在工具内取数：必须与顶层 sql 走同一套权限校验，否则形成
+	// 「content 免 SQL 校验 + 内嵌 SQL 取数」的越权通道（两参数同时存在时都要校验）。
+	if strings.TrimSpace(content) != "" {
+		if err := m.validateContentSQLBindings(toolName, content); err != nil {
+			return "", err
+		}
+	}
+
 	if sql == "" {
 		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
-		// 内容由 Agent 生成（基于已通过权限校验的查询结果），不直接访问数据库，无需 SQL 权限校验
-		if isContentModeExportTool(toolName) && hasContentArg(args) {
+		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
+		if strings.TrimSpace(content) != "" {
 			m.logAllow(toolName, "content_mode(no_sql)")
 			return endpoint(ctx, args, opts...)
 		}
@@ -1188,49 +1239,15 @@ func (m *PermissionMiddleware) checkSelectColumnAccessStrict(sql string, tables 
 }
 
 func (m *PermissionMiddleware) checkSelectColumnAccessWithStar(sql string, tables []string, toolName string, rejectStar bool) error {
-	selectCols := appperm.ExtractSelectColumns(appperm.StripComments(strings.TrimSpace(sql)))
-	for _, sc := range selectCols {
-		if sc.IsStar {
-			if !rejectStar {
-				continue
-			}
-			for _, table := range tables {
-				if m.Scope.GetTableAccessLevel(table) == "column" {
-					m.logDeny(toolName, "column 级表禁止 SELECT *（导出无结果过滤）", []string{table})
-					return &PermissionError{
-						Message: fmt.Sprintf("表 %s 仅开放部分字段，导出时必须显式列出允许字段，禁止使用 SELECT *", table),
-						Objects: []string{table},
-					}
-				}
-			}
-			continue
-		}
-		colName := sc.ColumnName
-		allDenied := false
-		hasColumnLevelTable := false
-		for _, table := range tables {
-			if m.Scope.GetTableAccessLevel(table) == "column" {
-				hasColumnLevelTable = true
-				if m.Scope.IsColumnAllowed(table, colName) {
-					allDenied = false
-					break
-				}
-				allDenied = true
-			}
-		}
-		if hasColumnLevelTable && allDenied {
-			displayName := colName
-			if sc.TableAlias != "" {
-				displayName = sc.TableAlias + "." + colName
-			}
-			m.logDeny(toolName, "无权访问字段", []string{displayName})
-			return &PermissionError{
-				Message: fmt.Sprintf("无权访问字段 %s", displayName),
-				Objects: []string{displayName},
-			}
-		}
+	err := checkSelectColumnsStrict(m.Scope, sql, tables, rejectStar)
+	if err == nil {
+		return nil
 	}
-	return nil
+	var pe *PermissionError
+	if errors.As(err, &pe) {
+		m.logDeny(toolName, pe.Message, pe.Objects)
+	}
+	return err
 }
 
 // checkWriteColumnAccess 写操作的列级程序化校验。
@@ -1264,11 +1281,22 @@ func (m *PermissionMiddleware) checkWriteColumnAccess(sql string) error {
 
 func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 	sql := m.extractSQLFromArgs(args)
+	content := ""
+	if isContentModeExportTool(toolName) {
+		content = contentArg(args)
+	}
+
+	// content 模式内嵌 SQL（```chart sql / ```table sql）与顶层 sql 使用同一套校验
+	if strings.TrimSpace(content) != "" {
+		if err := m.validateContentSQLBindings(toolName+"(stream)", content); err != nil {
+			return streamFromStr(err.Error()), nil
+		}
+	}
 
 	if sql == "" {
 		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
-		// 内容由 Agent 生成（基于已通过权限校验的查询结果），不直接访问数据库，无需 SQL 权限校验
-		if isContentModeExportTool(toolName) && hasContentArg(args) {
+		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
+		if strings.TrimSpace(content) != "" {
 			m.logAllow(toolName+"(stream)", "content_mode(no_sql)")
 			return endpoint(ctx, args, opts...)
 		}

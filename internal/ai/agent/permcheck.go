@@ -9,32 +9,23 @@ import (
 	"strings"
 
 	"websql/internal/ai/agent/sqlutil"
+	"websql/internal/pkg/sqlguard"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
-// containsDangerousSQL 判断 SQL（可能含多条语句）是否包含写操作。
+// containsDangerousSQL 判断 SQL 是否需要人工审批（fail-closed）。
 //
-// 判定策略：
-//  1. 以分号切分多语句，逐条判断首关键字是否为写关键字
-//     （词级匹配，`DROP\tTABLE` / `DELETE\nFROM` 均可命中）
-//  2. 首关键字为 WITH（CTE）的语句额外做整句写关键字扫描，
-//     防止 `WITH x AS (SELECT 1) DELETE FROM t` 这类 CTE 包裹的写操作绕过审批
+// 判定策略：凡不能被词法校验证明为「无副作用单条只读查询」的语句都需要审批，
+// 包括 INSERT/UPDATE/DELETE/DDL，也包括 CALL/SET/RENAME/LOCK 等首关键字不在写关键字表中、
+// 但同样会修改数据库状态的语句，以及被 MySQL 可执行注释 /*! ... */ 包裹、
+// 剥离注释后首关键字为空的语句（旧实现会把这类语句判定为「非危险」而跳过审批）。
 func containsDangerousSQL(sql string) bool {
-	for _, line := range strings.Split(sql, ";") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if sqlutil.IsDangerousSQL(line) {
-			return true
-		}
-		if sqlutil.FirstKeyword(line) == "WITH" && sqlutil.HasWriteKeyword(line) {
-			return true
-		}
+	if strings.TrimSpace(sql) == "" {
+		return false
 	}
-	return false
+	return sqlguard.RequiresApproval(sql)
 }
 
 type DangerousSQLInfo struct {

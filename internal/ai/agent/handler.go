@@ -22,10 +22,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	// sseRunTimeout 单次对话（含多轮工具调用）的服务端上限
+	sseRunTimeout = 30 * time.Minute
+	// sseKeepAliveInterval 心跳间隔：防止反向代理/浏览器在长时间工具调用期间断开空闲连接
+	sseKeepAliveInterval = 5 * time.Second
+	// sseWriteTimeout 单次写入超时：客户端卡住（不读数据）时及时放弃，避免事件在内存中无限堆积
+	sseWriteTimeout = 30 * time.Second
+)
+
+var (
+	errAIConfigMissing = errors.New("未配置 AI 服务")
+	errUnauthenticated = errors.New("未认证或认证已过期")
+)
+
 type Handler struct {
 	sessions *SessionStore
 }
 
+// writeGuard 串行化 SSE 写入，并在连接失效后拒绝继续写入。
 type writeGuard struct {
 	mu   sync.Mutex
 	dead bool
@@ -37,7 +52,7 @@ func (g *writeGuard) markDead() {
 	g.mu.Unlock()
 }
 
-func (g *writeGuard) tryWrite(fn func()) (ok bool) {
+func (g *writeGuard) tryWrite(fn func() error) (ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.dead {
@@ -49,7 +64,10 @@ func (g *writeGuard) tryWrite(fn func()) (ok bool) {
 			ok = false
 		}
 	}()
-	fn()
+	if err := fn(); err != nil {
+		g.dead = true
+		return false
+	}
 	return true
 }
 
@@ -58,73 +76,111 @@ func NewHandler() (*Handler, error) {
 	return &Handler{sessions: factory.GetSessions()}, nil
 }
 
-type sseContext struct {
-	wg           *writeGuard
-	kaStop       chan struct{}
-	flush        func(StreamChunk)
+// sseStream 一次 SSE 响应的生命周期管理。
+//
+// 生命周期约束（gin 要求）：handler 返回后 gin.Context 会被回收复用，
+// 因此所有后台 goroutine 必须在 handler 返回前退出，不能再触碰 c.Writer / c.Request。
+// close() 负责：标记连接失效 → 停止心跳 → 等待后台 goroutine 退出。
+type sseStream struct {
+	wg        *writeGuard
+	writer    gin.ResponseWriter
+	ctl       *http.ResponseController
+	stopCh    chan struct{}
+	bg        sync.WaitGroup
+	closeOnce sync.Once
+
 	runnerCtx    context.Context
 	runnerCancel context.CancelFunc
 }
 
-func setupSSE(c *gin.Context, parentCtx context.Context) *sseContext {
+func newSSEStream(c *gin.Context) *sseStream {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	defer c.Writer.Flush()
+	c.Header("X-Accel-Buffering", "no") // 关闭 Nginx 缓冲，保证流式实时性
+	c.Status(http.StatusOK)
 
-	wg := &writeGuard{}
-	kaStop := make(chan struct{})
-	// 使用请求级 context 作为父级，确保服务关闭时请求被优雅取消
-	// 超时设为 30 分钟，与 ChatModel 的 HTTP Timeout 对齐。
-	// 复杂问题（多轮工具调用 + LLM 思考）5 分钟不够用，会导致 context deadline exceeded。
-	// 客户端主动断开时 parentCtx.Done() 会触发 runnerCancel，无需依赖此超时兜底。
-	runnerCtx, runnerCancel := context.WithTimeout(parentCtx, 30*time.Minute)
+	reqCtx := c.Request.Context()
+	runnerCtx, runnerCancel := context.WithTimeout(reqCtx, sseRunTimeout)
+	s := &sseStream{
+		wg:           &writeGuard{},
+		writer:       c.Writer,
+		ctl:          http.NewResponseController(c.Writer),
+		stopCh:       make(chan struct{}),
+		runnerCtx:    runnerCtx,
+		runnerCancel: runnerCancel,
+	}
+	s.write(": connected\n\n")
 
+	// 心跳：SSE 注释行（冒号开头），客户端解析器会忽略，不会产生空 data 事件
+	s.bg.Add(1)
 	safego.GoWithName("sse-keepalive", func() {
-		ticker := time.NewTicker(5 * time.Second)
+		defer s.bg.Done()
+		ticker := time.NewTicker(sseKeepAliveInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-kaStop:
+			case <-s.stopCh:
 				return
 			case <-runnerCtx.Done():
 				return
 			case <-ticker.C:
-				wg.tryWrite(func() {
-					c.Writer.WriteString("data: \n\n")
-					c.Writer.Flush()
-				})
+				s.write(": ping\n\n")
 			}
 		}
 	})
 
-	flush := func(chunk StreamChunk) {
-		wg.tryWrite(func() {
-			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", string(data))
-			c.Writer.Flush()
-		})
-	}
-
-	sse := &sseContext{
-		wg:           wg,
-		kaStop:       kaStop,
-		flush:        flush,
-		runnerCtx:    runnerCtx,
-		runnerCancel: runnerCancel,
-	}
-
-	// 监听客户端断开 → 触发 runnerCancel
+	// 客户端断开 → 停止写入并取消运行
+	s.bg.Add(1)
 	safego.GoWithName("sse-ctx-watch", func() {
+		defer s.bg.Done()
 		select {
-		case <-parentCtx.Done():
-			wg.markDead()
-			sse.runnerCancel()
-		case <-runnerCtx.Done():
+		case <-reqCtx.Done():
+			s.wg.markDead()
+			runnerCancel()
+		case <-s.stopCh:
 		}
 	})
+	return s
+}
 
-	return sse
+func (s *sseStream) write(payload string) bool {
+	return s.wg.tryWrite(func() error {
+		_ = s.ctl.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) // 不支持时忽略
+		if _, err := s.writer.WriteString(payload); err != nil {
+			return err
+		}
+		s.writer.Flush()
+		return nil
+	})
+}
+
+// flush 推送一个事件（JSON）
+func (s *sseStream) flush(chunk StreamChunk) {
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return
+	}
+	s.write("data: " + string(data) + "\n\n")
+}
+
+// close 结束 SSE：推送 done（可选）、停止后台 goroutine 并等待退出。可重复调用。
+func (s *sseStream) close(sendDone bool) {
+	s.closeOnce.Do(func() {
+		if sendDone {
+			s.flush(StreamChunk{Type: "done"})
+		}
+		close(s.stopCh)
+		s.bg.Wait()
+		s.wg.markDead()
+		s.runnerCancel()
+	})
+}
+
+// fail 推送错误并结束流
+func (s *sseStream) fail(msg string) {
+	s.flush(StreamChunk{Type: "error", Content: msg})
+	s.close(true)
 }
 
 type requestParams struct {
@@ -142,12 +198,12 @@ type requestParams struct {
 func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, error) {
 	cfg := system.GetSelectedModelConfig(req.ModelId)
 	if cfg == nil {
-		return nil, errors.New("未配置 AI 服务")
+		return nil, errAIConfigMissing
 	}
 
 	user := admin.GetUser(c.GetHeader("Authorization"))
 	if user == nil || user.Id == "" {
-		return nil, errors.New("未认证或认证已过期")
+		return nil, errUnauthenticated
 	}
 
 	// 安全：会话归属一律以认证态用户为准，忽略客户端传入的 userId，
@@ -185,43 +241,52 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		schemas:   req.Schemas,
 		scope:     scope,
 		auditCtx: &ExecAuditCtx{
-			ConnID:    connID,
-			UserID:    user.Id,
-			UserName:  user.Name,
+			ConnID:   connID,
+			UserID:   user.Id,
+			UserName: user.Name,
+			// SessionID 在每次工具调用时经 context（WithRunIdentity）取当前会话，
+			// 这里的值仅作兜底
 			SessionID: req.SessionID,
 		},
 	}, nil
 }
 
-func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFunc) (*Session, string, error) {
-	sessionID := req.SessionID
-	if sessionID == "" {
-		sessionID = idgen.RandomStr()
+// writeParamsError 在 SSE 建立前以普通 JSON 响应返回参数/鉴权错误
+func writeParamsError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errUnauthenticated):
+		response.WriteAuthErr(c, err.Error())
+	case errors.Is(err, errAIConfigMissing):
+		response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
+	default:
+		response.WriteErr(c, http.StatusInternalServerError, 500, "请求处理失败")
 	}
-	req.SessionID = sessionID // 回写，避免 RunStream 重复生成新 ID
-	sess, err := h.sessions.GetOrCreate(sessionID, req.UserID)
+}
+
+func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFunc) (*Session, error) {
+	if req.SessionID == "" {
+		req.SessionID = idgen.RandomStr()
+	}
+	sess, err := h.sessions.GetOrCreate(req.SessionID, req.UserID)
 	if err != nil {
-		return nil, sessionID, err
+		return nil, err
 	}
 	sess.SetCancel(runnerCancel)
 
 	if len(req.Schemas) > 0 || len(req.TableContext) > 0 {
-		ctxData := SessionContext{
-			Schemas: req.Schemas,
-			Tables:  req.TableContext,
-		}
+		ctxData := SessionContext{Schemas: req.Schemas, Tables: req.TableContext}
 		if ctxJSON, err := json.Marshal(ctxData); err == nil {
 			if err := sess.MergeContext(string(ctxJSON)); err != nil {
-				log.Printf("[Handler] 合并会话上下文失败 - sessionId=%s, err=%v\n", sessionID, err)
+				log.Printf("[Handler] 合并会话上下文失败 - sessionId=%s, err=%v\n", req.SessionID, err)
 			}
 		}
 	}
-
-	return sess, sessionID, nil
+	return sess, nil
 }
 
-func (h *Handler) createAgent(sse *sseContext, params *requestParams, schemas []SchemaRef) (*SQLAgent, error) {
-	return GetAgentFactory().GetOrCreate(sse.runnerCtx, params.cfg, params.connID, params.dbType, params.dbSchema, params.dbVersion, schemas, params.scope, params.auditCtx)
+func (h *Handler) createAgent(ctx context.Context, params *requestParams) (*SQLAgent, error) {
+	return GetAgentFactory().GetOrCreate(ctx, params.cfg, params.connID, params.dbType, params.dbSchema,
+		params.dbVersion, params.schemas, params.scope, params.auditCtx)
 }
 
 func (h *Handler) ChatStream(c *gin.Context) {
@@ -232,119 +297,85 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	if len(req.InterruptIDs) > 0 && req.CheckPointID != "" {
-		h.handleResumeExec(c, req)
+	isResume := len(req.InterruptIDs) > 0 && req.CheckPointID != ""
+	if isResume && req.SessionID == "" {
+		response.WriteErr(c, http.StatusBadRequest, 400, "恢复执行缺少会话 ID")
 		return
 	}
 
 	params, err := resolveRequestParams(c, &req)
 	if err != nil {
-		switch err.Error() {
-		case "未配置 AI 服务":
-			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
-		case "未认证或认证已过期":
-			response.WriteAuthErr(c, err.Error())
-		default:
-			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
-		}
+		writeParamsError(c, err)
 		return
 	}
-
 	if params.scope.IsRemote && !params.scope.HasAnyAccess() {
 		response.WriteErr(c, http.StatusForbidden, 403, "你没有此数据库连接的访问权限")
 		return
 	}
 
-	sse := setupSSE(c, c.Request.Context())
-	defer sse.runnerCancel()
+	sse := newSSEStream(c)
+	defer sse.close(false)
 
-	sess, _, err := h.prepareSession(&req, sse.runnerCancel)
+	sess, err := h.prepareSession(&req, sse.runnerCancel)
 	if err != nil {
 		log.Printf("[Handler] 会话归属校验失败 - sessionId=%s, userId=%s, err=%v\n", req.SessionID, req.UserID, err)
-		close(sse.kaStop)
-		sse.flush(StreamChunk{Type: "error", Content: "会话不存在或无权访问，请新建会话后重试"})
-		sse.flush(StreamChunk{Type: "done"})
+		sse.fail("会话不存在或无权访问，请新建会话后重试")
+		return
+	}
+	defer sess.ClearCancel()
+
+	agent, err := h.createAgent(sse.runnerCtx, params)
+	if err != nil {
+		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
+		sse.fail("创建 AI 智能体失败，请稍后重试")
 		return
 	}
 
-	agent, agentErr := h.createAgent(sse, params, req.Schemas)
-	if agentErr != nil {
-		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", agentErr)
-		close(sse.kaStop)
-		sse.flush(StreamChunk{Type: "error", Content: "创建 Agent 失败，请稍后重试"})
-		sse.flush(StreamChunk{Type: "done"})
-		return
-	}
-
-	// 注册 Agent Cancel：当客户端断开连接时，触发 Agent 安全点取消
-	// 用 runID 精确指定要取消的 run，避免多 SSE / 多 tab 并发时错位
+	// runID 精确标识本次运行，用于安全点取消（多 tab / 多 SSE 并发时不会错位）
 	runID := fmt.Sprintf("%s_%d", req.SessionID, time.Now().UnixNano())
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	runnerCtx := sse.runnerCtx
 	safego.GoWithName("agent-cancel-watch", func() {
-		<-c.Request.Context().Done()
-		agent.Cancel(runID)
+		defer close(watchDone)
+		select {
+		case <-runnerCtx.Done():
+			agent.Cancel(runID)
+		case <-stopWatch:
+		}
 	})
+	defer func() {
+		close(stopWatch)
+		<-watchDone
+	}()
 
-	// RunStream 的会话 ID 已由 prepareSession 生成并回写到 req.SessionID，
-	// 这里只关心执行错误（业务错误已通过 SSE 事件推送给前端）
+	if isResume {
+		targets := make(map[string]bool, len(req.InterruptIDs))
+		for _, id := range req.InterruptIDs {
+			targets[id] = req.Confirmed
+		}
+		binding := CheckpointBinding{UserID: req.UserID, SessionID: req.SessionID, ConnID: params.connID}
+		if err := agent.ResumeStream(sse.runnerCtx, runID, req.CheckPointID, binding, targets, sse.flush, sess); err != nil {
+			log.Printf("[Handler] 恢复执行失败 - sessionId=%s, err=%v\n", req.SessionID, err)
+			switch {
+			case errors.Is(err, ErrCheckpointNotFound), errors.Is(err, ErrCheckpointForbidden), errors.Is(err, ErrCheckpointInFlight):
+				sse.flush(StreamChunk{Type: "error", Content: err.Error()})
+			default:
+				sse.flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新发起操作"})
+			}
+		}
+		sse.close(true)
+		return
+	}
+
+	// 业务错误已在 RunStream 内通过 SSE 事件推送给前端
 	if _, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush); runErr != nil {
-		log.Printf("[Handler] Agent 执行失败 - err=%+v\n", runErr)
+		log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
 		if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
 			sse.flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})
 		}
 	}
-	close(sse.kaStop)
-	sess.ClearCancel()
-
-	sse.flush(StreamChunk{Type: "done"})
-}
-
-func (h *Handler) handleResumeExec(c *gin.Context, req ChatRequest) {
-	params, err := resolveRequestParams(c, &req)
-	if err != nil {
-		switch err.Error() {
-		case "未配置 AI 服务":
-			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
-		case "未认证或认证已过期":
-			response.WriteAuthErr(c, err.Error())
-		default:
-			response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
-		}
-		return
-	}
-
-	sse := setupSSE(c, c.Request.Context())
-	defer sse.runnerCancel()
-
-	sess, _, err := h.prepareSession(&req, sse.runnerCancel)
-	if err != nil {
-		log.Printf("[Handler] 恢复执行会话归属校验失败 - sessionId=%s, userId=%s, err=%v\n", req.SessionID, req.UserID, err)
-		close(sse.kaStop)
-		sse.flush(StreamChunk{Type: "error", Content: "会话不存在或无权访问，请重新操作"})
-		sse.flush(StreamChunk{Type: "done"})
-		return
-	}
-
-	agent, agentErr := h.createAgent(sse, params, req.Schemas)
-	if agentErr != nil {
-		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", agentErr)
-		close(sse.kaStop)
-		sse.flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新操作"})
-		sse.flush(StreamChunk{Type: "done"})
-		return
-	}
-
-	targets := make(map[string]bool, len(req.InterruptIDs))
-	for _, id := range req.InterruptIDs {
-		targets[id] = req.Confirmed
-	}
-
-	if err := agent.ResumeStream(sse.runnerCtx, req.CheckPointID, targets, sse.flush, sess); err != nil {
-		log.Printf("[Handler] resume failed - err=%v\n", err)
-		sse.flush(StreamChunk{Type: "error", Content: "resume failed: " + err.Error()})
-	}
-	sess.ClearCancel()
-	close(sse.kaStop)
-	sse.flush(StreamChunk{Type: "done"})
+	sse.close(true)
 }
 
 func (h *Handler) HandleGetSessions(c *gin.Context) {

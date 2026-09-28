@@ -1,16 +1,20 @@
 package export
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
-	"github.com/xuri/excelize/v2"
-
+	"websql/internal/ai/agent/export/report"
 	"websql/internal/audit"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // AuditCtx 导出工具所需的最小审计上下文。
@@ -52,6 +56,61 @@ func recordExportAudit(auditCtx *AuditCtx, toolName string, start time.Time, err
 	audit.GetAuditService().Record(entry)
 }
 
+func ownerOf(auditCtx *AuditCtx) string {
+	if auditCtx == nil {
+		return ""
+	}
+	return auditCtx.UserID
+}
+
+// writeExportFile 把渲染产物写入 exports 目录并登记归属，返回下载 URL。
+func writeExportFile(fileName, ext string, data []byte, auditCtx *AuditCtx) (string, error) {
+	EnsureExportsDir()
+	filePath := filepath.Join("exports", fileName+"."+ext)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", fmt.Errorf("保存导出文件失败：%w", err)
+	}
+	url := "/exports/" + fileName + "." + ext
+	RecordExportOwnerByURL(url, ownerOf(auditCtx))
+	return url, nil
+}
+
+// queryRowsAny 把查询结果转为按列顺序的原始值二维表（保留数值类型供 Excel 数字格式识别）
+func queryRowsAny(qr *QueryResult) [][]any {
+	rows := make([][]any, 0, len(qr.Data))
+	for _, row := range qr.Data {
+		cells := make([]any, len(qr.Columns))
+		for i, col := range qr.Columns {
+			cells[i] = row[col]
+		}
+		rows = append(rows, cells)
+	}
+	return rows
+}
+
+// buildExportDocument 构建报告文档：
+//   - content 模式：解析扩展 Markdown（```kpi/```chart/```table 等），并回填内嵌 SQL 数据；
+//   - sql 模式：由查询结果自动生成「指标卡 + 图表 + 明细表」图文报告。
+func buildExportDocument(ctx context.Context, conn *sqlx.DB, ds DataSource, title, subtitle, content, sql string) (*report.Document, error) {
+	content = strings.TrimSpace(content)
+	sql = strings.TrimSpace(sql)
+	switch {
+	case content != "":
+		doc := report.BuildDocument(title, subtitle, content)
+		BindDocument(ctx, doc, ds)
+		return doc, nil
+	case sql != "":
+		qr, err := QueryForExport(conn, sql)
+		if err != nil {
+			return nil, err
+		}
+		return BuildDataDocument(title, subtitle, qr), nil
+	default:
+		return nil, fmt.Errorf("必须提供 content（扩展 Markdown 报告正文）或 sql 参数")
+	}
+}
+
+// NewExportExcelFunc 创建 Excel 数据导出工具（Go 原生渲染：表头样式/冻结/筛选/数字格式）。
 func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
 	return func(ctx context.Context, input *ExportExcelInput) (out *ExportExcelOutput, err error) {
 		start := time.Now()
@@ -61,20 +120,26 @@ func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Cont
 		if err != nil {
 			return nil, err
 		}
-
-		f := excelize.NewFile()
-		defer f.Close()
-
-		WriteExcelSheet(f, "Sheet1", qr)
-
-		fileName := SanitizeFileName(input.FileName, "export")
-		EnsureExportsDir()
-		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
-		if err := f.SaveAs(filePath); err != nil {
-			return nil, fmt.Errorf("保存 Excel 失败：%w", err)
+		title := strings.TrimSpace(input.Title)
+		if title == "" {
+			title = "数据导出"
 		}
 
-		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
+		buf, err := report.RenderXLSX(report.XLSXOptions{
+			Title: title,
+			Theme: report.ResolveTheme("", "business"),
+			Data:  &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
+			SQL:   input.SQL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("生成 Excel 失败：%w", err)
+		}
+
+		fileName := SanitizeFileName(input.FileName, "export")
+		url, err := writeExportFile(fileName, "xlsx", buf, auditCtx)
+		if err != nil {
+			return nil, err
+		}
 		log.Printf("[Tool:export_excel] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
 
 		return &ExportExcelOutput{
@@ -86,6 +151,8 @@ func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Cont
 	}
 }
 
+// NewExportExcelWithChartFunc 创建带图表的 Excel 导出工具。
+// 产出：分析摘要（指标卡/统计）+ 数据明细 + 原生可编辑图表（工作表）+ 说明（取数 SQL）。
 func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
 	return func(ctx context.Context, input *ExportExcelWithChartInput) (out *ExportExcelWithChartOutput, err error) {
 		start := time.Now()
@@ -96,273 +163,159 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx con
 			return nil, err
 		}
 
-		rowCount := len(qr.Data)
-		headerRow := 4
-		dataStartRow := 5
-		dataEndRow := rowCount + 4
-
 		charts := NormalizeCharts(input)
-
-		f := excelize.NewFile()
-		defer f.Close()
-
-		dataSheet := "数据概览"
-		f.SetSheetName("Sheet1", dataSheet)
-
-		reportTitle := "数据分析报告"
-		if len(charts) > 0 && charts[0].ChartTitle != "" {
-			reportTitle = charts[0].ChartTitle
-		}
-		ExcelSetTitleArea(f, dataSheet, reportTitle, len(qr.Columns), rowCount)
-		ExcelWriteStyledTable(f, dataSheet, qr, 4)
-
-		CreateAnalysisSummarySheet(f, "分析概要", qr)
-
-		dashSheet := "仪表盘"
-		_, _ = f.NewSheet(dashSheet)
-		ExcelDashboardSheet(f, dashSheet, qr)
-
-		chartCount := 0
-		for _, chart := range charts {
-			xIdx := FindFieldIndex(qr.Columns, chart.XAxisField)
-			if xIdx == -1 {
-				continue
-			}
-			xCol := ColLetter(xIdx)
-
-			var chartSeries []excelize.ChartSeries
-			for _, series := range chart.Series {
-				yIdx := FindFieldIndex(qr.Columns, series.YAxisField)
-				if yIdx == -1 {
-					continue
-				}
-				yCol := ColLetter(yIdx)
-				name := series.Name
-				if name == "" {
-					name = series.YAxisField
-				}
-				chartSeries = append(chartSeries, excelize.ChartSeries{
-					Name:       fmt.Sprintf("'%s'!$%s$%d", dataSheet, yCol, headerRow),
-					Categories: fmt.Sprintf("'%s'!$%s$%d:$%s$%d", dataSheet, xCol, dataStartRow, xCol, dataEndRow),
-					Values:     fmt.Sprintf("'%s'!$%s$%d:$%s$%d", dataSheet, yCol, dataStartRow, yCol, dataEndRow),
-				})
-			}
-
-			if len(chartSeries) == 0 {
-				continue
-			}
-
-			chartCount++
-			sheetName := chart.SheetName
-			if sheetName == "" {
-				sheetName = fmt.Sprintf("图表%d", chartCount)
-			}
-			_, _ = f.NewSheet(sheetName)
-
-			chartTitle := chart.ChartTitle
-			if chartTitle == "" {
-				chartTitle = chart.XAxisField
-			}
-
-			excelChart := CreateExcelChart(sheetName, chart.ChartType, chartTitle, chartSeries, "B2")
-
-			if err := f.AddChart(sheetName, "B2", excelChart); err != nil {
-				log.Printf("[Tool:export_excel_chart] 添加图表 [%s] 失败 - err=%v\n", sheetName, err)
-			}
+		dataCharts := DataChartsFromExcelCharts(qr, charts)
+		title := strings.TrimSpace(input.ChartTitle)
+		if title == "" {
+			title = "数据分析报告"
 		}
 
-		f.SetActiveSheet(0)
+		buf, err := report.RenderXLSX(report.XLSXOptions{
+			Title:      title,
+			Theme:      report.ResolveTheme("", "business"),
+			Summary:    BuildExcelSummary(title, qr),
+			Data:       &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
+			DataCharts: dataCharts,
+			SQL:        input.SQL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("生成 Excel 失败：%w", err)
+		}
 
 		fileName := SanitizeFileName(input.FileName, "chart")
-		EnsureExportsDir()
-		filePath := fmt.Sprintf("exports/%s.xlsx", fileName)
-		if err := f.SaveAs(filePath); err != nil {
-			return nil, fmt.Errorf("保存 Excel 失败：%w", err)
+		url, err := writeExportFile(fileName, "xlsx", buf, auditCtx)
+		if err != nil {
+			return nil, err
 		}
+		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", len(qr.Data), len(dataCharts), url)
 
-		url := fmt.Sprintf("/exports/%s.xlsx", fileName)
-		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", rowCount, chartCount, url)
-
-		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", chartCount, rowCount, url)
-		if chartCount == 1 && len(charts) > 0 && len(charts[0].Series) > 1 {
-			msg = fmt.Sprintf("已生成含 %d 条折线/柱状图表的 Excel（%d 条数据），[点击下载](%s)", len(charts[0].Series), rowCount, url)
+		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", len(dataCharts), len(qr.Data), url)
+		if len(dataCharts) == 0 && len(charts) > 0 {
+			msg = fmt.Sprintf("已生成 Excel（%d 条数据）。注意：图表字段名未匹配查询结果列，未生成图表；可用列为 %v，[点击下载](%s)",
+				len(qr.Data), qr.Columns, url)
 		}
 
 		return &ExportExcelWithChartOutput{
 			Message:     msg,
-			RowCount:    rowCount,
+			RowCount:    len(qr.Data),
+			ChartCount:  len(dataCharts),
 			DownloadURL: url,
 			FileType:    "excel_with_chart",
 		}, nil
 	}
 }
 
-// NewExportAnalysisDocxFunc 创建 Word 导出工具（双路径，保证导出不失败）。
-//   - 路径 1：Python 模板驱动渲染（专业版：封面/目录/样式集/自动图表）
-//   - 路径 2：Python 不可用或渲染失败时，自动降级 Go 基础版渲染器
-//     （手拼 OOXML 基础实现，无 Python 依赖，保证任何环境均可导出）
+// NewExportAnalysisDocxFunc 创建 Word 分析报告导出工具（Go 原生渲染：
+// 封面/目录/页眉页脚/指标卡/原生可编辑图表/分页表格）。
 //
-// 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
-// skill 工具加载 export-word 技能自行编排。
-func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportAnalysisDocxInput) (*ExportAnalysisDocxOutput, error) {
-	return func(ctx context.Context, input *ExportAnalysisDocxInput) (out *ExportAnalysisDocxOutput, err error) {
+// content 模式支持扩展 Markdown（```kpi/```chart/```table/提示框/公式/分页），
+// 内嵌 SQL 由注入的 DataSource 经权限校验后取数；仅给 sql 时自动生成图文报告。
+func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_analysis_docx", start, err) }()
 
-		title := input.Title
-		if title == "" {
-			title = "数据分析报告"
-		}
-
-		fileName := SanitizeFileName(input.FileName, "report")
-		EnsureExportsDir()
-		url := "/exports/" + fileName + ".docx"
-
-		// 路径 1：Python 模板驱动渲染（专业版）
-		if input.Content != "" {
-			req := buildDocxContentJSON(title, input.Content, url)
-			if result, err := runPythonRenderer(ctx,
-				filepath.Join("export-word", "scripts", "word_generator.py"), req); err == nil {
-				log.Printf("[Tool:export_docx] 成功（模板版）- url=%s\n", result.OutputPath)
-				return &ExportAnalysisDocxOutput{
-					Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", result.OutputPath),
-					DownloadURL: result.OutputPath,
-					FileType:    "docx",
-				}, nil
-			} else {
-				log.Printf("[Tool:export_docx] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
-			}
-			// 路径 2：Go 基础版兜底（无 Python 依赖，保证导出不失败）
-			docxPath := filepath.Join("exports", fileName+".docx")
-			if err := GenerateDocxFromContent(input.Content, title, docxPath); err != nil {
-				return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
-			}
-			return &ExportAnalysisDocxOutput{
-				Message:     fmt.Sprintf("已生成 Word 分析报告（基础版），[点击下载](%s)", url),
-				DownloadURL: url,
-				FileType:    "docx",
-			}, nil
-		}
-
-		qr, err := QueryForExport(conn, input.SQL)
+		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
 		if err != nil {
 			return nil, err
 		}
-
-		req := buildDocxDataJSON(qr, title, url)
-		if result, err := runPythonRenderer(ctx,
-			filepath.Join("export-word", "scripts", "word_generator.py"), req); err == nil {
-			log.Printf("[Tool:export_docx] 成功（模板版）- url=%s\n", result.OutputPath)
-			return &ExportAnalysisDocxOutput{
-				Message:     fmt.Sprintf("已生成 Word 分析报告，[点击下载](%s)", result.OutputPath),
-				DownloadURL: result.OutputPath,
-				FileType:    "docx",
-			}, nil
-		} else {
-			log.Printf("[Tool:export_docx] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
-		}
-
-		var chartImagePaths []string
-		if input.IncludeChart && len(qr.Columns) >= 2 && len(qr.Data) > 0 {
-			chartImagePaths = GenerateDocxCharts(qr, title, fileName)
-		}
-		docxPath := filepath.Join("exports", fileName+".docx")
-		if err := GenerateDocx(qr, title, chartImagePaths, docxPath); err != nil {
-			cleanupFiles(chartImagePaths)
+		data, err := report.RenderDOCX(doc, report.ResolveTheme(input.Theme, "business"))
+		if err != nil {
 			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
 		}
-		cleanupFiles(chartImagePaths)
 
-		return &ExportAnalysisDocxOutput{
-			Message:     fmt.Sprintf("已生成 Word 分析报告（%d 条数据，基础版），[点击下载](%s)", len(qr.Data), url),
+		fileName := SanitizeFileName(input.FileName, "report")
+		url, err := writeExportFile(fileName, "docx", data, auditCtx)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("[Tool:export_docx] 成功 - blocks=%d, url=%s\n", len(doc.Blocks), url)
+
+		return &ExportReportOutput{
+			Message:     fmt.Sprintf("已生成 Word 分析报告（%s），[点击下载](%s)", doc.Title, url),
 			DownloadURL: url,
 			FileType:    "docx",
 		}, nil
 	}
 }
 
-// NewExportPPTFunc 创建 PPT 导出工具（双路径，保证导出不失败）。
-//   - 路径 1：Python 模板驱动渲染（专业版：母版/版式/深色主题）
-//   - 路径 2：Python 不可用或渲染失败时，自动降级 Go 基础版渲染器
-//     （手拼 OOXML 基础实现，无 Python 依赖，保证任何环境均可导出）
-//
-// 若需更细粒度的自定义（自定义 sections/blocks 结构），Agent 可改用
-// skill 工具加载 export-ppt 技能自行编排。
-func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportPPTInput) (*ExportPPTOutput, error) {
-	return func(ctx context.Context, input *ExportPPTInput) (out *ExportPPTOutput, err error) {
+// NewExportPPTFunc 创建 PPT 导出工具（Go 原生渲染：封面/目录/章节页/指标卡/
+// 原生可编辑图表/分页表格/洞察面板）。
+func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_ppt", start, err) }()
 
-		title := input.Title
-		if title == "" {
-			title = "数据报告"
-		}
-
-		fileName := SanitizeFileName(input.FileName, "slides")
-		EnsureExportsDir()
-		url := "/exports/" + fileName + ".pptx"
-
-		// 路径 1：Python 模板驱动渲染（专业版）
-		if input.Content != "" {
-			req := buildPPTContentJSON(title, input.Content, url)
-			if result, err := runPythonRenderer(ctx,
-				filepath.Join("export-ppt", "scripts", "export_ppt.py"), req); err == nil {
-				log.Printf("[Tool:export_ppt] 成功（模板版）- slides=%d, url=%s\n", result.SlideCount, result.OutputPath)
-				return &ExportPPTOutput{
-					Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", result.SlideCount, result.OutputPath),
-					SlideCount:  result.SlideCount,
-					DownloadURL: result.OutputPath,
-					FileType:    "ppt",
-				}, nil
-			} else {
-				log.Printf("[Tool:export_ppt] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
-			}
-			// 路径 2：Go 基础版兜底（无 Python 依赖，保证导出不失败）
-			pptxPath := filepath.Join("exports", fileName+".pptx")
-			slideCount, err := GeneratePptxFromContent(input.Content, title, pptxPath)
-			if err != nil {
-				return nil, fmt.Errorf("生成 PPT 失败：%w", err)
-			}
-			return &ExportPPTOutput{
-				Message:     fmt.Sprintf("已生成 PPT（%d 页，基础版），[点击下载](%s)", slideCount, url),
-				SlideCount:  slideCount,
-				DownloadURL: url,
-				FileType:    "ppt",
-			}, nil
-		}
-
-		qr, err := QueryForExport(conn, input.SQL)
+		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
 		if err != nil {
 			return nil, err
 		}
-
-		req := buildPPTDataJSON(qr, title, url)
-		if result, err := runPythonRenderer(ctx,
-			filepath.Join("export-ppt", "scripts", "export_ppt.py"), req); err == nil {
-			log.Printf("[Tool:export_ppt] 成功（模板版）- slides=%d, url=%s\n", result.SlideCount, result.OutputPath)
-			return &ExportPPTOutput{
-				Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", result.SlideCount, result.OutputPath),
-				SlideCount:  result.SlideCount,
-				DownloadURL: result.OutputPath,
-				FileType:    "ppt",
-			}, nil
-		} else {
-			log.Printf("[Tool:export_ppt] Python 渲染不可用，降级 Go 基础版 - err=%v\n", err)
-		}
-
-		chartPaths := GeneratePptCharts(qr, title, fileName)
-		pptxPath := filepath.Join("exports", fileName+".pptx")
-		slideCount, err := GeneratePptx(qr, title, chartPaths, pptxPath)
-		cleanupFiles(chartPaths)
+		data, err := report.RenderPPTX(doc, report.ResolveTheme(input.Theme, "business"))
 		if err != nil {
 			return nil, fmt.Errorf("生成 PPT 失败：%w", err)
 		}
 
-		return &ExportPPTOutput{
-			Message:     fmt.Sprintf("已生成 PPT（%d 页，基础版），[点击下载](%s)", slideCount, url),
+		fileName := SanitizeFileName(input.FileName, "slides")
+		url, err := writeExportFile(fileName, "pptx", data, auditCtx)
+		if err != nil {
+			return nil, err
+		}
+		slideCount := countPPTXSlides(data)
+		log.Printf("[Tool:export_ppt] 成功 - slides=%d, url=%s\n", slideCount, url)
+
+		return &ExportReportOutput{
+			Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
 			SlideCount:  slideCount,
 			DownloadURL: url,
 			FileType:    "ppt",
 		}, nil
 	}
+}
+
+// NewExportHTMLFunc 创建 HTML 报告导出工具。
+// 服务端渲染、全文转义、图表内联 SVG，断网可用；含 mermaid 图示/公式时才引入 CDN 渐进增强。
+func NewExportHTMLFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
+		start := time.Now()
+		defer func() { recordExportAudit(auditCtx, "export_html", start, err) }()
+
+		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
+		if err != nil {
+			return nil, err
+		}
+		data := report.RenderHTML(doc, report.ResolveTheme(input.Theme, "business"))
+
+		fileName := SanitizeFileName(input.FileName, "report")
+		url, err := writeExportFile(fileName, "html", data, auditCtx)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("[Tool:export_html] 成功 - url=%s\n", url)
+
+		return &ExportReportOutput{
+			Message:     fmt.Sprintf("已生成 HTML 报告（%s），[点击下载](%s)", doc.Title, url),
+			DownloadURL: url,
+			FileType:    "html",
+		}, nil
+	}
+}
+
+// countPPTXSlides 统计 PPTX 中的幻灯片数量（ppt/slides/slideN.xml）。
+func countPPTXSlides(data []byte) int {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, f := range zr.File {
+		name := f.Name
+		rest, ok := strings.CutPrefix(name, "ppt/slides/")
+		if !ok || !strings.HasPrefix(rest, "slide") || !strings.HasSuffix(rest, ".xml") {
+			continue
+		}
+		if !strings.Contains(strings.TrimSuffix(rest, ".xml"), "/") {
+			n++
+		}
+	}
+	return n
 }

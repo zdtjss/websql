@@ -224,6 +224,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *QueryInput) (*QueryOutput, error) {
 		startTime := time.Now()
+		auditCtx := auditCtx.ForRun(ctx)
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
 		conn, dbType := GetConn(targetConnID, userId)
@@ -245,6 +246,14 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		default:
 			err := errors.New("query_data only supports SELECT/SHOW/DESCRIBE/EXPLAIN/WITH")
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
+			return nil, err
+		}
+		// 词法级只读校验：拦截可执行注释、SELECT ... INTO OUTFILE、LOAD_FILE()、
+		// FOR UPDATE 行锁、EXPLAIN ANALYZE（会真实执行）以及 CTE 包裹的写操作等
+		// 首关键字白名单无法识别的副作用写法
+		if err := sqlguard.ValidateReadOnlyQuery(sql); err != nil {
+			err = fmt.Errorf("query_data 仅允许无副作用的只读查询：%w", err)
+			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
 			return nil, err
 		}
 		// 多语句注入防护：检测 SQL 中是否包含分号分隔的多条语句。
@@ -604,6 +613,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 	schemaNames := buildSchemaNames(schemas)
 	return func(ctx context.Context, input *ExecInput) (*ExecOutput, error) {
 		startTime := time.Now()
+		auditCtx := auditCtx.ForRun(ctx)
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
 		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, targetConnID)
 		sql := strings.TrimSpace(input.SQL)
@@ -633,6 +643,14 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 
 		sqlType := string(sqlutil.DetectSQLType(sql))
 		riskLevel := string(sqlutil.DetectRiskLevel(sql))
+
+		// 可执行注释防护：MySQL 会执行 /*! ... */ 中的内容，而审批弹窗与权限解析
+		// 都会把它当作普通注释，用户无法从确认框看出真正执行的语句，直接拒绝
+		if sqlguard.HasExecutableComment(sql) {
+			err := errors.New("exec_sql 不允许包含 MySQL 可执行注释（/*! ... */），请去掉注释后以明文 SQL 提交")
+			recordExecAudit(auditCtx, sql, targetConnID, sqlType, riskLevel, "failed", 0, int(time.Since(startTime).Milliseconds()), err.Error())
+			return nil, err
+		}
 
 		// 多语句防护：写操作一次只允许一条语句，
 		// 防止模型在一次调用里夹带未经过审批确认的额外写操作

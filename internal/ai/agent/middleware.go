@@ -69,6 +69,13 @@ func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddle
 		log.Printf("[Reduction] 创建 offload 目录失败，使用 tmp - err=%v\n", err)
 		dir = os.TempDir()
 	}
+	// RootDir 必须是绝对路径，且与文件系统沙箱的只读根一致：
+	// reduction 会告诉模型「内容已保存到 <RootDir>/trunc/<id>，请用 read_file 读取」。
+	// 旧实现未设置 RootDir（默认 /tmp），而 backend 实际写到 data/reduction/tmp/...，
+	// 模型按提示路径读取时文件不存在，被裁剪的大结果永远取不回来。
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 
 	ctxTokens := maxContextTokens
 	if ctxTokens <= 0 {
@@ -83,10 +90,11 @@ func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddle
 
 	mw, err := reduction.New(context.Background(), &reduction.Config{
 		Backend:                   backend,
+		RootDir:                   dir,
 		MaxLengthForTrunc:         30_000, // 单条 tool result 超过 30k 字符触发 truncate + offload 到文件
 		TokenCounter:              reductionTokenCounter,
 		MaxTokensForClear:         clearTokens, // 总 token 超过窗口 70% 触发 clear
-		ClearRetentionSuffixLimit: 4,          // 保留最近 4 条不 clear
+		ClearRetentionSuffixLimit: 4,           // 保留最近 4 条不 clear
 		// 说明：危险 SQL 确认走 eino interrupt 状态而非工具结果，
 		// 不在 reduction 的处理范围内，因此无需（也无法）通过工具名排除。
 	})
@@ -96,6 +104,38 @@ func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddle
 	}
 	log.Printf("[Reduction] 已启用 - offloadDir=%s, clearTokenThreshold=%d（上下文窗口 %d）\n", dir, clearTokens, ctxTokens)
 	return mw
+}
+
+// CleanupReductionOffload 清理 reduction offload 目录中超过 maxAge 的文件。
+// offload 文件是大结果被裁剪时落盘的副本，仅用于模型按提示回读，过期即可删除；
+// 由启动时的导出清理任务周期调用（避免 data/reduction 无限增长）。
+func CleanupReductionOffload(maxAge time.Duration) {
+	dir := os.Getenv("REDUCTION_OFFLOAD_DIR")
+	if dir == "" {
+		dir = filepath.Join("data", "reduction")
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	_ = filepath.WalkDir(abs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil // 目录不存在/权限不足时静默跳过
+		}
+		info, statErr := d.Info()
+		if statErr != nil || info.ModTime().After(cutoff) {
+			return nil
+		}
+		if os.Remove(path) == nil {
+			removed++
+		}
+		return nil
+	})
+	if removed > 0 {
+		log.Printf("[Cleanup] 已清理 %d 个 reduction offload 文件\n", removed)
+	}
 }
 
 // osfsReductionBackend 是一个最小化的本地文件 reduction.Backend 实现。
@@ -109,7 +149,14 @@ func (b *osfsReductionBackend) Write(ctx context.Context, req *filesystem.WriteR
 	if req == nil || req.FilePath == "" {
 		return errors.New("WriteRequest 必须包含 FilePath")
 	}
-	full := filepath.Join(b.rootDir, req.FilePath)
+	full := req.FilePath
+	if !filepath.IsAbs(full) {
+		full = filepath.Join(b.rootDir, full)
+	}
+	full = filepath.Clean(full)
+	if rel, err := filepath.Rel(b.rootDir, full); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("offload 路径 %q 超出 reduction 目录", req.FilePath)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -266,6 +313,12 @@ func recoveryHintWithSkillMeta(ctx context.Context, toolName, args string, err e
 	if err == nil {
 		return ""
 	}
+	// 0. 权限拒绝：明确告知模型不要重试或绕过
+	var permErr *PermissionError
+	if errors.As(err, &permErr) {
+		return "权限不足，属于安全策略拒绝而非 SQL 错误。禁止重试相同操作，禁止改用其他表、视图、子查询或工具绕过；" +
+			"请直接向用户说明缺少哪些表/字段/操作的权限，并建议联系管理员开通。"
+	}
 	// 1. 尝试活跃 Skill 的 errorHints
 	if activeSkill := getActiveSkillFromContext(ctx); activeSkill != "" {
 		if meta := globalSkillMetaRegistry.GetSkillMeta(activeSkill); meta != nil {
@@ -370,11 +423,11 @@ func recoveryHint(toolName, args string, err error) string {
 		strings.Contains(args, "check_deps")
 
 	if isPipOrPython && (isEncodingOrSyntax || isSkillExport) {
-		return "Python skill execution failed on Windows. Retry the skill workflow with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' tools instead (they try the same Python renderer first but automatically fall back to a built-in Go renderer, so export never fails without Python)."
+		return "Python skill execution failed on Windows. Retry the skill workflow with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' / 'export_html' tools instead (they render with the built-in Go engine, no Python required)."
 	}
 
 	if isSkillExport {
-		return "Skill script execution failed. Retry with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' tools instead (they automatically fall back to a built-in Go renderer when Python is unavailable, so export never fails)."
+		return "Skill script execution failed. Retry with corrected parameters, or use the 'export_ppt' / 'export_analysis_docx' tools instead (built-in Go renderer, no Python required)."
 	}
 
 	return "Please adjust parameters and retry."

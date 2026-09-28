@@ -484,6 +484,7 @@ func (s *PermissionScope) DescribeForPrompt() string {
 	}
 
 	sb.WriteString("⚠️ 对 column 级别的表使用 SELECT * **会被拒绝**，必须显式列出允许字段。\n")
+	sb.WriteString("⚠️ 权限拒绝时直接向用户说明缺少哪张表/哪个字段的权限并给出替代方案，**禁止**换表名变体、注释包装、导出链路内嵌 SQL 等方式尝试绕过。\n")
 
 	if !s.AllowModify {
 		sb.WriteString("⛔ **禁止修改数据**。不得生成或执行任何写操作 SQL。\n")

@@ -345,6 +345,19 @@ export function useChatStream(deps: UseChatStreamDeps) {
               case 'session':
                 sessionId.value = chunk.content
                 break
+              case 'retract': {
+                // 模型流式重试：后端撤回本次尝试已推送的文本（与前端已接收内容一致，按后缀回退），
+                // 避免重试后的内容与失败尝试的内容重复展示
+                const retractContent = chunk.content || ''
+                const retractThinking = chunk.thinking || ''
+                if (retractContent && streamingContent.value.endsWith(retractContent)) {
+                  streamingContent.value = streamingContent.value.slice(0, -retractContent.length)
+                }
+                if (retractThinking && thinkingText.value.endsWith(retractThinking)) {
+                  thinkingText.value = thinkingText.value.slice(0, -retractThinking.length)
+                }
+                break
+              }
               case 'thinking':
                 thinkingText.value += chunk.content
                 scrollToBottom()

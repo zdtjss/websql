@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -18,9 +20,13 @@ import (
 const (
 	agentCacheTTL      = 10 * time.Minute
 	agentCacheCleanSec = 2 * time.Minute
+	// maxCachedAgents Agent 缓存容量上限：按 (连接, schema, 用户, 模型/权限指纹) 组合缓存，
+	// 组合数随用户与连接数增长，需设上限防止内存无限增长；淘汰仅移出缓存，不影响进行中的 Run。
+	maxCachedAgents = 128
 )
 
 type AgentFactory struct {
+	buildMu  sync.Mutex
 	cache    *TTLCache[*SQLAgent]
 	sessions *SessionStore
 }
@@ -35,8 +41,10 @@ func GetAgentFactory() *AgentFactory {
 			log.Printf("[AgentFactory] 创建 SessionStore 失败 - err=%v\n", err)
 			sessions, _ = NewSessionStore()
 		}
+		agentCache := NewTTLCache[*SQLAgent](agentCacheTTL, agentCacheCleanSec)
+		agentCache.SetMaxEntries(maxCachedAgents)
 		globalAgentFactory = &AgentFactory{
-			cache:    NewTTLCache[*SQLAgent](agentCacheTTL, agentCacheCleanSec),
+			cache:    agentCache,
 			sessions: sessions,
 		}
 	})
@@ -51,13 +59,26 @@ func (f *AgentFactory) Close() {
 }
 
 func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
-	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas)
+	// 缓存 key 纳入「模型配置指纹 + 权限范围指纹」：
+	//   - 用户切换模型 / 管理员修改模型参数后立即生效（旧 key 只含连接与用户，最长 10 分钟仍用旧模型）
+	//   - 管理员调整用户权限后，新的权限范围会构建新的 Agent（工具与提示词中的权限描述随之更新）
+	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas) + "::" + configFingerprint(cfg, scope)
 
 	if agent, ok := f.cache.Get(key); ok {
 		return agent, nil
 	}
 
-	newAgent, err := NewSQLAgent(ctx, cfg, connID, dbType, dbSchema, dbVersion, schemas, f.sessions, scope, auditCtx)
+	// 同一 key 的并发未命中只构建一次（构建包含模型客户端、权限智能体等较重的初始化）
+	f.buildMu.Lock()
+	defer f.buildMu.Unlock()
+	if agent, ok := f.cache.Get(key); ok {
+		return agent, nil
+	}
+
+	// 构建期使用独立 context：Agent 会被缓存并被后续请求共享，
+	// 不能让组件持有首个请求的 ctx（请求结束即取消）
+	buildCtx := context.WithoutCancel(ctx)
+	newAgent, err := NewSQLAgent(buildCtx, cfg, connID, dbType, dbSchema, dbVersion, schemas, f.sessions, scope, auditCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +86,20 @@ func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, co
 	f.cache.Set(key, newAgent)
 	log.Printf("[AgentFactory] 创建新 Agent - key=%s\n", key)
 	return newAgent, nil
+}
+
+// configFingerprint 计算模型配置与权限范围的短指纹（sha256 前 12 位，不泄露 apiKey 原文）
+func configFingerprint(cfg *system.AIConfig, scope *PermissionScope) string {
+	h := sha256.New()
+	if cfg != nil {
+		fmt.Fprintf(h, "%+v", *cfg)
+	}
+	if scope != nil {
+		// fmt 对 map 按 key 排序输出，结果稳定
+		fmt.Fprintf(h, "|%v|%v|%v|%v|%v|%v|%v", scope.IsRemote, scope.HasFullConnAccess, scope.AllSchemasFull,
+			scope.AllowModify, scope.FullAccessSchemas, scope.AllowedTables, scope.AllowedColumns)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 func (f *AgentFactory) InvalidateAll() {

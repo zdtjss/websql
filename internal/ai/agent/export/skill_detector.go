@@ -74,10 +74,27 @@ func GetSkillEnv() *SkillEnv {
 	return defaultSkillEnv
 }
 
+// skillsRootDir 返回 skills 目录：
+// 优先 SkillEnv.rootDir（InitSkillEnv 初始化时确定），其次 SKILLS_DIR 环境变量，
+// 最后当前工作目录下的 skills/。
+func skillsRootDir() string {
+	if env := GetSkillEnv(); env != nil && env.rootDir != "" {
+		return env.rootDir
+	}
+	if dir := os.Getenv("SKILLS_DIR"); dir != "" {
+		return dir
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "skills"
+	}
+	return filepath.Join(cwd, "skills")
+}
+
 // logSkillStatus 启动时打印 Python 与 Skill 发现状态。
 func logSkillStatus(ctx context.Context) {
 	if !IsPythonAvailable() {
-		log.Println("[SkillEnv] Python 未安装，Skill 脚本不可用；export_ppt/export_analysis_docx 导出工具将自动降级 Go 基础版（导出不失败）")
+		log.Println("[SkillEnv] Python 未安装，Skill 脚本不可用；报告类导出由 Go 原生渲染器完成，不受影响")
 		return
 	}
 

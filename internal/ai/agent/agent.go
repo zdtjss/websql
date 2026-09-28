@@ -35,6 +35,9 @@ type StreamChunk struct {
 	SQL          string `json:"sql,omitempty"`          // 展示用
 	InterruptID  string `json:"interruptId,omitempty"`  // Eino 中断地址 ID
 	CheckPointID string `json:"checkPointId,omitempty"` // Runner CheckPoint ID
+	// Thinking 仅用于 type=retract：需要从思考区末尾撤回的文本
+	// （模型流式重试时，失败尝试已推送的内容需要撤回，content 字段承载正文部分）
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // ChatRequest 聊天请求
@@ -127,7 +130,7 @@ type SQLAgent struct {
 	maxContextTokens int
 	cancelMu         sync.Mutex
 	cancelFuncs      map[string]adk.AgentCancelFunc // runID -> cancel
-	sessionSync      *SessionSyncMiddleware        // Eino v0.9 会话同步中间件
+	sessionSync      *SessionSyncMiddleware         // Eino v0.9 会话同步中间件
 	promptMW         *DynamicPromptMiddleware       // per-run 动态系统提示词中间件
 }
 
@@ -198,6 +201,14 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	}
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
+	// 同一会话互斥：多 tab / 重复提交并发运行会交错写消息、破坏 tool_calls 配对
+	if !sess.TryBeginRun() {
+		log.Printf("[Agent] 会话正在处理中，拒绝并发运行 - sessionID=%s\n", sessionID)
+		flush(StreamChunk{Type: "error", Content: "该会话正在处理中，请等待当前回复完成后再发送。"})
+		return sessionID, nil
+	}
+	defer sess.EndRun()
+
 	if err := sess.Append("user", req.Question); err != nil {
 		return sessionID, err
 	}
@@ -206,8 +217,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	log.Printf("[Agent] 历史消息 - total=%d, maxContextTokens=%d\n", len(allMsgs), a.maxContextTokens)
 
 	if !a.scope.HasAnyAccess() {
+		// done 事件由 handler 统一发送，这里只推送错误，避免前端收到两次 done
 		flush(StreamChunk{Type: "error", Content: "您暂时没有可访问的数据表权限，请联系管理员开通。"})
-		flush(StreamChunk{Type: "done"})
 		return sessionID, nil
 	}
 
@@ -309,45 +320,85 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	if a.sessionSync != nil {
 		ctx = WithRunSessionState(ctx, newRunSessionState(sess, len(allMsgs)))
 	}
+	// 本次运行的会话/用户经 context 传给工具（审计记录使用真实 SessionID，
+	// 而不是缓存 Agent 构建时烘焙进工具的旧值）
+	ctx = WithRunIdentity(ctx, RunIdentity{SessionID: sessionID, UserID: req.UserID})
+
+	// 登记 checkpoint 归属：恢复时校验用户/会话/连接一致，并保证一次性消费
+	globalCheckPointStore.Bind(checkPointID, CheckpointBinding{UserID: req.UserID, SessionID: sessionID, ConnID: defaultConnID})
 
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID), cancelOpt)
 
-	_, _ = a.processEvents(iter, flush, sess, checkPointID)
+	interrupted := a.processEvents(runID, iter, flush, sess, checkPointID)
+	// 未停在「等待确认」上的 checkpoint（含取消时保存的不可恢复状态）立即释放
+	globalCheckPointStore.Release(checkPointID, interrupted)
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
 	}
 
-	log.Printf("[Agent] 执行完毕 - sessionID=%s\n", sessionID)
+	log.Printf("[Agent] 执行完毕 - sessionID=%s, awaitingConfirm=%v\n", sessionID, interrupted)
 
 	return sessionID, nil
 }
 
-// ResumeStream 恢复被中断的执行（用户确认/取消后）
-// 当再次被中断时（如 LLM 生成了新的危险 SQL），不发送 done，让前端继续等待用户确认
-func (a *SQLAgent) ResumeStream(ctx context.Context, checkPointID string, targets map[string]bool, flush func(StreamChunk), sess *Session) error {
-	log.Printf("[Agent] resume 开始 - cpID=%s, targets=%v, sessionMsgs=%d\n", checkPointID, targets, len(sess.messages))
+// ResumeStream 恢复被中断的执行（用户确认/取消后）。
+//
+// 安全语义：
+//   - BeginResume 校验 checkpoint 归属（用户 + 会话 + 连接）并加「恢复中」标记，
+//     并发重复提交直接拒绝；
+//   - EndResume 在恢复结束后消费 checkpoint：同一次审批只能执行一次，
+//     重放同一 resume 请求会得到 ErrCheckpointNotFound；
+//   - 恢复过程中若再次中断（新的危险 SQL），Runner 以同一 ID 保存新状态，前端可继续确认。
+func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string, binding CheckpointBinding, targets map[string]bool, flush func(StreamChunk), sess *Session) error {
+	log.Printf("[Agent] resume 开始 - cpID=%s, targets=%d, sessionMsgs=%d\n", checkPointID, len(targets), len(sess.GetMessages()))
+
+	// 同一会话互斥：确认操作与新的对话请求不可并发运行。
+	// 用 BeginRunWait 容忍「中断事件已推送、RunStream 尚在收尾」的毫秒级窗口。
+	if sess != nil {
+		if !sess.BeginRunWait(2 * time.Second) {
+			return errors.New("该会话正在处理中，请等待当前回复完成后再确认")
+		}
+		defer sess.EndRun()
+	}
+
+	version, err := globalCheckPointStore.BeginResume(checkPointID, binding)
+	if err != nil {
+		return err
+	}
+	defer globalCheckPointStore.EndResume(checkPointID, version)
 
 	targetsAny := make(map[string]any, len(targets))
 	for id, approved := range targets {
 		targetsAny[id] = SQLApprovalResult{Approved: approved}
 	}
 
+	if runID == "" {
+		runID = fmt.Sprintf("%s_resume_%d", binding.SessionID, time.Now().UnixNano())
+	}
+	cancelOpt, cancelFn := adk.WithCancel()
+	a.registerCancel(runID, cancelFn)
+	defer a.unregisterCancel(runID)
+
+	if a.sessionSync != nil {
+		ctx = WithRunSessionState(ctx, newRunSessionState(sess, len(sess.GetMessages())))
+	}
+	ctx = WithRunIdentity(ctx, RunIdentity{SessionID: binding.SessionID, UserID: binding.UserID})
+
 	resumeStart := time.Now()
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
 		Targets: targetsAny,
-	})
+	}, cancelOpt)
 	if err != nil {
-		return fmt.Errorf("resume failed: %w", err)
+		return fmt.Errorf("恢复执行失败：%w", err)
 	}
-	log.Printf("[Agent] resume ResumeWithParams 返回 - elapsed=%v\n", time.Since(resumeStart))
 
-	_, _ = a.processEvents(iter, flush, sess, checkPointID)
+	interrupted := a.processEvents(runID, iter, flush, sess, checkPointID)
 
-	log.Printf("[Agent] resume processEvents 完成 - totalElapsed=%v, sessionMsgs=%d\n", time.Since(resumeStart), len(sess.messages))
+	log.Printf("[Agent] resume 完成 - elapsed=%v, awaitingConfirm=%v\n", time.Since(resumeStart), interrupted)
 
 	if err := sess.SaveToDB(); err != nil {
-		log.Printf("[Agent] save assistant msg failed - err=%v\n", err)
+		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
 	}
 
 	return nil
@@ -382,10 +433,15 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.transport.RoundTrip(clonedReq)
 }
 
-func NewAuthClient(token string) *http.Client {
-	return &http.Client{
-		Transport: &authTransport{token: token, transport: http.DefaultTransport},
+// NewAuthClient 返回带 Bearer 鉴权与整体超时的 HTTP 客户端。
+// 注意：eino-ext ollama 在设置 HTTPClient 后会忽略 ChatModelConfig.Timeout，
+// 因此超时必须设置在客户端上；token 为空时不发送 Authorization 头（避免发送 "Bearer "）。
+func NewAuthClient(token string, timeout time.Duration) *http.Client {
+	var transport http.RoundTripper = http.DefaultTransport
+	if strings.TrimSpace(token) != "" {
+		transport = &authTransport{token: token, transport: http.DefaultTransport}
 	}
+	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
 // ──────────────────────────────────────────────
@@ -416,7 +472,7 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 			}
 			ollamaCfg.Options = opts
 		}
-		ollamaCfg.HTTPClient = NewAuthClient(cfg.ApiKey)
+		ollamaCfg.HTTPClient = NewAuthClient(cfg.ApiKey, 30*time.Minute)
 		cm, err = ollama.NewChatModel(ctx, ollamaCfg)
 	case "openai":
 		openaiCfg := &openai.ChatModelConfig{
@@ -471,15 +527,20 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v crossJoin=%v", qErr, sErr, lErr, dErr, rfErr, cjErr)
 	}
 
-	// 导出工具：export_ppt / export_analysis_docx 为双路径导出工具——
-	// Python 可用时走模板驱动专业版，Python 不可用/渲染失败时自动降级
-	// Go 基础版（无 Python 依赖，保证导出永不失败）；需要更细粒度的
-	// 自定义（sections/blocks）时可改用 skill 工具加载对应 SKILL.md。
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 表格数据（Go 原生实现），须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出带图表的 Excel（Go 原生实现），图表类型根据数据特征自动选择", export.NewExportExcelWithChartFunc(conn, exportAuditCtx))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（模板驱动，科技感深色主题，含封面/目录/图表/表格页；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-ppt 技能。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成数据分析报告 Word（模板驱动，含封面/目录/KPI/图表；无 Python 环境时自动降级为基础版，保证可导出）。需要更细粒度自定义时可用 skill 工具加载 export-word 技能。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn, exportAuditCtx))
-	exportHTMLTool, _ := utils.InferTool("export_html", "生成 HTML 报告（Go 原生实现，支持 Markdown、Mermaid 图表交互、代码高亮、数学公式）。优先使用 content 模式。也可先用 skill 工具加载 export-html 技能获取高级用法", export.NewExportHTMLFunc(conn, exportAuditCtx))
+	// 导出工具：全部走 Go 原生 report 渲染引擎（封面/目录/指标卡/原生可编辑图表/
+	// 提示框/分页表格），无 Python 依赖、离线可用、导出永不因环境而失败。
+	// docx/ppt/html 的 content 模式支持扩展 Markdown（```kpi/```chart/```table），
+	// 其中内嵌 SQL 由 DataSource 经只读 + 表/列权限校验后取数。
+	auditUserID := ""
+	if auditCtx != nil {
+		auditUserID = auditCtx.UserID
+	}
+	dataSource := newReportDataSource(connID, auditUserID, schemas, scope)
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 数据表格（Go 原生渲染：表头样式/冻结首行/筛选/数字格式）。须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出含图表的 Excel（Go 原生可编辑图表 + 分析摘要 + 数据明细）。须传入 sql 与 charts（X/Y 字段名须与查询结果列一致）", export.NewExportExcelWithChartFunc(conn, exportAuditCtx))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（Go 原生渲染：封面/目录/章节页/指标卡/原生可编辑图表/分页表格，theme=tech 为深色科技风）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx, dataSource))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成 Word 数据分析报告（Go 原生渲染：封面/目录/页眉页脚/指标卡/原生可编辑图表/分页表格）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表/提示框），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn, exportAuditCtx, dataSource))
+	exportHTMLTool, _ := utils.InferTool("export_html", "生成自包含 HTML 报告（服务端渲染、内联 SVG 图表、断网可读、支持 Mermaid 图示与公式）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportHTMLFunc(conn, exportAuditCtx, dataSource))
 
 	for _, t := range []tool.BaseTool{exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, exportHTMLTool} {
 		if t != nil {

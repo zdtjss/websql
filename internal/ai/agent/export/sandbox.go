@@ -43,53 +43,6 @@ var (
 	sandboxValue sandboxRoots
 )
 
-// allowedCommandPrefixes execute 工具允许执行的命令白名单（按分段首 token 精确匹配）。
-// python/pip 系列是 skills 渲染脚本的实际用法；set/export/chcp/cd 用于编码与环境准备，
-// 它们只影响子进程环境与工作目录，不构成文件系统越权。
-var allowedCommandPrefixes = map[string]bool{
-	"python": true, "python3": true, "python.exe": true, "python3.exe": true,
-	"py": true,
-	"pip": true, "pip3": true, "pip.exe": true, "pip3.exe": true,
-	"set": true, "export": true, "chcp": true, "cd": true,
-}
-
-// commandBlacklistPatterns 危险命令黑名单（小写归一化后子串匹配）。
-// 与白名单叠加使用：白名单限制「能跑什么」，黑名单限制「明显危险的参数形态」。
-var commandBlacklistPatterns = []string{
-	// 文件/目录批量删除（覆盖 -rf/-fr/-Rf/-r 与 Windows /s /q /f 变体）
-	"rm -rf", "rm -fr", "rm -r ", "rm -rf/", "rm --recursive",
-	"rmdir /s", "rd /s", "del /s", "del /q", "del /f", "erase /s",
-	// 磁盘/分区/系统
-	"format ", "mkfs", "dd if=", "diskpart", "fdisk",
-	"shutdown", "reboot", "halt", "poweroff", "bcdedit",
-	// 注册表 / 系统配置 / 权限
-	"reg add", "reg delete", "reg import", "takeown", "icacls", "chmod 777 /", "chown -r",
-	// 账户与服务
-	"net user", "net localgroup", "useradd", "userdel", "passwd",
-	"systemctl", "launchctl", "sc delete", "sc config", "schtasks", "crontab",
-	// 间接执行 / 编码执行 / 网络外传
-	"powershell", "pwsh", "wmic", "certutil", "bitsadmin", "mshta",
-	"curl ", "wget ", "scp ", "ssh ", "rsync ", "nc ", "ncat ", "netcat",
-	"invoke-webrequest", "invoke-expression", "start-process",
-	// 环境变量劫持（会影响后续 python 解析路径）
-	"set path=", "export path=", "set pythonpath=", "export pythonpath=",
-	// fork bomb
-	":(){:|:&};:",
-	// 设备直写
-	"> /dev/sd",
-}
-
-// winAbsPathRegex / unixAbsPathRegex 用于从命令中提取绝对路径，做沙箱越界检查。
-var (
-	winAbsPathRegex  = regexp.MustCompile(`[A-Za-z]:[\\/][^\s"'<>|;&]*`)
-	unixAbsPathRegex = regexp.MustCompile(`(?:^|[\s"'=(,:<>])/[A-Za-z0-9_.][^\s"'<>|;&]*`)
-)
-
-// devicePathAllowlist 允许访问的设备文件（重定向到 null 是常见用法）
-var devicePathAllowlist = map[string]bool{
-	"/dev/null": true, "/dev/stdout": true, "/dev/stderr": true,
-}
-
 func agentWorkspaceDir() string {
 	if dir := strings.TrimSpace(os.Getenv(envAgentWorkspace)); dir != "" {
 		return dir
@@ -233,89 +186,219 @@ func resolveWritePath(p string) (string, error) {
 	return "", fmt.Errorf("路径 %q 不在允许写入的范围内（仅允许：工作区、exports 导出目录、系统临时目录）", p)
 }
 
-// splitCommandSegments 按 shell 连接符切分命令，用于逐段做白名单校验。
-func splitCommandSegments(command string) []string {
-	replacer := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n", "\r\n", "\n", "\r", "\n")
-	return strings.Split(replacer.Replace(command), "\n")
+// ──────────────────────────────────────────────
+// execute 命令策略：只允许「运行技能目录内的 Python 脚本」，不经过 shell
+// ──────────────────────────────────────────────
+//
+// 旧策略（首 token 白名单 python/pip + 危险子串黑名单 + 绝对路径检查）存在根本缺陷：
+//   - `python -c "..."`、`python -m ...`、`pip install <任意包>` 本身就是任意代码执行；
+//   - 模型可先 write_file 写一个 .py 到工作区再 `python x.py` 执行；
+//   - 命令经 `cmd /C` / `sh -c` 执行，Windows 单个 `&`、`$(...)`、反引号等元字符未被切分校验。
+// 在提示注入（上传文件、表注释、查询结果都可能携带指令）面前，上述任一缺口都等价于远程代码执行。
+//
+// 新策略：
+//  1. 解析为 argv，直接 exec（不经 shell），任何未加引号的 shell 元字符一律拒绝；
+//  2. 解释器必须是 python 系列，解释器参数仅允许 -u / -B；
+//  3. 脚本必须位于只读技能目录（skills/）内且真实存在；
+//  4. 其余参数只能是沙箱可读范围内的文件路径或不含特殊字符的普通值；
+//  5. 允许 `< input.json` 形式的标准输入重定向（文件同样须在沙箱内）。
+
+// skillInvocation 解析后的技能脚本调用
+type skillInvocation struct {
+	pyFlags   []string
+	script    string
+	args      []string
+	stdinFile string
 }
 
-// firstToken 返回命令片段的首个 token（小写，去除包裹引号）。
-func firstToken(segment string) string {
-	segment = strings.TrimSpace(segment)
-	// 跳过前导环境变量前缀（如 FOO=bar python x.py）
+var (
+	// 常见的无害前缀（编码/环境准备），解析前剥离
+	harmlessPrefixRe = regexp.MustCompile(`(?i)^\s*(chcp\s+\d+(\s*>\s*nul)?|set\s+PYTHONIOENCODING=utf-?8|export\s+PYTHONIOENCODING=utf-?8|set\s+PYTHONUTF8=1|export\s+PYTHONUTF8=1)\s*&&\s*`)
+	// 常见的无害后缀（日志截断/合并输出），解析前剥离
+	harmlessSuffixRe = regexp.MustCompile(`(?i)(\s*2>&1)?(\s*\|\s*tail\s+-?n?\s*\d+)?\s*$`)
+	envPrefixRe      = regexp.MustCompile(`^(PYTHONIOENCODING=utf-?8|PYTHONUTF8=1)\s+`)
+	plainArgRe       = regexp.MustCompile(`^[\p{L}\p{N}_.,:=@+\-/\\ ]+$`)
+)
+
+var allowedPythonNames = map[string]bool{
+	"python": true, "python3": true, "py": true, "python.exe": true, "python3.exe": true, "py.exe": true,
+}
+
+// splitArgv 按 POSIX 风格切分参数（支持单双引号），遇到未加引号的 shell 元字符返回错误。
+func splitArgv(command string) ([]string, error) {
+	var args []string
+	var cur strings.Builder
+	inArg := false
+	quote := rune(0)
+	for _, r := range command {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			inArg = true
+		case r == ' ' || r == '\t':
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+		case r == '<':
+			// 标准输入重定向作为独立 token
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+			args = append(args, "<")
+		case strings.ContainsRune("&|;$`()>\n\r*?!%^{}", r):
+			return nil, fmt.Errorf("命令包含不允许的 shell 元字符 %q（execute 不经过 shell，仅支持运行技能脚本）", r)
+		default:
+			cur.WriteRune(r)
+			inArg = true
+		}
+	}
+	if quote != 0 {
+		return nil, errors.New("命令引号未闭合")
+	}
+	if inArg {
+		args = append(args, cur.String())
+	}
+	return args, nil
+}
+
+// mapTmpPath 把模型习惯使用的 /tmp/ 路径映射到系统临时目录（跨平台）
+func mapTmpPath(p string) string {
+	if strings.HasPrefix(p, "/tmp/") {
+		return filepath.Join(os.TempDir(), filepath.FromSlash(strings.TrimPrefix(p, "/tmp/")))
+	}
+	return p
+}
+
+// resolveSkillScript 解析脚本路径：必须位于技能根目录内、是 .py 普通文件、且不在任何可写根目录内
+func resolveSkillScript(p string) (string, error) {
+	if !strings.EqualFold(filepath.Ext(p), ".py") {
+		return "", fmt.Errorf("只允许运行 .py 技能脚本，当前为 %q", p)
+	}
+	root, err := filepath.Abs(skillsRootDir())
+	if err != nil {
+		return "", err
+	}
+	p = filepath.FromSlash(mapTmpPath(p))
+	candidates := []string{}
+	if filepath.IsAbs(p) {
+		candidates = append(candidates, filepath.Clean(p))
+	} else {
+		if abs, err := filepath.Abs(p); err == nil {
+			candidates = append(candidates, abs)
+		}
+		trimmed := strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(p), "./"), "skills/")
+		candidates = append(candidates, filepath.Join(root, filepath.FromSlash(trimmed)))
+	}
+	writeRoots := getSandboxRoots().write
+	for _, cand := range candidates {
+		if !pathWithinRoot(cand, root) || withinAnyRoot(cand, writeRoots) {
+			continue
+		}
+		fi, err := os.Lstat(cand)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		return cand, nil
+	}
+	return "", fmt.Errorf("脚本 %q 不在技能目录内或不存在（execute 仅允许运行 skills/ 下的技能脚本）", p)
+}
+
+// parseSkillCommand 把模型给出的命令解析为受限的技能脚本调用
+func parseSkillCommand(command string) (*skillInvocation, error) {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return nil, errors.New("命令为空")
+	}
 	for {
-		fields := strings.Fields(segment)
-		if len(fields) == 0 {
-			return ""
+		stripped := harmlessPrefixRe.ReplaceAllString(cmd, "")
+		stripped = envPrefixRe.ReplaceAllString(stripped, "")
+		if stripped == cmd {
+			break
 		}
-		first := fields[0]
-		if eq := strings.Index(first, "="); eq > 0 && !strings.HasPrefix(first, "=") {
-			segment = strings.TrimSpace(strings.TrimPrefix(segment, first))
+		cmd = stripped
+	}
+	cmd = strings.TrimSpace(harmlessSuffixRe.ReplaceAllString(cmd, ""))
+
+	argv, err := splitArgv(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if len(argv) == 0 {
+		return nil, errors.New("命令为空")
+	}
+	if !allowedPythonNames[strings.ToLower(filepath.Base(argv[0]))] {
+		return nil, fmt.Errorf("命令 %q 不在允许范围内（execute 仅允许 python 运行 skills/ 下的技能脚本；依赖需随部署预装，禁止运行时 pip 安装）", argv[0])
+	}
+
+	inv := &skillInvocation{}
+	i := 1
+	for ; i < len(argv) && strings.HasPrefix(argv[i], "-"); i++ {
+		if argv[i] != "-u" && argv[i] != "-B" {
+			return nil, fmt.Errorf("不允许的解释器参数 %q（禁止 -c/-m 等内联代码或模块执行）", argv[i])
+		}
+		inv.pyFlags = append(inv.pyFlags, argv[i])
+	}
+	if i >= len(argv) {
+		return nil, errors.New("缺少要运行的技能脚本路径")
+	}
+	script, err := resolveSkillScript(argv[i])
+	if err != nil {
+		return nil, err
+	}
+	inv.script = script
+
+	for i++; i < len(argv); i++ {
+		a := argv[i]
+		if a == "<" {
+			if i+1 >= len(argv) || inv.stdinFile != "" {
+				return nil, errors.New("标准输入重定向格式错误")
+			}
+			p, err := resolveReadPath(mapTmpPath(argv[i+1]))
+			if err != nil {
+				return nil, err
+			}
+			inv.stdinFile = p
+			i++
 			continue
 		}
-		return strings.ToLower(strings.Trim(first, `"'`))
-	}
-}
-
-// extractAbsolutePaths 从命令中提取绝对路径（含 Windows 盘符路径与 Unix 路径）。
-func extractAbsolutePaths(command string) []string {
-	var out []string
-	for _, m := range winAbsPathRegex.FindAllString(command, -1) {
-		out = append(out, m)
-	}
-	for _, m := range unixAbsPathRegex.FindAllString(command, -1) {
-		trimmed := strings.TrimLeft(m, " \t\"'=(,:<>")
-		if trimmed == "" || strings.Contains(trimmed, "://") {
+		if looksLikePath(a) {
+			p, err := resolveReadPath(mapTmpPath(a))
+			if err != nil {
+				// 输出文件路径可能尚不存在：只要落在可写根内即可
+				wp, werr := resolveWritePath(mapTmpPath(a))
+				if werr != nil {
+					return nil, err
+				}
+				p = wp
+			}
+			inv.args = append(inv.args, p)
 			continue
 		}
-		out = append(out, trimmed)
+		if !plainArgRe.MatchString(a) || strings.HasPrefix(a, "-") {
+			return nil, fmt.Errorf("不允许的脚本参数 %q", a)
+		}
+		inv.args = append(inv.args, a)
 	}
-	return out
+	return inv, nil
 }
 
-// validateSandboxedCommand 是 execute 工具的最终命令校验器：
-//  1. 危险命令黑名单（保留原有能力，防止明显破坏性操作）
-//  2. 分段白名单：命令的每一段首 token 必须是 python/pip 系列或环境准备指令
-//  3. 绝对路径沙箱检查：命令中出现的绝对路径必须落在允许根目录内
+func looksLikePath(a string) bool {
+	return strings.ContainsAny(a, `/\`) || strings.HasSuffix(strings.ToLower(a), ".json") ||
+		(len(a) > 1 && a[1] == ':')
+}
+
+// validateSandboxedCommand 是 execute 工具的命令校验入口（保留原函数名供调用方与测试使用）
 func validateSandboxedCommand(command string) error {
-	if err := defaultCommandValidator(command); err != nil {
-		return err
-	}
-	lower := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if lower == "" {
-		return errors.New("命令为空")
-	}
-	for _, pattern := range commandBlacklistPatterns {
-		if strings.Contains(lower, pattern) {
-			return fmt.Errorf("命令包含危险操作 [%s]，已被安全校验拦截", pattern)
-		}
-	}
-
-	for _, seg := range splitCommandSegments(lower) {
-		if strings.TrimSpace(seg) == "" {
-			continue
-		}
-		token := firstToken(seg)
-		if token == "" {
-			continue
-		}
-		if !allowedCommandPrefixes[token] {
-			return fmt.Errorf("命令 %q 不在允许范围内（execute 仅允许 python/pip 系列命令）", token)
-		}
-	}
-
-	roots := getSandboxRoots()
-	for _, p := range extractAbsolutePaths(command) {
-		if devicePathAllowlist[strings.ToLower(p)] {
-			continue
-		}
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			return fmt.Errorf("命令中的路径 %q 无法解析，已拦截", p)
-		}
-		if !withinAnyRoot(abs, roots.read) {
-			return fmt.Errorf("命令引用了沙箱之外的路径 %q，已拦截", p)
-		}
-	}
-	return nil
+	_, err := parseSkillCommand(command)
+	return err
 }

@@ -492,12 +492,18 @@ func TestApprovalGate_DecisionLogic(t *testing.T) {
 		{"INSERT INTO", "INSERT INTO users VALUES(1, 'a')", true},
 		{"UPDATE SET", "UPDATE users SET admin=1", true},
 		{"多语句含危险 SQL", "SELECT 1; DROP TABLE users", true},
+		// fail-closed：首关键字不在写关键字表中、但会修改数据库状态的语句同样需要确认
+		{"SET 变量（fail-closed）", "SET @var = 1", true},
+		{"SET GLOBAL", "SET GLOBAL read_only = 0", true},
+		{"CALL 存储过程", "CALL purge_all()", true},
+		{"RENAME TABLE", "RENAME TABLE users TO users_bak", true},
+		{"可执行注释包裹的 DELETE", "/*!50000 DELETE FROM users */", true},
+		{"SELECT INTO OUTFILE", "SELECT * FROM users INTO OUTFILE '/tmp/u'", true},
 
 		// 不应触发
 		{"纯 SELECT", "SELECT * FROM users WHERE id=1", false},
 		{"SHOW", "SHOW CREATE TABLE users", false},
 		{"EXPLAIN", "EXPLAIN SELECT * FROM users", false},
-		{"SET 变量", "SET @var = 1", false},
 		{"空字符串", "", false},
 	}
 	for _, tt := range tests {

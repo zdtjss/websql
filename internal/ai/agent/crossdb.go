@@ -249,6 +249,7 @@ func NewCrossDBJoinFunc(defaultConnID string, schemas []SchemaRef, auditCtx *Exe
 	connLookup := buildConnLookup(schemas)
 	return func(ctx context.Context, input *CrossDBJoinInput) (*CrossDBJoinOutput, error) {
 		start := time.Now()
+		auditCtx := auditCtx.ForRun(ctx)
 
 		// 主逻辑包一层闭包：无论成功失败都统一走审计出口（失败路径同样记录 failed）
 		out, runErr := func() (*CrossDBJoinOutput, error) {

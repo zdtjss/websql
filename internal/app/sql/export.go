@@ -2,11 +2,7 @@ package sql
 
 import (
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -321,73 +317,4 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 	excel.Write(c.Writer)
 	log.Println("导出完成")
 	return nil
-}
-
-func handleExportDownload(c *gin.Context) {
-	fileName := c.Param("filename")
-	if fileName == "" {
-		response.WriteErr(c, http.StatusBadRequest, 500, "文件名不能为空")
-		return
-	}
-
-	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
-		response.WriteErr(c, http.StatusBadRequest, 500, "非法文件名")
-		return
-	}
-
-	cleanPath := filepath.Clean("exports/" + fileName)
-	if !strings.HasPrefix(cleanPath, "exports") {
-		response.WriteErr(c, http.StatusBadRequest, 500, "非法文件路径")
-		return
-	}
-
-	contentTypes := map[string]string{
-		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-		".png":  "image/png",
-		".jpg":  "image/jpeg",
-	}
-
-	ext := ""
-	ct := ""
-	for e, t := range contentTypes {
-		if strings.HasSuffix(fileName, e) {
-			ext = e
-			ct = t
-			break
-		}
-	}
-	if ext == "" {
-		response.WriteErr(c, http.StatusBadRequest, 500, "不支持的文件类型")
-		return
-	}
-
-	filePath := "exports/" + fileName
-
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		response.WriteErr(c, http.StatusNotFound, 500, "文件不存在")
-		return
-	}
-
-	c.Header("Content-Type", ct)
-	c.Header("Content-Disposition", "attachment; filename=\""+fileName+"\"")
-
-	file, err := os.Open(filePath)
-	if err != nil {
-		response.WriteErr(c, http.StatusInternalServerError, 500, "读取文件失败")
-		return
-	}
-	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		response.WriteErr(c, http.StatusInternalServerError, 500, "获取文件信息失败")
-		return
-	}
-	c.Header("Content-Length", fmt.Sprintf("%d", stat.Size()))
-
-	io.Copy(c.Writer, file)
-	c.Writer.Flush()
-	file.Close()
 }

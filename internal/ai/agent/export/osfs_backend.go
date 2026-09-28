@@ -1,7 +1,6 @@
 package export
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,8 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/adk/filesystem"
@@ -337,256 +336,145 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 	return nil
 }
 
-var (
-	tailPipeRegex = regexp.MustCompile(`\s*2>&1\s*\|\s*tail\s+-?\d+\s*`)
-	pythonCRegex  = regexp.MustCompile(`python(?:3|\.exe)?\s+-c\s+"((?:[^"\\]|\\.)*)"`)
-	python3Regex  = regexp.MustCompile(`(^|\s)python3(\s|$)`)
-)
-
 // executeDefaultTimeout execute 子进程默认执行上限。
-// LLM 生成的 Python 脚本可能死循环或长时间运行，必须设置服务端兜底超时，
+// 脚本可能死循环或长时间运行，必须设置服务端兜底超时，
 // 避免会话被挂死且进程不回收（超时后 CommandContext 会自动 Kill 进程）。
 const executeDefaultTimeout = 300 * time.Second
 
-// unescapeShellCode 对从 python -c "..." 中提取的代码进行 shell 反转义。
-// LLM 生成的 python -c "code" 中，code 内部的双引号会被转义为 \"，
-// 反斜杠会被转义为 \\。写入 .py 文件前需要还原，否则 Python 会报 SyntaxError。
-// 注意：只反转义 shell 双引号上下文中的 \" 和 \\，保留 \n \t 等 Python 转义序列。
-func unescapeShellCode(code string) string {
-	var sb strings.Builder
-	sb.Grow(len(code))
-	i := 0
-	for i < len(code) {
-		if code[i] == '\\' && i+1 < len(code) {
-			next := code[i+1]
-			// 仅反转义 shell 双引号转义：\" → ", \\ → \
-			if next == '"' {
-				sb.WriteByte('"')
-				i += 2
-				continue
-			}
-			if next == '\\' {
-				sb.WriteByte('\\')
-				i += 2
-				continue
-			}
-			// 其他 \x 序列（如 \n \t）是 Python 转义，保留原样
-		}
-		sb.WriteByte(code[i])
-		i++
-	}
-	return sb.String()
+// executeMaxOutput execute 输出上限（stdout+stderr 合计），超出部分截断，
+// 防止脚本输出海量内容撑爆内存与模型上下文。
+const executeMaxOutput = 256 * 1024
+
+// cappedBuffer 并发安全、带容量上限的输出缓冲（stdout/stderr 两个 goroutine 同时写入）
+type cappedBuffer struct {
+	mu        sync.Mutex
+	buf       strings.Builder
+	truncated bool
 }
 
-// getPythonCommand 根据检测结果返回正确的 Python 命令名称。
-// detectPython 优先检测 python3，其次 python。如果检测到的是 python3，
-// 则命令中保留 python3；如果检测到的是 python（Windows 常见），则返回 python。
-func (b *OSFilesystemBackend) getPythonCommand() string {
-	if b.pythonPath == "" {
-		return "python"
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remain := executeMaxOutput - b.buf.Len()
+	if remain <= 0 {
+		b.truncated = true
+		return len(p), nil
 	}
-	base := filepath.Base(b.pythonPath)
-	base = strings.TrimSuffix(base, ".exe")
-	if base == "python3" || base == "python" {
-		return base
+	if len(p) > remain {
+		b.buf.Write(p[:remain])
+		b.truncated = true
+		return len(p), nil
+	}
+	b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := strings.TrimSpace(b.buf.String())
+	if b.truncated {
+		s += "\n...(输出过长，已截断)"
+	}
+	return s
+}
+
+// pythonExecutable 返回用于执行技能脚本的解释器路径
+func (b *OSFilesystemBackend) pythonExecutable() string {
+	if b.pythonPath != "" {
+		return b.pythonPath
 	}
 	return "python"
 }
 
-// pythonEnvDir 返回需要加入子进程 PATH 的 Python 目录。
-// 当检测到捆绑的 Python 分发（绝对路径，如 C:\WebSQL\python\python.exe）时，
-// 返回其所在目录；当 pythonPath 为空或为裸命令名（已位于系统 PATH）时返回空。
-// 捆绑 Python 不在系统 PATH 中，必须显式加入子进程 PATH 才能让
-// python/python3/pip 等命令在 execute 工具生成的 shell 命令中正确解析。
-func (b *OSFilesystemBackend) pythonEnvDir() string {
-	if b.pythonPath == "" {
-		return ""
-	}
-	if !filepath.IsAbs(b.pythonPath) {
-		return ""
-	}
-	return filepath.Dir(b.pythonPath)
-}
-
-// preprocessCommand 跨平台命令预处理。
-// 1. 剥离 tail 管道（部分平台无 tail 命令）
-// 2. 将 python3 替换为检测到的 Python 命令（当 python3 不可用时）
-// 3. 将 /tmp/ 路径映射到 os.TempDir()（跨平台兼容）
-// 4. 将 python -c "code" 提取为临时 .py 文件执行（彻底避免 shell 引号转义问题）
-// 5. Windows 特定：设置 UTF-8 编码
-func (b *OSFilesystemBackend) preprocessCommand(command string) string {
-	// 1. 剥离 tail 管道
-	command = tailPipeRegex.ReplaceAllString(command, "")
-	command = strings.ReplaceAll(command, "2>&1 | tail", "")
-	command = strings.ReplaceAll(command, "| tail -5", "")
-	command = strings.ReplaceAll(command, "| tail-5", "")
-
-	// 2. 确定正确的 Python 命令，若 python3 不可用则替换
-	pythonCmd := b.getPythonCommand()
-	if pythonCmd != "python3" {
-		// 先替换 Unix 绝对路径（python3Regex 无法匹配 /usr/bin/python3 中的 python3）
-		for _, unixPath := range []string{
-			"/usr/local/bin/python3", "/usr/bin/python3",
-			"/usr/local/bin/python", "/usr/bin/python",
-		} {
-			command = strings.ReplaceAll(command, unixPath, pythonCmd)
-		}
-		// 再替换独立的 python3 token
-		command = python3Regex.ReplaceAllString(command, "${1}"+pythonCmd+"${2}")
-	}
-
-	// 3. 将 /tmp/ 映射到系统临时目录（使用正斜杠，跨平台兼容且不引发 Python 转义问题）
-	tmpDir := strings.ReplaceAll(os.TempDir(), "\\", "/")
-	command = strings.ReplaceAll(command, "/tmp/", tmpDir+"/")
-
-	// 4. 将 python -c "code" 提取为临时文件执行
-	// 这在所有平台上都避免了 shell 引号转义导致的 SyntaxError
-	command = pythonCRegex.ReplaceAllStringFunc(command, func(match string) string {
-		parts := pythonCRegex.FindStringSubmatch(match)
-		if len(parts) < 2 {
-			return match
-		}
-		code := unescapeShellCode(parts[1])
-
-		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("websql_py_%d.py", time.Now().UnixNano()))
-		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
-			return match
-		}
-
-		// 执行临时脚本，并在执行后删除（平台相关的删除命令）
-		if runtime.GOOS == "windows" {
-			return fmt.Sprintf("%s %s && del %s", pythonCmd, tmpFile, tmpFile)
-		}
-		return fmt.Sprintf("%s %s && rm -f %s", pythonCmd, tmpFile, tmpFile)
-	})
-
-	// 5. Windows 特定：强制 UTF-8 编码，避免 GBK 编码问题
-	if runtime.GOOS == "windows" {
-		command = "chcp 65001 >nul && set PYTHONIOENCODING=utf-8 && " + command
-	}
-
-	return command
-}
-
+// ExecuteStreaming 执行技能脚本。
+//
+// 安全模型：命令先经 parseSkillCommand 解析为受限 argv（只允许运行 skills/ 目录内的
+// Python 脚本），再直接 exec 解释器——不经过 cmd /C 或 sh -c，shell 元字符没有任何效果。
 func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *filesystem.ExecuteRequest) (*schema.StreamReader[*filesystem.ExecuteResponse], error) {
-	if input == nil || input.Command == "" {
+	if input == nil || strings.TrimSpace(input.Command) == "" {
 		return nil, errors.New("command is required")
 	}
-
-	// 安全校验：在预处理之前验证原始命令（检查用户意图）
 	if b.validateCommand != nil {
 		if err := b.validateCommand(input.Command); err != nil {
 			return nil, fmt.Errorf("command validation failed: %w", err)
 		}
 	}
-
-	// 跨平台命令预处理
-	command := b.preprocessCommand(input.Command)
-
-	// 服务端兜底超时：防止脚本死循环/长任务把会话挂死
-	execCtx, cancel := context.WithTimeout(ctx, executeDefaultTimeout)
-
-	// 根据操作系统选择正确的 shell
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(execCtx, "sh", "-c", command)
+	inv, err := parseSkillCommand(input.Command)
+	if err != nil {
+		return nil, fmt.Errorf("command validation failed: %w", err)
 	}
-	hideWindow(cmd)
 
-	// 沙箱：子进程工作目录固定为工作区，命令里的相对路径写入都会落在工作区内
+	execCtx, cancel := context.WithTimeout(ctx, executeDefaultTimeout)
+	argv := append(append(append([]string{}, inv.pyFlags...), inv.script), inv.args...)
+	cmd := exec.CommandContext(execCtx, b.pythonExecutable(), argv...)
+	hideWindow(cmd)
 	if ws := getSandboxRoots().workspace; ws != "" {
 		cmd.Dir = ws
 	}
-
-	// 安全措施：设置环境变量
-	// PYTHONIOENCODING：统一 UTF-8 编码，避免 Windows GBK 编码问题
-	// PYTHONDONTWRITEBYTECODE：禁止生成 .pyc 文件，避免代码注入风险
-	// 注意：不设置 PYTHONNOUSERSITE，因为 Windows 上 pip install 默认安装到用户 site-packages
 	cmd.Env = append(os.Environ(),
 		"PYTHONIOENCODING=utf-8",
+		"PYTHONUTF8=1",
 		"PYTHONDONTWRITEBYTECODE=1",
+		"PYTHONNOUSERSITE=", // 允许使用用户 site-packages 中预装的依赖
+		"WEBSQL_EXPORT_DIR="+exportsDirAbs(),
 	)
-	// 捆绑 Python 分发不在系统 PATH 中，需将其目录加入子进程 PATH，
-	// 否则 execute 工具生成的 `python script.py` 命令无法解析。
-	if pythonDir := b.pythonEnvDir(); pythonDir != "" {
+	if dir := b.pythonEnvDir(); dir != "" {
 		for i, env := range cmd.Env {
 			if len(env) >= 5 && strings.EqualFold(env[:5], "PATH=") {
-				cmd.Env[i] = "PATH=" + pythonDir + string(os.PathListSeparator) + env[5:]
+				cmd.Env[i] = "PATH=" + dir + string(os.PathListSeparator) + env[5:]
 				break
 			}
 		}
 	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	if inv.stdinFile != "" {
+		f, err := os.Open(inv.stdinFile)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("打开输入文件失败：%w", err)
+		}
+		cmd.Stdin = f
+		defer f.Close()
 	}
 
+	out := &cappedBuffer{}
+	cmd.Stdout = out
+	cmd.Stderr = out
+
+	sr, sw := schema.Pipe[*filesystem.ExecuteResponse](1)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
-
-	sr, sw := schema.Pipe[*filesystem.ExecuteResponse](10)
-
-	safego.GoWithName("osfs-exec-collector", func() {
+	safego.GoWithName("osfs-exec-wait", func() {
 		defer sw.Close()
-
-		var output strings.Builder
-
-		stdoutDone := make(chan struct{})
-		safego.GoWithName("osfs-stdout-reader", func() {
-			defer close(stdoutDone)
-			scanner := bufio.NewScanner(stdout)
-			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-			for scanner.Scan() {
-				output.WriteString(scanner.Text())
-				output.WriteString("\n")
-			}
-		})
-
-		stderrDone := make(chan struct{})
-		safego.GoWithName("osfs-stderr-reader", func() {
-			defer close(stderrDone)
-			scanner := bufio.NewScanner(stderr)
-			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-			for scanner.Scan() {
-				output.WriteString(scanner.Text())
-				output.WriteString("\n")
-			}
-		})
-
-		<-stdoutDone
-		<-stderrDone
-
-		err := cmd.Wait()
-		cancel() // 释放超时计时器（子进程已结束或已被 Kill）
+		defer cancel()
+		waitErr := cmd.Wait()
 		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
 				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = -1
 			}
 		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
+		output := out.String()
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			output += fmt.Sprintf("\n(执行超过 %v 已被终止)", executeDefaultTimeout)
 		}
-
-		sw.Send(&filesystem.ExecuteResponse{
-			Output:   strings.TrimSpace(output.String()),
-			ExitCode: &exitCode,
-		}, nil)
+		if ctx.Err() != nil {
+			return
+		}
+		sw.Send(&filesystem.ExecuteResponse{Output: output, ExitCode: &exitCode}, nil)
 	})
-
 	return sr, nil
+}
+
+// pythonEnvDir 返回需要加入子进程 PATH 的 Python 目录（捆绑的便携 Python 不在系统 PATH 中）
+func (b *OSFilesystemBackend) pythonEnvDir() string {
+	if b.pythonPath == "" || !filepath.IsAbs(b.pythonPath) {
+		return ""
+	}
+	return filepath.Dir(b.pythonPath)
 }

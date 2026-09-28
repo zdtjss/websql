@@ -11,6 +11,7 @@ import (
 
 	"websql/internal/ai"
 	"websql/internal/ai/agent"
+	"websql/internal/ai/agent/export"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
 	"websql/internal/app/conn"
@@ -342,6 +343,16 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
+	// 归属校验：导出文件登记了归属用户时仅允许生成者下载；
+	// 无归属记录的历史文件按兼容策略放行，随 7 天清理淘汰。
+	// 不符时返回与「文件不存在」一致的 404，避免文件名探测。
+	currentUserID, _ := c.Get("userId")
+	uid, _ := currentUserID.(string)
+	if allowed, known := export.CheckExportAccess(fileName, uid); known && !allowed {
+		response.WriteErr(c, http.StatusNotFound, 404, "文件不存在")
+		return
+	}
+
 	contentTypes := map[string]string{
 		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -435,4 +446,8 @@ func cleanExpiredExports() {
 	if deleted > 0 {
 		log.Printf("[Cleanup] 已清理 %d 个过期导出文件\n", deleted)
 	}
+	// 同步清理孤儿归属记录（对应文件已删除/过期淘汰）
+	export.CleanupOrphanOwners()
+	// 清理 reduction offload 目录（大结果裁剪落盘副本，7 天后淘汰）
+	agent.CleanupReductionOffload(7 * 24 * time.Hour)
 }

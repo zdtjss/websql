@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -70,9 +71,47 @@ type Session struct {
 	messages  []SessionMessage
 	cancelFn  context.CancelFunc
 
+	// running 标记会话是否正在执行一次 Run/Resume。
+	// 同一会话并发运行会交错写消息、破坏 tool_calls 配对（多 tab / 重复提交），
+	// RunStream/ResumeStream 通过 TryBeginRun 互斥。
+	running atomic.Bool
+
 	debounceTimer *time.Timer
 	pendingSave   bool
 	lastAccess    time.Time
+}
+
+// TryBeginRun 尝试进入运行态；已有运行中的 Run 时返回 false。
+func (s *Session) TryBeginRun() bool {
+	return s.running.CompareAndSwap(false, true)
+}
+
+// BeginRunWait 在 timeout 内等待进入运行态；超时返回 false。
+//
+// 用途：确认（resume）请求。中断事件推送与 RunStream 真正返回之间存在毫秒级收尾窗口
+// （Release/SaveToDB/SSE 关闭），用户在该窗口内点击确认会被误判为「会话处理中」，
+// 故先短暂等待而不是立即拒绝。
+func (s *Session) BeginRunWait(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if s.TryBeginRun() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// EndRun 退出运行态。
+func (s *Session) EndRun() {
+	s.running.Store(false)
+}
+
+// IsRunning 会话是否正在运行。
+func (s *Session) IsRunning() bool {
+	return s.running.Load()
 }
 
 // Append 追加消息并持久化到数据库
@@ -403,13 +442,17 @@ func (s *Session) doSave() error {
 	if db == nil {
 		return nil // 管理库不可用（启动期/测试环境）：跳过持久化，不阻断对话
 	}
+	// WHERE 追加归属条件：即使内存中出现了 ID 冲突的会话对象，也不会整行覆盖他人会话
+	// （user_id 为空的存量会话按兼容策略允许写入）
 	_, err = db.Exec(`
-		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ? WHERE id = ?
-	`, string(data), title, ctx, time.Now(), s.ID)
+		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ?
+		WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
+	`, string(data), title, ctx, time.Now(), s.ID, s.UserID)
 	if err != nil && dberr.IsColumnNotExist(err) {
 		_, err = db.Exec(`
-			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ? WHERE id = ?
-		`, string(data), title, time.Now(), s.ID)
+			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ?
+			WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
+		`, string(data), title, time.Now(), s.ID, s.UserID)
 	}
 	if err != nil && dberr.IsTableNotExist(err) {
 		return nil
@@ -508,28 +551,63 @@ func sessionBelongsTo(ownerID, requesterID string) bool {
 	return ownerID == requesterID
 }
 
-// GetOrCreate 获取或创建会话
+// GetOrCreate 获取或创建会话。
+//
+// 并发设计：数据库 I/O（加载/建行）在全局锁之外执行，避免单个用户的会话加载
+// 阻塞所有其他用户（此前持 store.mu 期间调用 loadSessionFromDB，全局串行化）；
+// 写回缓存时二次校验，并发加载同一会话以先入缓存者为准。
 func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
+	// 快路径：缓存命中
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if sess, ok := s.cache[id]; ok {
 		if !sessionBelongsTo(sess.UserID, userID) {
+			s.mu.Unlock()
 			log.Printf("[SessionStore] 拒绝跨用户访问缓存会话 - id=%s, owner=%s, requester=%s\n", id, sess.UserID, userID)
 			return nil, ErrSessionForbidden
 		}
 		sess.mu.Lock()
 		sess.lastAccess = time.Now()
 		sess.mu.Unlock()
+		s.mu.Unlock()
 		return sess, nil
 	}
-
 	if len(s.cache) >= sessionMaxCacheSize {
 		s.evictOldestUnlocked()
 	}
+	s.mu.Unlock()
 
+	// 慢路径：DB I/O 不持全局锁
+	sess, err := s.loadOrCreateSession(id, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.cache[id]; ok {
+		// 并发加载：已有缓存则以其为准（保证同一会话只共享一个内存实例）
+		if !sessionBelongsTo(cached.UserID, userID) {
+			return nil, ErrSessionForbidden
+		}
+		cached.mu.Lock()
+		cached.lastAccess = time.Now()
+		cached.mu.Unlock()
+		return cached, nil
+	}
+	s.cache[id] = sess
+	return sess, nil
+}
+
+// loadOrCreateSession 从数据库加载会话或创建新会话记录（不持有全局锁）。
+func (s *SessionStore) loadOrCreateSession(id, userID string) (*Session, error) {
 	sess, err := loadSessionFromDB(id)
-	if err != nil || sess == nil {
+	if err != nil {
+		// 管理库暂时不可用（如 SQLite database is locked、网络抖动）时不能退化为「新建空会话」：
+		// 否则后续保存会用空历史整行覆盖原会话，甚至覆盖他人会话。直接报错让用户重试。
+		log.Printf("[SessionStore] 加载会话失败，拒绝以空会话替代 - id=%s, err=%v\n", id, err)
+		return nil, fmt.Errorf("加载会话失败，请稍后重试：%w", err)
+	}
+	if sess == nil {
 		sess = &Session{
 			ID:         id,
 			UserID:     userID,
@@ -538,6 +616,14 @@ func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 			lastAccess: time.Now(),
 		}
 		if err := createSessionInDB(id, userID); err != nil {
+			// 主键冲突说明会话已被并发创建或加载时漏读：再读一次，按库内归属校验
+			if existing, loadErr := loadSessionFromDB(id); loadErr == nil && existing != nil {
+				if !sessionBelongsTo(existing.UserID, userID) {
+					return nil, ErrSessionForbidden
+				}
+				existing.lastAccess = time.Now()
+				return existing, nil
+			}
 			log.Printf("[SessionStore] 创建会话记录失败 - id=%s, err=%v\n", id, err)
 		}
 	} else {
@@ -547,8 +633,6 @@ func (s *SessionStore) GetOrCreate(id, userID string) (*Session, error) {
 		}
 		sess.lastAccess = time.Now()
 	}
-
-	s.cache[id] = sess
 	return sess, nil
 }
 
@@ -756,7 +840,11 @@ func extractUserMessagesFromSummary(content string) []string {
 // ──────────────────────────────────────────────
 
 func createSessionInDB(id, userID string) error {
-	_, err := getDB().Exec(`
+	db := getDBOrNil()
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`
 		INSERT INTO t_ai_session (id, user_id, title, messages, created_at, updated_at)
 		VALUES (?, ?, '', '[]', ?, ?)
 	`, id, userID, time.Now(), time.Now())
@@ -767,6 +855,9 @@ func createSessionInDB(id, userID string) error {
 }
 
 func loadSessionFromDB(id string) (*Session, error) {
+	if getDBOrNil() == nil {
+		return nil, nil // 管理库不可用（测试/启动期）：按新会话处理，仅内存态
+	}
 	sessDB, err := getSessionByID(id)
 	if err != nil || sessDB == nil {
 		return nil, err
@@ -842,6 +933,13 @@ func listSessionsByUserID(userID string) ([]SessionDB, error) {
 	return sessions, nil
 }
 
+// escapeLikeKeyword 转义 LIKE 模式中的通配符（%、_、\），
+// 使用户搜索词中的 "%"、"_" 按字面量匹配而不是通配（管理库为 MySQL/MariaDB/SQLite，
+// 均默认以 \ 作为 LIKE 转义符）。
+func escapeLikeKeyword(keyword string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
+}
+
 func listSessionsByUserIDPaged(userID, keyword string, limit, offset int) ([]SessionDB, error) {
 	var sessions []SessionDB
 	var (
@@ -859,7 +957,7 @@ func listSessionsByUserIDPaged(userID, keyword string, limit, offset int) ([]Ses
 			SELECT id, user_id, COALESCE(title,'') as title, created_at, updated_at
 			FROM t_ai_session WHERE user_id = ? AND title LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?
 		`
-		args = []any{userID, "%" + keyword + "%", limit, offset}
+		args = []any{userID, "%" + escapeLikeKeyword(keyword) + "%", limit, offset}
 	}
 	if err := getDB().Select(&sessions, sqlStr, args...); err != nil {
 		if dberr.IsTableNotExist(err) {
@@ -880,7 +978,7 @@ func countSessionsByUserID(userID, keyword string) (int, error) {
 		args = []any{userID}
 	} else {
 		sqlStr = `SELECT COUNT(*) FROM t_ai_session WHERE user_id = ? AND title LIKE ?`
-		args = []any{userID, "%" + keyword + "%"}
+		args = []any{userID, "%" + escapeLikeKeyword(keyword) + "%"}
 	}
 	var count int
 	if err := getDB().Get(&count, sqlStr, args...); err != nil {
@@ -950,18 +1048,33 @@ func mergeToolCalls(chunks []schema.ToolCall) []schema.ToolCall {
 		name      strings.Builder
 		args      strings.Builder
 	}
-	builders := make(map[int]*tcBuilder)
-	indices := make([]int, 0, len(chunks))
+	// 分组规则：
+	//   - 有 Index：按 Index 分组（OpenAI 兼容流式协议）
+	//   - 无 Index 但有 ID：按 ID 分组（Ollama 等不设置 Index 的实现，并行工具调用各自带 ID）
+	//   - 两者皆无：视为上一个工具调用的续传片段
+	// 旧实现把 Index 为 nil 的片段全部并入 index 0，导致 Ollama 并行工具调用的
+	// 名称与参数被拼接成一个非法调用。
+	builders := make(map[string]*tcBuilder)
+	indices := make([]string, 0, len(chunks))
+	lastKey := ""
 	for _, tc := range chunks {
-		idx := 0
-		if tc.Index != nil {
-			idx = *tc.Index
+		var key string
+		switch {
+		case tc.Index != nil:
+			key = fmt.Sprintf("i:%d", *tc.Index)
+		case tc.ID != "":
+			key = "id:" + tc.ID
+		case lastKey != "":
+			key = lastKey
+		default:
+			key = "i:0"
 		}
-		b, ok := builders[idx]
+		lastKey = key
+		b, ok := builders[key]
 		if !ok {
 			b = &tcBuilder{}
-			builders[idx] = b
-			indices = append(indices, idx)
+			builders[key] = b
+			indices = append(indices, key)
 		}
 		if tc.ID != "" {
 			b.id = tc.ID

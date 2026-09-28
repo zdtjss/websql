@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"websql/internal/ai/agent/export"
 	system "websql/internal/app/system"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/agentsmd"
 	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
@@ -140,22 +142,31 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	// promptMW 持有 per-run 系统提示词，RunStream 每次调用前 SetPrompt
 	promptMW := NewDynamicPromptMiddleware()
 
+	// 中间件执行顺序（eino v0.9.21，adk/wrappers.go）：
+	//   - BeforeAgent / BeforeModelRewriteState / AfterModelRewriteState：按注册顺序正序执行
+	//   - 工具包裹（Wrap*ToolCall）：handlers[0] 在最外层
 	handlers := []adk.ChatModelAgentMiddleware{
 		// DynamicPromptMiddleware 必须最先注册：在每次 Run 前将 RunStream 按请求构建的
 		// 系统提示词（含 tableContext / 上传文件 / 历史引导等 per-run 上下文）覆盖到 Instruction。
 		// Agent 构造期不再设置 Instruction，避免与动态提示词双份注入。
 		promptMW,
-		// patchtoolcalls 必须在最外层，确保每次 LLM 调用前 dangling tool_calls 被补占位
-		// 防止历史会话（崩溃/cancel 后）发送 dangling tool_calls 给 LLM
-		// 使用自定义 PatchedContentGenerator，把"工具未完成"信息以更友好的
-		// 形式呈现给 LLM，便于下一轮模型理解上下文
-		buildPatchToolCallsMiddleware(),
-		&ToolCallLoggingMiddleware{},
 	}
+	// patchtoolcalls 在每次 LLM 调用前为 dangling tool_calls 补占位，
+	// 防止历史会话（崩溃/cancel 后）把不完整的 tool_calls 发给 LLM。
+	// 构造失败返回 nil：nil 接口进入 handlers 会在首次调用钩子时 panic，必须判空。
+	if patchMW := buildPatchToolCallsMiddleware(); patchMW != nil {
+		handlers = append(handlers, patchMW)
+	}
+	handlers = append(handlers, &ToolCallLoggingMiddleware{})
 	if tsMiddleware != nil {
 		handlers = append(handlers, tsMiddleware)
 	}
 	handlers = append(handlers,
+		// ToolErrorRecovery 必须包在权限/审批/Skill 守卫之外：
+		// 工具返回 error 时 eino ToolsNode 会让整次 Run 以错误结束（compose/tool_node.go），
+		// 权限拒绝（PermissionError）若不转换为工具结果，用户看到的是「AI 处理出错」，
+		// 模型也无法向用户解释缺少哪张表/哪个字段的权限。中断信号（审批）会原样透传。
+		&ToolErrorRecoveryMiddleware{},
 		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool, ConnID: connID, Schemas: schemas},
 		&DangerousSQLApprovalMiddleware{},
 		&SkillGuardMiddleware{
@@ -165,7 +176,6 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			DBType:   dbType,
 			DBSchema: dbSchema,
 		},
-		&ToolErrorRecoveryMiddleware{},
 	)
 	resolvedCtxTokens := cfg.MaxContextTokens
 	if resolvedCtxTokens <= 0 {
@@ -183,8 +193,9 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	handlers = append(handlers, summarizationMW)
 
 	// AgentsMD 中间件：在每次模型调用前注入 Agents.md 补充指令。
-	// 必须在 summarization 之后注册，使注入内容不被摘要压缩。
-	// 内容是瞬态的（不进入会话状态），每次模型调用都看到完整最新规范。
+	// 必须在 summarization 之后注册，使注入内容排在压缩之后。
+	// 注入消息会进入 eino state.Messages，但会话持久化层按 Extra 标记过滤（见 sessionmw.go），
+	// 不会落库累积；每次模型调用都看到完整最新规范。
 	agentsmdMW := buildAgentsMDMiddleware(ctx)
 	if agentsmdMW != nil {
 		handlers = append(handlers, agentsmdMW)
@@ -246,6 +257,26 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 	return func(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
 		// 有错误时：根据错误类型决定是否重试
 		if retryCtx.Err != nil {
+			// 优先按 provider 结构化错误判定（OpenAI 兼容 APIError 携带 HTTP 状态码），
+			// 避免子串匹配（"500"/"connection"）把非状态码场景误判为可重试
+			var apiErr *openai.APIError
+			if errors.As(retryCtx.Err, &apiErr) && apiErr.HTTPStatusCode > 0 {
+				code := apiErr.HTTPStatusCode
+				switch {
+				case code == 429:
+					backoff := time.Duration(retryCtx.RetryAttempt+1) * 3 * time.Second
+					log.Printf("[ShouldRetry] HTTP 429 速率限制，退避 %v - attempt=%d\n", backoff, retryCtx.RetryAttempt)
+					return &adk.RetryDecision{Retry: true, Backoff: backoff}
+				case code >= 500, code == 408, code == 409:
+					backoff := time.Duration(retryCtx.RetryAttempt+1) * time.Second
+					log.Printf("[ShouldRetry] HTTP %d 服务端错误，退避 %v - attempt=%d\n", code, backoff, retryCtx.RetryAttempt)
+					return &adk.RetryDecision{Retry: true, Backoff: backoff}
+				default:
+					log.Printf("[ShouldRetry] HTTP %d 不可重试\n", code)
+					return &adk.RetryDecision{Retry: false}
+				}
+			}
+
 			s := retryCtx.Err.Error()
 
 			// 不可重试的错误：内容安全过滤、认证失败
@@ -299,14 +330,20 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 	}
 }
 
-// buildAgentsMDMiddleware 创建 AgentsMD 中间件，在每次模型调用前注入 Agents.md 补充指令。
+// AgentsMD 中间件：在每次模型调用前注入 Agents.md 补充指令。
 // Agents.md 位于项目根目录，包含数据安全规范、SQL 性能规范、方言兼容性提醒等运行时指南。
-// 内容是瞬态的（不进入会话状态），不会被 summarization 压缩。
-// 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
+// 必须在 summarization 之后注册，使注入内容排在压缩之后；若被摘要压缩丢弃，
+// 下一次模型调用会重新注入，模型始终能看到完整最新规范。
+//
+// 事实澄清（已核对 eino v0.9.21 源码）：注入的是一条 User 消息且会写入 state.Messages
+// （并非"完全不进入状态"）；会话持久化由 sessionmw.go 按 Extra["__agentsmd_content__"] 标记过滤，
+// 因此不会落库、不会在下次加载时重复累积。
 //
 // 读取优先级：
 //  1. 磁盘文件（工作目录下的 AGENTS.md）— 支持运行时热更新
 //  2. 编译时嵌入的内容（_embedded_agents.md）— 确保打包后可用
+//
+// 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
 func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
 	// 解析磁盘路径（可能不存在，backend 会回退到嵌入内容）
 	diskPath := "AGENTS.md"
