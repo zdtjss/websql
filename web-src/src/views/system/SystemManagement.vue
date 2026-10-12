@@ -8,6 +8,15 @@
     </el-tooltip>
     <!-- 主内容区 -->
     <div class="page-content">
+      <!-- 顶部工具栏：导出用户配置 -->
+      <div class="page-toolbar">
+        <el-tooltip content="导出系统设置、提示词、连接、审计配置、收藏为 SQL 文件" placement="left" :show-after="300">
+          <el-button type="primary" size="small" :loading="exporting" @click="handleExportConfig">
+            <el-icon><Download /></el-icon>
+            导出配置(SQL)
+          </el-button>
+        </el-tooltip>
+      </div>
       <el-tabs v-model="activeTab" type="border-card" class="system-tabs">
         <!-- 系统配置 -->
         <el-tab-pane label="系统配置" name="system">
@@ -29,14 +38,9 @@
           <UserManagement />
         </el-tab-pane>
 
-        <!-- 连接管理 -->
-        <el-tab-pane label="连接管理" name="conn" lazy>
+        <!-- 连接与目录管理（连接挂载在目录下，含无目录的「未指定」分组） -->
+        <el-tab-pane label="连接与目录" name="conn" lazy>
           <ConnManagement />
-        </el-tab-pane>
-
-        <!-- 目录管理 -->
-        <el-tab-pane label="目录管理" name="dir" lazy>
-          <DirManagement />
         </el-tab-pane>
 
         <!-- SQL 审计日志 -->
@@ -56,12 +60,13 @@
 <script setup>
 import { ref, provide, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, Download } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { exportUserConfigSql } from '@/api/system'
 import RolePermission from './RolePermission.vue'
 import PromptManagement from './PromptManagement.vue'
 import UserManagement from './UserManagement.vue'
 import ConnManagement from './ConnManagement.vue'
-import DirManagement from './DirManagement.vue'
 import SystemConfig from './SystemConfig.vue'
 import SQLAuditLog from './SQLAuditLog.vue'
 import AuditConfig from './AuditConfig.vue'
@@ -69,6 +74,20 @@ import AuditConfig from './AuditConfig.vue'
 const router = useRouter()
 const activeTab = ref('system')
 const isRemote = ref(sessionStorage.getItem("isRemote") === "true")
+
+// 导出用户配置（系统设置、提示词、连接、审计配置、收藏）为 SQL 文件
+const exporting = ref(false)
+async function handleExportConfig() {
+  exporting.value = true
+  try {
+    await exportUserConfigSql()
+    ElMessage.success('配置已导出')
+  } catch {
+    ElMessage.error('导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 // 返回上一页：有历史则 back，无历史（直接进入/刷新）则回首页，首页路由守卫会跳到默认主页
 function goBack() {
@@ -131,10 +150,20 @@ onMounted(() => {
   flex: 1;
   padding: 10px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.page-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 .system-tabs {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);

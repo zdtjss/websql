@@ -120,6 +120,35 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 - 禁止只导出原始数据：至少包含 指标卡 + 一个图表 + 结论
 `)
 
+	// ─── 高级导出（export_by_code，临时代码只读）───
+	// 工具仅在「用户拥有连接完整权限且检测到 Python」时注册；未注册时模型不会看到该工具。
+	sb.WriteString(`
+## 高级导出（export_by_code，临时代码只读）
+当用户要求导出「现有工具不支持的格式」（如 PDF、自定义 CSV/Markdown/XML、ZIP 打包等），
+且系统提供了 export_by_code 工具时，由你编写 Python 代码连接当前数据库查询并生成文件。
+硬性约束（违反会被拦截）：
+- **只能是 Python**；数据库只能经只读助手 websql_db 访问，且**仅允许查询**（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 只读）
+- 禁止写数据库/改结构；禁止修改或删除系统与用户文件；禁止联网；禁止导入 socket/subprocess/ctypes/pymysql 等模块
+- 只能在当前工作目录内创建文件，最终产物写到 outputFile 指定的相对路径
+- 连接信息由环境变量提供：WEBSQL_DB_TYPE / WEBSQL_DB_URL / WEBSQL_DB_USER / WEBSQL_DB_PASSWORD / WEBSQL_DB_SCHEMA；
+  当前库表结构见工作目录下的 schema.json
+- 依赖为预装库，禁止 pip 安装；**不要直接 import 数据库驱动（已被禁用）**，统一用 websql_db
+- 数据量大时先用聚合/WHERE 缩小范围，避免拉取海量明细
+
+示例：
+
+` + "```python" + `
+import websql_db
+
+rows = websql_db.query("SELECT region, SUM(amount) AS total FROM orders GROUP BY region")
+# 用 rows 生成目标文件（此处以 CSV 为例），必须写到 outputFile
+with open("report.csv", "w", encoding="utf-8") as f:
+    f.write("region,total\n")
+    for r in rows:
+        f.write("%s,%s\n" % (r["region"], r["total"]))
+` + "```" + `
+`)
+
 	// ─── SQL 规范（合并 rules + pitfalls）───
 	sb.WriteString("\n## SQL 规范（" + dbType + "）\n")
 	sb.WriteString(getDialectSpec(dbType))
@@ -321,6 +350,23 @@ func buildOSEnvironmentInfo() string {
 	sb.WriteString("- 推荐先 write_file 写 .py 再 execute 执行；禁止网络外传、删除系统文件\n")
 
 	return sb.String()
+}
+
+// advancedExportDirectivePrompt 返回「高级导出模式」下追加的系统指令。
+//
+// 触发方式：前端 AI 对话工具栏的「高级导出」开关（ChatRequest.AdvancedExport=true）。
+// 语义：本次回复必须用 export_by_code 生成文件，而不是交给其他固定格式导出工具。
+// 交互设计：首次进入该模式（本轮尚无 export_by_code 执行记录）时先确认「导出什么/什么格式」；
+// 用户对已生成结果表达不满/要求调整时，直接改代码重新导出，不再重复确认。
+func advancedExportDirectivePrompt() string {
+	return "\n\n## 🔧 本次为「高级导出」模式（用户已通过工具栏开启）\n" +
+		"本次回复必须使用 export_by_code 工具生成文件（仅 Python、只读临时代码），**不要**改用其他导出工具（export_excel/export_ppt/…）：\n" +
+		"- 若本轮对话尚无法确定「要导出什么内容」或「目标文件格式」（且此前未执行过 export_by_code），" +
+		"先用一句话向用户确认导出范围与目标格式，不要臆测。\n" +
+		"- 确定后，编写 Python 代码经 websql_db 只读查询数据并生成文件，返回下载链接。\n" +
+		"- 若已生成过文件、用户只是表示不满意或要求调整（如换格式/改样式/补字段），" +
+		"直接修改代码重新导出，不要再次确认。\n" +
+		"- 若当前环境未提供 export_by_code 工具，告知用户：高级导出需同时满足「连接完整权限 + 可用 Python + OS 级隔离」。\n"
 }
 
 // ──────────────────────────────────────────────

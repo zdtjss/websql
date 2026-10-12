@@ -175,7 +175,7 @@
     </el-dialog>
 
     <!-- 登录对话框 -->
-    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="380px" @keyup.enter="login"
+    <el-dialog v-model="loginDialogVisible" @close="loginDialogVisible = false" width="380px" :draggable="true" @keyup.enter="login"
       @opened="loginName.focus()" class="login-dialog">
       <template #header>
         <div class="login-header">
@@ -198,7 +198,7 @@
     </el-dialog>
 
     <!-- 修改密码对话框 -->
-    <el-dialog v-model="changePwdDialogVisible" width="400px" @keyup.enter="submitChangePassword" class="login-dialog">
+    <el-dialog v-model="changePwdDialogVisible" width="400px" :draggable="true" @keyup.enter="submitChangePassword" class="login-dialog">
       <template #header>
         <div class="login-header">
           <span class="login-icon">🔑</span>

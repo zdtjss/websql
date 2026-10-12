@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" title="备份与恢复" width="900px" :close-on-click-modal="false" aria-label="备份与恢复对话框" @opened="onDialogOpened">
+  <el-dialog v-model="visible" title="备份与恢复" width="900px" :draggable="true" :close-on-click-modal="false" aria-label="备份与恢复对话框" @opened="onDialogOpened">
     <el-tabs v-model="activeTab">
       <el-tab-pane label="创建备份" name="create">
         <el-form label-position="top" :inline="false" class="backup-form">

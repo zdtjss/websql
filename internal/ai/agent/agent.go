@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"websql/internal/ai/agent/export"
+	connpkg "websql/internal/app/conn"
 	system "websql/internal/app/system"
 	idgen "websql/internal/pkg/idgen"
 
@@ -54,6 +55,9 @@ type ChatRequest struct {
 	CheckPointID string      `json:"checkPointId,omitempty"` // 确认时回传
 	ExcelData    *ExcelData  `json:"excelData,omitempty"`
 	ModelId      string      `json:"modelId,omitempty"` // 选中的模型 ID
+	// AdvancedExport 高级导出模式：前端工具栏开关开启时为 true，
+	// 本次对话强制走 export_by_code（仅 Python、只读临时代码）生成文件。
+	AdvancedExport bool `json:"advancedExport,omitempty"`
 }
 
 // SchemaRef 单个 schema 引用
@@ -257,6 +261,12 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 				"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
 				"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。\n"
 		}
+	}
+
+	// 高级导出模式（前端工具栏开关）：本次回复强制走 export_by_code。
+	if req.AdvancedExport {
+		sysPrompt += advancedExportDirectivePrompt()
+		log.Printf("[Agent] 高级导出模式已启用 - session=%s\n", sessionID)
 	}
 
 	// 通过动态提示词中间件注入（BeforeAgent 覆盖 Instruction）：
@@ -548,6 +558,29 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		}
 	}
 
+	// 高级导出（export_by_code）：由模型编写 Python 连接「用户选中连接」（只读）查询并生成
+	// 任意格式文件。仅在满足以下条件时注册（fail-closed）：
+	//   1. 用户对该连接拥有完整权限（SkipChecks）——直连会绕过应用层表/列权限，
+	//      存在表/列级限制的用户不得使用，避免越权读取未授权表；
+	//   2. 检测到可用的 Python 运行环境；
+	//   3. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）。
+	if scope.SkipChecks() && export.IsPythonAvailable() && export.CodegenIsolationAvailable() {
+		if dbInfo := resolveCodegenDBInfo(connID, dbSchema); dbInfo != nil {
+			exportByCodeTool, _ := utils.InferTool(
+				"export_by_code",
+				"高级导出：编写 Python 代码连接当前数据库（只读，仅允许查询）并按用户描述的格式生成文件，"+
+					"用于现有工具不支持的格式（如 PDF/CSV/Markdown/XML/ZIP 等）。"+
+					"只读约束：仅能通过 websql_db 只读助手查询数据库，禁止写库/改结构；禁止修改或删除系统与用户文件；禁止联网；"+
+					"只能在当前工作目录内创建文件。连接信息（host/port/user/password/库）由环境变量 WEBSQL_DB_* 提供，"+
+					"当前库的表结构见工作目录下的 schema.json。脚本必须在 outputFile 指定的相对路径产出目标文件。",
+				export.NewExportByCodeFunc(conn, dbInfo, exportAuditCtx),
+			)
+			if exportByCodeTool != nil {
+				deferredTools = append(deferredTools, exportByCodeTool)
+			}
+		}
+	}
+
 	if scope.AllowModify {
 		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
 		if execTool != nil {
@@ -571,4 +604,29 @@ func toExportAuditCtx(auditCtx *ExecAuditCtx) *export.AuditCtx {
 		UserName:  auditCtx.UserName,
 		SessionID: auditCtx.SessionID,
 	}
+}
+
+// resolveCodegenDBInfo 读取「用户选中连接」的连接信息，供高级导出注入子进程环境变量。
+// 读取失败（管理库未就绪/密码解密失败等）返回 nil，此时不注册高级导出工具（fail-closed）。
+// 【安全约定】返回值含明文密码，仅注入本地子进程环境变量，不得写入日志或返回给前端。
+func resolveCodegenDBInfo(connID, dbSchema string) *export.CodegenDBInfo {
+	cfg, err := connpkg.GetConnCfgWithPwd(connID)
+	if err != nil {
+		log.Printf("[Agent] 高级导出不可用（读取连接配置失败）- conn=%s, err=%v\n", connID, err)
+		return nil
+	}
+	info := &export.CodegenDBInfo{DBType: cfg.DbType, Schema: dbSchema}
+	if cfg.Url != nil {
+		info.URL = *cfg.Url
+	}
+	if cfg.User != nil {
+		info.User = *cfg.User
+	}
+	if cfg.Pwd != nil {
+		info.Password = *cfg.Pwd
+	}
+	if info.Schema == "" && cfg.DbSchema != nil {
+		info.Schema = *cfg.DbSchema
+	}
+	return info
 }

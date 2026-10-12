@@ -80,7 +80,7 @@
           :ai-model-list="aiModelList"
           :get-table-comment="getTableComment"
           @schema-change="handleSchemaChange"
-          @send="chatStream.sendMessage"
+          @send="handleSend"
           @stop="chatStream.stopGeneration"
         >
           <template #toolbar>
@@ -99,6 +99,12 @@
                   <el-icon v-if="!excelUploading"><Upload /></el-icon>
                 </el-button>
               </el-upload>
+              <!-- 高级导出开关：开启后本次对话强制用 export_by_code（仅 Python、只读临时代码）生成文件 -->
+              <el-button class="toolbar-btn" size="small" :type="advancedExport ? 'primary' : 'default'"
+                @click="handleAdvancedExportToggle"
+                :title="advancedExport ? '高级导出已开启：本次对话将由大模型编写只读 Python 代码生成自定义格式文件（点击关闭）' : '开启高级导出：自定义格式（PDF/CSV/XML/ZIP 等），由大模型编写只读 Python 代码生成'">
+                <el-icon><Download /></el-icon>
+              </el-button>
               <!-- 提示词 Popover -->
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="promptPopoverVisible"
                 @show="loadPrompts()">
@@ -202,7 +208,7 @@
                   </el-tabs>
                 </div>
                 <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" :role-id="editingRoleId" @saved="handlePromptSaved" @send-to-AI="handleSendToAIFromDialog" />
-                <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="800px" append-to-body>
+                <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="800px" :draggable="true" append-to-body>
                   <div v-if="promptDetail">
                     <div v-if="promptDetail.connSchemas && promptDetail.connSchemas.length" class="prompt-detail-meta">
                       <div class="prompt-detail-meta-label">关联 Schema</div>
@@ -320,7 +326,7 @@ import { useMarkdownRenderer } from './composables/useMarkdownRenderer'
 import { useChatHistory } from './composables/useChatHistory'
 import { useSqlConfirm } from './composables/useSqlConfirm'
 import { useChatStream, type UploadedExcel } from './composables/useChatStream'
-import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Download, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -333,6 +339,8 @@ const router = useRouter()
 
 // ── ChatView 专属状态 ──
 const question = ref('')
+// 高级导出模式开关：开启后本次发送的对话强制走 export_by_code（仅 Python、只读临时代码）
+const advancedExport = ref(false)
 const selectedTables = ref<string[]>([])
 const selectedSchemas = ref<string[]>([])
 const selectedModel = ref('')
@@ -537,6 +545,7 @@ const chatStream = useChatStream({
   selectedTables,
   selectedModel,
   question,
+  advancedExport,
   uploadedExcel,
   loading,
   abortController,
@@ -810,6 +819,29 @@ function handlePromptSendToAI(content: string, connInfo: any): void {
 function handlePromptFillInput(content: string, connInfo: any): void {
   promptPopoverVisible.value = false
   applyPromptToInput(content, connInfo, false)
+}
+
+// 高级导出开关：切换后本次（后续）对话强制走 export_by_code。
+const ADVANCED_EXPORT_PROMPT = '请执行高级导出：依据本轮对话内容或我描述的目标文件类型，' +
+  '用 export_by_code 编写只读 Python 代码（仅允许查询，禁止任何写操作）生成对应文件并返回下载链接。'
+
+function handleAdvancedExportToggle(): void {
+  advancedExport.value = !advancedExport.value
+  ElMessage({
+    message: advancedExport.value
+      ? '已开启高级导出：本次对话将由大模型编写只读 Python 代码生成自定义格式文件（仅查询、禁止写操作）'
+      : '已关闭高级导出',
+    type: advancedExport.value ? 'success' : 'info',
+  })
+}
+
+// 开关模式下的发送：开启高级导出且输入为空时补一条默认指令，等价于“一键高级导出”；
+// 输入非空时保持用户原文不变（由后端按开关注入高级导出约束）。
+function handleSend(): void {
+  if (advancedExport.value && !question.value.trim()) {
+    question.value = ADVANCED_EXPORT_PROMPT
+  }
+  void chatStream.sendMessage()
 }
 
 function handlePromptAdd(): void { openPromptEditDialog() }

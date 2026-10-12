@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" title="Schema/数据比较" width="1100px" :close-on-click-modal="false" aria-label="Schema 或数据比较对话框" @opened="onOpen">
+  <el-dialog v-model="visible" title="Schema/数据比较" width="1100px" :draggable="true" :close-on-click-modal="false" aria-label="Schema 或数据比较对话框" @opened="onOpen">
     <el-row :gutter="15" style="margin-bottom:15px">
       <el-col :span="11">
         <el-card shadow="never">
@@ -76,7 +76,7 @@
         </el-table-column>
       </el-table>
 
-      <el-dialog v-model="ddlVisible" title="DDL对比" width="900px" append-to-body aria-label="DDL 对比对话框">
+      <el-dialog v-model="ddlVisible" title="DDL对比" width="900px" :draggable="true" append-to-body aria-label="DDL 对比对话框">
         <el-row :gutter="10">
           <el-col :span="12">
             <h4 style="color:#409EFF">源表 DDL</h4>

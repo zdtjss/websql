@@ -29,12 +29,27 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// setProcessTimezone 将进程本地时区固定为中国标准时间（UTC+8）。
+// 需在 main 最早期调用一次：此后所有 time.Now() 均为北京时间，
+// 无需在各业务代码处单独指定时区；SQLite/MySQL 配置库落库时间保持一致。
+func setProcessTimezone() {
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		time.Local = loc
+		return
+	}
+	// 兜底：桌面版打包后可能缺少 tzdata，中国无夏令时，固定 +8 等价
+	time.Local = time.FixedZone("CST", 8*3600)
+}
+
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[MainRecovery] main goroutine panic recovered - panic=%v\n%s", r, debug.Stack())
 		}
 	}()
+
+	// 统一进程时区为中国标准时间（UTC+8），全局 time.Now() 自动产出北京时间串
+	setProcessTimezone()
 
 	// 在最早阶段创建 Job Object（KILL_ON_JOB_CLOSE），确保主进程退出时
 	// 所有子进程（msedgewebview2.exe 等）被操作系统强制终止，避免残留。

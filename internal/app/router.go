@@ -14,6 +14,7 @@ import (
 	"websql/internal/ai/agent/export"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
+	"websql/internal/app/configexport"
 	"websql/internal/app/conn"
 	"websql/internal/app/datadict"
 	"websql/internal/app/dbadmin"
@@ -167,6 +168,9 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/system/config/ai/model/save", system.SaveAIModelHandler)
 	routerGroup.POST("/system/config/ai/model/delete", system.DeleteAIModelHandler)
 	routerGroup.POST("/system/config/ai/model/select", system.SelectAIModelHandler)
+
+	// 用户配置导出：导出系统设置、提示词、连接、审计配置、收藏为 SQL 文件（管理员）
+	routerGroup.GET("/system/config/export", configexport.ExportUserConfig)
 
 	routerGroup.POST("/ai/config/save", ai.HandleSaveConfig)
 	routerGroup.GET("/ai/config/get", ai.HandleGetConfig)

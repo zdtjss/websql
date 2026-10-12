@@ -308,6 +308,8 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+		case "export_by_code":
+			return m.checkExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
 			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
 			m.logAllow(tCtx.Name, "skill_read_only")
@@ -364,6 +366,8 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
 		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
 			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+		case "export_by_code":
+			return m.checkStreamExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
 			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
 			m.logAllow(tCtx.Name+"(stream)", "skill_read_only")
@@ -383,6 +387,55 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return nil, unregisteredToolError(tCtx.Name)
 		}
 	}, nil
+}
+
+// checkExportByCodeAccess 高级导出（export_by_code）权限校验。
+//
+// 该工具仅在「用户拥有连接完整权限」时才会注册（直连会绕过应用层表/列权限）；
+// 此处再 fail-closed 兜底，并记录审计（代码执行类操作，RiskLevel=medium）。
+func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	if !m.Scope.SkipChecks() {
+		m.logDeny("export_by_code", "高级导出仅限连接完整权限用户", nil)
+		return "", &PermissionError{
+			Message: "高级导出仅对拥有该连接完整权限的用户开放（限完整权限以避免绕过表/列级权限）",
+			Objects: []string{},
+		}
+	}
+	start := time.Now()
+	result, err := endpoint(ctx, args, opts...)
+	status, errMsg := "success", ""
+	if err != nil {
+		status, errMsg = "failed", err.Error()
+	}
+	connName, schemaName := conn.GetConnInfo(m.Scope.ConnID)
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:     "agent",
+		ToolName:   "export_by_code",
+		SQLType:    "CODEGEN",
+		RiskLevel:  "medium",
+		Status:     status,
+		ConnID:     m.Scope.ConnID,
+		ConnName:   connName,
+		SchemaName: schemaName,
+		UserID:     m.Scope.UserID,
+		ErrorMsg:   errMsg,
+		ExecTimeMs: int(time.Since(start).Milliseconds()),
+	})
+	m.logAllow("export_by_code", "codegen_ro_export")
+	return result, err
+}
+
+// checkStreamExportByCodeAccess 高级导出的流式版本。
+func (m *PermissionMiddleware) checkStreamExportByCodeAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	if !m.Scope.SkipChecks() {
+		m.logDeny("export_by_code(stream)", "高级导出仅限连接完整权限用户", nil)
+		return nil, &PermissionError{
+			Message: "高级导出仅对拥有该连接完整权限的用户开放（限完整权限以避免绕过表/列级权限）",
+			Objects: []string{},
+		}
+	}
+	m.logAllow("export_by_code(stream)", "codegen_ro_export")
+	return endpoint(ctx, args, opts...)
 }
 
 func (m *PermissionMiddleware) checkSQLPermissionViaAgent(ctx context.Context, sql, toolName string) (*PermDecisionOutput, error) {

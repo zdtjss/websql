@@ -171,7 +171,7 @@
       </el-button>
     </div>
 
-    <el-dialog v-model="modelDialogVisible" :title="editingModel ? '编辑模型' : '添加模型'" width="600px" append-to-body>
+    <el-dialog v-model="modelDialogVisible" :title="editingModel ? '编辑模型' : '添加模型'" width="600px" :draggable="true" append-to-body>
       <el-form :model="modelForm" label-width="120px">
         <el-form-item label="AI 提供商">
           <el-radio-group v-model="modelForm.provider">

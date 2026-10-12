@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="dialogVisible" @close="handleClose" width="350px" @keyup.enter="login" @opened="loginNameInput?.focus()">
+  <el-dialog v-model="dialogVisible" @close="handleClose" width="350px" :draggable="true" @keyup.enter="login" @opened="loginNameInput?.focus()">
     <el-form ref="loginFormRef" :model="loginForm" :rules="loginRules" label-width="80px">
       <el-form-item label="用户名" prop="name">
         <el-input ref="loginNameInput" v-model="loginForm.name" />

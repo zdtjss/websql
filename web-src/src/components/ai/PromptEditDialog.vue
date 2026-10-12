@@ -3,6 +3,7 @@
     v-model="dialogVisible"
     :title="isEdit ? '编辑提示词' : '新增提示词'"
     width="1000px"
+    :draggable="true"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     @open="handleOpen"

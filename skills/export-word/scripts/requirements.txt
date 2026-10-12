@@ -1,5 +1,5 @@
 python-docx==1.2.0
 docxtpl==0.20.2
-matplotlib==3.11.1
+matplotlib==3.11.2
 numpy==2.5.2
 Pillow==12.3.0

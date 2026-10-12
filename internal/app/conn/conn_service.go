@@ -2,6 +2,7 @@ package conn
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 
@@ -444,4 +445,37 @@ func GetConnInfo(connId string) (name, schema string) {
 		schema = *cfgList[0].DbSchema
 	}
 	return name, schema
+}
+
+// GetConnCfgWithPwd 返回连接的原始配置（含解密后的密码）。
+//
+// 仅用于「高级导出」沙箱：把连接信息注入本地 Python 子进程的环境变量，
+// 使模型编写的临时代码能够以只读方式连接数据库查询。
+// 【安全约定】返回值含明文密码，调用方不得写入日志、不得返回给前端或进入模型上下文。
+func GetConnCfgWithPwd(connId string) (*ConnCfg, error) {
+	if connId == "" {
+		return nil, errors.New("connId 为空")
+	}
+	db := getDBOrNil()
+	if db == nil {
+		return nil, errors.New("管理库未初始化")
+	}
+	cfgList, err := NewConnRepo(db).FindConnById(connId)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfgList) == 0 {
+		return nil, fmt.Errorf("连接配置不存在: %s", connId)
+	}
+	cfg := cfgList[0]
+	pwd := ""
+	if cfg.Pwd != nil && cfg.DbType != "sqlite" {
+		decoded, decErr := crypto.AESDecode(*cfg.Pwd)
+		if decErr != nil {
+			return nil, fmt.Errorf("连接密码解密失败: %w", decErr)
+		}
+		pwd = decoded
+	}
+	cfg.Pwd = &pwd
+	return &cfg, nil
 }

@@ -7,7 +7,7 @@
     </div>
 
     <!-- 新建表 Dialog -->
-    <el-dialog v-model="newTableDialogVisible" title="新建表" width="850px" :close-on-click-modal="false">
+    <el-dialog v-model="newTableDialogVisible" title="新建表" width="850px" :draggable="true" :close-on-click-modal="false">
     <el-form :model="newTableForm" label-width="80px" size="small">
       <el-row :gutter="12">
         <el-col :span="12">
@@ -80,7 +80,7 @@
   </el-dialog>
 
   <!-- 重命名表 Dialog -->
-  <el-dialog v-model="renameDialogVisible" title="重命名表" width="500px" :close-on-click-modal="false">
+  <el-dialog v-model="renameDialogVisible" title="重命名表" width="500px" :draggable="true" :close-on-click-modal="false">
     <el-form size="small" label-width="80px">
       <el-form-item label="原表名">
         <el-input :value="renameTarget" disabled />

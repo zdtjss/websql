@@ -2,6 +2,7 @@ import http from './index'
 import type { AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
 import type { AIModel } from './ai'
+import { downloadBlob } from '@/utils/exportHelper'
 
 /** 角色信息 */
 export interface Role {
@@ -221,4 +222,21 @@ export function getAuditConfig(): Promise<AxiosResponse<ApiResponse<AuditConfig>
 /** 保存审计配置，对应 POST /audit/config/save */
 export function saveAuditConfig(config: AuditConfig): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/audit/config/save', config)
+}
+
+/** 用户配置导出结果 */
+export interface UserConfigExportData {
+  filename: string
+  content: string
+}
+
+/**
+ * 导出用户配置（系统设置、提示词、连接、审计配置、收藏）为 SQL 文件并下载。
+ * 后端返回标准 {code,data} 信封，前端取出 data 后触发浏览器下载。
+ */
+export async function exportUserConfigSql(): Promise<void> {
+  const resp = await http.get<UserConfigExportData | ApiResponse<UserConfigExportData>>('/system/config/export')
+  const payload = (resp as AxiosResponse<ApiResponse<UserConfigExportData>>).data
+  const data = payload?.data ?? (payload as unknown as UserConfigExportData)
+  downloadBlob(data.content, data.filename, 'application/sql;charset=utf-8')
 }

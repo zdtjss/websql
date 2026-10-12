@@ -52,9 +52,9 @@ SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 BUNDLE_PYTHON_DIR = os.path.join(DIST_PACK_DIR, "python")
 
 # 本地官方 embeddable Python 包（scripts/ 下，随仓库分发，无需联网下载）
-EMBEDDABLE_ZIP = os.path.join(PROJECT_ROOT, "scripts", "python-3.14.7-embed-amd64.zip")
-EMBEDDABLE_PY_VERSION = "3.14"
-EMBEDDABLE_ABI = "cp314"
+EMBEDDABLE_ZIP = os.path.join(PROJECT_ROOT, "scripts", "python-3.15.0-embed-amd64.zip")
+EMBEDDABLE_PY_VERSION = "3.15"
+EMBEDDABLE_ABI = "cp315"
 EMBEDDABLE_PLATFORM = "win_amd64"
 
 # 复制本机 Python 时排除的大而无用的目录（保留标准库与 site-packages）
@@ -76,7 +76,7 @@ BUNDLE_REQUIRED_MODULES = ["pptx", "docx", "docxtpl", "matplotlib", "numpy", "PI
 # pip 安装的依赖清单（精确版本，与 skills/*/requirements.txt 保持一致）
 BUNDLE_PIP_DEPS = [
     "python-pptx==1.0.2", "python-docx==1.2.0", "docxtpl==0.20.2",
-    "matplotlib==3.11.1", "numpy==2.5.2", "Pillow==12.3.0",
+    "matplotlib==3.11.2", "numpy==2.5.2", "Pillow==12.3.0",
 ]
 
 # 平台配置：key 用于 --platform 参数和 zip 命名
@@ -301,9 +301,9 @@ def find_user_site_packages():
 def collect_python_runtime(rebuild=False):
     """收集捆绑 Python 运行时到 dist-pack/python/。
 
-    主路径：本地官方 embeddable 包（scripts/python-3.14.7-embed-amd64.zip）
-      - 解压 + 启用 site（修改 ._pth）+ pip 交叉安装 cp314 依赖闭包
-      - 版本固定 3.14.7，产物可复现；embeddable zip 随仓库分发，离线可用
+    主路径：本地官方 embeddable 包（scripts/python-3.15.0-embed-amd64.zip）
+      - 解压 + 启用 site（修改 ._pth）+ pip 交叉安装 cp315 依赖闭包
+      - 版本固定 3.15.0，产物可复现；embeddable zip 随仓库分发，离线可用
     回退路径：本机 Python 精简复制（pip 交叉安装失败/无 embeddable 包时）
     已存在且非强制重建时直接复用缓存。
     """
@@ -355,7 +355,7 @@ def _build_from_embeddable():
         with open(pth, "w", encoding="utf-8") as f:
             f.write(content)
 
-    # 3. pip 交叉安装依赖（embeddable 无 pip，从打包机以 cp314 wheel 安装）
+    # 3. pip 交叉安装依赖（embeddable 无 pip，从打包机以 cp315 wheel 安装）
     dst_sp = os.path.join(BUNDLE_PYTHON_DIR, "Lib", "site-packages")
     os.makedirs(dst_sp, exist_ok=True)
     cross = (EMBEDDABLE_PLATFORM, EMBEDDABLE_PY_VERSION, EMBEDDABLE_ABI)
@@ -424,7 +424,7 @@ def _install_deps_via_pip(dst_sp, cross=None):
     """用 pip 安装导出渲染依赖闭包到指定目录。
 
     cross: (platform, python_version, abi) 元组——embeddable 无 pip 且目标
-    解释器与打包机不同（如 cp314 vs cp313），用 pip 交叉安装参数拉取
+    解释器与打包机不同（如 cp315 vs cp313），用 pip 交叉安装参数拉取
     目标 ABI 的 wheel；None 表示按当前解释器安装。
     """
     print(f"[Python] pip 安装依赖: {' '.join(BUNDLE_PIP_DEPS)}")

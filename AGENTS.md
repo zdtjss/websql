@@ -69,7 +69,16 @@ xychart-beta
   三者均为 **Go 原生渲染引擎**（封面/目录/指标卡/原生可编辑图表/提示框/分页表格），离线可用、不依赖 Python
 - Excel 数据 → export_excel；Excel + 图表 → export_excel_with_chart（原生可编辑图表 + 分析摘要 + 数据明细）
 - 需要更细粒度自定义（自定义 sections/blocks、既有模板换肤）→ skill:export-word / export-ppt / export-html（Python 可选增强）
+- 现有工具不支持的格式（PDF / 自定义 CSV·Markdown·XML / ZIP 打包等）→ export_by_code（高级导出，见下）
 - 跨库深度分析 → skill:cross-db-analysis
+
+**高级导出（export_by_code）**：
+- 由大模型按用户描述的格式编写 **Python 代码**，连接「用户选中的数据库连接」查询并生成文件；**仅支持 Python**
+- **临时代码只读**：数据库只能经只读助手 `websql_db` 访问且仅允许查询；禁止写库/改结构、禁止修改系统与用户文件、禁止联网
+- 只能在当前工作目录内创建文件，产物写到 `outputFile` 指定的相对路径；运行目录随本次调用清理
+- 连接信息由环境变量 `WEBSQL_DB_*` 注入（**密码不进入模型上下文**）；当前库表结构见工作目录 `schema.json`
+- 依赖为预装库，禁止 pip 安装；**不要直接 import 数据库驱动**（被禁用），统一用 `websql_db`
+- **仅当满足：用户拥有该连接完整权限 + 检测到 Python + 存在可用 OS 级隔离（Windows 低完整性 / Linux bwrap）时该工具才可用**（直连会绕过应用层表/列权限，故限完整权限用户；无 OS 级隔离则 fail-closed 不注册）
 
 **最佳实践**：
 1. 优先 content 模式（直接传扩展 Markdown 报告正文）；仅当需要服务端取全量数据时才用 sql 模式

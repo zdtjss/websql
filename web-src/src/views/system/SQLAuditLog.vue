@@ -130,14 +130,14 @@
         size="small"
       />
     </div>
-    <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" destroy-on-close class="sql-detail-dialog">
+    <el-dialog v-model="sqlDialogVisible" title="SQL 详情" width="700px" :draggable="true" destroy-on-close class="sql-detail-dialog">
       <div style="margin-bottom: 8px; color: var(--text-tertiary); font-size: 13px;">
         {{ isRemote ? sqlDetail.userName : "" }}<span v-if="sqlDetail.connName"> | {{ sqlDetail.connName }}</span><span v-if="sqlDetail.schemaName"> | {{ sqlDetail.schemaName }}</span> | {{ sqlDetail.execTime || '' }} | {{ sqlDetail.source === 'agent' ? 'Agent' : '编辑器' }}
       </div>
       <pre class="sql-full-text" v-html="highlightedSql"></pre>
     </el-dialog>
 
-    <el-dialog v-model="errorDialogVisible" title="错误详情" width="700px" destroy-on-close>
+    <el-dialog v-model="errorDialogVisible" title="错误详情" width="700px" :draggable="true" destroy-on-close>
       <pre class="error-full-text">{{ errorDetail }}</pre>
     </el-dialog>
   </div>

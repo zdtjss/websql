@@ -4,6 +4,7 @@ import (
 	"websql/internal/ai/agent"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
+	"websql/internal/app/configexport"
 	"websql/internal/app/conn"
 	"websql/internal/app/dbops"
 	"websql/internal/app/monitor"
@@ -79,6 +80,7 @@ func NewContainerWithDB(db *sqlx.DB) *Container {
 	dbops.Init(db)
 	snippet.Init(db)
 	storage.Init(db)
+	configexport.Init(db)
 
 	c := &Container{
 		Config:       config.Get(),

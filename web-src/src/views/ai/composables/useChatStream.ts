@@ -35,6 +35,8 @@ export interface UseChatStreamDeps {
   selectedTables: Ref<string[]>
   /** 当前选中的 AI 模型 ID */
   selectedModel: Ref<string>
+  /** 高级导出模式：勾选后本次对话强制走 export_by_code（仅 Python、只读临时代码）生成文件 */
+  advancedExport: Ref<boolean>
   /** 输入框内容（发送后清空） */
   question: Ref<string>
   /** 已上传的 Excel 文件（发送成功后清空） */
@@ -94,7 +96,7 @@ export interface UseChatStreamDeps {
 export function useChatStream(deps: UseChatStreamDeps) {
   const {
     chatHistory, showAllHistory, sessionId, selectedSchemas, selectedTables,
-    selectedModel, question, uploadedExcel,
+    selectedModel, question, uploadedExcel, advancedExport,
     loading, abortController, streamingExecContent,
     buildRequestSchemas, getPrimaryConnId, scrollToBottom, handleSessionExpired,
     renderMarkdown, doRenderMermaidBlocks, countClosedMermaidBlocks,
@@ -299,6 +301,9 @@ export function useChatStream(deps: UseChatStreamDeps) {
       }
       if (excelContext) {
         body.excelData = excelContext
+      }
+      if (advancedExport.value) {
+        body.advancedExport = true
       }
 
       const resp = await fetch(url, {

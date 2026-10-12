@@ -88,6 +88,56 @@ export const exportJsonToExcel = ({ header, title, key, data, filename, autoWidt
   XLSX.writeFile(wb, filename + '.xlsx')
 }
 
+/** 多结果集导出的单个工作表定义 */
+export interface ExcelSheet {
+  /** 工作表名称 */
+  name: string
+  /** 字段名列表 */
+  key: string[]
+  /** 表体数据（不含表头行） */
+  data: any[]
+}
+
+// 生成合法且唯一的工作表名称：去除 Excel 非法字符、截断至 31 字符
+function normalizeSheetName(rawName: string, used: Set<string>): string {
+  let name = (rawName || 'Sheet').replace(/[\\/?*\[\]:]/g, '_').slice(0, 31)
+  if (!name) name = 'Sheet'
+  let candidate = name
+  let i = 1
+  while (used.has(candidate)) {
+    const suffix = '_' + i
+    candidate = name.slice(0, 31 - suffix.length) + suffix
+    i++
+  }
+  used.add(candidate)
+  return candidate
+}
+
+/**
+ * 将多个结果集导出到同一个 Excel 文件（每个结果集一个工作表）
+ * @param sheets 工作表列表
+ * @param filename 文件名
+ */
+export const exportSheetsToExcel = (sheets: ExcelSheet[], filename: string): void => {
+  const wb = XLSX.utils.book_new()
+  const usedNames = new Set<string>()
+  sheets.forEach((sheet) => {
+    const key = sheet.key
+    const data = [...sheet.data]
+    const header: Record<string, unknown> = {}
+    key.forEach((k) => (header[k] = k))
+    data.unshift(header)
+    const ws = XLSX.utils.json_to_sheet(data, {
+      header: key,
+      skipHeader: true,
+    })
+    auto_width(ws, json_to_array(key, data))
+    XLSX.utils.book_append_sheet(wb, ws, normalizeSheetName(sheet.name, usedNames))
+  })
+  XLSX.writeFile(wb, filename + '.xlsx')
+}
+
 export default {
-  exportJsonToExcel
+  exportJsonToExcel,
+  exportSheetsToExcel
 }

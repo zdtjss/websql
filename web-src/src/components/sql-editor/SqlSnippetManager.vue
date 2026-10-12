@@ -1,33 +1,52 @@
 <template>
   <el-drawer
     v-model="visible"
-    title="SQL 收藏夹"
     :size="snippetDrawerWidth + 'px'"
+    class="snippet-drawer"
+    :show-close="false"
     @close="visible = false"
   >
+    <template #header>
+      <div class="snippet-drawer-header">
+        <div class="snippet-drawer-title">
+          <el-icon class="snippet-drawer-title-icon"><Collection /></el-icon>
+          <span>SQL 收藏夹</span>
+          <el-tag class="snippet-count-tag" size="small" round effect="plain" type="primary">
+            {{ totalCount }}
+          </el-tag>
+        </div>
+        <el-icon class="snippet-drawer-close" title="关闭" @click="visible = false"><Close /></el-icon>
+      </div>
+    </template>
+
     <div v-if="visible" class="drawer-drag-handle"
         :style="{ right: snippetDrawerWidth + 'px' }"
         @mousedown="onSnippetDrawerDragStart"></div>
 
     <!-- 顶部操作栏 -->
     <div class="snippet-toolbar">
-      <el-button size="small" type="primary" @click="showAddSnippet(true)">+ 收藏当前 SQL</el-button>
-      <el-button size="small" @click="showAddSnippet(false)" :icon="Plus">新建</el-button>
-      <el-upload
-        :show-file-list="false"
-        accept=".json"
-        :http-request="handleImportFile"
-      >
-        <el-button size="small" :icon="Upload">导入</el-button>
-      </el-upload>
-      <el-button size="small" :icon="Download" @click="handleExport">导出</el-button>
-      <el-button
-        v-if="hasLocalSnippets"
-        size="small"
-        type="warning"
-        @click="migrateFromLocal"
-      >从本地迁移</el-button>
-      <el-button size="small" text :icon="Refresh" @click="reloadAll" :loading="loading">刷新</el-button>
+      <el-button type="primary" size="small" :icon="Star" @click="showAddSnippet(true)">收藏当前 SQL</el-button>
+      <div class="snippet-toolbar-group">
+        <el-button size="small" :icon="Plus" @click="showAddSnippet(false)">新建</el-button>
+        <el-upload
+          class="snippet-upload"
+          :show-file-list="false"
+          accept=".json"
+          :http-request="handleImportFile"
+        >
+          <el-button size="small" :icon="Upload">导入</el-button>
+        </el-upload>
+        <el-button size="small" :icon="Download" @click="handleExport">导出</el-button>
+        <el-button
+          v-if="hasLocalSnippets"
+          size="small"
+          type="warning"
+          plain
+          :icon="RefreshLeft"
+          @click="migrateFromLocal"
+        >从本地迁移</el-button>
+        <el-button size="small" :icon="Refresh" circle title="刷新" @click="reloadAll" :loading="loading" />
+      </div>
     </div>
 
     <!-- 搜索与标签过滤 -->
@@ -39,55 +58,47 @@
         size="small"
         :prefix-icon="Search"
         @input="onSearchInput"
-        style="flex: 1;"
       />
       <el-select
+        v-model="activeCategory"
+        placeholder="全部分类"
+        size="small"
+        class="filter-cate"
+        @change="loadList"
+      >
+        <el-option label="全部" value="all" />
+        <el-option
+          v-for="cate in categories"
+          :key="cate.name"
+          :label="`${cate.name}（${cate.count}）`"
+          :value="cate.name"
+        />
+      </el-select>
+      <el-select
         v-model="filterTag"
-        placeholder="标签过滤"
+        placeholder="全部标签"
         clearable
         size="small"
-        style="width: 140px;"
+        class="filter-tag"
         @change="loadList"
       >
         <el-option v-for="t in allTags" :key="t" :label="t" :value="t" />
       </el-select>
     </div>
 
-    <!-- 主体：左侧分类树 + 右侧列表 -->
+    <!-- 主体：收藏列表 -->
     <div class="snippet-body">
-      <!-- 左侧分类 -->
-      <div class="snippet-cates">
-        <div class="snippet-cates-title">分类</div>
-        <el-scrollbar>
-          <div
-            class="snippet-cate-item"
-            :class="{ active: activeCategory === 'all' }"
-            @click="selectCategory('all')"
-          >
-            <span>全部</span>
-            <el-badge :value="totalCount" :max="999" type="info" />
-          </div>
-          <div
-            v-for="cate in categories"
-            :key="cate.name"
-            class="snippet-cate-item"
-            :class="{ active: activeCategory === cate.name }"
-            @click="selectCategory(cate.name)"
-          >
-            <el-icon><Folder /></el-icon>
-            <span class="cate-name" :title="cate.name">{{ cate.name }}</span>
-            <el-badge :value="cate.count" :max="999" type="info" />
-          </div>
-        </el-scrollbar>
-      </div>
-
-      <!-- 右侧列表 -->
       <div class="snippet-list-wrap">
         <el-scrollbar>
-          <div v-if="loading" class="snippet-empty">加载中...</div>
-          <div v-else-if="filteredSnippets.length === 0" class="snippet-empty">
-            暂无收藏的 SQL 片段
+          <div v-if="loading" class="snippet-loading">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            加载中...
           </div>
+          <el-empty
+            v-else-if="filteredSnippets.length === 0"
+            description="暂无收藏的 SQL 片段"
+            :image-size="72"
+          />
           <div
             v-for="snippet in filteredSnippets"
             :key="snippet.id"
@@ -97,13 +108,13 @@
             <div class="snippet-header">
               <span class="snippet-name">{{ snippet.title || '未命名' }}</span>
               <div class="snippet-ops" @click.stop>
-                <el-icon class="snippet-op" :size="14" title="复制 SQL" @click="copySql(snippet)">
+                <el-icon class="snippet-op" title="复制 SQL" @click="copySql(snippet)">
                   <CopyDocument />
                 </el-icon>
-                <el-icon class="snippet-op" :size="14" title="编辑" @click="showEditSnippet(snippet)">
+                <el-icon class="snippet-op" title="编辑" @click="showEditSnippet(snippet)">
                   <Edit />
                 </el-icon>
-                <el-icon class="snippet-op" :size="14" title="删除" @click="deleteSnippet(snippet)">
+                <el-icon class="snippet-op danger" title="删除" @click="deleteSnippet(snippet)">
                   <Delete />
                 </el-icon>
               </div>
@@ -111,15 +122,24 @@
             <div v-if="snippet.description" class="snippet-desc">{{ snippet.description }}</div>
             <pre class="snippet-body-text">{{ snippet.sqlContent }}</pre>
             <div class="snippet-meta">
-              <el-tag v-if="snippet.category" size="small" type="info">{{ snippet.category }}</el-tag>
+              <el-tag v-if="snippet.category" size="small" type="info" effect="plain">
+                {{ snippet.category }}
+              </el-tag>
               <el-tag
                 v-for="t in splitTags(snippet.tags)"
                 :key="t"
                 size="small"
                 effect="plain"
+                class="meta-tag"
               >{{ t }}</el-tag>
-              <span v-if="snippet.dbType" class="meta-text">{{ snippet.dbType }}</span>
-              <span class="meta-time">{{ snippet.updatedAt || snippet.createdAt || '' }}</span>
+              <el-tag
+                v-if="snippet.dbType"
+                size="small"
+                effect="light"
+                class="meta-db"
+                :type="dbTypeTagType(snippet.dbType)"
+              >{{ dbTypeLabel(snippet.dbType) }}</el-tag>
+              <span class="meta-time">{{ formatTime(snippet.updatedAt || snippet.createdAt) }}</span>
             </div>
           </div>
         </el-scrollbar>
@@ -130,11 +150,13 @@
     <el-dialog
       v-model="editDialogVisible"
       :title="editingId ? '编辑收藏' : '添加收藏'"
-      width="750px"
+      width="760px"
+      :draggable="true"
+      class="snippet-edit-dialog"
       :append-to-body="true"
       destroy-on-close
     >
-      <el-form ref="formRef" :model="formData" label-width="100px" size="default" :rules="rules">
+      <el-form ref="formRef" :model="formData" label-width="90px" size="default" :rules="rules">
         <el-form-item label="标题" prop="title">
           <el-input v-model="formData.title" placeholder="必填，简明描述用途" maxlength="255" />
         </el-form-item>
@@ -145,29 +167,45 @@
           <el-input
             v-model="formData.sqlContent"
             type="textarea"
-            :rows="8"
+            :rows="9"
             placeholder="必填，SQL 语句"
             class="sql-textarea"
           />
         </el-form-item>
-        <el-form-item label="分类" prop="category">
-          <el-select
-            v-model="formData.category"
-            placeholder="选择或输入新分类"
-            filterable
-            allow-create
-            clearable
-            default-first-option
-            style="width: 100%;"
-          >
-            <el-option
-              v-for="cate in categoryOptions"
-              :key="cate"
-              :label="cate"
-              :value="cate"
-            />
-          </el-select>
-        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="分类" prop="category">
+              <el-select
+                v-model="formData.category"
+                placeholder="选择或输入新分类"
+                filterable
+                allow-create
+                clearable
+                default-first-option
+                style="width: 100%;"
+              >
+                <el-option
+                  v-for="cate in categoryOptions"
+                  :key="cate"
+                  :label="cate"
+                  :value="cate"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="数据库类型" prop="dbType">
+              <el-select v-model="formData.dbType" placeholder="选填" clearable style="width: 100%;">
+                <el-option
+                  v-for="opt in dbTypeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="标签" prop="tagsInput">
           <div class="tag-editor">
             <el-tag
@@ -176,34 +214,27 @@
               closable
               size="small"
               @close="removeTag(idx)"
-              style="margin-right: 4px; margin-bottom: 4px;"
             >{{ t }}</el-tag>
             <el-input
               v-if="tagInputVisible"
               ref="tagInputRef"
               v-model="tagInputValue"
               size="small"
-              style="width: 120px;"
+              class="tag-input"
               placeholder="回车添加"
               @keyup.enter="addTag"
               @blur="addTag"
             />
-            <el-button v-else size="small" @click="showTagInput">+ 标签</el-button>
+            <el-button v-else size="small" :icon="Plus" @click="showTagInput">标签</el-button>
           </div>
         </el-form-item>
-        <el-form-item label="数据库类型" prop="dbType">
-          <el-select v-model="formData.dbType" placeholder="选填" clearable style="width: 100%;">
-            <el-option label="MySQL" value="mysql" />
-            <el-option label="MariaDB" value="mariadb" />
-            <el-option label="SQLite" value="sqlite" />
-            <el-option label="Oracle" value="oracle" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="关联连接">
-          <el-input :model-value="currentConnName || connId" disabled placeholder="来自当前标签页" />
-        </el-form-item>
-        <el-form-item label="Schema">
-          <el-input :model-value="schema" disabled placeholder="来自当前标签页" />
+        <el-form-item label="来源">
+          <div class="source-info">
+            <el-icon class="source-icon"><Connection /></el-icon>
+            <span class="source-conn">{{ currentConnName || connId || '当前连接' }}</span>
+            <span class="source-divider">/</span>
+            <span class="source-schema">{{ schema || '默认 Schema' }}</span>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -215,7 +246,10 @@
 </template>
 
 <script setup lang="ts">
-import { Delete, Edit, Download, Upload, Plus, Search, Refresh, Folder, CopyDocument } from '@element-plus/icons-vue'
+import {
+  Delete, Edit, Download, Upload, Plus, Search, Refresh, RefreshLeft, Star,
+  CopyDocument, Collection, Close, Connection, Loading
+} from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
 import {
@@ -234,6 +268,54 @@ import copyToClipboard from '@/utils/copy-to-clipboard'
 
 // 旧版 localStorage 存储键，用于数据迁移
 const LEGACY_STORAGE_KEY = 'websql_snippets'
+
+// 数据库类型选项：value 为存储值，label 为展示值（与编辑对话框下拉框一致）
+const dbTypeOptions = [
+  { label: 'MySQL', value: 'mysql' },
+  { label: 'MariaDB', value: 'mariadb' },
+  { label: 'SQLite', value: 'sqlite' },
+  { label: 'Oracle', value: 'oracle' },
+]
+
+// 数据库类型存储值转展示名称（如 mysql → MySQL）
+function dbTypeLabel(type?: string): string {
+  if (!type) return ''
+  const opt = dbTypeOptions.find(o => o.value === type.toLowerCase())
+  return opt ? opt.label : type
+}
+
+// 数据库类型对应的标签配色
+function dbTypeTagType(type?: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' {
+  switch ((type || '').toLowerCase()) {
+    case 'mysql': return 'success'
+    case 'mariadb': return 'primary'
+    case 'sqlite': return 'warning'
+    case 'oracle': return 'danger'
+    default: return 'info'
+  }
+}
+
+// 时间展示为 YYYY-MM-DD HH:mm。
+// 后端以北京时间（UTC+8）墙钟值落库，但 SQLite 驱动会把无时区的 DATETIME 列解析为 UTC 的 time.Time，
+// 序列化后带上 'Z'（如 "2026-10-08T18:05:59Z"）——该 'Z' 并非真实 UTC，直接按 UTC 转换会整体偏 +8 小时。
+// 因此无数字时区偏移（含末尾 Z）的串一律原样展示其墙钟时分；
+// 仅当带显式偏移（如 +08:00 / -05:00）时，才真正转换到 Asia/Shanghai。
+function formatTime(val?: string): string {
+  if (!val) return ''
+  const naive = val.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?Z?$/)
+  if (naive) {
+    return `${naive[1]}-${naive[2]}-${naive[3]} ${naive[4]}:${naive[5]}`
+  }
+  const d = new Date(val)
+  if (isNaN(d.getTime())) return val
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(d)
+  const get = (type: string) => parts.find(p => p.type === type)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
+}
 
 const visible = defineModel({ default: false })
 const props = defineProps({
@@ -364,12 +446,6 @@ async function loadMeta() {
 // 重新加载全部
 async function reloadAll() {
   await Promise.all([loadList(), loadMeta()])
-}
-
-// 选择分类
-function selectCategory(name: string) {
-  activeCategory.value = name
-  loadList()
 }
 
 // 显示新增对话框（useCurrentSql=true 时预填当前编辑器 SQL，false 时新建空白）
@@ -607,6 +683,43 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* ============ 抽屉头部 ============ */
+.snippet-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.snippet-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.snippet-drawer-title-icon {
+  font-size: 18px;
+  color: var(--el-color-primary);
+}
+
+.snippet-count-tag {
+  margin-left: 2px;
+}
+
+.snippet-drawer-close {
+  font-size: 18px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.snippet-drawer-close:hover {
+  color: var(--el-color-primary);
+}
+
+/* ============ 顶部操作栏 ============ */
 .snippet-toolbar {
   display: flex;
   gap: 8px;
@@ -614,98 +727,87 @@ onMounted(() => {
   align-items: center;
 }
 
+.snippet-toolbar-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.snippet-upload {
+  line-height: 1;
+}
+
+/* ============ 搜索与过滤 ============ */
 .snippet-filter {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   margin: 12px 0;
 }
 
-.snippet-body {
-  display: flex;
-  gap: 8px;
-  height: calc(100vh - 200px);
+.snippet-filter .el-input {
+  flex: 1 1 160px;
 }
 
-.snippet-cates {
-  width: 160px;
+.snippet-filter :deep(.filter-cate) {
+  width: 150px;
   flex-shrink: 0;
-  border-right: 1px solid var(--el-border-color-light, #ebeef5);
-  padding-right: 8px;
 }
 
-.snippet-cates-title {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 8px;
-  padding-left: 4px;
+.snippet-filter :deep(.filter-tag) {
+  width: 120px;
+  flex-shrink: 0;
 }
 
-.snippet-cate-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  color: #606266;
-  transition: background 0.15s;
-}
-
-.snippet-cate-item:hover {
-  background: #f5f7fa;
-}
-
-.snippet-cate-item.active {
-  background: #ecf5ff;
-  color: #409eff;
-  font-weight: 600;
-}
-
-.cate-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* ============ 收藏列表 ============ */
+.snippet-body {
+  height: calc(100vh - 210px);
 }
 
 .snippet-list-wrap {
-  flex: 1;
+  height: 100%;
   overflow: hidden;
 }
 
-.snippet-empty {
-  text-align: center;
-  color: #c0c4cc;
+.snippet-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 40px 0;
-  font-size: 14px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 
 .snippet-card {
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--el-bg-color);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 0.18s, box-shadow 0.18s;
 }
 
 .snippet-card:hover {
-  border-color: #409eff;
-  background: #ecf5ff;
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 4px 12px rgba(64, 158, 255, 0.12);
 }
 
 .snippet-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 6px;
 }
 
 .snippet-name {
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
-  color: #303133;
+  color: var(--el-text-color-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -713,69 +815,125 @@ onMounted(() => {
 
 .snippet-ops {
   display: flex;
-  gap: 8px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
 .snippet-op {
-  color: #909399;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
   cursor: pointer;
+  transition: color 0.15s, background 0.15s;
 }
 
 .snippet-op:hover {
-  color: #409eff;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
 
-.snippet-op:last-child:hover {
-  color: #f56c6c;
+.snippet-op.danger:hover {
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 
 .snippet-desc {
   font-size: 12px;
-  color: #909399;
-  margin-bottom: 6px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
   white-space: pre-wrap;
 }
 
 .snippet-body-text {
-  background: #f5f7fa;
-  border-radius: 4px;
-  padding: 8px;
-  font-size: 12px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-left: 3px solid var(--el-color-primary-light-5);
+  border-radius: 6px;
+  padding: 8px 10px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 100px;
+  max-height: 96px;
   overflow: hidden;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin: 0;
 }
 
 .snippet-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   align-items: center;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
-.meta-text {
-  font-size: 11px;
-  color: #909399;
+.meta-db {
+  font-weight: 600;
 }
 
 .meta-time {
   font-size: 11px;
-  color: #c0c4cc;
+  color: var(--el-text-color-placeholder);
   margin-left: auto;
+}
+
+/* ============ 编辑对话框 ============ */
+.snippet-edit-dialog :deep(.el-dialog__body) {
+  padding-top: 10px;
+}
+
+.snippet-edit-dialog :deep(.sql-textarea .el-textarea__inner) {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .tag-editor {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 4px;
+  width: 100%;
 }
 
+.tag-editor :deep(.el-tag) {
+  margin: 0;
+}
+
+.tag-input {
+  width: 120px;
+}
+
+.source-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  font-size: 12.5px;
+  color: var(--el-text-color-regular);
+}
+
+.source-icon {
+  color: var(--el-color-primary);
+}
+
+.source-conn {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.source-divider {
+  color: var(--el-text-color-placeholder);
+}
+
+/* ============ 抽屉宽度拖拽手柄 ============ */
 .drawer-drag-handle {
   position: fixed;
   top: 0;
@@ -789,10 +947,5 @@ onMounted(() => {
 
 .drawer-drag-handle:hover {
   background: rgba(64, 158, 255, 0.3);
-}
-
-:deep(.sql-textarea textarea) {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 12px;
 }
 </style>

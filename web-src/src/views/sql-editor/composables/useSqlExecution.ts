@@ -2,7 +2,7 @@ import { ref, computed, type Ref, type ComputedRef } from 'vue'
 import { ElMessage, ElLoading } from 'element-plus'
 import { execSQL } from '@/api/sql'
 import { isCancel } from '@/api'
-import { exportToCsv, exportToJson } from '@/utils/exportHelper'
+import { exportToCsv, exportToJson, exportToCsvMulti } from '@/utils/exportHelper'
 import excel from '@/utils/excel'
 import copyToClipboard from '@/utils/copy-to-clipboard'
 import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper'
@@ -683,7 +683,60 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
 
     // ── 导出 ──
 
+    /** 收集批量执行中所有成功的查询结果集（编号与结果集 tab 的 queryNum 对齐） */
+    function collectQueryResultSets() {
+        const sets: {
+            name: string
+            columns: string[]
+            comments: string[]
+            rows: any[]
+        }[] = []
+        let queryNum = 0
+        for (const item of batchResults.value) {
+            if (item.type !== 'query') continue
+            queryNum++
+            if (item.status !== 'success') continue
+            const columns: any[] = item.columns || []
+            sets.push({
+                name: `结果集${queryNum}`,
+                columns: columns.map((c: any) => c.name),
+                comments: columns.map((c: any) => c.comment),
+                rows: item.data || [],
+            })
+        }
+        return sets
+    }
+
+    /** 将多个结果集导出到同一个文件（xlsx 多 Sheet / csv 分节） */
+    function exportAllResultSets(
+        command: 'xlsx' | 'csv',
+        sets: ReturnType<typeof collectQueryResultSets>
+    ) {
+        const filename = 'query_result'
+        if (command === 'xlsx') {
+            excel.exportSheetsToExcel(
+                sets.map((s) => ({ name: s.name, key: s.columns, data: s.rows })),
+                filename
+            )
+        } else {
+            exportToCsvMulti(
+                sets.map((s) => ({ name: s.name, columns: s.columns, rows: s.rows, comments: s.comments })),
+                filename
+            )
+        }
+        ElMessage({ message: '导出成功', type: 'success' })
+    }
+
     function handleExportResult(command: string) {
+        // 批量执行产生多个结果集时，xlsx / csv 合并导出为同一个文件
+        if (command === 'xlsx' || command === 'csv') {
+            const sets = isBatchMode.value ? collectQueryResultSets() : []
+            if (sets.length > 1) {
+                exportAllResultSets(command, sets)
+                return
+            }
+        }
+
         if (result.value.length === 0) {
             ElMessage({ message: '请先执行查询', type: 'warning' })
             return

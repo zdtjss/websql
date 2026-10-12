@@ -45,6 +45,18 @@ var (
 	router  = gin.Default()
 )
 
+// setProcessTimezone 将进程本地时区固定为中国标准时间（UTC+8）。
+// 需在 main 最早期调用一次：此后所有 time.Now() 均为北京时间，
+// 无需在各业务代码处单独指定时区；SQLite/MySQL 配置库落库时间保持一致。
+func setProcessTimezone() {
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		time.Local = loc
+		return
+	}
+	// 兜底：打包环境可能缺少 tzdata，中国无夏令时，固定 +8 等价
+	time.Local = time.FixedZone("CST", 8*3600)
+}
+
 func main() {
 	// 兜底：捕获 main goroutine 中的未预期 panic，防止进程崩溃
 	defer func() {
@@ -52,6 +64,9 @@ func main() {
 			log.Printf("[MainRecovery] main goroutine panic 已恢复 - panic=%v\n%s", r, debug.Stack())
 		}
 	}()
+
+	// 统一进程时区为中国标准时间（UTC+8），全局 time.Now() 自动产出北京时间串
+	setProcessTimezone()
 
 	gin.SetMode(gin.ReleaseMode)
 
