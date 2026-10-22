@@ -38,6 +38,8 @@ export interface ListSnippetParams {
   keyword?: string
   category?: string
   tag?: string
+  /** 来源 schema，留空表示不按 schema 过滤 */
+  schema?: string
 }
 
 /** 列表响应 */
@@ -48,6 +50,12 @@ export interface ListSnippetResult {
 
 /** 分类统计项 */
 export interface SnippetCategoryStat {
+  name: string
+  count: number
+}
+
+/** schema 统计项 */
+export interface SnippetSchemaStat {
   name: string
   count: number
 }
@@ -91,6 +99,11 @@ export function listSnippetCategories(): Promise<AxiosResponse<ApiResponse<Snipp
 /** 查询全部标签，对应 GET /snippet/tags */
 export function listSnippetTags(): Promise<AxiosResponse<ApiResponse<string[]>>> {
   return http.get('/snippet/tags')
+}
+
+/** 查询收藏中出现过的 schema 统计，对应 GET /snippet/schemas */
+export function listSnippetSchemas(): Promise<AxiosResponse<ApiResponse<SnippetSchemaStat[]>>> {
+  return http.get('/snippet/schemas')
 }
 
 /** 新增/更新收藏，对应 POST /snippet/save */

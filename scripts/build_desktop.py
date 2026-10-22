@@ -10,19 +10,19 @@
   - Windows: WebView2 Runtime(Win11 自带)
   - macOS: Xcode Command Line Tools
   - Linux: libgtk-3-dev libwebkit2gtk-4.1-dev
-  - Python 3.8+（打包脚本自身；Windows 捆绑运行时默认取自本机 Python）
+  - Python 3.8+（打包脚本自身；可选捆绑运行时默认取自本机 Python）
 
 用法:
   python scripts/build_desktop.py                          # 当前平台完整构建
   python scripts/build_desktop.py --skip-frontend          # 跳过前端构建
   python scripts/build_desktop.py --package                # 调用 wails3 build 完成构建与打包
   python scripts/build_desktop.py --check                  # 仅检查环境
-  python scripts/build_desktop.py --skip-python            # 不捆绑 Python 运行时
-  python scripts/build_desktop.py --rebuild-python         # 强制重新收集捆绑 Python
+
+  构建过程中会交互式询问是否捆绑 Python 运行时（默认否,直接回车即跳过）。
 
 产物:
   dist-pack/websql-desktop-{platform}.zip  — 可独立发行、运行的 zip 包
-  包内容: WebSQL 可执行文件 + skills/（skill 脚本与模板）+ python/（捆绑 Python 运行时）
+  包内容: WebSQL 可执行文件 + skills/（skill 脚本与模板）+ 可选 python/（捆绑 Python 运行时）
   捆绑 Python 使桌面版 Skill 导出（Word/PPT 模板驱动渲染）开箱即用；
   即使无 Python，导出工具也会自动降级 Go 基础版，保证导出不失败。
 
@@ -298,21 +298,18 @@ def find_user_site_packages():
     return None
 
 
-def collect_python_runtime(rebuild=False):
+def collect_python_runtime():
     """收集捆绑 Python 运行时到 dist-pack/python/。
 
     主路径：本地官方 embeddable 包（scripts/python-3.15.0-embed-amd64.zip）
       - 解压 + 启用 site（修改 ._pth）+ pip 交叉安装 cp315 依赖闭包
       - 版本固定 3.15.0，产物可复现；embeddable zip 随仓库分发，离线可用
     回退路径：本机 Python 精简复制（pip 交叉安装失败/无 embeddable 包时）
-    已存在且非强制重建时直接复用缓存。
+    已存在时直接复用缓存。
     """
-    if os.path.isdir(BUNDLE_PYTHON_DIR) and not rebuild:
+    if os.path.isdir(BUNDLE_PYTHON_DIR):
         print(f"[Python] 复用已有捆绑运行时: {BUNDLE_PYTHON_DIR}")
         return True
-
-    if os.path.isdir(BUNDLE_PYTHON_DIR):
-        shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
 
     # 主路径：本地 embeddable 包
     if os.path.isfile(EMBEDDABLE_ZIP):
@@ -519,7 +516,19 @@ def create_release_zip(binary_path, platform_key, include_python=True):
     return zip_path
 
 
-def build_platform(platform_key, skip_frontend, package, skip_python=False, rebuild_python=False):
+def ask_bundle_python():
+    """交互式询问是否捆绑 Python 运行时（默认否；非交互环境回退为否）。"""
+    prompt = ("[Python] 是否打包捆绑 Python 运行时"
+              "（Skill 导出开箱即用，体积增加数百 MB）? [y/N]: ")
+    try:
+        answer = input(prompt)
+    except EOFError:
+        print("  -> 非交互环境，默认不打包 Python 运行时")
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def build_platform(platform_key, skip_frontend, package, include_python=False):
     cfg = DESKTOP_PLATFORMS[platform_key]
 
     if not skip_frontend:
@@ -541,15 +550,13 @@ def build_platform(platform_key, skip_frontend, package, skip_python=False, rebu
     # 生成 AGENTS.md 嵌入文件（确保 go:embed 能找到 _embedded_agents.md）
     generate_agents_md_embed()
 
-    # 收集捆绑 Python 运行时（失败不阻塞打包：Go 基础版兜底保证导出不失败）
-    include_python = True
-    if skip_python:
-        print("[Python] 已跳过捆绑（--skip-python），导出将使用系统 Python 或降级 Go 基础版")
-        include_python = False
-    else:
-        if not collect_python_runtime(rebuild=rebuild_python):
+    # 按需收集捆绑 Python 运行时（失败不阻塞打包：Go 基础版兜底保证导出不失败）
+    if include_python:
+        if not collect_python_runtime():
             print("[WARN] 捆绑 Python 不可用，zip 将不含 python/（导出自动降级 Go 基础版）")
             include_python = False
+    else:
+        print("[Python] 不打包捆绑 Python 运行时，导出将使用系统 Python 或降级 Go 基础版")
 
     if package:
         print("\n[Build] 调用 wails3 build 完成完整构建与打包...")
@@ -578,10 +585,6 @@ def main():
                         help="调用 wails3 build 完成完整构建(含打包)")
     parser.add_argument("--check", action="store_true",
                         help="仅检查环境,不构建")
-    parser.add_argument("--skip-python", action="store_true",
-                        help="不捆绑 Python 运行时（导出将使用系统 Python 或降级 Go 基础版）")
-    parser.add_argument("--rebuild-python", action="store_true",
-                        help="强制重新收集捆绑 Python 运行时（默认复用 dist-pack/python 缓存）")
     args = parser.parse_args()
 
     if args.check:
@@ -602,9 +605,11 @@ def main():
 
     check_env()
 
+    # 是否捆绑 Python 运行时由交互式 y/n 决定（默认否）
+    include_python = ask_bundle_python()
+
     build_platform(platform, args.skip_frontend, args.package,
-                   skip_python=args.skip_python,
-                   rebuild_python=args.rebuild_python)
+                   include_python=include_python)
 
     print(f"\n{'=' * 55}")
     print("  桌面版构建完成!")

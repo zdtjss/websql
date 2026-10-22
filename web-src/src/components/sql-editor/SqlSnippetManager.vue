@@ -9,11 +9,7 @@
     <template #header>
       <div class="snippet-drawer-header">
         <div class="snippet-drawer-title">
-          <el-icon class="snippet-drawer-title-icon"><Collection /></el-icon>
           <span>SQL 收藏夹</span>
-          <el-tag class="snippet-count-tag" size="small" round effect="plain" type="primary">
-            {{ totalCount }}
-          </el-tag>
         </div>
         <el-icon class="snippet-drawer-close" title="关闭" @click="visible = false"><Close /></el-icon>
       </div>
@@ -59,6 +55,22 @@
         :prefix-icon="Search"
         @input="onSearchInput"
       />
+      <el-select
+        v-model="activeSchema"
+        placeholder="全部 Schema"
+        size="small"
+        class="filter-schema"
+        clearable
+        @change="loadList"
+      >
+        <el-option :label="`当前 Schema（${currentSchemaLabel}）`" value="__current__" />
+        <el-option
+          v-for="s in schemaOptions"
+          :key="s.name"
+          :label="`${s.name}（${s.count}）`"
+          :value="s.name"
+        />
+      </el-select>
       <el-select
         v-model="activeCategory"
         placeholder="全部分类"
@@ -126,6 +138,12 @@
                 {{ snippet.category }}
               </el-tag>
               <el-tag
+                v-if="snippet.schemaName"
+                size="small"
+                effect="plain"
+                class="meta-schema"
+              >{{ snippet.schemaName }}</el-tag>
+              <el-tag
                 v-for="t in splitTags(snippet.tags)"
                 :key="t"
                 size="small"
@@ -155,6 +173,8 @@
       class="snippet-edit-dialog"
       :append-to-body="true"
       destroy-on-close
+      @opened="initSqlEditor"
+      @closed="destroySqlEditor"
     >
       <el-form ref="formRef" :model="formData" label-width="90px" size="default" :rules="rules">
         <el-form-item label="标题" prop="title">
@@ -164,13 +184,7 @@
           <el-input v-model="formData.description" type="textarea" :rows="2" placeholder="选填，补充说明" />
         </el-form-item>
         <el-form-item label="SQL" prop="sqlContent">
-          <el-input
-            v-model="formData.sqlContent"
-            type="textarea"
-            :rows="9"
-            placeholder="必填，SQL 语句"
-            class="sql-textarea"
-          />
+          <div ref="sqlEditorRef" class="sql-editor-box"></div>
         </el-form-item>
         <el-row :gutter="16">
           <el-col :span="12">
@@ -231,9 +245,9 @@
         <el-form-item label="来源">
           <div class="source-info">
             <el-icon class="source-icon"><Connection /></el-icon>
-            <span class="source-conn">{{ currentConnName || connId || '当前连接' }}</span>
+            <span class="source-conn">{{ currentConnName || formData.connId || '当前连接' }}</span>
             <span class="source-divider">/</span>
-            <span class="source-schema">{{ schema || '默认 Schema' }}</span>
+            <span class="source-schema">{{ formData.schemaName || '默认 Schema' }}</span>
           </div>
         </el-form-item>
       </el-form>
@@ -251,19 +265,28 @@ import {
   CopyDocument, Collection, Close, Connection, Loading
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
-import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
+import { EditorState } from '@codemirror/state'
+import { MySQL, PLSQL, SQLite, StandardSQL, sql, type SQLDialect } from '@codemirror/lang-sql'
+import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
+import { history, insertTab, standardKeymap } from '@codemirror/commands'
 import {
   listSnippets,
   listSnippetCategories,
   listSnippetTags,
+  listSnippetSchemas,
   saveSnippet as apiSaveSnippet,
   deleteSnippet as apiDeleteSnippet,
   importSnippets,
   exportSnippetsToFile,
   type SqlSnippet,
   type SnippetCategoryStat,
+  type SnippetSchemaStat,
   type SnippetExportItem
 } from '@/api/snippet'
+import { useTheme } from '@/utils/useTheme'
 import copyToClipboard from '@/utils/copy-to-clipboard'
 
 // 旧版 localStorage 存储键，用于数据迁移
@@ -334,15 +357,27 @@ const currentConnName = computed(() => {
 })
 const emit = defineEmits(['apply'])
 
+const { currentTheme } = useTheme()
+
 // 列表与过滤状态
 const snippets = ref<SqlSnippet[]>([])
 const categories = ref<SnippetCategoryStat[]>([])
 const allTags = ref<string[]>([])
+const schemaStats = ref<SnippetSchemaStat[]>([])
 const searchText = ref('')
 const filterTag = ref('')
 const activeCategory = ref('all')
+// schema 过滤：默认当前 schema，可选其他 schema；清空则不过滤（查看所有 schema）
+const activeSchema = ref('__current__')
 const loading = ref(false)
 const saving = ref(false)
+
+// 过滤下拉中展示的"当前 Schema"名称
+const currentSchemaLabel = computed(() => props.schema || '默认')
+// 其他 schema 选项（排除当前 schema，避免与"当前 Schema"重复）
+const schemaOptions = computed(() =>
+  schemaStats.value.filter(s => s.name !== (props.schema || ''))
+)
 
 // 是否存在旧的本地收藏数据（用于显示迁移按钮）
 const hasLocalSnippets = ref(false)
@@ -358,6 +393,10 @@ const formRef = useTemplateRef<FormInstance>('formRef')
 const tagInputRef = useTemplateRef<any>('tagInputRef')
 const tagInputVisible = ref(false)
 const tagInputValue = ref('')
+
+// 对话框内 SQL 高亮编辑器
+const sqlEditorRef = ref<HTMLElement>()
+const sqlEditorView = shallowRef<EditorView>()
 
 const formData = ref({
   title: '',
@@ -381,11 +420,6 @@ const categoryOptions = computed(() => {
   categories.value.forEach(c => set.add(c.name))
   return Array.from(set)
 })
-
-// 总条数
-const totalCount = computed(() =>
-  categories.value.reduce((sum, c) => sum + c.count, 0)
-)
 
 // 前端二次过滤（关键字在标题/描述/SQL 中匹配；后端已支持，这里兜底处理本地缓存场景）
 const filteredSnippets = computed(() => {
@@ -411,6 +445,13 @@ function onSearchInput() {
   searchTimer = setTimeout(() => loadList(), 250)
 }
 
+// 解析 schema 过滤值：清空→空（查看所有），当前→当前 schema，其余→所选 schema
+function resolveSchemaParam(): string {
+  if (!activeSchema.value) return ''
+  if (activeSchema.value === '__current__') return props.schema || ''
+  return activeSchema.value
+}
+
 // 加载列表（带过滤参数）
 async function loadList() {
   loading.value = true
@@ -422,6 +463,8 @@ async function loadList() {
       params.category = activeCategory.value === '未分类' ? '__uncategorized__' : activeCategory.value
     }
     if (filterTag.value) params.tag = filterTag.value
+    const schemaParam = resolveSchemaParam()
+    if (schemaParam) params.schema = schemaParam
     const resp = await listSnippets(params)
     const result = resp.data?.data
     snippets.value = result?.items || []
@@ -432,12 +475,17 @@ async function loadList() {
   }
 }
 
-// 加载分类与标签
+// 加载分类、标签与 schema 统计
 async function loadMeta() {
   try {
-    const [cateResp, tagResp] = await Promise.all([listSnippetCategories(), listSnippetTags()])
+    const [cateResp, tagResp, schemaResp] = await Promise.all([
+      listSnippetCategories(),
+      listSnippetTags(),
+      listSnippetSchemas(),
+    ])
     categories.value = cateResp.data?.data || []
     allTags.value = tagResp.data?.data || []
+    schemaStats.value = schemaResp.data?.data || []
   } catch (e) {
     // 忽略
   }
@@ -484,6 +532,70 @@ function showEditSnippet(snippet: SqlSnippet) {
   editDialogVisible.value = true
 }
 
+// 根据数据库类型返回 CodeMirror SQL 方言，用于高亮与补全
+function snippetDialect(): SQLDialect {
+  const t = (formData.value.dbType || props.dbType || '').toLowerCase()
+  if (t === 'mysql' || t === 'mariadb') return MySQL
+  if (t === 'oracle') return PLSQL
+  if (t === 'sqlite') return SQLite
+  return StandardSQL
+}
+
+// 对话框打开后创建 SQL 高亮编辑器，内容变化时同步回表单
+function initSqlEditor() {
+  if (!sqlEditorRef.value) return
+  destroySqlEditor()
+  const isDark = currentTheme.value === 'dark'
+  const theme = EditorView.theme({
+    '&': {
+      height: '200px',
+      fontSize: '12.5px',
+      backgroundColor: isDark ? '#1e1e2e' : '#ffffff',
+      color: isDark ? '#cdd6f4' : '#303133',
+    },
+    '&.cm-focused': { outline: 'none' },
+    '.cm-scroller': {
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+      lineHeight: '1.6',
+      overflow: 'auto',
+    },
+    '.cm-gutters': isDark
+      ? { backgroundColor: '#1e1e2e', color: '#6c7086', border: 'none' }
+      : { backgroundColor: '#fafbfc', color: '#909399', borderRight: '1px solid #ebeef5' },
+  }, { dark: isDark })
+
+  sqlEditorView.value = new EditorView({
+    state: EditorState.create({
+      doc: formData.value.sqlContent || '',
+      extensions: [
+        keymap.of([...standardKeymap, { key: 'Tab', run: insertTab, preventDefault: true }]),
+        sql({ dialect: snippetDialect() }),
+        history(),
+        lineNumbers(),
+        highlightActiveLine(),
+        EditorView.lineWrapping,
+        EditorView.editable.of(true),
+        theme,
+        syntaxHighlighting(isDark ? oneDarkHighlightStyle : defaultHighlightStyle, { fallback: true }),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            formData.value.sqlContent = update.state.doc.toString()
+          }
+        }),
+      ],
+    }),
+    parent: sqlEditorRef.value,
+  })
+}
+
+// 销毁编辑器实例
+function destroySqlEditor() {
+  if (sqlEditorView.value) {
+    sqlEditorView.value.destroy()
+    sqlEditorView.value = undefined
+  }
+}
+
 // 保存（新增/更新）
 async function saveSnippet() {
   if (!formRef.value) return
@@ -499,8 +611,8 @@ async function saveSnippet() {
         category: formData.value.category?.trim() || '',
         tags: formData.value.tagList.join(','),
         dbType: formData.value.dbType || '',
-        connId: props.connId?.trim() || '',
-        schemaName: props.schema?.trim() || '',
+        connId: formData.value.connId?.trim() || '',
+        schemaName: formData.value.schemaName?.trim() || '',
       })
       ElMessage.success(editingId.value ? '更新成功' : '收藏成功')
       editDialogVisible.value = false
@@ -680,6 +792,10 @@ watch(visible, (val) => {
 onMounted(() => {
   checkLocalSnippets()
 })
+
+onBeforeUnmount(() => {
+  destroySqlEditor()
+})
 </script>
 
 <style scoped>
@@ -742,22 +858,33 @@ onMounted(() => {
 .snippet-filter {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin: 12px 0;
 }
 
+/* 搜索框自适应占满剩余空间，允许收缩到 0 不换行 */
 .snippet-filter .el-input {
-  flex: 1 1 160px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 三个下拉框缩短宽度并允许继续收缩，保证 4 个条件始终同行 */
+.snippet-filter :deep(.filter-schema) {
+  width: 120px;
+  flex: 0 1 120px;
+  min-width: 0;
 }
 
 .snippet-filter :deep(.filter-cate) {
-  width: 150px;
-  flex-shrink: 0;
+  width: 120px;
+  flex: 0 1 120px;
+  min-width: 0;
 }
 
 .snippet-filter :deep(.filter-tag) {
-  width: 120px;
-  flex-shrink: 0;
+  width: 96px;
+  flex: 0 1 96px;
+  min-width: 0;
 }
 
 /* ============ 收藏列表 ============ */
@@ -886,10 +1013,16 @@ onMounted(() => {
   padding-top: 10px;
 }
 
-.snippet-edit-dialog :deep(.sql-textarea .el-textarea__inner) {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 12.5px;
-  line-height: 1.6;
+.sql-editor-box {
+  width: 100%;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.sql-editor-box:hover {
+  border-color: var(--el-border-color-hover);
 }
 
 .tag-editor {

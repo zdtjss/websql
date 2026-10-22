@@ -12,13 +12,14 @@ import (
 
 // SnippetService 封装 SQL 收藏夹的业务逻辑：校验、创建者鉴权、导入导出转换。
 type SnippetService interface {
-	List(userId, keyword, category, tag string) ([]*Snippet, error)
+	List(userId, keyword, category, tag, schema string) ([]*Snippet, error)
 	Save(req *SnippetSave, userId string) (*Snippet, error)
 	Delete(id, userId string) error
 	Export(userId string) (*SnippetExportData, error)
 	Import(items []SnippetImportItem, userId string) (int, error)
 	Categories(userId string) ([]CategoryStat, error)
 	AllTags(userId string) ([]string, error)
+	Schemas(userId string) ([]SchemaStat, error)
 }
 
 type snippetService struct {
@@ -51,8 +52,8 @@ var (
 )
 
 // List 列表查询。
-func (s *snippetService) List(userId, keyword, category, tag string) ([]*Snippet, error) {
-	return s.repo.List(userId, keyword, category, tag)
+func (s *snippetService) List(userId, keyword, category, tag, schema string) ([]*Snippet, error) {
+	return s.repo.List(userId, keyword, category, tag, schema)
 }
 
 // Save 新增或更新。req.Id 为空表示新增；非空表示更新（仅创建者可改）。
@@ -254,4 +255,32 @@ func (s *snippetService) AllTags(userId string) ([]string, error) {
 		}
 	}
 	return tags, nil
+}
+
+// Schemas 返回当前用户收藏中出现过的 schema 及各自条数（忽略未指定 schema 的条目），
+// 用于前端 schema 过滤下拉（默认当前 schema，可切换其他 schema 或全部）。
+func (s *snippetService) Schemas(userId string) ([]SchemaStat, error) {
+	list, err := s.repo.ListByUserId(userId)
+	if err != nil {
+		return nil, err
+	}
+	stat := make(map[string]int)
+	for _, sn := range list {
+		name := strings.TrimSpace(sn.SchemaName)
+		if name == "" {
+			continue
+		}
+		stat[name]++
+	}
+	result := make([]SchemaStat, 0, len(stat))
+	for name, cnt := range stat {
+		result = append(result, SchemaStat{Name: name, Count: cnt})
+	}
+	return result, nil
+}
+
+// SchemaStat schema 统计项。
+type SchemaStat struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }

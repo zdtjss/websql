@@ -268,6 +268,7 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/snippet/import", snippet.Import)
 	routerGroup.GET("/snippet/categories", snippet.Categories)
 	routerGroup.GET("/snippet/tags", snippet.Tags)
+	routerGroup.GET("/snippet/schemas", snippet.Schemas)
 
 	// 用户级 KV 存储：持久化前端 localStorage 数据，解决桌面模式重启后丢失问题
 	routerGroup.GET("/storage/list", storage.List)

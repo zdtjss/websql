@@ -11,7 +11,7 @@ import (
 // SnippetRepo 定义 SQL 收藏夹数据访问接口，所有针对 t_sql_snippet 的查询均在此实现。
 type SnippetRepo interface {
 	EnsureTable() error
-	List(userId, keyword, category, tag string) ([]*Snippet, error)
+	List(userId, keyword, category, tag, schema string) ([]*Snippet, error)
 	FindById(id string) (*Snippet, error)
 	Insert(s *Snippet) error
 	Update(s *Snippet) error
@@ -33,9 +33,9 @@ func (r *snippetRepo) EnsureTable() error {
 	return nil
 }
 
-// List 按用户、关键字、分类、标签过滤收藏列表。
-// keyword 命中 title/description/sql_content；tag 命中 tags 字段（逗号分隔）。
-func (r *snippetRepo) List(userId, keyword, category, tag string) ([]*Snippet, error) {
+// List 按用户、关键字、分类、标签、schema 过滤收藏列表。
+// keyword 命中 title/description/sql_content；tag 命中 tags 字段（逗号分隔）；schema 精确匹配来源 schema。
+func (r *snippetRepo) List(userId, keyword, category, tag, schema string) ([]*Snippet, error) {
 	sql := bytes.Buffer{}
 	args := []any{}
 	sql.WriteString(`select id, user_id, title, description, sql_content, category, tags, db_type, conn_id, schema_name, created_at, updated_at
@@ -62,6 +62,10 @@ func (r *snippetRepo) List(userId, keyword, category, tag string) ([]*Snippet, e
 		// tags 为逗号分隔，使用 like 匹配整标签，避免子串误命中
 		sql.WriteString(" and (tags = ? or tags like ? or tags like ? or tags like ?)")
 		args = append(args, tag, tag+",%", "%,"+tag, "%,"+tag+",%")
+	}
+	if schema != "" {
+		sql.WriteString(" and schema_name = ?")
+		args = append(args, schema)
 	}
 	sql.WriteString(" order by updated_at desc, created_at desc")
 

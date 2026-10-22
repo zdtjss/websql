@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// List GET /api/snippet/list?keyword=&category=&tag=
-// 返回当前用户的收藏列表，支持按关键字、分类、标签过滤。
+// List GET /api/snippet/list?keyword=&category=&tag=&schema=
+// 返回当前用户的收藏列表，支持按关键字、分类、标签、来源 schema 过滤。
 func List(c *gin.Context) {
 	userId := appctx.Ctx.GetUserID(c)
 	if userId == "" {
@@ -19,11 +19,12 @@ func List(c *gin.Context) {
 	keyword := c.Query("keyword")
 	category := c.Query("category")
 	tag := c.Query("tag")
+	schema := c.Query("schema")
 	// category=all 视为不过滤
 	if category == "all" {
 		category = ""
 	}
-	list, err := getDefaultSnippet().List(userId, keyword, category, tag)
+	list, err := getDefaultSnippet().List(userId, keyword, category, tag, schema)
 	if err != nil {
 		response.WriteErr(c, 200, 500, "操作失败")
 		return
@@ -149,4 +150,20 @@ func Tags(c *gin.Context) {
 		return
 	}
 	response.WriteOK(c, tags)
+}
+
+// Schemas GET /api/snippet/schemas
+// 返回当前用户收藏中出现过的 schema 及各自条数，供前端 schema 过滤。
+func Schemas(c *gin.Context) {
+	userId := appctx.Ctx.GetUserID(c)
+	if userId == "" {
+		response.WriteAuthErr(c, "")
+		return
+	}
+	schemas, err := getDefaultSnippet().Schemas(userId)
+	if err != nil {
+		response.WriteErr(c, 200, 500, "操作失败")
+		return
+	}
+	response.WriteOK(c, schemas)
 }

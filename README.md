@@ -392,13 +392,13 @@ $env:CGO_ENABLED=0; $env:GOOS="windows"; $env:GOARCH="amd64"; go build -o WebSql
 桌面版基于 Wails v3，依赖 CGO，**必须在目标平台原生构建**，无法交叉编译。脚本会自动检测当前平台。
 
 ```bash
-python scripts/build_desktop.py                          # 自动检测当前平台并完整构建
+python scripts/build_desktop.py                          # 自动检测当前平台并完整构建（交互式询问是否捆绑 Python，默认否）
 python scripts/build_desktop.py --skip-frontend          # 跳过前端构建（适用于已构建过前端的场景）
-python scripts/build_desktop.py --skip-python            # 跳过 Python 运行时打包
-python scripts/build_desktop.py --rebuild-python         # 强制重新打包 Python 运行时
 python scripts/build_desktop.py --package                # 调用 wails3 build 完整构建与打包
 python scripts/build_desktop.py --check                  # 仅检查环境，不构建
 ```
+
+> 是否捆绑 Python 运行时在构建过程中交互式询问（`[y/N]`，直接回车即跳过）；跳过时 Skill 导出将使用系统 Python 或降级 Go 基础版。
 
 **产物：** `dist-pack/websql-desktop-{platform}.zip`，包内为单个可执行文件（前端资源、配置、迁移脚本均通过 `go:embed` 嵌入）以及随包分发的 `skills/` 技能目录与 `python/` 内置运行时。
 
