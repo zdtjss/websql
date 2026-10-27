@@ -7,8 +7,9 @@ import (
 	"websql/internal/dialect"
 	"websql/internal/logger"
 
-	"github.com/jmoiron/sqlx"
 	"slices"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func dereferenceValue(v any) any {
@@ -59,7 +60,8 @@ func GetResultRows(dbtype string, rows *sqlx.Rows) ([]map[string]any, error) {
 			key := columns[i]
 			colType := colTypeMap[key]
 			actualVal := dereferenceValue(values[i])
-			converted := dialect.ConvertColHandler[dbtype](&colType, &actualVal, true)
+			// 统一走 dialect 注册表：方言未注册时安全降级，不会因 nil 函数 panic
+			converted := dialect.ConvertValue(dbtype, &colType, &actualVal, true)
 			if converted != nil {
 				row[key] = *converted
 			} else {
@@ -110,7 +112,7 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows, limit int) ([]map[st
 			key := columns[i]
 			colType := colTypeMap[key]
 			actualVal := dereferenceValue(values[i])
-			converted := dialect.ConvertColHandler[dbtype](&colType, &actualVal, false)
+			converted := dialect.ConvertValue(dbtype, &colType, &actualVal, false)
 			if converted != nil {
 				row[key] = *converted
 			} else {

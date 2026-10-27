@@ -62,6 +62,9 @@ var tableMetaCache = &metaCache{
 const metaCacheTTL = 5 * time.Minute
 
 func init() {
+	// 连接配置变更后由 conn 包回调失效元数据缓存（conn → dbops 直引会形成循环依赖）
+	conn.SetMetaCacheInvalidator(InvalidateCacheByConn)
+
 	safego.GoWithName("dbops-metacache-cleanup", func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
@@ -118,6 +121,23 @@ func (c *metaCache) set(key string, columnMap map[string]string, primaryKeys []s
 		expiresAt:   time.Now().Add(metaCacheTTL),
 	}
 	c.mu.Unlock()
+}
+
+// InvalidateCacheByConn 清除指定连接的全部表元数据缓存。
+// 连接配置（地址/账号/默认 schema）变更后必须调用，
+// 否则 TTL（5 分钟）内仍会返回旧库的主键与字段注释，导致结果集可编辑性判断错误。
+func InvalidateCacheByConn(connId string) {
+	if connId == "" {
+		return
+	}
+	prefix := connId + ":"
+	tableMetaCache.mu.Lock()
+	for k := range tableMetaCache.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(tableMetaCache.entries, k)
+		}
+	}
+	tableMetaCache.mu.Unlock()
 }
 
 // ===== 业务逻辑方法 =====

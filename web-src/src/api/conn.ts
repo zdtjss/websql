@@ -395,3 +395,13 @@ export function grantDbUserPrivilege(params: DbUserPrivilegeParams): Promise<Axi
 export function revokeDbUserPrivilege(params: DbUserPrivilegeParams): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/db/admin/user/privilege/revoke', params)
 }
+
+/** 只读连接：临时开启写入窗口（仅当前进程有效） */
+export function unlockConnWrite(params: { connId: string; durationSecs: number }): Promise<AxiosResponse<ApiResponse<{ unlockRemaining: number }>>> {
+  return http.post('/conn/readonly/unlock', params)
+}
+
+/** 只读连接：查询当前是否可写与解锁剩余时间 */
+export function getConnReadOnlyState(connId: string): Promise<AxiosResponse<ApiResponse<{ readOnly: boolean; unlockRemaining: number; allowed: boolean }>>> {
+  return http.get('/conn/readonly/state', { params: { connId } })
+}

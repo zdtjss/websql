@@ -12,6 +12,11 @@ type ConnCfg struct {
 	DbSchema   *string `json:"dbSchema" db:"db_schema"`
 	DbVersion  *string `json:"dbVersion" db:"db_version"`
 	Charset    *string `json:"charset" db:"charset"`
+	// ReadOnly 只读连接：开启后写语句会被拒绝，需临时解锁才能写。
+	// 不落在 t_conn 上（避免加列迁移），存于 t_system_config（见 readonly.go）。
+	ReadOnly bool `json:"readOnly" db:"-"`
+	// SSH 跳板机配置：非空表示该连接经 SSH 隧道访问（存于 t_system_config，见 ssh_tunnel.go）。
+	SSH *SSHTunnelConfig `json:"ssh,omitempty" db:"-"`
 }
 
 type ConnCfgBase struct {

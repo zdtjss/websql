@@ -1,9 +1,11 @@
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { Ref } from 'vue'
+import type { FileAttachmentItem } from '../utils/uploadState'
+import { refsToFileChatMessages } from '../utils/attachments'
 
-/** 聊天消息角色类型 */
-export type ChatMessageRole = 'user' | 'assistant' | 'thinking' | 'tool_call'
+/** 聊天消息角色类型（file：用户上传的文件卡片，类微信独立气泡） */
+export type ChatMessageRole = 'user' | 'assistant' | 'thinking' | 'tool_call' | 'file'
 
 /** 聊天消息结构 */
 export interface ChatMessage {
@@ -11,6 +13,8 @@ export interface ChatMessage {
   content: string
   hasSql?: boolean
   collapsed?: boolean
+  /** role=file 时的文件卡片元数据 */
+  file?: FileAttachmentItem
   /** 渲染缓存：上次渲染结果 */
   _renderedHtml?: string | null
   /** 渲染缓存：上次渲染时的内容（用于检测变化） */
@@ -208,6 +212,10 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
       if (!resp.ok) throw new Error(`请求失败：${resp.status}`)
 
       ElMessage({ message: '会话已删除', type: 'success' })
+      // 删除的正是当前打开的会话：一并清空聊天区与本地文件预览，回到新会话状态
+      if (sessionId.value === id) {
+        resetCurrentSession()
+      }
       if (sessionList.value.length <= 1 && sessionCurrentPage.value > 1) {
         sessionCurrentPage.value -= 1
       }
@@ -253,6 +261,11 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
         for (const msg of sessionData.messages) {
           const contentStr = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '')
           const isSql = /^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|SHOW|DESCRIBE|EXPLAIN|WITH)\s/i.test(contentStr.trim())
+          // 附件引用还原为独立文件卡片（类微信），位于对应消息之前；过期态由卡片按 expireAt 判定
+          const fileCards = refsToFileChatMessages(msg.attachments)
+          for (const card of fileCards) {
+            chatHistory.value.push(card)
+          }
           chatHistory.value.push({
             role: msg.role,
             content: contentStr,

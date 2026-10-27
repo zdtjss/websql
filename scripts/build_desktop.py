@@ -24,7 +24,9 @@
   dist-pack/websql-desktop-{platform}.zip  — 可独立发行、运行的 zip 包
   包内容: WebSQL 可执行文件 + skills/（skill 脚本与模板）+ 可选 python/（捆绑 Python 运行时）
   捆绑 Python 使桌面版 Skill 导出（Word/PPT 模板驱动渲染）开箱即用；
-  即使无 Python，导出工具也会自动降级 Go 基础版，保证导出不失败。
+  同时提供 docx/pdf 上传文件的内容解析（python-docx / pdfplumber）；
+  即使无 Python，导出工具会自动降级 Go 基础版、docx 解析回退内置实现，
+  pdf 解析则在前端明确提示当前环境不支持，不影响其他功能。
 
 注意:
   桌面版使用 CGO（Wails 依赖），必须在目标平台上构建，无法交叉编译。
@@ -70,13 +72,16 @@ USER_SITE_EXCLUDE = {
     "adodbapi", "isapi", "pythonwin", "servicemanager", "win32ctypes",
 }
 
-# 导出渲染所需的 Python 依赖（捆绑后验证用）
-BUNDLE_REQUIRED_MODULES = ["pptx", "docx", "docxtpl", "matplotlib", "numpy", "PIL"]
+# 导出渲染与文件解析所需的 Python 依赖（捆绑后验证用）
+# 说明：pdfplumber 用于上传 PDF 的文本抽取（pdfminer.six + Pillow 为传递依赖），
+# 与 python-docx 共同支撑 AI 对话中的文档解析能力（见 internal/ai/agent/fileparse）。
+BUNDLE_REQUIRED_MODULES = ["pptx", "docx", "docxtpl", "matplotlib", "numpy", "PIL", "pdfplumber"]
 
 # pip 安装的依赖清单（精确版本，与 skills/*/requirements.txt 保持一致）
 BUNDLE_PIP_DEPS = [
     "python-pptx==1.0.2", "python-docx==1.2.0", "docxtpl==0.20.2",
     "matplotlib==3.11.2", "numpy==2.5.2", "Pillow==12.3.0",
+    "pdfplumber==0.11.7",
 ]
 
 # 平台配置：key 用于 --platform 参数和 zip 命名
@@ -257,7 +262,9 @@ def build_go(platform_key):
     print(f"> {cmd}")
     result = subprocess.run(cmd, shell=True, cwd=PROJECT_ROOT, env=env)
     if result.returncode != 0:
-        print(f"[FAIL] 构建 {platform_key} 失败 (Wails 需要 CGO，必须在目标平台运行)")
+        print(f"[FAIL] 构建 {platform_key} 失败 (exit={result.returncode})，请查看上方 go build 错误输出")
+        print("  提示: Wails 依赖 CGO，需在目标平台运行且 gcc 在 PATH 中；")
+        print("        Windows 可检查 D:\\msys64\\mingw64\\bin，go.sum 缺失可用 go mod download 补齐")
         sys.exit(1)
     print(f"[Build] 二进制产物: {output} (version={version})")
     return output

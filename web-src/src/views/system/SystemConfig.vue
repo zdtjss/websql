@@ -50,6 +50,16 @@
             <div class="model-item-info">
               <span class="model-model">{{ model.model }}</span>
               <span class="model-provider">{{ model.provider }}</span>
+              <span class="model-caps">
+                <el-tag v-for="cap in (model.capabilities || [])" :key="cap" size="small"
+                  :type="cap === 'video' ? 'warning' : 'info'">
+                  {{ capabilityLabel(cap) }}
+                </el-tag>
+                <el-tooltip v-if="!model.capabilities" placement="top"
+                  content="未显式配置能力，系统按模型名自动推断（可在编辑中固定配置）">
+                  <el-tag size="small" type="info" effect="plain">能力自动推断</el-tag>
+                </el-tooltip>
+              </span>
             </div>
             <div class="model-item-actions">
               <el-tag v-if="systemConfig.selectedModelId === model.id" type="success" size="small">当前使用</el-tag>
@@ -207,6 +217,38 @@
           <el-switch v-model="modelForm.enableThinking" />
           <span style="margin-left: 10px; font-size: 12px; color: var(--text-tertiary);">启用后模型会输出思考过程</span>
         </el-form-item>
+        <el-form-item label="模型能力">
+          <div class="capability-group">
+            <el-checkbox
+              v-for="opt in capabilityOptions"
+              :key="opt.value"
+              :model-value="capabilityChecked(opt.value)"
+              @update:model-value="(v) => toggleCapability(opt.value, v)"
+            >
+              {{ opt.label }}
+            </el-checkbox>
+            <div class="capability-hint">
+              <template v-if="modelForm.capabilities === undefined">
+                未配置：系统将按模型名自动推断（如 gpt-4o / qwen-vl 判定为支持图片）
+              </template>
+              <template v-else>
+                已显式配置：仅勾选的能力会被放行，未勾选将拒绝对应用户上传
+              </template>
+              <el-button
+                v-if="modelForm.capabilities !== undefined"
+                link
+                type="primary"
+                size="small"
+                @click="resetCapabilitiesToAuto"
+              >
+                恢复自动推断
+              </el-button>
+            </div>
+            <div class="capability-hint">
+              作用：AI 对话中上传图片/视频时的前置校验依据；不支持的能力会在选择文件阶段直接提示并拦截。
+            </div>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="modelDialogVisible = false">取消</el-button>
@@ -302,8 +344,42 @@ const modelForm = ref({
   frequencyPenalty: 0.5,
   presencePenalty: 0.3,
   maxContextTokens: 0,
-  enableThinking: false
+  enableThinking: false,
+  // capabilities：undefined = 未配置（后端按模型名自动推断）；数组 = 显式配置
+  capabilities: undefined
 })
+
+// ── 模型能力（vision / video）────────────────────────────────
+//
+// 与后端 internal/app/system/ai_capability.go 的语义保持一致：
+//   - undefined：未配置，由后端按模型名启发式推断（存量模型默认走这条路）；
+//   - 数组：显式配置，空数组 = 明确声明仅文本能力（不再推断）。
+const capabilityOptions = [
+  { value: 'vision', label: '图片理解（vision）' },
+  { value: 'video', label: '视频理解（video）' }
+]
+
+const capabilityLabel = (cap) => (cap === 'video' ? '视频' : cap === 'vision' ? '图片' : cap)
+
+const capabilityChecked = (value) => {
+  const caps = modelForm.value.capabilities
+  return Array.isArray(caps) ? caps.includes(value) : false
+}
+
+const toggleCapability = (value, checked) => {
+  const current = Array.isArray(modelForm.value.capabilities) ? [...modelForm.value.capabilities] : []
+  let next = checked ? Array.from(new Set([...current, value])) : current.filter((c) => c !== value)
+  // 与后端 NormalizeCapabilities 对齐：视频能力隐含图片能力；
+  // 取消图片能力时同步取消视频，避免保存出自相矛盾的配置。
+  if (checked && value === 'video' && !next.includes('vision')) next.push('vision')
+  if (!checked && value === 'vision') next = next.filter((c) => c !== 'video')
+  modelForm.value.capabilities = next
+}
+
+// 恢复「未配置」状态：保存时不下发 capabilities 字段，交回后端自动推断
+const resetCapabilitiesToAuto = () => {
+  modelForm.value.capabilities = undefined
+}
 
 watch(() => modelForm.value.model, (newModel) => {
   if (newModel && modelForm.value.maxContextTokens === 0) {
@@ -381,7 +457,8 @@ const showAddModelDialog = () => {
     frequencyPenalty: 0.5,
     presencePenalty: 0.3,
     maxContextTokens: 0,
-    enableThinking: false
+    enableThinking: false,
+    capabilities: undefined
   }
   modelDialogVisible.value = true
 }
@@ -398,7 +475,9 @@ const showEditModelDialog = (model) => {
     frequencyPenalty: model.frequencyPenalty ?? 0.5,
     presencePenalty: model.presencePenalty ?? 0.3,
     maxContextTokens: model.maxContextTokens || 0,
-    enableThinking: model.enableThinking || false
+    enableThinking: model.enableThinking || false,
+    // 保留未配置状态（null/undefined）以免保存无关字段时把存量模型变成「显式仅文本」
+    capabilities: Array.isArray(model.capabilities) ? [...model.capabilities] : undefined
   }
   modelDialogVisible.value = true
 }
@@ -628,6 +707,26 @@ onMounted(() => {
   background: var(--bg-active);
   padding: 2px 8px;
   border-radius: 4px;
+}
+
+/* 模型能力徽标（列表） */
+.model-caps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 模型能力勾选（编辑弹窗） */
+.capability-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capability-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
 }
 
 .model-item-actions {

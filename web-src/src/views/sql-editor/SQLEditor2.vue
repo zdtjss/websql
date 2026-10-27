@@ -23,6 +23,7 @@
             <el-splitter-panel size="55%">
                 <div id="sqlArea" ref="sqlAreaRef" class="sql-area">
                     <div ref="codemirror" class="codemirror" :class="{ 'table-link-cursor': tableNameUnderCursor }"
+                        @contextmenu.prevent="openEditorMenu"
                         @keyup="onKeyup" @keydown="onEditorKeydown" @mousemove="onEditorMousemove"
                         @click="onEditorClick"></div>
                 </div>
@@ -44,10 +45,13 @@
                     :max-line="maxLine"
                     :current-select-table="currentSelectTable"
                     :effective-db-type="effectiveDbType"
+                    :has-more="hasMoreResults"
+                    :loading-more="loadingMore"
                     @update:active-result-tab="activeResultTab = $event"
                     @batch-tab-change="onBatchTabChange"
                     @open-data-details="openDataDetails"
                     @exec-refresh="exec(true)"
+                    @load-more="loadMoreResults"
                 />
             </el-splitter-panel>
         </el-splitter>
@@ -107,6 +111,17 @@
 
     <SQLOptimizePanel v-model:visible="optimizePanelVisible" :conn-id="connId" :schema="schema" :sql="optimizeSql"
         :db-type="dbType" />
+
+    <!-- 编辑器右键菜单（计划 3.1：复制 / 格式化 / 执行选中 / EXPLAIN） -->
+    <div v-if="editorMenu.visible" class="editor-ctx-mask" @click="closeEditorMenu"
+        @contextmenu.prevent="closeEditorMenu"></div>
+    <div v-if="editorMenu.visible" class="editor-ctx-menu"
+        :style="{ left: editorMenu.x + 'px', top: editorMenu.y + 'px' }">
+        <div class="editor-ctx-item" @click="menuCopy">复制选中</div>
+        <div class="editor-ctx-item" @click="menuFormat">格式化</div>
+        <div class="editor-ctx-item" @click="menuExec">执行选中 / 当前语句</div>
+        <div class="editor-ctx-item" @click="menuExplain">执行 EXPLAIN</div>
+    </div>
 </template>
 
 <script lang="ts" setup>
@@ -117,6 +132,7 @@ import { standardKeymap, insertTab, history, redo, undo } from '@codemirror/comm
 import { sql } from '@codemirror/lang-sql'
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { autocompletion } from '@codemirror/autocomplete'
+import { search, searchKeymap } from '@codemirror/search'
 import { tags } from '@lezer/highlight'
 import { ref, shallowRef, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import { useDbSchemaStore } from '@/stores/dbSchema'
@@ -200,7 +216,7 @@ const emit = defineEmits(['openTableManager', 'openDataBrowser', 'viewTableInfo'
 const editorView = shallowRef<EditorView>()
 const sqlAreaRef: any = ref(null)
 const codemirror = ref()
-const maxLine = ref('15')
+const maxLine = ref('200')
 const canModify = ref(false)
 const roleForbidModify = ref(false)
 const refreshingSchema = ref(false)
@@ -250,6 +266,7 @@ const getEditorDoc = (): string => {
 const {
     result, rawColumns, tableKeys, canEdit, sqlError, executionTime, exectingSql,
     isBatchMode, activeResultTab, currentSelectTable, batchDisplayTabs, canInlineEdit,
+    hasMoreResults, loadingMore, loadMoreResults,
     exec, execSmart, execFile, onBatchTabChange, handleExportResult,
 } = useSqlExecution({
     connId, schema, maxLine, getEditorView, canModify, effectiveDbType,
@@ -262,6 +279,68 @@ const { optimizePanelVisible, optimizeSql, formatSql, toggleOptimizePanel } = us
 const { backupData, backupDataDrawerShow, showBackupData, exportBackupData } = useSqlHistory({
     connId, schema,
 })
+
+// ── 编辑器右键菜单（计划 3.1） ──
+// 菜单项：复制选中 / 格式化 / 执行选中或当前语句 / 执行 EXPLAIN。
+// 不依赖 CodeMirror 扩展，避免与自定义 keymap 和主题耦合。
+const editorMenu = ref({ visible: false, x: 0, y: 0 })
+
+function openEditorMenu(e: MouseEvent) {
+    editorMenu.value = { visible: true, x: e.clientX, y: e.clientY }
+}
+
+function closeEditorMenu() {
+    editorMenu.value.visible = false
+}
+
+/** 取编辑器当前选中文本（无选区时返回空串） */
+function editorSelection(): string {
+    const view = editorView.value
+    if (!view) return ''
+    const { from, to } = view.state.selection.main
+    if (from === to) return ''
+    return view.state.sliceDoc(from, to)
+}
+
+function menuCopy() {
+    closeEditorMenu()
+    const text = editorSelection() || getEditorDoc()
+    if (!text) {
+        ElMessage({ message: '编辑器没有可复制的内容', type: 'warning' })
+        return
+    }
+    navigator.clipboard
+        .writeText(text)
+        .then(() => ElMessage({ message: '已复制', type: 'success' }))
+        .catch(() => ElMessage({ message: '复制失败，请检查浏览器剪贴板权限', type: 'error' }))
+}
+
+function menuFormat() {
+    closeEditorMenu()
+    formatSql()
+}
+
+function menuExec() {
+    closeEditorMenu()
+    execSmart()
+}
+
+function menuExplain() {
+    closeEditorMenu()
+    const text = (editorSelection() || getEditorDoc()).trim()
+    if (!text) {
+        ElMessage({ message: '请先输入或选中 SQL', type: 'warning' })
+        return
+    }
+    const db = String(effectiveDbType.value || '').toLowerCase()
+    if (db === 'oracle') {
+        // Oracle 的 EXPLAIN PLAN FOR 会写入 PLAN_TABLE，不适合一键执行
+        ElMessage({ message: 'Oracle 请用工具栏「优化」面板查看执行计划', type: 'info' })
+        return
+    }
+    const stmt = text.replace(/[;\s]+$/, '')
+    exec(false, 'EXPLAIN ' + stmt)
+}
 
 // ── 编辑器实例管理 ──
 function createEditor(editorContainer: any, doc: any) {
@@ -291,6 +370,9 @@ function createEditor(editorContainer: any, doc: any) {
         lineNumbers(),
         highlightActiveLineGutter(),
         autocompletion(),
+        // 查找/替换（Ctrl+F）；PageFindBar 在编辑器内不再拦截 Ctrl+F
+        search({ top: true }),
+        keymap.of([...searchKeymap]),
         EditorView.editable.of(true),
         themeCompartment.of(getEditorTheme()),
         highlightCompartment.of(syntaxHighlighting(isDark ? oneDarkHighlightStyle : lightHighlightStyle, { fallback: true })),
@@ -586,6 +668,35 @@ watch(canModify, (can) => {
 
 .codemirror {
     height: 100%;
+}
+
+/* 编辑器右键菜单 */
+.editor-ctx-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+}
+
+.editor-ctx-menu {
+    position: fixed;
+    z-index: 3001;
+    min-width: 190px;
+    padding: 4px 0;
+    background: var(--bg-secondary, #fff);
+    border: 1px solid var(--border-primary, #dcdfe6);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: 13px;
+}
+
+.editor-ctx-item {
+    padding: 6px 14px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.editor-ctx-item:hover {
+    background: var(--bg-toolbar, #f5f7fa);
 }
 
 .table-link-cursor .cm-editor {

@@ -1,184 +1,51 @@
 package agent
 
 import (
-	"encoding/csv"
-	"errors"
-	"fmt"
-	"io"
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode/utf8"
 
+	"websql/internal/ai/agent/fileparse"
+	"websql/internal/ai/agent/uploadstore"
 	admin "websql/internal/app/admin"
-	"websql/internal/pkg/idgen"
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xuri/excelize/v2"
 )
 
-const uploadDir = "./data/uploads"
-const uploadMaxAge = 30 * time.Minute
-const uploadCleanSec = 5 * time.Minute
-const maxUploadSize = 20 * 1024 * 1024 // Excel/CSV 最大 20MB；Markdown 不限
-
-// uploadFileType 上传文件类型
-type uploadFileType string
-
-const (
-	fileTypeExcel    uploadFileType = "excel"
-	fileTypeCSV      uploadFileType = "csv"
-	fileTypeMarkdown uploadFileType = "markdown"
-)
-
-func classifyUploadExt(ext string) (uploadFileType, bool) {
-	switch ext {
-	case ".xlsx", ".xls":
-		return fileTypeExcel, true
-	case ".csv":
-		return fileTypeCSV, true
-	case ".md", ".markdown":
-		return fileTypeMarkdown, true
-	}
-	return "", false
-}
-
-type uploadMeta struct {
-	ID        string
-	UserID    string         // 上传者用户 ID（归属校验，防止跨用户读取）
-	FileName  string
-	DiskPath  string
-	Type      uploadFileType // excel | csv | markdown
-	Columns   []string       // 表格类（excel/csv）
-	TotalRows int            // 表格类（excel/csv）
-	CharCount int            // markdown 字符数
-}
-
-var uploadCache = NewTTLCache[*uploadMeta](uploadMaxAge, uploadCleanSec, func(key string, meta *uploadMeta) {
-	if meta != nil {
-		os.Remove(meta.DiskPath)
-		log.Printf("[UploadStore] 清理过期文件 - id=%s, name=%s\n", key, meta.FileName)
-	}
-})
-
-func init() {
-	os.MkdirAll(uploadDir, 0o755)
-}
-
-type UploadedFile struct {
-	Type    string     // "table"（excel/csv）| "text"（markdown）
-	Columns []string   // table
-	Data    [][]string // table
-	Text    string     // text（markdown 全文）
-}
-
-// GetUploadedFile 读取已上传文件内容，仅允许文件所有者访问。
+// legacy 上传接口（deprecated）。
 //
-// 归属校验：fileId 为加密安全随机 token（不可枚举），且必须与上传者一致；
-// 两者缺一都会让任一登录用户通过枚举 fileId 读取他人上传的数据文件（IDOR）。
-// 不存在与无权访问返回同一提示，避免通过报错探测 fileId 是否存在。
-func GetUploadedFile(id, userID string) (*UploadedFile, error) {
-	meta, ok := uploadCache.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("上传文件不存在或已过期（id=%s），请重新上传", id)
-	}
-	if meta.UserID != "" && meta.UserID != userID {
-		log.Printf("[Upload] 拒绝跨用户读取上传文件 - id=%s, owner=%s, requester=%s\n", id, meta.UserID, userID)
-		return nil, fmt.Errorf("上传文件不存在或已过期，请重新上传")
-	}
+// 保留原因：桌面端/未刷新的前端仍调用 /ai/agent/uploadExcel，且其响应契约
+// 依赖「上传即解析」产出的列名/行数/预览。新前端请使用 /ai/agent/uploadFile
+// （仅存储不解析，解析时机推迟到 read_file_data 按需触发）。
+//
+// 与既有行为保持一致的要点：
+//   - 白名单固定为 .xlsx/.xls/.csv/.md/.markdown（不随新链路扩展）；
+//   - 非 Markdown 限 20MB，Markdown 不限；
+//   - 表格类上传即校验「至少表头 + 一行数据」，失败即拒绝且不留盘。
 
-	switch meta.Type {
-	case fileTypeMarkdown:
-		raw, err := os.ReadFile(meta.DiskPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
-		}
-		return &UploadedFile{Type: "text", Text: string(raw)}, nil
-	case fileTypeCSV:
-		f, err := os.Open(meta.DiskPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
-		}
-		defer f.Close()
-		reader := csv.NewReader(f)
-		reader.LazyQuotes = true
-		reader.FieldsPerRecord = -1 // 允许行列数不一致
-		allRows, err := reader.ReadAll()
-		if err != nil {
-			return nil, fmt.Errorf("解析 CSV 失败：%w", err)
-		}
-		return buildTabularUploaded(allRows)
-	default: // excel
-		f, err := excelize.OpenFile(meta.DiskPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取暂存文件失败：%w", err)
-		}
-		defer f.Close()
-		sheetName := f.GetSheetName(0)
-		allRows, err := f.GetRows(sheetName)
-		if err != nil {
-			return nil, fmt.Errorf("解析工作表失败：%w", err)
-		}
-		return buildTabularUploaded(allRows)
+// legacyUploadMaxSize 旧接口的体积上限（Excel/CSV）
+const legacyUploadMaxSize = 20 * 1024 * 1024
+
+// legacyUploadFileType 旧接口的 fileType 命名（响应兼容）
+func legacyUploadFileType(ext string) (string, bool) {
+	switch fileparse.NormalizeExt(ext) {
+	case ".xlsx", ".xls":
+		return "excel", true
+	case ".csv":
+		return "csv", true
+	case ".md", ".markdown":
+		return "markdown", true
+	default:
+		return "", false
 	}
 }
 
-// buildTabularUploaded 将二维行数据（首行表头）转为 UploadedFile，跳过空行并按列数补齐。
-func buildTabularUploaded(allRows [][]string) (*UploadedFile, error) {
-	if len(allRows) < 2 {
-		return nil, errors.New("文件数据不足")
-	}
-	columns := allRows[0]
-	var data [][]string
-	for _, row := range allRows[1:] {
-		hasValue := false
-		for _, cell := range row {
-			if strings.TrimSpace(cell) != "" {
-				hasValue = true
-				break
-			}
-		}
-		if !hasValue {
-			continue
-		}
-		padded := make([]string, len(columns))
-		copy(padded, row)
-		data = append(data, padded)
-	}
-	return &UploadedFile{Type: "table", Columns: columns, Data: data}, nil
-}
-
-func RemoveUploadedFile(id string) {
-	uploadCache.Delete(id)
-}
-
-// IsUploadOwner 判断上传文件是否属于指定用户（供会话请求侧做归属校验）。
-// 文件不存在时返回 false（过期文件不再向提示词暴露元信息）。
-func IsUploadOwner(id, userID string) bool {
-	if id == "" {
-		return false
-	}
-	meta, ok := uploadCache.Get(id)
-	if !ok {
-		return false
-	}
-	return meta.UserID == "" || meta.UserID == userID
-}
-
-// uploaderID 从请求上下文取上传者用户 ID（AuthMiddleware 已注入 currentUser）。
-func uploaderID(c *gin.Context) string {
-	if v, ok := c.Get("currentUser"); ok {
-		if u, ok := v.(*admin.User); ok && u != nil {
-			return u.Id
-		}
-	}
-	return ""
-}
-
+// HandleUploadExcel POST /ai/agent/uploadExcel（deprecated，保持旧契约）
 func HandleUploadExcel(c *gin.Context) {
 	ownerID := uploaderID(c)
 	fileHeader, err := c.FormFile("file")
@@ -188,15 +55,15 @@ func HandleUploadExcel(c *gin.Context) {
 		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-	ft, ok := classifyUploadExt(ext)
+	ext := fileparse.NormalizeExt(filepath.Ext(fileHeader.Filename))
+	fileType, ok := legacyUploadFileType(ext)
 	if !ok {
 		response.WriteErr(c, http.StatusBadRequest, 400, "仅支持 .xlsx/.xls/.csv/.md/.markdown 格式的文件")
 		return
 	}
 
-	// Markdown 不做数据量限制；Excel/CSV 限制 20MB
-	if ft != fileTypeMarkdown && fileHeader.Size > maxUploadSize {
+	isMarkdown := fileType == "markdown"
+	if !isMarkdown && fileHeader.Size > legacyUploadMaxSize {
 		response.WriteErr(c, http.StatusBadRequest, 400, "文件大小不能超过 20MB")
 		return
 	}
@@ -209,159 +76,81 @@ func HandleUploadExcel(c *gin.Context) {
 	}
 	defer src.Close()
 
-	// fileId 必须使用加密安全随机 token：雪花 ID 单调可枚举，
-	// 会让任一登录用户通过递增猜测读取他人上传的文件
-	fileID := idgen.SecureRandomToken()
-	diskPath := filepath.Join(uploadDir, fileID+ext)
-
-	dst, err := os.Create(diskPath)
+	limit := int64(0)
+	if !isMarkdown {
+		limit = legacyUploadMaxSize
+	}
+	fileID, diskPath, size, err := saveUploadedTemp(src, ext, limit)
 	if err != nil {
-		log.Printf("[Upload] 保存文件失败 - err=%v\n", err)
-		response.WriteErr(c, http.StatusInternalServerError, 500, "保存文件失败，请重试")
-		return
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		os.Remove(diskPath)
-		log.Printf("[Upload] 写入文件失败 - err=%v\n", err)
-		response.WriteErr(c, http.StatusInternalServerError, 500, "写入文件失败，请重试")
-		return
-	}
-	dst.Close()
-
-	// Markdown：读取全文，不做数据量限制
-	if ft == fileTypeMarkdown {
-		raw, err := os.ReadFile(diskPath)
-		if err != nil {
-			os.Remove(diskPath)
-			log.Printf("[Upload] 读取 Markdown 失败 - err=%v\n", err)
-			response.WriteErr(c, http.StatusBadRequest, 400, "读取文件失败，请检查文件内容")
+		if err == errFileTooLarge {
+			response.WriteErr(c, http.StatusBadRequest, 400, "文件大小不能超过 20MB")
 			return
 		}
-		text := string(raw)
-		charCount := utf8.RuneCountInString(text)
-		uploadCache.Set(fileID, &uploadMeta{
-			ID:        fileID,
-			UserID:    ownerID,
-			FileName:  fileHeader.Filename,
-			DiskPath:  diskPath,
-			Type:      ft,
-			CharCount: charCount,
-		})
-		log.Printf("[Upload] Markdown 已暂存 - id=%s, name=%s, chars=%d\n", fileID, fileHeader.Filename, charCount)
+		log.Printf("[Upload] 保存文件失败 - name=%s, err=%v\n", fileHeader.Filename, err)
+		response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+
+	// legacy 行为：上传即解析，用于返回列名/行数/字符数/预览
+	res, parseErr := fileparse.Parse(context.Background(), fileparse.Source{
+		Path:     diskPath,
+		FileName: fileHeader.Filename,
+		Ext:      ext,
+		Size:     size,
+	})
+	if parseErr != nil {
+		os.Remove(diskPath)
+		log.Printf("[Upload] legacy 解析失败 - id=%s, name=%s, err=%v\n", fileID, fileHeader.Filename, parseErr)
+		response.WriteErr(c, http.StatusBadRequest, 400, parseErr.Error())
+		return
+	}
+
+	meta := &uploadstore.FileMeta{
+		ID:       fileID,
+		UserID:   ownerID,
+		FileName: fileHeader.Filename,
+		DiskPath: diskPath,
+		Ext:      ext,
+		Size:     size,
+		MIME:     mimeOfExt(ext),
+		Kind:     string(res.Kind),
+		FileType: fileType,
+	}
+	globalUploadStore.Save(meta)
+
+	if res.Kind == fileparse.KindText {
+		log.Printf("[Upload] Markdown 已暂存 - id=%s, name=%s, chars=%d\n", fileID, fileHeader.Filename, res.TotalChars)
 		response.WriteOK(c, gin.H{
 			"fileId":      fileID,
 			"fileName":    fileHeader.Filename,
-			"fileType":    string(ft),
-			"charCount":   charCount,
-			"textPreview": markdownPreview(text),
+			"fileType":    fileType,
+			"charCount":   res.TotalChars,
+			"textPreview": markdownPreview(res.Text),
 		})
 		return
 	}
 
-	// 表格类：Excel / CSV
-	allRows, err := readTabularRows(diskPath, ft)
-	if err != nil {
-		os.Remove(diskPath)
-		log.Printf("[Upload] 解析表格失败 - type=%s, err=%v\n", ft, err)
-		response.WriteErr(c, http.StatusBadRequest, 400, err.Error())
-		return
+	preview := res.Rows
+	if len(preview) > 10 {
+		preview = preview[:10]
 	}
-	if len(allRows) < 2 {
-		os.Remove(diskPath)
-		response.WriteErr(c, http.StatusBadRequest, 400, "文件至少需要包含表头行和一行数据")
-		return
-	}
-
-	columns := allRows[0]
-	var preview [][]string
-	totalRows := 0
-	for _, row := range allRows[1:] {
-		hasValue := false
-		for _, cell := range row {
-			if strings.TrimSpace(cell) != "" {
-				hasValue = true
-				break
-			}
-		}
-		if !hasValue {
-			continue
-		}
-		totalRows++
-		if len(preview) < 10 {
-			padded := make([]string, len(columns))
-			copy(padded, row)
-			preview = append(preview, padded)
-		}
-	}
-
-	uploadCache.Set(fileID, &uploadMeta{
-		ID:        fileID,
-		UserID:    ownerID,
-		FileName:  fileHeader.Filename,
-		DiskPath:  diskPath,
-		Type:      ft,
-		Columns:   columns,
-		TotalRows: totalRows,
-	})
-
 	log.Printf("[Upload] 表格文件已暂存 - id=%s, name=%s, type=%s, columns=%v, rows=%d\n",
-		fileID, fileHeader.Filename, ft, columns, totalRows)
-
+		fileID, fileHeader.Filename, fileType, res.Columns, res.TotalRows)
 	response.WriteOK(c, gin.H{
 		"fileId":    fileID,
 		"fileName":  fileHeader.Filename,
-		"fileType":  string(ft),
-		"columns":   columns,
-		"totalRows": totalRows,
+		"fileType":  fileType,
+		"columns":   res.Columns,
+		"totalRows": res.TotalRows,
 		"preview":   preview,
 	})
 }
 
-// readTabularRows 读取表格文件（excel/csv）的全部行。
-func readTabularRows(diskPath string, ft uploadFileType) ([][]string, error) {
-	if ft == fileTypeCSV {
-		f, err := os.Open(diskPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取文件失败，请重试")
-		}
-		defer f.Close()
-		reader := csv.NewReader(f)
-		reader.LazyQuotes = true
-		reader.FieldsPerRecord = -1 // 允许行列数不一致
-		rows, err := reader.ReadAll()
-		if err != nil {
-			return nil, fmt.Errorf("解析 CSV 失败，请检查文件格式")
-		}
-		return rows, nil
-	}
-	// excel
-	xlsx, err := excelize.OpenFile(diskPath)
-	if err != nil {
-		return nil, fmt.Errorf("读取 Excel 文件失败，请检查文件格式")
-	}
-	defer xlsx.Close()
-	sheetName := xlsx.GetSheetName(0)
-	rows, err := xlsx.GetRows(sheetName)
-	if err != nil {
-		return nil, fmt.Errorf("读取工作表失败，请检查文件内容")
-	}
-	return rows, nil
-}
-
-// markdownPreview 截取前 30 行（且不超过 2000 字符）作为预览文本。
-func markdownPreview(text string) string {
-	lines := strings.Split(text, "\n")
-	if len(lines) > 30 {
-		lines = lines[:30]
-	}
-	preview := strings.Join(lines, "\n")
-	if utf8.RuneCountInString(preview) > 2000 {
-		preview = string([]rune(preview)[:2000]) + "…"
-	}
-	return preview
-}
-
+// HandlePreMatchColumns POST /ai/agent/preMatchColumns
+//
+// 按上传文件的列名与目标表列做预匹配。
+// 说明：解析改为按需触发（GetUploadedFile），因此这里也会执行一次归属校验——
+// 旧实现只按 fileId 取缓存、未校验归属，属于 IDOR 面，本次一并收紧。
 func HandlePreMatchColumns(c *gin.Context) {
 	var req struct {
 		FileID    string `json:"fileId"`
@@ -377,19 +166,34 @@ func HandlePreMatchColumns(c *gin.Context) {
 		return
 	}
 
-	meta, ok := uploadCache.Get(req.FileID)
-	if !ok {
+	// 身份解析：文件归属校验优先使用请求上下文中的当前用户
+	// （与上传/删除/内容接口的 uploaderID 保持一致，避免本地模式下
+	// 上传者为 local、校验方解析为 "" 而误判为非本人文件）；
+	// 取不到时回退到 Authorization 头解析。连接访问控制沿用既有身份来源。
+	authUserID := ""
+	if authorization := c.GetHeader("Authorization"); authorization != "" {
+		if user := admin.GetUser(authorization); user != nil {
+			authUserID = user.Id
+		}
+	}
+	fileOwner := uploaderID(c)
+	if fileOwner == "" {
+		fileOwner = authUserID
+	}
+
+	upload, err := GetUploadedFile(c.Request.Context(), req.FileID, fileOwner)
+	if err != nil {
+		log.Printf("[Upload] 列预匹配读取文件失败 - id=%s, user=%s, err=%v\n", req.FileID, fileOwner, err)
 		response.WriteErr(c, http.StatusBadRequest, 400, "上传文件不存在或已过期，请重新上传")
 		return
 	}
-
-	var preMatchUserId string
-	if authorization := c.GetHeader("Authorization"); authorization != "" {
-		if user := admin.GetUser(authorization); user != nil {
-			preMatchUserId = user.Id
-		}
+	if !upload.IsTabular() {
+		response.WriteErr(c, http.StatusBadRequest, 400, "该文件不是表格数据，无法进行列匹配")
+		return
 	}
-	conn, dbType := GetConn(req.ConnID, preMatchUserId)
+	columns := upload.Columns
+
+	conn, dbType := GetConn(req.ConnID, authUserID)
 	if conn == nil {
 		response.WriteErr(c, http.StatusBadRequest, 400, "数据库连接不存在")
 		return
@@ -403,7 +207,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 		return
 	}
 
-	mapping, _ := buildFinalMapping(meta.Columns, tableColumns, nil)
+	mapping, _ := buildFinalMapping(columns, tableColumns, nil)
 
 	type matchItem struct {
 		ExcelColumn string `json:"excelColumn"`
@@ -411,7 +215,7 @@ func HandlePreMatchColumns(c *gin.Context) {
 		Matched     bool   `json:"matched"`
 	}
 	var matches []matchItem
-	for i, excelCol := range meta.Columns {
+	for i, excelCol := range columns {
 		if dbCol, ok := mapping[i]; ok {
 			matches = append(matches, matchItem{ExcelColumn: excelCol, DBColumn: dbCol, Matched: true})
 		} else {
@@ -422,8 +226,21 @@ func HandlePreMatchColumns(c *gin.Context) {
 	response.WriteOK(c, gin.H{
 		"matches":      matches,
 		"matchedCount": len(mapping),
-		"totalExcel":   len(meta.Columns),
+		"totalExcel":   len(columns),
 		"totalDB":      len(tableColumns),
 		"tableColumns": tableColumns,
 	})
+}
+
+// markdownPreview 截取前 30 行（且不超过 2000 字符）作为预览文本。
+func markdownPreview(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > 30 {
+		lines = lines[:30]
+	}
+	preview := strings.Join(lines, "\n")
+	if utf8.RuneCountInString(preview) > 2000 {
+		preview = string([]rune(preview)[:2000]) + "…"
+	}
+	return preview
 }

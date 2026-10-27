@@ -3,17 +3,14 @@ import { ElMessage } from 'element-plus'
 import type { Ref } from 'vue'
 import { sanitizeError } from '@/utils/errorHandler'
 import type { ChatMessage } from './useChatHistory'
-
-/** 上传的 Excel 文件元信息 */
-export interface UploadedExcel {
-  fileId: string
-  name: string
-  fileType: string
-  columns: string[]
-  rows: number
-  charCount: number
-  [key: string]: unknown
-}
+import { isExpired, type FileAttachmentItem } from '../utils/uploadState'
+import {
+  collectRetryAttachments,
+  collectSendAttachments,
+  toFileChatMessages,
+  toRequestAttachments,
+  type RequestAttachment,
+} from '../utils/attachments'
 
 /** streamChatResponse 的额外选项 */
 export interface StreamChatOptions {
@@ -39,8 +36,10 @@ export interface UseChatStreamDeps {
   advancedExport: Ref<boolean>
   /** 输入框内容（发送后清空） */
   question: Ref<string>
-  /** 已上传的 Excel 文件（发送成功后清空） */
-  uploadedExcel: Ref<UploadedExcel | null>
+  /** 待发送文件队列（发送成功后由 markAttachmentsSent 清理） */
+  uploads: Ref<FileAttachmentItem[]>
+  /** 标记附件已随消息发送（从待发送队列移除） */
+  markAttachmentsSent: (items: FileAttachmentItem[]) => void
   /** 全局 loading（与 useSqlConfirm 共享，由 ChatView 创建） */
   loading: Ref<boolean>
   /** 全局 AbortController（与 useSqlConfirm 共享，由 ChatView 创建） */
@@ -96,7 +95,7 @@ export interface UseChatStreamDeps {
 export function useChatStream(deps: UseChatStreamDeps) {
   const {
     chatHistory, showAllHistory, sessionId, selectedSchemas, selectedTables,
-    selectedModel, question, uploadedExcel, advancedExport,
+    selectedModel, question, uploads, markAttachmentsSent, advancedExport,
     loading, abortController, streamingExecContent,
     buildRequestSchemas, getPrimaryConnId, scrollToBottom, handleSessionExpired,
     renderMarkdown, doRenderMermaidBlocks, countClosedMermaidBlocks,
@@ -252,12 +251,24 @@ export function useChatStream(deps: UseChatStreamDeps) {
   }
 
   /**
-   * 核心流式请求函数（供 sendMessage 和重试功能共用）。
-   * messageContent: 发送给 AI 的完整内容；excelContext: 文件上下文（重试时为 null）
+   * 是否具备数据来源：本轮文件附件，或会话历史中已发送且未过期的文件卡片。
+   * 大模型分析的数据来源可以是数据库，也可以是文件，二者至少有其一即可发送。
+   */
+  function hasFileDataSource(attachments: RequestAttachment[] | null): boolean {
+    if (attachments && attachments.length > 0) return true
+    return chatHistory.value.some(
+      (m) => m.role === 'file' && !!m.file?.fileId && !isExpired(m.file),
+    )
+  }
+
+  /**
+   * 核心流式请求函数（供 sendMessage / 重试 / Mermaid 修复共用）。
+   * messageContent: 发送给 AI 的提问文本（不含文件上下文，附件经 attachments 透传给后端）；
+   * attachments: 本轮携带的文件引用（重试时按同轮文件卡片还原；无附件传 null）
    */
   async function streamChatResponse(
     messageContent: string,
-    excelContext: { fileId: string; columns: string[]; totalRows: number; fileType: string; charCount: number } | null,
+    attachments: RequestAttachment[] | null,
     options: StreamChatOptions = {},
   ): Promise<void> {
     const { onSchemasEmpty = null } = options
@@ -279,8 +290,8 @@ export function useChatStream(deps: UseChatStreamDeps) {
     abortController.value = controller
 
     const schemas = buildRequestSchemas()
-    if (schemas.length === 0) {
-      ElMessage.warning('请先选择至少一个数据库 schema')
+    if (schemas.length === 0 && !hasFileDataSource(attachments)) {
+      ElMessage.warning('请选择至少一个数据库 Schema，或上传要分析的文件')
       loading.value = false
       retryingMsg.value = null
       if (onSchemasEmpty) onSchemasEmpty()
@@ -299,8 +310,8 @@ export function useChatStream(deps: UseChatStreamDeps) {
         tableContext: selectedTables.value,
         modelId: selectedModel.value,
       }
-      if (excelContext) {
-        body.excelData = excelContext
+      if (attachments && attachments.length > 0) {
+        body.attachments = attachments
       }
       if (advancedExport.value) {
         body.advancedExport = true
@@ -439,11 +450,6 @@ export function useChatStream(deps: UseChatStreamDeps) {
       if (collectedDangerSQLs.length > 0) {
         setBatchPendingSQL(collectedDangerSQLs)
       }
-
-      // 清除已上传的 Excel
-      if (uploadedExcel.value) {
-        uploadedExcel.value = null
-      }
     } catch (e) {
       const err = e as Error
       if (err.name === 'AbortError') {
@@ -493,14 +499,25 @@ export function useChatStream(deps: UseChatStreamDeps) {
     }
   }
 
-  /** 发送一条新消息 */
+  /** 发送一条新消息（文本 + 待发送文件附件） */
   async function sendMessage(): Promise<void> {
     const text = question.value.trim()
-    if (!text && !uploadedExcel.value) return
+    const ready = collectSendAttachments(uploads.value)
+    if (!text && ready.length === 0) return
     if (loading.value) return
+    // 上传未完成：提示等待，避免发出「引用不可用」的半成品消息
+    if (uploads.value.some((i) => i.status === 'pending' || i.status === 'uploading')) {
+      ElMessage.warning('文件正在上传中，请稍候再发送')
+      return
+    }
     // 上传文件后若未描述需求，无法判断意图（分析/结合库/导入），提示用户补充
-    if (!text && uploadedExcel.value) {
+    if (!text && ready.length > 0) {
       ElMessage.warning('请描述你对这个文件的需求（例如：分析这份数据 / 导入到 xx 表 / 和 xx 表对比）')
+      return
+    }
+    // 数据库与文件均未提供时不进入发送流程（避免先落消息再回滚）
+    if (buildRequestSchemas().length === 0 && ready.length === 0 && !hasFileDataSource(null)) {
+      ElMessage.warning('请选择至少一个数据库 Schema，或上传要分析的文件')
       return
     }
 
@@ -510,34 +527,16 @@ export function useChatStream(deps: UseChatStreamDeps) {
     showRetryConfirm.value = false
     lastQuestion.value = text
 
-    // 构建消息内容
-    let messageContent = text
-    let excelContext: { fileId: string; columns: string[]; totalRows: number; fileType: string; charCount: number } | null = null
-
-    if (uploadedExcel.value) {
-      const excel = uploadedExcel.value
-      excelContext = {
-        fileId: excel.fileId,
-        columns: excel.columns,
-        totalRows: excel.rows,
-        fileType: excel.fileType,
-        charCount: excel.charCount,
-      }
-      // 仅附带文件元信息上下文，不预设"导入"意图；意图由用户提问决定
-      if (excel.fileType === 'markdown') {
-        messageContent += `\n\n[已上传文件] Markdown 文档，文件ID：${excel.fileId}，共 ${excel.charCount} 字符。`
-      } else {
-        messageContent += `\n\n[已上传文件] 文件ID：${excel.fileId}，列名：${excel.columns.join(', ')}，共 ${excel.rows} 行数据。`
-      }
+    // 文件卡片先入历史（类微信独立气泡，位于用户消息之前），再入用户消息
+    for (const card of toFileChatMessages(ready)) {
+      chatHistory.value.push(card)
     }
-
     chatHistory.value.push({ role: 'user', content: text })
     question.value = ''
+    markAttachmentsSent(ready)
 
-    // 调用核心流式请求（schemas 为空时回退刚加入的用户消息）
-    await streamChatResponse(messageContent, excelContext, {
-      onSchemasEmpty: () => chatHistory.value.pop(),
-    })
+    // 附件以 fileId 引用透传给后端（内容由后端按需解析，不进消息体）
+    await streamChatResponse(text, ready.length > 0 ? toRequestAttachments(ready) : null)
   }
 
   /** 复制 AI 消息内容到剪贴板 */
@@ -567,14 +566,14 @@ export function useChatStream(deps: UseChatStreamDeps) {
     const idx = chatHistory.value.indexOf(msg)
     if (idx < 0) return
     // 向前查找最近的用户消息
-    let userMsg: ChatMessage | null = null
+    let userIdx = -1
     for (let i = idx - 1; i >= 0; i--) {
       if (chatHistory.value[i].role === 'user') {
-        userMsg = chatHistory.value[i]
+        userIdx = i
         break
       }
     }
-    if (!userMsg) return
+    if (userIdx < 0) return
 
     // 标记重试状态（按钮 loading）
     retryingMsg.value = msg
@@ -586,10 +585,11 @@ export function useChatStream(deps: UseChatStreamDeps) {
     resetDetectFlag()
     pendingSQLList.value = []
     showRetryConfirm.value = false
-    lastQuestion.value = userMsg.content
+    lastQuestion.value = chatHistory.value[userIdx].content
 
-    // 重新发送请求（不附带 excel 上下文，因为文件已处理完毕）
-    await streamChatResponse(userMsg.content, null)
+    // 重新发送请求：还原同轮文件附件（未过期的才重发），保持文件上下文
+    const attachments = collectRetryAttachments(chatHistory.value, userIdx)
+    await streamChatResponse(chatHistory.value[userIdx].content, attachments.length > 0 ? attachments : null)
   }
 
   /** 折叠/展开思考块 */

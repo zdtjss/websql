@@ -157,6 +157,10 @@ type Config struct {
 		MaxOpenConns   int    `json:"maxOpenConns"`
 		MaxIdleConns   int    `json:"maxIdleConns"`
 		ConnMaxLifeMin int    `json:"connMaxLifeMin"`
+		// 受管数据库的连接超时（秒，默认 10）与语句超时（秒，默认 300）。
+		// 连接不可达 / 语句挂死时靠它失败，避免请求长时间挂住。
+		ConnectTimeoutSec int `json:"connectTimeoutSec"`
+		QueryTimeoutSec   int `json:"queryTimeoutSec"`
 	} `json:"db"`
 	Redis struct {
 		Addr     string `json:"addr"`

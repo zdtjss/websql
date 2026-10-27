@@ -73,6 +73,9 @@ func (g *writeGuard) tryWrite(fn func() error) (ok bool) {
 
 func NewHandler() (*Handler, error) {
 	factory := GetAgentFactory()
+	// 启动阶段输出文件解析能力概览（含 Python 依赖探测预热），便于排查
+	// 「某格式不可用」类问题；幂等调用，测试环境下开销可忽略。
+	InitUploadStoreLog()
 	return &Handler{sessions: factory.GetSessions()}, nil
 }
 
@@ -217,6 +220,10 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		log.Printf("[Handler] 丢弃非本人上传的文件引用 - user=%s, fileId=%s\n", user.Id, req.ExcelData.FileID)
 		req.ExcelData = nil
 	}
+	// 新上传链路（多文件）：校验归属并剔除已过期引用，展示字段一律以服务端元数据回填
+	if len(req.Attachments) > 0 {
+		req.Attachments = SanitizeChatAttachments(req.Attachments, user.Id)
+	}
 
 	connID := req.ConnID
 	if connID == "" && len(req.Schemas) > 0 {
@@ -289,6 +296,30 @@ func (h *Handler) createAgent(ctx context.Context, params *requestParams) (*SQLA
 		params.dbVersion, params.schemas, params.scope, params.auditCtx)
 }
 
+// hasFileDataSource 判断本次请求是否携带文件数据来源（多文件附件或 legacy 单文件）。
+// 大模型分析的数据来源可以是数据库，也可以是文件，二者至少有其一即可。
+func hasFileDataSource(req *ChatRequest) bool {
+	return len(req.Attachments) > 0 || (req.ExcelData != nil && req.ExcelData.FileID != "")
+}
+
+// sessionHasFileDataSource 判断会话历史中是否已有文件附件。
+// 用于纯文件会话的后续追问：本轮不再重复携带附件，但文件仍是该会话的数据来源。
+func (h *Handler) sessionHasFileDataSource(sessionID, userID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	detail, err := h.sessions.GetDetail(sessionID, userID)
+	if err != nil {
+		return false
+	}
+	for _, msg := range detail.Messages {
+		if len(msg.Attachments) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) ChatStream(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -308,8 +339,10 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		writeParamsError(c, err)
 		return
 	}
-	if params.scope.IsRemote && !params.scope.HasAnyAccess() {
-		response.WriteErr(c, http.StatusForbidden, 403, "你没有此数据库连接的访问权限")
+	// 未选择数据库时，允许以用户上传的文件作为唯一数据来源
+	if params.scope.IsRemote && !params.scope.HasAnyAccess() &&
+		!hasFileDataSource(&req) && !h.sessionHasFileDataSource(req.SessionID, req.UserID) {
+		response.WriteErr(c, http.StatusForbidden, 403, "你没有此数据库连接的访问权限，请选择有权限的数据库或上传文件")
 		return
 	}
 

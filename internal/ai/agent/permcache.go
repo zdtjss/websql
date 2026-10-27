@@ -9,6 +9,7 @@ import (
 
 	admin "websql/internal/app/admin"
 	system "websql/internal/app/system"
+	"websql/internal/pkg/ttlcache"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -28,12 +29,12 @@ type permAgentValue struct {
 }
 
 type PermissionAgentCache struct {
-	cache   *TTLCache[permAgentValue]
+	cache   *ttlcache.TTLCache[permAgentValue]
 	stopped sync.Once
 }
 
 var globalPermAgentCache = func() *PermissionAgentCache {
-	cache := NewTTLCache[permAgentValue](permAgentCacheTTL, permAgentCleanSec)
+	cache := ttlcache.New[permAgentValue](permAgentCacheTTL, permAgentCleanSec)
 	cache.SetMaxEntries(maxCachedPermAgents)
 	return &PermissionAgentCache{cache: cache}
 }()
@@ -88,7 +89,7 @@ func (c *PermissionAgentCache) GetOrCreate(ctx context.Context, cfg *system.AICo
 
 // InvalidateAll 清除所有 Permission Agent 缓存（权限变更 / AI 配置变更时调用）
 func (c *PermissionAgentCache) InvalidateAll() {
-	count := len(c.cache.items)
+	count := c.cache.Len()
 	c.cache.InvalidateAll()
 	if count > 0 {
 		log.Printf("[PermAgentCache] 缓存已清空 - count=%d\n", count)

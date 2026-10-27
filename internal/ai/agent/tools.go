@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"websql/internal/ai/agent/fileparse"
 	"websql/internal/ai/agent/sqlutil"
 	admin "websql/internal/app/admin"
 	connpkg "websql/internal/app/conn"
@@ -29,8 +31,10 @@ const (
 	maxListTables = 500
 	// maxSchemaOutputChars 单次 get_table_schema 返回的 DDL 字符上限
 	maxSchemaOutputChars = 60_000
-	// maxMarkdownFileChars 上传 Markdown 文档单次读取的字符上限
+	// maxMarkdownFileChars 上传文档（md/txt/docx/pdf）单次读取的默认字符窗口
 	maxMarkdownFileChars = 30_000
+	// maxTextWindowChars 文本/文档类单次读取的字符窗口硬上限
+	maxTextWindowChars = 60_000
 )
 
 // dangerousTableTokens 表名中禁止出现的 SQL 关键字。
@@ -1003,22 +1007,37 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 // ReadFileDataInput 读取已上传文件数据（只读，用于数据分析，不会导入数据库）
 type ReadFileDataInput struct {
 	FileID string `json:"fileId" jsonschema:"required"`
-	Limit  int    `json:"limit"`  // 返回行数，默认 100，最大 500
-	Offset int    `json:"offset"` // 起始行偏移，默认 0
+	Limit  int    `json:"limit"`  // 表格：返回行数（默认 100，最大 500）；文本/文档：返回字符数（默认 30000，最大 60000）
+	Offset int    `json:"offset"` // 表格：起始行偏移；文本/文档：起始字符偏移（rune 计）
 }
+
+// ReadFileDataOutput 文件内容读取结果。
+//
+// 字段保持向后兼容（table/text 两类的既有字段不变），并追加：
+//   - Meta：图片/视频元信息；
+//   - Notice：截断/降级说明（面向模型，如「仅返回前 N 字符」「docx 为降级解析」）；
+//   - Degraded：是否降级解析（如无 Python 环境时的内置 docx 解析）。
 type ReadFileDataOutput struct {
-	Type         string     `json:"type"` // "table"（excel/csv）| "text"（markdown）
-	Columns      []string   `json:"columns,omitempty"`
-	Rows         [][]string `json:"rows,omitempty"`
-	TotalRows    int        `json:"totalRows,omitempty"`
-	ReturnedRows int        `json:"returnedRows,omitempty"`
-	Text         string     `json:"text,omitempty"`      // markdown 全文
-	CharCount    int        `json:"charCount,omitempty"` // markdown 字符数
+	Type         string         `json:"type"` // "table"（xlsx/xls/csv）| "text"（txt/md/docx/pdf）| "image" | "video"
+	Columns      []string       `json:"columns,omitempty"`
+	Rows         [][]string     `json:"rows,omitempty"`
+	TotalRows    int            `json:"totalRows,omitempty"`
+	ReturnedRows int            `json:"returnedRows,omitempty"`
+	Text         string         `json:"text,omitempty"`
+	CharCount    int            `json:"charCount,omitempty"`
+	Meta         map[string]any `json:"meta,omitempty"`
+	Notice       string         `json:"notice,omitempty"`
+	Degraded     bool           `json:"degraded,omitempty"`
 }
 
 // NewReadFileDataFunc 返回读取已上传文件数据的工具函数（只读，供 LLM 分析文件内容）。
-// 它不会写入数据库，也不会删除暂存文件，可多次分页调用。
-// 表格类（excel/csv）按 limit/offset 分页返回行；文本类（markdown）不做数据量限制，返回全文。
+//
+// 延迟解析：内容在首次调用本工具时才解析（fileparse），结果按 fileId 缓存复用；
+// 不会写入数据库，也不会删除暂存文件，可多次分页调用。
+//   - 表格类（xlsx/xls/csv）：按 limit/offset 分页返回行；
+//   - 文本/文档类（txt/md/docx/pdf）：按 limit/offset 分页返回字符窗口；
+//   - 图片/视频：返回元信息（内容由多模态注入链路直接随消息提供）。
+//
 // userID 为调用者身份，用于上传文件归属校验（仅能读取本人上传的文件）。
 func NewReadFileDataFunc(userID string) func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
 	return func(ctx context.Context, input *ReadFileDataInput) (*ReadFileDataOutput, error) {
@@ -1026,62 +1045,136 @@ func NewReadFileDataFunc(userID string) func(ctx context.Context, input *ReadFil
 		if input.FileID == "" {
 			return nil, errors.New("fileId is required")
 		}
-		upload, err := GetUploadedFile(input.FileID, userID)
+
+		res, err := GetUploadedFile(ctx, input.FileID, userID)
 		if err != nil {
 			return nil, err
 		}
 
-		// 文本类（Markdown）：返回全文，但超过 maxMarkdownChars 时截断并明确告知模型
-		if upload.Type == "text" {
-			total := utf8.RuneCountInString(upload.Text)
-			text := upload.Text
-			if total > maxMarkdownFileChars {
-				text = string([]rune(upload.Text)[:maxMarkdownFileChars]) +
-					fmt.Sprintf("\n\n...(文档过长，仅返回前 %d 字符。如需后续内容请让用户在提问中指明要分析的章节)", maxMarkdownFileChars)
-			}
+		switch res.Kind {
+		case fileparse.KindTable:
+			return readTableWindow(res, input), nil
+		case fileparse.KindText, fileparse.KindDoc:
+			return readTextWindow(res, input), nil
+		case fileparse.KindImage:
 			return &ReadFileDataOutput{
-				Type:      "text",
-				Text:      text,
-				CharCount: total,
+				Type: "image",
+				Meta: res.Meta,
+				Notice: "图片内容已由多模态链路直接提供给模型，此处仅返回元信息。" +
+					"请基于已看到的图像内容回答用户问题，不要重复请求图片内容。",
 			}, nil
+		case fileparse.KindVideo:
+			return &ReadFileDataOutput{
+				Type: "video",
+				Meta: res.Meta,
+				Notice: "视频仅提供元信息（时长/分辨率/编码），不支持逐帧内容分析；" +
+					"若当前模型支持视频输入，视频内容已随本次消息提供给模型。",
+			}, nil
+		default:
+			return nil, fmt.Errorf("不支持的文件类型：%s", res.Kind)
 		}
-
-		// 表格类：分页读取
-		limit := input.Limit
-		if limit <= 0 {
-			limit = 100
-		}
-		if limit > 500 {
-			limit = 500
-		}
-		offset := input.Offset
-		if offset < 0 {
-			offset = 0
-		}
-		total := len(upload.Data)
-		start := offset
-		if start > total {
-			start = total
-		}
-		end := start + limit
-		if end > total {
-			end = total
-		}
-		src := upload.Data[start:end]
-		rows := make([][]string, len(src))
-		for i, r := range src {
-			cp := make([]string, len(r))
-			copy(cp, r)
-			rows[i] = cp
-		}
-		return &ReadFileDataOutput{
-			Type:         "table",
-			Columns:      upload.Columns,
-			Rows:         rows,
-			TotalRows:    total,
-			ReturnedRows: len(rows),
-		}, nil
 	}
+}
+
+// readTableWindow 表格类分页读取（默认 100 行、最大 500 行，与既有行为一致）。
+func readTableWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = fileparse.DefaultRowLimit
+	}
+	if limit > fileparse.MaxRowLimit {
+		limit = fileparse.MaxRowLimit
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	total := len(res.Rows)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+
+	src := res.Rows[start:end]
+	rows := make([][]string, len(src))
+	for i, r := range src {
+		cp := make([]string, len(r))
+		copy(cp, r)
+		rows[i] = cp
+	}
+
+	notice := res.Notice
+	if end < total {
+		notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 行（共 %d 行），如需后续数据可再次调用并传入 offset=%d",
+			start+1, end, total, end))
+	}
+	return &ReadFileDataOutput{
+		Type:         "table",
+		Columns:      res.Columns,
+		Rows:         rows,
+		TotalRows:    total,
+		ReturnedRows: len(rows),
+		Notice:       notice,
+		Degraded:     res.Degraded,
+	}
+}
+
+// readTextWindow 文本/文档类按字符窗口（rune）分页读取。
+//
+// 与既有 Markdown 行为兼容：默认窗口 30000 字符，超出部分通过 Notice 告知模型
+// （旧实现把截断提示拼在文本尾部，新实现放在结构化字段中，模型同样可见）。
+func readTextWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	runes := []rune(res.Text)
+	total := len(runes)
+
+	limit := input.Limit
+	if limit <= 0 {
+		limit = maxMarkdownFileChars
+	}
+	if limit > maxTextWindowChars {
+		limit = maxTextWindowChars
+	}
+	offset := input.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	notice := res.Notice
+	if end < total {
+		notice = joinNotice(notice, fmt.Sprintf("文档较长，本次返回第 %d-%d 字符（共 %d 字符）。如需后续内容可再次调用并传入 offset=%d",
+			offset+1, end, total, end))
+	}
+
+	return &ReadFileDataOutput{
+		Type:      "text",
+		Text:      string(runes[offset:end]),
+		CharCount: total,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// joinNotice 拼接说明文案（分号分隔）
+func joinNotice(existing, add string) string {
+	if add == "" {
+		return existing
+	}
+	if existing == "" {
+		return add
+	}
+	return existing + "；" + add
 }
 
 func normalizeColName(name string) string {

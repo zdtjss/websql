@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 	app "websql/internal/app"
+	connpkg "websql/internal/app/conn"
 	"websql/internal/app/monitor"
 	sqlhand "websql/internal/app/sql"
 	"websql/internal/audit"
@@ -171,6 +172,9 @@ func main() {
 	log.Printf("服务正在关闭 %s......", s)
 	sqlhand.ShutdownHistoryWriter()
 	audit.GetAuditService().Shutdown()
+	// 关闭 SSH 隧道与数据库连接池，避免退出时残留监听与连接
+	connpkg.CloseAllTunnels()
+	database.CloseAllConns()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

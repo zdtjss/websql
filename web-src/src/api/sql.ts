@@ -11,6 +11,8 @@ export interface ExecSQLParams {
   tableName?: string
   batch?: string
   isFile?: string
+  /** 执行标识：用于服务端主动取消（/sql/cancel） */
+  requestId?: string
 }
 
 /** 列信息 */
@@ -19,11 +21,108 @@ export interface ColumnInfo {
   [key: string]: unknown
 }
 
-/** 单条 SQL 执行结果 */
+/** 表结构变更：列定义（与服务端 ddl.ColumnDef 对应） */
+export interface DdlColumnDef {
+  name: string
+  type: string
+  /** true=可空；false=NOT NULL；不传=不改动可空性 */
+  nullable?: boolean
+  /** 默认值原值（可以是 CURRENT_TIMESTAMP 等表达式） */
+  default?: string | null
+  comment?: string
+  /** 仅 MySQL 有效：放在指定列之后 */
+  after?: string
+  /** 仅 MySQL 有效：放到第一列 */
+  first?: boolean
+}
+
+/** 表结构变更意图 */
+export interface DdlChange {
+  kind: 'add_column' | 'drop_column' | 'modify_column' | 'rename_column' | 'create_index' | 'drop_index'
+  column?: DdlColumnDef
+  name?: string
+  oldName?: string
+  index?: { name: string; unique: boolean; columns: string[] }
+}
+
+/** 服务端生成的变更计划（只预览，不改库） */
+export interface DdlPlan {
+  planId: string
+  dbType: string
+  table: string
+  statements: { sql: string; risk: string; message?: string }[]
+  warnings?: string[]
+  unsupported?: string[]
+}
+
+/** 生成表结构变更计划 */
+export function planDdl(payload: {
+  connId: string
+  schema?: string
+  table: string
+  changes: DdlChange[]
+}): Promise<AxiosResponse<ApiResponse<DdlPlan>>> {
+  return http.post('/ddl/plan', payload)
+}
+
+/** 按计划执行表结构变更 */
+export function applyDdl(payload: {
+  planId: string
+  connId: string
+  schema?: string
+}): Promise<AxiosResponse<ApiResponse<{ executed: unknown[]; partial: boolean; failed?: unknown; error?: string }>>> {
+  return http.post('/ddl/apply', payload)
+}
+
+/** 按 requestId 终止服务端正在执行的 SQL */
+export function cancelSql(requestId: string): Promise<AxiosResponse<ApiResponse<{ cancelled: boolean }>>> {
+  return http.post('/sql/cancel', { requestId })
+}
+
+/** 生成一次执行的 requestId */
+export function newRequestId(): string {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 export interface SQLResult {
   columns?: ColumnInfo[]
   results?: unknown[]
   [key: string]: unknown
+}
+
+/** 分页查询结果（列式） */
+export interface QueryPageResult {
+  columns: { name: string; type: string; comment?: string }[]
+  rows: unknown[][]
+  offset: number
+  limit: number
+  hasMore: boolean
+  canPage: boolean
+}
+
+/** 结果集分页查询：用于结果网格「继续加载」 */
+export function pageQuery(payload: {
+  connId: string
+  schema?: string
+  sql: string
+  offset: number
+  limit: number
+  requestId?: string
+}): Promise<AxiosResponse<ApiResponse<QueryPageResult>>> {
+  const body = new URLSearchParams()
+  body.append('connId', payload.connId)
+  body.append('schema', payload.schema || '')
+  body.append('sql', payload.sql)
+  body.append('offset', String(payload.offset))
+  body.append('limit', String(payload.limit))
+  if (payload.requestId) {
+    body.append('requestId', payload.requestId)
+  }
+  return http.post('/query/page', body)
 }
 
 /** 批量执行结果 */
@@ -78,6 +177,9 @@ export function execSQL(params: ExecSQLParams, signal?: AbortSignal): Promise<Ax
   }
   if (params.isFile !== undefined) {
     body.append('isFile', params.isFile)
+  }
+  if (params.requestId) {
+    body.append('requestId', params.requestId)
   }
   const config = signal ? { signal } : undefined
   return http.post('/execSQL', body, config)

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"websql/internal/pkg/apperror"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -15,10 +17,13 @@ const (
 )
 
 // Response 统一响应体。字段名 code/data/msg 与现有前端契约一致。
+// errCode/hint 为增量字段：用于错误分类与修复建议，旧客户端可忽略。
 type Response struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg,omitempty"`
-	Data any    `json:"data,omitempty"`
+	Code    int    `json:"code"`
+	Msg     string `json:"msg,omitempty"`
+	Data    any    `json:"data,omitempty"`
+	ErrCode string `json:"errCode,omitempty"`
+	Hint    string `json:"hint,omitempty"`
 }
 
 // WriteOK 写入成功响应。data 为 nil 时仅返回 code=200。
@@ -48,4 +53,20 @@ func WriteAuthErr(c *gin.Context, msg string) {
 		msg = "未授权访问，请先登录"
 	}
 	WriteErr(c, http.StatusUnauthorized, CodeAuth, msg)
+}
+
+// WriteAppErr 写入分类后的应用错误。
+// HTTP 状态与 code 保持原有语义（200/500），errCode/hint 为增量字段，
+// 便于前端按类型给出修复建议而不必解析驱动原文。
+func WriteAppErr(c *gin.Context, appErr *apperror.Error) {
+	if appErr == nil {
+		WriteErr(c, http.StatusOK, CodeError, "操作失败")
+		return
+	}
+	c.JSON(http.StatusOK, Response{
+		Code:    CodeError,
+		Msg:     appErr.Msg,
+		ErrCode: appErr.Code,
+		Hint:    appErr.Hint,
+	})
 }

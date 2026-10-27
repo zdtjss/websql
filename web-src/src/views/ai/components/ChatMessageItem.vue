@@ -7,6 +7,12 @@
     <div v-show="!msg.collapsed" class="thinking-content markdown-body" v-html="getCachedHtml(msg)"></div>
   </div>
 
+  <!-- 用户上传的文件卡片（类微信独立气泡） -->
+  <div v-else-if="msg.role === 'file' && msg.file" :class="['chat-bubble', 'file']">
+    <div class="bubble-label">你</div>
+    <ChatFileCard :file="msg.file" mode="history" />
+  </div>
+
   <!-- 用户消息 -->
   <div v-else-if="msg.role === 'user'" :class="['chat-bubble', 'user']">
     <div class="bubble-label">你</div>
@@ -59,6 +65,7 @@
  * 根据消息角色（thinking / user / assistant / tool_call）渲染不同样式。
  */
 import { CopyDocument, RefreshRight } from '@element-plus/icons-vue'
+import ChatFileCard from './ChatFileCard.vue'
 import type { ChatMessage } from '../composables/useChatHistory'
 
 defineProps<{
@@ -176,6 +183,27 @@ const emit = defineEmits<{
 
 .chat-bubble.assistant .bubble-label {
   color: #546e7a;
+}
+
+/* 用户上传的文件卡片气泡：容器透明，卡片自带样式（类微信文件消息） */
+.chat-bubble.file {
+  align-self: flex-end;
+  background: transparent;
+  box-shadow: none;
+  padding: 2px 0;
+  backdrop-filter: none;
+}
+
+.chat-bubble.file:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.chat-bubble.file .bubble-label {
+  color: #78909c;
+  text-align: right;
+  margin-bottom: 2px;
+  padding-right: 4px;
 }
 
 /* ========== 标签样式 ========== */

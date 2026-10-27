@@ -246,8 +246,6 @@ const dataExport = useDataExport({
   filterExpr: () => dataQuery.filterExpr.value,
   sortColumn: () => dataQuery.sortColumn.value,
   sortOrder: () => dataQuery.sortOrder.value,
-  dataColumns: () => dataQuery.dataColumns.value,
-  fetchFullData: dataQuery.fetchFullData,
 })
 
 function onExport(format: ExportFormat) {

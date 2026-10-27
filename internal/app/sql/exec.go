@@ -15,10 +15,11 @@ import (
 	"websql/internal/app/permission"
 	"websql/internal/audit"
 	"websql/internal/database"
+	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
+	"websql/internal/pkg/apperror"
 	"websql/internal/pkg/jsonutil"
 	"websql/internal/pkg/response"
-	"websql/internal/pkg/safego"
 	"websql/internal/pkg/sqlguard"
 
 	"github.com/gin-gonic/gin"
@@ -123,9 +124,21 @@ func ExecSQL(c *gin.Context) {
 		}
 	}
 
+	queryCtx, queryCancel := withQueryContext(c, connId, c.PostForm("requestId"))
+	defer queryCancel()
+
+	// 只读连接：任何写语句直接拒绝（除非处于临时解锁窗口）。
+	// 必须在执行前拦，避免多选语句时先执行了一部分才报错。
+	if containsWriteStatement(sqlStr) {
+		if allowed, reason := ensureConnWritable(connId); !allowed {
+			response.WriteErr(c, 200, 403, reason)
+			return
+		}
+	}
+
 	batch := c.PostForm("batch")
 	if batch == "true" {
-		execBatchSQL(c, sqlStr, conn, schema, tableName, maxLine, user, connId, authorization, startTime)
+		execBatchSQL(queryCtx, c, sqlStr, conn, schema, tableName, maxLine, user, connId, authorization, startTime)
 		return
 	}
 
@@ -135,10 +148,9 @@ func ExecSQL(c *gin.Context) {
 		nlIdx = len(sqlStr)
 	}
 
+	// 写操作前同步取快照（不能放 goroutine：会与写入并发，快照可能变成改后数据）
 	if sqlguard.WriteKind(sqlStr) == "UPDATE" || sqlguard.WriteKind(sqlStr) == "DELETE" {
-		safego.GoWithName("sql-async-backup", func() {
-			asyncBackup(sqlStr, user, connId, conn)
-		})
+		snapshotWriteBackup(conn, nil, sqlStr, user, connId)
 	} else {
 		asyncRecordHistory(sqlStr, user, connId)
 	}
@@ -149,7 +161,7 @@ func ExecSQL(c *gin.Context) {
 	// 避免「关键字+空格」前缀匹配漏判导致写语句走查询分支执行
 	if sqlguard.IsWriteStatement(sqlStr) {
 		rspData := TableDataList{Columns: []Column{{Name: "受影响行数", Type: "VARCHAR(10)"}}}
-		result, err := batchExec(sqlStr, conn)
+		result, err := batchExec(queryCtx, sqlStr, conn)
 		if err != nil {
 			recordEditorAudit(c, user, connId, schema, sqlStr, "failed", 0, startTime, err.Error())
 			writeSQLError(c, err)
@@ -171,7 +183,7 @@ func ExecSQL(c *gin.Context) {
 		response.WriteOK(c, rspData)
 	} else {
 		params := make([]any, 0)
-		if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
+		if checkPrefx(sqlStr, []string{"select"}) && !sqlguard.HasTopLevelLimit(sqlStr) {
 			maxLineI, _ := strconv.Atoi(maxLine)
 			if maxLineI > 0 {
 				sqlStr = page(conn.DriverName(), sqlStr)
@@ -181,9 +193,6 @@ func ExecSQL(c *gin.Context) {
 
 		var rows *sqlx.Rows
 		var err2 error
-
-		queryCtx, queryCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-		defer queryCancel()
 
 		if len(params) > 0 {
 			rows, err2 = conn.QueryxContext(queryCtx, sqlStr, params...)
@@ -245,11 +254,10 @@ func ExecSQL(c *gin.Context) {
 }
 
 func writeSQLError(c *gin.Context, err error) {
-	msg := err.Error()
-	if len(msg) > 500 {
-		msg = msg[:500] + "..."
-	}
-	response.WriteErr(c, 200, 500, msg)
+	// 驱动原文只进服务端日志；前端只拿到分类后的描述与建议
+	appErr := apperror.FromDatabase(err)
+	logger.PrintErrf("SQL 执行失败 - code=%s, err=%v", err, appErr.Code)
+	response.WriteAppErr(c, appErr)
 }
 
 func IsAlphaNumeric(str string) bool {
@@ -265,17 +273,17 @@ func IsAlphaNumeric(str string) bool {
 }
 
 func page(dbtype string, sql string) string {
-    if dbtype == "oracle" {
-            return "select a.* from (" + sql + ") a where rownum <= :1"
-    } else if dbtype == "mysql" || dbtype == "mariadb" || dbtype == "sqlite" {
-            return sql + " limit ?"
-    }
-    return sql
+	if dbtype == "oracle" {
+		return "select a.* from (" + sql + ") a where rownum <= :1"
+	} else if dbtype == "mysql" || dbtype == "mariadb" || dbtype == "sqlite" {
+		return sql + " limit ?"
+	}
+	return sql
 }
 
-func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
+func batchExec(ctx context.Context, sql string, db *sqlx.DB) ([]map[string]any, error) {
 	sqlArr := splitSQLRespectQuotes(sql)
-	tx, err := db.Beginx()
+	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +294,7 @@ func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
 		if sqlStr == "" {
 			continue
 		}
-		rs, err2 := tx.Exec(sqlStr)
+		rs, err2 := tx.ExecContext(ctx, sqlStr)
 		if err2 != nil {
 			return nil, err2
 		}
@@ -303,14 +311,27 @@ func batchExec(sql string, db *sqlx.DB) ([]map[string]any, error) {
 	return resultData, nil
 }
 
-func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) {
-	// 备份数据仅作回滚参考。无论备份是否成功，都必须记录历史，否则
-	// DELETE/UPDATE 在备份失败或无法解析表名/where 时会丢失历史记录。
+// backupSnapshotRowLimit 单次写操作历史备份的最大快照行数。
+// 无上限时对大表执行 UPDATE/DELETE 会把整表读进内存；备份仅作回滚参考，截断可接受。
+const backupSnapshotRowLimit = 5000
+
+// backupSnapshotTimeout 快照查询超时，避免大表 / 锁等待拖住写操作。
+const backupSnapshotTimeout = 10 * time.Second
+
+// snapshotWriteBackup 在执行写语句之前取一次快照并写入历史。
+// 关键点：必须与写入串行（原实现放在 goroutine 里，与写入并发，
+// 快照可能变成“修改后”的数据，导致历史备份根本无法用于回滚）。
+// tx 非空时在事务内取快照，保证与同批次先前的写入一致。
+func snapshotWriteBackup(db *sqlx.DB, tx *sqlx.Tx, ddlSql string, user *admin.User, connId string) {
 	operationType, backupSQL := buildBackupSQL(ddlSql)
 
+	userName := ""
+	if user != nil {
+		userName = user.LoginName
+	}
 	record := &historyRecord{
 		Id:            fmt.Sprintf("%d", time.Now().UnixMicro()),
-		User:          user.LoginName,
+		User:          userName,
 		ConnId:        connId,
 		OperationType: operationType,
 		ExecTime:      time.Now(),
@@ -318,17 +339,43 @@ func asyncBackup(ddlSql string, user *admin.User, connId string, conn *sqlx.DB) 
 	}
 
 	if backupSQL != "" {
-		rows, err := conn.Queryx(backupSQL)
-		if err == nil {
-			data, dataErr := database.GetResultRows(conn.DriverName(), rows)
-			rows.Close()
-			if dataErr == nil {
-				record.Data = string(jsonutil.ToJsonString(data))
+		data, truncated, dataErr := readBackupSnapshot(db, tx, backupSQL, backupSnapshotRowLimit)
+		if dataErr != nil {
+			logger.PrintErrf("历史备份快照读取失败 - connId=%s, err=%v", dataErr, connId)
+		} else {
+			if truncated {
+				logger.PrintErrf("历史备份快照已截断 - connId=%s, limit=%d", nil, connId, backupSnapshotRowLimit)
 			}
+			record.Data = string(jsonutil.ToJsonString(data))
 		}
 	}
 
 	historyWriter.enqueue(record)
+}
+
+// readBackupSnapshot 在事务（tx 非空）或连接上读取写操作前的快照。
+// 必须在执行写语句之前调用；limit 用于防止大表快照把内存打爆，
+// 超过 limit 时 truncated 为 true。
+func readBackupSnapshot(db *sqlx.DB, tx *sqlx.Tx, query string, limit int) (rows []map[string]any, truncated bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), backupSnapshotTimeout)
+	defer cancel()
+
+	var result *sqlx.Rows
+	if tx != nil {
+		result, err = tx.QueryxContext(ctx, query)
+	} else {
+		result, err = db.QueryxContext(ctx, query)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer result.Close()
+
+	data, dataErr := database.GetResultRowsForExport(db.DriverName(), result, limit)
+	if dataErr != nil {
+		return nil, false, dataErr
+	}
+	return data, len(data) >= limit, nil
 }
 
 // buildBackupSQL 解析 update/delete 语句，返回操作类型与可用于备份的查询 SQL。
@@ -439,15 +486,6 @@ func checkPrefx(src string, prefix []string) bool {
 	for _, p := range prefix {
 		p = strings.ToUpper(p)
 		if strings.HasPrefix(src, p+" ") || strings.HasPrefix(src, p+"\n") {
-			return true
-		}
-	}
-	return false
-}
-
-func checkContains(src string, suffix []string) bool {
-	for _, p := range suffix {
-		if strings.LastIndex(src, p) != -1 {
 			return true
 		}
 	}
@@ -664,13 +702,14 @@ func extractTableNameFromSQL(sqlStr string) string {
 	return tableNameArr.String()
 }
 
-// setSQLError 统一填充 SQL 执行错误结果：脱敏、截断、审计。
+// setSQLError 统一填充 SQL 执行错误结果：分类、脱敏、审计。
 func setSQLError(result *SQLResultItem, err error) {
 	result.Status = "error"
 	result.AuditError = audit.FormatErrorWithStack(err)
-	msg := err.Error()
-	if len(msg) > 500 {
-		msg = msg[:500] + "..."
+	appErr := apperror.FromDatabase(err)
+	msg := appErr.Msg
+	if appErr.Hint != "" {
+		msg += "（" + appErr.Hint + "）"
 	}
 	result.Error = msg
 }
@@ -705,7 +744,7 @@ func execQuerySQL(result *SQLResultItem, sqlStr string, conn *sqlx.DB, tx *sqlx.
 	result.Type = "query"
 	params := make([]any, 0)
 	execSQL := sqlStr
-	if checkPrefx(sqlStr, []string{"select"}) && !checkContains(sqlStr, []string{" limit ", " LIMIT ", "\nlimit\n", "\nLIMIT\n"}) {
+	if checkPrefx(sqlStr, []string{"select"}) && !sqlguard.HasTopLevelLimit(sqlStr) {
 		maxLineI, _ := strconv.Atoi(maxLine)
 		if maxLineI > 0 {
 			execSQL = page(conn.DriverName(), sqlStr)
@@ -779,10 +818,10 @@ func execQuerySQL(result *SQLResultItem, sqlStr string, conn *sqlx.DB, tx *sqlx.
 func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableName, maxLine string, user *admin.User, connId, authorization string, queryCtx context.Context) *SQLResultItem {
 	result := &SQLResultItem{SQL: sqlStr}
 
+	// 写操作前同步取快照（不能放 goroutine：会与写入并发，快照可能变成改后数据）；
+	// 批量执行时 tx 非空，快照在事务内取，与同批次先前的写入保持一致。
 	if sqlguard.WriteKind(sqlStr) == "UPDATE" || sqlguard.WriteKind(sqlStr) == "DELETE" {
-		safego.GoWithName("sql-async-backup", func() {
-			asyncBackup(sqlStr, user, connId, conn)
-		})
+		snapshotWriteBackup(conn, tx, sqlStr, user, connId)
 	} else {
 		asyncRecordHistory(sqlStr, user, connId)
 	}
@@ -797,7 +836,7 @@ func execSingleSQLCore(sqlStr string, conn *sqlx.DB, tx *sqlx.Tx, schema, tableN
 	return result
 }
 
-func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableName, maxLine string, user *admin.User, connId, authorization string, startTime time.Time) {
+func execBatchSQL(queryCtx context.Context, c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableName, maxLine string, user *admin.User, connId, authorization string, startTime time.Time) {
 	sqlArr := splitSQL(sqlStr)
 	if len(sqlArr) == 0 {
 		response.WriteErr(c, 200, 500, "SQL 语句不能为空")
@@ -819,13 +858,10 @@ func execBatchSQL(c *gin.Context, sqlStr string, conn *sqlx.DB, schema, tableNam
 		}
 	}
 
-	queryCtx, queryCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-	defer queryCancel()
-
 	var tx *sqlx.Tx
 	if hasWrite {
 		var err error
-		tx, err = conn.Beginx()
+		tx, err = conn.BeginTxx(queryCtx, nil)
 		if err != nil {
 			writeSQLError(c, err)
 			return

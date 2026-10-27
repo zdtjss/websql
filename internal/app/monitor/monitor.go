@@ -104,6 +104,8 @@ func collectMetricsSnapshot(conn *sqlx.DB, dbType string) MetricsSnapshot {
 
 	if dbType == "mysql" || dbType == "mariadb" {
 
+		// SHOW GLOBAL STATUS 固定返回 Variable_name/Value 两列，此处用 StructScan 安全；
+		// 但不要再向该结构体加"依赖服务端新增列"的字段（约束见 rowscan.go）。
 		type statusRow struct {
 			Name  string `db:"Variable_name"`
 			Value int64  `db:"Value"`
@@ -356,41 +358,23 @@ func GetProcesses(c *gin.Context) {
 	processes := make([]ProcessInfo, 0)
 
 	if dbType == "mysql" || dbType == "mariadb" {
-		type processRow struct {
-			Id      int64   `db:"Id"`
-			User    *string `db:"User"`
-			Host    *string `db:"Host"`
-			Db      *string `db:"db"`
-			Command *string `db:"Command"`
-			Time    int64   `db:"Time"`
-			State   *string `db:"State"`
-			Info    *string `db:"Info"`
-		}
-		var rows []processRow
-		err := dbConn.Select(&rows, "SHOW FULL PROCESSLIST")
+		// 不使用 StructScan：SHOW FULL PROCESSLIST 的输出列由服务端决定，
+		// 云厂商/新版本会追加扩展列（详见 rowscan.go 注释），一遇未声明列就整批失败。
+		rows, err := dbConn.Queryx("SHOW FULL PROCESSLIST")
 		if err != nil {
 			logger.PrintErrf("获取进程列表失败 - dbType=%s, connId=%s, err=%v", err, dbType, connId)
-			response.WriteErr(c, 200, 500, "获取进程列表失败: "+err.Error())
+			response.WriteErr(c, 200, 500, processListErrMessage(err))
 			return
 		}
-		deref := func(p *string) string {
-			if p != nil {
-				return *p
-			}
-			return ""
+		parsed, columns, scanErr := parseProcessRows(rows)
+		rows.Close()
+		if scanErr != nil {
+			// 列名仅用于排障，不含业务数据
+			logger.PrintErrf("解析进程列表失败 - dbType=%s, connId=%s, columns=%v, err=%v", scanErr, dbType, connId, columns)
+			response.WriteErr(c, 200, 500, "获取进程列表失败：服务端返回的结果集结构无法解析")
+			return
 		}
-		for _, r := range rows {
-			processes = append(processes, ProcessInfo{
-				Id:      int(r.Id),
-				User:    deref(r.User),
-				Host:    deref(r.Host),
-				Db:      deref(r.Db),
-				Command: deref(r.Command),
-				Time:    int(r.Time),
-				State:   deref(r.State),
-				Info:    deref(r.Info),
-			})
-		}
+		processes = parsed
 	} else if dbType == "oracle" {
 		rows, err := dbConn.Queryx("SELECT sid, serial#, username, status, machine, program FROM v$session WHERE type!='BACKGROUND'")
 		if err != nil {
@@ -419,6 +403,25 @@ func GetProcesses(c *gin.Context) {
 		"processes": processes,
 		"count":     len(processes),
 	})
+}
+
+// processListErrMessage 把会话列表查询错误转换为面向用户的提示。
+// 驱动原文只写服务端日志，不回传前端（避免泄露主机名、库名等连接细节）。
+func processListErrMessage(err error) string {
+	if err == nil {
+		return "获取进程列表失败"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "access denied"), strings.Contains(msg, "process privilege"):
+		return "获取进程列表失败：当前账号缺少 PROCESS 权限，无法查看会话列表"
+	case strings.Contains(msg, "unknown column"):
+		return "获取进程列表失败：服务端返回了未知列，请升级到最新版本"
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
+		return "获取进程列表失败：数据库响应超时，请稍后重试"
+	default:
+		return "获取进程列表失败，请查看服务端日志排查（已记录连接与错误详情）"
+	}
 }
 
 func GetServerVariables(c *gin.Context) {
@@ -570,25 +573,25 @@ func GetAllServerVariables(c *gin.Context) {
 	switch dbType {
 	case "mysql", "mariadb":
 		result.Supported = true
-		type varRow struct {
-			Name  string `db:"Variable_name"`
-			Value string `db:"Value"`
-		}
-		var rows []varRow
-		var err error
+		query := "SHOW GLOBAL VARIABLES"
 		if scope == "session" {
-			err = conn.Select(&rows, "SHOW SESSION VARIABLES")
-		} else {
-			err = conn.Select(&rows, "SHOW GLOBAL VARIABLES")
+			query = "SHOW SESSION VARIABLES"
 		}
+		// 按列名取值而非 StructScan：服务端若追加列，不应导致整页不可用（见 rowscan.go）
+		rows, err := conn.Queryx(query)
 		if err != nil {
 			logger.PrintErrf("获取服务器变量失败", err)
-			response.WriteErr(c, 200, 500, "获取服务器变量失败: "+err.Error())
+			response.WriteErr(c, 200, 500, "获取服务器变量失败")
 			return
 		}
-		for _, r := range rows {
-			result.Items = append(result.Items, VarInfo{Name: r.Name, Value: r.Value})
+		items, columns, scanErr := parseNameValueRows(rows, []string{"variable_name", "name"}, []string{"value"})
+		rows.Close()
+		if scanErr != nil {
+			logger.PrintErrf("解析服务器变量失败 - connId=%s, columns=%v, err=%v", scanErr, connId, columns)
+			response.WriteErr(c, 200, 500, "获取服务器变量失败：结果集结构无法解析")
+			return
 		}
+		result.Items = append(result.Items, items...)
 	case "oracle":
 		result.Supported = true
 		type varRow struct {

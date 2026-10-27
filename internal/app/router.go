@@ -19,6 +19,7 @@ import (
 	"websql/internal/app/datadict"
 	"websql/internal/app/dbadmin"
 	"websql/internal/app/dbops"
+	"websql/internal/app/ddl"
 	"websql/internal/app/modeler"
 	"websql/internal/app/monitor"
 	"websql/internal/app/permission"
@@ -85,8 +86,14 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/listTable", dbops.ListTableFat)
 	routerGroup.GET("/exportXlsx", sql.ExportXlsx)
 	routerGroup.POST("/exportXlsxBySql", sql.ExportXlsxBySql)
+	// 文本格式（CSV/JSON/SQL）服务端流式导出：边读边写，不在内存里攒全量结果
+	routerGroup.POST("/exportText", sql.ExportText)
 	routerGroup.POST("/importXlsx", sql.ImportXlsx)
 	routerGroup.POST("/execSQL", sql.ExecSQL)
+	// 按 requestId 终止正在执行的 SQL（服务端取消，释放数据库连接）
+	routerGroup.POST("/sql/cancel", sql.CancelHandler)
+	// 结果集分页查询（列式返回，供前端「继续加载」）
+	routerGroup.POST("/query/page", sql.PageQuery)
 
 	routerGroup.POST("/saveConn", conn.SaveConn)
 	routerGroup.POST("/testDbConn", conn.TestDbConn)
@@ -95,6 +102,9 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/listConn2", conn.ListConn2)
 	routerGroup.GET("/listUserConn", conn.ListUserConn)
 	routerGroup.GET("/listUserConnSchemasStream", tree.ListUserConnSchemasStream)
+	// 只读连接：查询状态 / 临时解锁写入
+	routerGroup.GET("/conn/readonly/state", conn.ReadOnlyStateHandler)
+	routerGroup.POST("/conn/readonly/unlock", conn.UnlockWriteHandler)
 	routerGroup.GET("/userPermissions", admin.UserPermissions)
 	routerGroup.GET("/listTableNames", tree.ListTableNames)
 	routerGroup.GET("/showTree", tree.ShowTree)
@@ -107,6 +117,11 @@ func MainRegister(router *gin.Engine) {
 	// 数据库对象管理 - 列出对象 / 获取对象 DDL（视图、存储过程、函数、触发器、事件、表）
 	routerGroup.GET("/db/objects", dbops.ListObjects)
 	routerGroup.GET("/db/object/ddl", dbops.GetObjectDDL)
+
+	// 表结构变更：先生成计划预览（/ddl/plan），确认后按计划执行（/ddl/apply）。
+	// 旧 /execSQL 保持不变，前端可灰度切回。
+	routerGroup.POST("/ddl/plan", ddl.PlanHandler)
+	routerGroup.POST("/ddl/apply", ddl.ApplyHandler)
 
 	// 数据库用户与库管理（仅 MySQL/MariaDB/Oracle；本地/桌面模式无限制，非本地仅管理员）
 	routerGroup.GET("/db/admin/users", dbadmin.ListDbUsers)
@@ -182,6 +197,12 @@ func MainRegister(router *gin.Engine) {
 		log.Printf("创建 AI Agent Handler 失败: %v，AI 功能将不可用", err)
 	} else {
 		routerGroup.POST("/ai/agent/chatStream", agentHandler.ChatStream)
+		// 文件上传（新链路：仅校验 + 存储，不解析内容）
+		routerGroup.POST("/ai/agent/uploadFile", agent.HandleUploadFile)
+		routerGroup.POST("/ai/agent/uploadFile/delete", agent.HandleDeleteUploadFile)
+		routerGroup.GET("/ai/agent/uploadFile/content", agent.HandleUploadFileContent)
+		routerGroup.GET("/ai/agent/fileSupport", agent.HandleFileSupport)
+		// legacy 上传接口（deprecated，保留旧契约供未升级前端使用）
 		routerGroup.POST("/ai/agent/uploadExcel", agent.HandleUploadExcel)
 		routerGroup.POST("/ai/agent/preMatchColumns", agent.HandlePreMatchColumns)
 		routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)

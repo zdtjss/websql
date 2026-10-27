@@ -168,7 +168,8 @@
     </div>
 
     <!-- 连接编辑对话框 -->
-    <el-dialog v-model="connDialogVisible" :title="connDialogTitle" width="560px" :draggable="true" append-to-body>
+    <el-dialog v-model="connDialogVisible" :title="connDialogTitle" width="560px" top="6vh"
+      class="conn-edit-dialog" :draggable="true" append-to-body>
       <el-form :model="connForm" label-width="100px">
         <el-form-item label="连接名称" required>
           <el-input v-model="connForm.name" placeholder="请输入连接名称" />
@@ -208,9 +209,57 @@
             placeholder="如 jdbc:mysql://host:3306/db 或 主机:端口/库名"
           />
         </el-form-item>
+        <el-form-item label="只读连接">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <el-switch v-model="connForm.readOnly" active-text="只读" inactive-text="可写" />
+            <span class="readonly-tip">开启后写语句会被拒绝，需临时解锁才能写入</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="SSH 隧道">
+          <div style="width: 100%">
+            <el-switch v-model="connForm.sshEnabled" active-text="经跳板机" inactive-text="直连" />
+            <span class="readonly-tip" style="margin-left: 10px;">内网数据库可经 SSH 跳板机访问</span>
+          </div>
+        </el-form-item>
+        <template v-if="connForm.sshEnabled">
+          <el-form-item label="跳板机地址" required>
+            <div style="display: flex; gap: 8px; width: 100%">
+              <el-input v-model="connForm.sshHost" placeholder="host 或 IP" style="flex: 1" />
+              <el-input-number v-model="connForm.sshPort" :min="1" :max="65535" controls-position="right"
+                style="width: 130px" />
+            </div>
+          </el-form-item>
+          <el-form-item label="SSH 用户" required>
+            <el-input v-model="connForm.sshUser" placeholder="登录跳板机的用户名" />
+          </el-form-item>
+          <el-form-item label="认证方式">
+            <el-radio-group v-model="connForm.sshAuthType">
+              <el-radio value="password">密码</el-radio>
+              <el-radio value="key">私钥文件</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="connForm.sshAuthType !== 'key'" label="SSH 密码">
+            <el-input v-model="connForm.sshPassword" type="password" show-password
+              :placeholder="connForm.id && hasSavedSsh ? '留空则不修改' : '请输入 SSH 密码'" />
+          </el-form-item>
+          <template v-else>
+            <el-form-item label="私钥路径" required>
+              <el-input v-model="connForm.sshKeyPath" placeholder="如 C:\\Users\\me\\.ssh\\id_rsa" />
+            </el-form-item>
+            <el-form-item label="私钥口令">
+              <el-input v-model="connForm.sshKeyPassphrase" type="password" show-password
+                placeholder="私钥无口令时留空" />
+            </el-form-item>
+          </template>
+          <el-form-item label="known_hosts">
+            <el-input v-model="connForm.sshKnownHostsPath"
+              placeholder="留空则不校验主机密钥（会记录警告）" />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button :loading="connTesting" @click="testConnForm">测试连接</el-button>
+        <el-button v-if="connForm.id && connForm.readOnly" @click="unlockWrite">临时解锁写入</el-button>
         <el-button @click="connDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="connSaving" @click="submitConn">保存</el-button>
       </template>
@@ -228,8 +277,9 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
-import { listConn, saveConn, testDbConn, delConn, listDirTree, delTreeNode, saveTree } from '@/api/conn'
+import { listConn, saveConn, testDbConn, delConn, listDirTree, delTreeNode, saveTree, unlockConnWrite } from '@/api/conn'
 import { ElMessage } from 'element-plus'
+import { handleError } from '@/utils/errorHandler'
 import { Check, Connection, Delete, Edit, Folder, Plus, Search, UserFilled, Warning } from '@element-plus/icons-vue'
 import DbUserSchemaManager from '@/components/db-tools/DbUserSchemaManager.vue'
 
@@ -506,7 +556,9 @@ watch(filterText, (val) => {
 const connDialogVisible = ref(false)
 const connSaving = ref(false)
 const connTesting = ref(false)
-const connForm = ref({ id: '', name: '', dbType: 'mysql', parentId: '', user: '', pwd: '', url: '' })
+const connForm = ref({ id: '', name: '', dbType: 'mysql', parentId: '', user: '', pwd: '', url: '', readOnly: false, sshEnabled: false, sshHost: '', sshPort: 22, sshUser: '', sshAuthType: 'password', sshPassword: '', sshKeyPath: '', sshKeyPassphrase: '', sshKnownHostsPath: '' })
+// 编辑已有连接时，是否已保存过 SSH 配置（决定口令 placeholder）
+const hasSavedSsh = ref(false)
 
 const connDialogTitle = computed(() => (connForm.value.id ? '编辑连接' : '添加连接'))
 
@@ -520,12 +572,15 @@ const dirOptions = computed(() => {
 })
 
 const openAddConn = (parentId = '') => {
-  connForm.value = { id: '', name: '', dbType: 'mysql', parentId: parentId || '', user: '', pwd: '', url: '' }
+  hasSavedSsh.value = false
+  connForm.value = { id: '', name: '', dbType: 'mysql', parentId: parentId || '', user: '', pwd: '', url: '', readOnly: false, sshEnabled: false, sshHost: '', sshPort: 22, sshUser: '', sshAuthType: 'password', sshPassword: '', sshKeyPath: '', sshKeyPassphrase: '', sshKnownHostsPath: '' }
   connDialogVisible.value = true
 }
 
 const openEditConn = (node) => {
   const raw = node.raw || {}
+  const ssh = raw.ssh || null
+  hasSavedSsh.value = !!ssh
   connForm.value = {
     id: node.id,
     name: raw.name || node.label || '',
@@ -533,9 +588,27 @@ const openEditConn = (node) => {
     parentId: raw.parentId || '',
     user: raw.user || '',
     pwd: '',
-    url: raw.url || ''
+    url: raw.url || '',
+    readOnly: !!raw.readOnly,
+    sshEnabled: !!ssh,
+    sshHost: ssh?.host || '',
+    sshPort: ssh?.port || 22,
+    sshUser: ssh?.user || '',
+    sshAuthType: ssh?.authType || 'password',
+    sshPassword: '',
+    sshKeyPath: ssh?.keyPath || '',
+    sshKeyPassphrase: '',
+    sshKnownHostsPath: ssh?.knownHostsPath || '',
   }
   connDialogVisible.value = true
+}
+
+// 只读连接的临时写解锁（1 或 5 分钟，进程重启失效）
+const unlockWrite = () => {
+  if (!connForm.value.id) return
+  unlockConnWrite({ connId: connForm.value.id, durationSecs: 300 })
+    .then(() => ElMessage.success('已解锁写入 5 分钟，请尽快操作'))
+    .catch((e) => handleError(e, '解锁写入'))
 }
 
 const submitConn = () => {
@@ -551,7 +624,15 @@ const submitConn = () => {
     dbType: form.dbType,
     parentId: form.parentId || '',
     user: form.user || '',
-    url: form.url
+    url: form.url,
+    readOnly: !!form.readOnly
+  }
+  if (form.sshEnabled) {
+    if (!validateSshForm()) return
+    payload.ssh = buildSshConfig()
+  } else if (hasSavedSsh.value) {
+    // 显式关闭隧道：传 null 让服务端清理已有配置与隧道
+    payload.ssh = null
   }
   if (form.pwd) payload.pwd = form.pwd
 
@@ -598,10 +679,47 @@ const submitConn = () => {
   })
 }
 
+// 构造 SSH 配置：未开启返回 null（表示显式清除），无已存配置时保持 undefined 语义
+const buildSshConfig = () => {
+  const form = connForm.value
+  if (!form.sshEnabled) return null
+  return {
+    host: form.sshHost,
+    port: Number(form.sshPort) || 22,
+    user: form.sshUser,
+    authType: form.sshAuthType,
+    password: form.sshPassword || undefined,
+    keyPath: form.sshKeyPath || undefined,
+    keyPassphrase: form.sshKeyPassphrase || undefined,
+    knownHostsPath: form.sshKnownHostsPath || undefined,
+  }
+}
+
+const validateSshForm = () => {
+  const form = connForm.value
+  if (!form.sshEnabled) return true
+  if (!form.sshHost || !form.sshUser) { ElMessage.warning('请填写跳板机地址与 SSH 用户'); return false }
+  if (form.sshAuthType === 'password' && !form.sshPassword && !hasSavedSsh.value) {
+    ElMessage.warning('请填写 SSH 密码'); return false
+  }
+  if (form.sshAuthType === 'key' && !form.sshKeyPath) { ElMessage.warning('请填写私钥路径'); return false }
+  return true
+}
+
 const testConnForm = () => {
   if (!connForm.value.url) { ElMessage.warning('请先填写连接信息'); return }
+  if (!validateSshForm()) return
+  const ssh = buildSshConfig()
+  const payload = {
+    id: connForm.value.id || '',
+    dbType: connForm.value.dbType,
+    user: connForm.value.user || '',
+    url: connForm.value.url,
+  }
+  if (connForm.value.pwd) payload.pwd = connForm.value.pwd
+  if (ssh) payload.ssh = ssh
   connTesting.value = true
-  testDbConn(connForm.value)
+  testDbConn(payload)
     .then((resp) => {
       if (resp.data.code === 200) ElMessage.success('数据库连接成功')
     })
@@ -832,6 +950,12 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
+/* 只读连接说明文字 */
+.readonly-tip {
+  font-size: 12px;
+  color: var(--db-text-tertiary, #909399);
+}
+
 .conn-meta {
   display: flex;
   align-items: center;
@@ -893,5 +1017,13 @@ onMounted(() => {
 
 :deep(.el-input__wrapper) {
   border-radius: 6px;
+}
+</style>
+
+<!-- 连接对话框 append-to-body 后不在组件的 scoped 作用域内，需用全局样式 -->
+<style>
+.conn-edit-dialog .el-dialog__body {
+  max-height: 68vh;
+  overflow-y: auto;
 }
 </style>

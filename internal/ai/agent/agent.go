@@ -54,7 +54,10 @@ type ChatRequest struct {
 	InterruptIDs []string    `json:"interruptIds,omitempty"` // 确认时回传（支持多条）
 	CheckPointID string      `json:"checkPointId,omitempty"` // 确认时回传
 	ExcelData    *ExcelData  `json:"excelData,omitempty"`
-	ModelId      string      `json:"modelId,omitempty"` // 选中的模型 ID
+	// Attachments 本轮携带的上传文件引用（多文件，新上传链路）。
+	// 与 ExcelData（legacy 单文件）并存：新前端走此处，旧契约保持兼容。
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
+	ModelId     string          `json:"modelId,omitempty"` // 选中的模型 ID
 	// AdvancedExport 高级导出模式：前端工具栏开关开启时为 true，
 	// 本次对话强制走 export_by_code（仅 Python、只读临时代码）生成文件。
 	AdvancedExport bool `json:"advancedExport,omitempty"`
@@ -73,6 +76,22 @@ type ExcelData struct {
 	TotalRows int      `json:"totalRows"`
 	FileType  string   `json:"fileType,omitempty"`  // excel | csv | markdown
 	CharCount int      `json:"charCount,omitempty"` // markdown 字符数
+}
+
+// AttachmentRef 会话请求携带的上传文件引用（新上传链路，多文件）。
+//
+// 仅 FileID 由客户端提供；其余字段由服务端按上传暂存元数据回填
+// （见 handler 侧 SanitizeChatAttachments），避免客户端伪造文件名/类别进入系统提示词。
+// 该结构同时用于会话消息持久化（历史回看还原文件卡片）。
+type AttachmentRef struct {
+	FileID   string `json:"fileId"`
+	FileName string `json:"fileName,omitempty"`
+	// FileKind 内容类别：table | text | doc | image | video（fileparse.Kind）
+	FileKind string `json:"fileKind,omitempty"`
+	FileExt  string `json:"fileExt,omitempty"`
+	FileSize int64  `json:"fileSize,omitempty"`
+	// ExpireAt 暂存过期时间（秒级时间戳）：历史回看时据此标记「文件已过期」
+	ExpireAt int64 `json:"expireAt,omitempty"`
 }
 
 // SessionMeta 会话列表摘要
@@ -97,10 +116,11 @@ type SessionDetail struct {
 	Context   *SessionContext        `json:"context,omitempty"`
 }
 
-// SessionDetailMessage 会话消息
+// SessionDetailMessage 会话消息（展示用：含文件附件引用，供前端还原文件卡片）
 type SessionDetailMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role        string          `json:"role"`
+	Content     string          `json:"content"`
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -213,16 +233,28 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	}
 	defer sess.EndRun()
 
-	if err := sess.Append("user", req.Question); err != nil {
+	if err := sess.AppendMessage(SessionMessage{
+		Role:        "user",
+		Content:     req.Question,
+		Attachments: req.Attachments, // 空切片时 omitempty 不落库
+	}); err != nil {
 		return sessionID, err
 	}
 
 	allMsgs := sess.GetMessages()
 	log.Printf("[Agent] 历史消息 - total=%d, maxContextTokens=%d\n", len(allMsgs), a.maxContextTokens)
 
-	if !a.scope.HasAnyAccess() {
+	// 数据来源可为数据库或文件：无数据库权限时，只要本次或历史消息中携带了文件，仍可进行文件分析
+	hasHistoryFile := false
+	for _, msg := range allMsgs {
+		if len(msg.Attachments) > 0 {
+			hasHistoryFile = true
+			break
+		}
+	}
+	if !a.scope.HasAnyAccess() && !hasFileDataSource(&req) && !hasHistoryFile {
 		// done 事件由 handler 统一发送，这里只推送错误，避免前端收到两次 done
-		flush(StreamChunk{Type: "error", Content: "您暂时没有可访问的数据表权限，请联系管理员开通。"})
+		flush(StreamChunk{Type: "error", Content: "您暂时没有可访问的数据表权限，请选择有权限的数据库或上传文件。"})
 		return sessionID, nil
 	}
 
@@ -263,10 +295,25 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		}
 	}
 
-	// 高级导出模式（前端工具栏开关）：本次回复强制走 export_by_code。
-	if req.AdvancedExport {
+	// 新上传链路（多文件）：按类别描述 + 不可信数据声明，文件内容仍按需读取（read_file_data）
+	if len(req.Attachments) > 0 {
+		sysPrompt += buildAttachmentsPrompt(req.Attachments)
+		log.Printf("[Agent] 已注入上传文件上下文 - session=%s, files=%d\n", sessionID, len(req.Attachments))
+	}
+
+	// 是否选择了数据库：未选择时数据来源只能是用户上传的文件
+	hasDBContext := defaultConnID != "" || len(req.Schemas) > 0
+
+	// 高级导出模式（前端工具栏开关）：本次回复强制走 export_by_code（依赖数据库连接）。
+	if req.AdvancedExport && hasDBContext {
 		sysPrompt += advancedExportDirectivePrompt()
 		log.Printf("[Agent] 高级导出模式已启用 - session=%s\n", sessionID)
+	}
+
+	// 纯文件分析：置顶文件模式约束（利用 primacy bias），避免模型沿用数据库工作流调用 DB 工具
+	if !hasDBContext && (hasFileDataSource(&req) || hasHistoryFile) {
+		sysPrompt = fileOnlyPromptPrefix() + sysPrompt
+		log.Printf("[Agent] 未选择数据库，切换为文件分析模式 - session=%s\n", sessionID)
 	}
 
 	// 通过动态提示词中间件注入（BeforeAgent 覆盖 Instruction）：
@@ -276,12 +323,28 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	ctx = WithRunPrompt(ctx, sysPrompt)
 	log.Printf("[Agent] 系统提示词已构建并注入 - len=%d\n", len(sysPrompt))
 
+	// 多模态媒体注入计划（图片/视频）：仅模型具备对应能力时注入，
+	// 仅覆盖最近 mediaInjectWindow 条含媒体的用户消息，同一 fileId 只注入一次。
+	mediaInjector := newMediaInjector(req.ModelId, req.UserID)
+	mediaPlan := planMediaInjection(allMsgs, mediaInjector)
+	if len(mediaPlan) > 0 {
+		log.Printf("[Media] 媒体注入计划 - session=%s, 消息数=%d, allowImage=%v, allowVideo=%v\n",
+			sessionID, len(mediaPlan), mediaInjector.allowImage, mediaInjector.allowVideo)
+	}
+
 	// 构建 Eino 消息列表：仅用户/助手/工具消息，系统提示词已由 promptMW 注入 Instruction
 	messages := make([]adk.Message, 0, len(allMsgs))
-	for _, msg := range allMsgs {
+	for i, msg := range allMsgs {
 		switch msg.Role {
 		case "user":
-			messages = append(messages, &schema.Message{Role: schema.User, Content: msg.Content})
+			// 历史轮次携带的文件引用以紧凑文本附带，保证后续追问仍能拿到 fileId
+			// 调用 read_file_data（文件内容不在消息体中，按需读取）。
+			content := msg.Content + formatMessageAttachments(msg.Attachments)
+			if refs, ok := mediaPlan[i]; ok {
+				messages = append(messages, mediaInjector.buildUserMessage(content, refs))
+			} else {
+				messages = append(messages, &schema.Message{Role: schema.User, Content: content})
+			}
 		case "assistant":
 			sm := &schema.Message{Role: schema.Assistant, Content: msg.Content}
 			if len(msg.ToolCalls) > 0 {

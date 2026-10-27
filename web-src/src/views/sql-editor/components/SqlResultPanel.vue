@@ -5,7 +5,17 @@
             @update:model-value="emit('update:activeResultTab', $event)"
             @change="emit('batchTabChange', $event)" />
         <SqlErrorPanel v-if="sqlError" :error="sqlError" />
-        <div v-else style="flex: 1; overflow: hidden;">
+        <!-- 行数反馈：结果可能被行数上限截断时必须明示，避免用户误判数据量（缺陷 D7） -->
+        <div v-else-if="result.length > 0" class="result-rowhint">
+            <span class="result-rowhint-text">
+                {{ hasMore ? `已显示前 ${result.length} 行（可能仍有更多数据）` : `共 ${result.length} 行` }}
+            </span>
+            <el-button v-if="hasMore" size="small" type="primary" link :loading="loadingMore"
+                @click="emit('loadMore')">
+                继续加载
+            </el-button>
+        </div>
+        <div v-if="!sqlError" style="flex: 1; overflow: hidden;">
             <el-auto-resizer>
                 <template #default="{ height: autoHeight, width: autoWidth }">
                     <div ref="resultScrollRef"
@@ -21,6 +31,17 @@
         </div>
         <SqlInlineEditor v-if="canInlineEdit && inlineChangeCount > 0" :change-count="inlineChangeCount"
             :saving="savingInline" @save="saveInlineChanges" @discard="discardInlineChanges" />
+
+        <!-- 复制格式右键菜单 -->
+        <div v-if="ctxMenu.visible" class="grid-ctx-mask" @click="closeContextMenu"
+            @contextmenu.prevent="closeContextMenu"></div>
+        <div v-if="ctxMenu.visible" class="grid-ctx-menu"
+            :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
+            <div v-for="fmt in copyFormats" :key="fmt" class="grid-ctx-item" @click="copyAs(fmt)">
+                {{ GRID_COPY_FORMAT_LABELS[fmt] }}
+            </div>
+            <div class="grid-ctx-item" @click="copyColumnNames">复制列名</div>
+        </div>
     </div>
 </template>
 
@@ -29,6 +50,7 @@ import { ref, computed, watch, h, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { execSQL } from '@/api/sql'
 import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper'
+import { buildGridText, GRID_COPY_FORMAT_LABELS, type GridCopyFormat } from '@/utils/gridCopy'
 import SqlBatchResultTabs from './SqlBatchResultTabs.vue'
 import SqlErrorPanel from './SqlErrorPanel.vue'
 import SqlInlineEditor from './SqlInlineEditor.vue'
@@ -46,6 +68,10 @@ const props = defineProps<{
     tableKeys: string[]
     connId: string
     schema: string
+    /** 是否仍可能有后续行（由行数上限截断） */
+    hasMore?: boolean
+    /** 是否正在加载下一页 */
+    loadingMore?: boolean
     maxLine: string
     currentSelectTable: string
     effectiveDbType: string
@@ -56,6 +82,7 @@ const emit = defineEmits<{
     batchTabChange: [name: string | number]
     openDataDetails: [rowIndex: number]
     execRefresh: [silent: boolean]
+    loadMore: []
 }>()
 
 // ── 显示列（含 cellRenderer），从 rawColumns 构建 ──
@@ -221,23 +248,76 @@ function copySelectedRange2() {
     if (!bounds) return
 
     const colKeys = dataColKeys()
-    const lines: string[] = []
     const cols = colKeys.slice(bounds.colMin, bounds.colMax + 1)
-    for (let r = bounds.rowMin; r <= bounds.rowMax; r++) {
-        const row = props.result[r]
-        if (!row) continue
-        const line = cols
-            .map((k) => {
-                const val = row[k]
-                return val != null ? String(val) : '\\N'
-            })
-            .join('\t')
-        lines.push(line)
+    const selected = props.result.slice(bounds.rowMin, bounds.rowMax + 1)
+    const text = buildGridText({ format: 'tsv', columns: cols, rows: selected })
+    if (text) {
+        navigator.clipboard.writeText(text).catch(() => {})
+        ElMessage({ message: `已复制 ${selected.length} 行`, type: 'success' })
     }
-    if (lines.length > 0) {
-        navigator.clipboard.writeText(lines.join('\n')).catch(() => {})
-        ElMessage({ message: `已复制 ${lines.length} 行`, type: 'success' })
+}
+
+// ── 右键菜单：多格式复制 ──
+const copyFormats: GridCopyFormat[] = ['tsv', 'csv', 'json', 'insert', 'markdown']
+const ctxMenu = ref({ visible: false, x: 0, y: 0 })
+const ctxRows = ref<Record<string, any>[]>([])
+const ctxCols = ref<string[]>([])
+
+/** 右键：有选区时复制选区，否则复制当前行 */
+function openContextMenu(e: MouseEvent, rowIndex: number) {
+    e.preventDefault()
+    const bounds = selectionBounds2.value
+    let rows: Record<string, any>[] = []
+    let cols: string[] = []
+    if (bounds && rowIndex >= bounds.rowMin && rowIndex <= bounds.rowMax) {
+        const all = dataColKeys()
+        cols = all.slice(bounds.colMin, bounds.colMax + 1)
+        rows = props.result.slice(bounds.rowMin, bounds.rowMax + 1)
+    } else {
+        cols = dataColKeys()
+        const row = props.result[rowIndex]
+        rows = row ? [row] : []
     }
+    if (rows.length === 0 || cols.length === 0) return
+    ctxRows.value = rows
+    ctxCols.value = cols
+    ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY }
+}
+
+function closeContextMenu() {
+    ctxMenu.value.visible = false
+}
+
+async function copyAs(format: GridCopyFormat) {
+    const rowCount = ctxRows.value.length
+    const text = buildGridText({
+        format,
+        columns: ctxCols.value,
+        rows: ctxRows.value,
+        table: props.currentSelectTable,
+        dbType: props.effectiveDbType,
+    })
+    closeContextMenu()
+    if (!text) {
+        ElMessage({ message: '没有可复制的内容', type: 'warning' })
+        return
+    }
+    try {
+        await navigator.clipboard.writeText(text)
+        ElMessage({ message: `已复制 ${rowCount} 行（${format.toUpperCase()}）`, type: 'success' })
+    } catch {
+        ElMessage({ message: '复制失败，请检查浏览器剪贴板权限', type: 'error' })
+    }
+}
+
+function copyColumnNames() {
+    const text = ctxCols.value.join('\t')
+    closeContextMenu()
+    if (!text) return
+    navigator.clipboard
+        .writeText(text)
+        .then(() => ElMessage({ message: '已复制列名', type: 'success' }))
+        .catch(() => ElMessage({ message: '复制失败', type: 'error' }))
 }
 
 // ── 内联编辑 ──
@@ -778,6 +858,7 @@ function buildColumnDef(col: any): any {
                     onMousedown: (e: MouseEvent) => onCellMouseDown2(rowIndex, colKey, e),
                     onMousemove: () => onCellMouseMove2(rowIndex, colKey),
                     onMouseenter: () => onCellMouseEnter2(rowIndex, colKey),
+                    onContextmenu: (e: MouseEvent) => openContextMenu(e, rowIndex),
                 },
                 displayVal
             )
@@ -824,6 +905,50 @@ watch([() => props.result, totalColumnWidth], () => {
 </script>
 
 <style scoped>
+/* 行数反馈栏 */
+.result-rowhint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--db-text-tertiary);
+    border-bottom: 1px solid var(--border-primary, #e4e7ed);
+}
+
+.result-rowhint-text {
+    flex: 1;
+}
+
+/* 复制格式右键菜单 */
+.grid-ctx-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+}
+
+.grid-ctx-menu {
+    position: fixed;
+    z-index: 3001;
+    min-width: 220px;
+    padding: 4px 0;
+    background: var(--bg-secondary, #fff);
+    border: 1px solid var(--border-primary, #dcdfe6);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: 13px;
+}
+
+.grid-ctx-item {
+    padding: 6px 14px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.grid-ctx-item:hover {
+    background: var(--bg-toolbar, #f5f7fa);
+}
+
 .data-view {
     cursor: pointer;
 }

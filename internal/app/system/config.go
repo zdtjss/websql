@@ -61,12 +61,19 @@ type AIModelItem struct {
 	MaxContextTokens int     `json:"maxContextTokens"`
 	EnableThinking   bool    `json:"enableThinking"`
 	IsDefault        bool    `json:"isDefault"`
+	// Capabilities 模型能力集合（vision/video）。
+	// nil = 未配置（按模型名启发式推断）；空数组 = 明确声明无附加能力（仅文本）。
+	Capabilities []string `json:"capabilities"`
 }
 
 type AIModelBrief struct {
 	Id       string `json:"id"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Capabilities 生效能力集合（显式配置或启发式推断）
+	Capabilities []string `json:"capabilities"`
+	// CapabilitiesSource 能力来源：configured（管理端配置）/ inferred（按模型名推断）
+	CapabilitiesSource string `json:"capabilitiesSource"`
 }
 
 type AIModelListResponse struct {
@@ -84,6 +91,9 @@ type AIConfig struct {
 	PresencePenalty  float32 `json:"presencePenalty"`
 	MaxContextTokens int     `json:"maxContextTokens"`
 	EnableThinking   bool    `json:"enableThinking"`
+	// Capabilities 生效能力集合（见 ai_capability.go）；CapabilitiesSource 说明其来源
+	Capabilities       []string `json:"capabilities,omitempty"`
+	CapabilitiesSource string   `json:"capabilitiesSource,omitempty"`
 }
 
 func GetSystemConfigByKey(key string) *SystemConfig {
@@ -179,16 +189,21 @@ func GetAIConfigFromDB() *AIConfig {
 		if temperature == 0 {
 			temperature = 0.7
 		}
+		// 能力集合在此统一解析（显式配置优先，未配置按模型名推断），
+		// 上层（文件上传校验、多模态注入）直接消费，无需感知解析细节。
+		caps, capsSource := ResolveModelCapabilities(*picked)
 		return &AIConfig{
-			Provider:         picked.Provider,
-			BaseURL:          picked.BaseURL,
-			Model:            picked.Model,
-			ApiKey:           picked.ApiKey,
-			Temperature:      temperature,
-			FrequencyPenalty: picked.FrequencyPenalty,
-			PresencePenalty:  picked.PresencePenalty,
-			MaxContextTokens: picked.MaxContextTokens,
-			EnableThinking:   picked.EnableThinking,
+			Provider:           picked.Provider,
+			BaseURL:            picked.BaseURL,
+			Model:              picked.Model,
+			ApiKey:             picked.ApiKey,
+			Temperature:        temperature,
+			FrequencyPenalty:   picked.FrequencyPenalty,
+			PresencePenalty:    picked.PresencePenalty,
+			MaxContextTokens:   picked.MaxContextTokens,
+			EnableThinking:     picked.EnableThinking,
+			Capabilities:       caps,
+			CapabilitiesSource: capsSource,
 		}
 	}
 
@@ -343,16 +358,19 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 			if err == nil {
 				for _, m := range modelList {
 					if m.Id == targetId {
+						caps, capsSource := ResolveModelCapabilities(m)
 						return &AIConfig{
-							Provider:         m.Provider,
-							BaseURL:          m.BaseURL,
-							Model:            m.Model,
-							ApiKey:           m.ApiKey,
-							Temperature:      m.Temperature,
-							FrequencyPenalty: m.FrequencyPenalty,
-							PresencePenalty:  m.PresencePenalty,
-							MaxContextTokens: m.MaxContextTokens,
-							EnableThinking:   m.EnableThinking,
+							Provider:           m.Provider,
+							BaseURL:            m.BaseURL,
+							Model:              m.Model,
+							ApiKey:             m.ApiKey,
+							Temperature:        m.Temperature,
+							FrequencyPenalty:   m.FrequencyPenalty,
+							PresencePenalty:    m.PresencePenalty,
+							MaxContextTokens:   m.MaxContextTokens,
+							EnableThinking:     m.EnableThinking,
+							Capabilities:       caps,
+							CapabilitiesSource: capsSource,
 						}
 					}
 				}
@@ -366,16 +384,19 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 		err := json.Unmarshal([]byte(modelListJSON), &modelList)
 		if err == nil && len(modelList) > 0 {
 			m := modelList[0]
+			caps, capsSource := ResolveModelCapabilities(m)
 			return &AIConfig{
-				Provider:         m.Provider,
-				BaseURL:          m.BaseURL,
-				Model:            m.Model,
-				ApiKey:           m.ApiKey,
-				Temperature:      m.Temperature,
-				FrequencyPenalty: m.FrequencyPenalty,
-				PresencePenalty:  m.PresencePenalty,
-				MaxContextTokens: m.MaxContextTokens,
-				EnableThinking:   m.EnableThinking,
+				Provider:           m.Provider,
+				BaseURL:            m.BaseURL,
+				Model:              m.Model,
+				ApiKey:             m.ApiKey,
+				Temperature:        m.Temperature,
+				FrequencyPenalty:   m.FrequencyPenalty,
+				PresencePenalty:    m.PresencePenalty,
+				MaxContextTokens:   m.MaxContextTokens,
+				EnableThinking:     m.EnableThinking,
+				Capabilities:       caps,
+				CapabilitiesSource: capsSource,
 			}
 		}
 	}
@@ -472,7 +493,8 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 		}
 	}
 
-	logger.PrintErr(fmt.Errorf("返回配置数据：%+v", cfg))
+	// 不打印 cfg 全文：其中包含 AI apiKey、Redis 口令等敏感字段
+	logger.PrintErr(fmt.Errorf("返回系统配置：aiModelCount=%d, allowedIPCount=%d", len(cfg.AIModelList), len(cfg.AllowedIP)))
 	response.WriteOK(c, cfg)
 }
 
@@ -779,10 +801,15 @@ func GetAIModelListHandler(c *gin.Context) {
 
 	briefList := make([]AIModelBrief, 0, len(modelList))
 	for _, m := range modelList {
+		// 返回「生效能力」而非原始配置值：前端据此做上传前置校验与能力徽标展示，
+		// 无需在前端重复实现启发式推断；来源字段用于提示用户该能力的可信度。
+		caps, capsSource := ResolveModelCapabilities(m)
 		briefList = append(briefList, AIModelBrief{
-			Id:       m.Id,
-			Provider: m.Provider,
-			Model:    m.Model,
+			Id:                 m.Id,
+			Provider:           m.Provider,
+			Model:              m.Model,
+			Capabilities:       caps,
+			CapabilitiesSource: capsSource,
 		})
 	}
 

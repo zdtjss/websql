@@ -11,6 +11,7 @@ import (
 
 	"websql/internal/ai/agent/export"
 	"websql/internal/ai/agent/sqlutil"
+	"websql/internal/ai/agent/uploadstore"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -444,8 +445,11 @@ func TestUploadOwnership(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
 		t.Fatalf("准备测试文件失败：%v", err)
 	}
-	uploadCache.Set("f-1", &uploadMeta{ID: "f-1", UserID: "u1", DiskPath: path, Type: fileTypeMarkdown})
-	defer uploadCache.Delete("f-1")
+	globalUploadStore.Save(&uploadstore.FileMeta{
+		ID: "f-1", UserID: "u1", DiskPath: path, FileName: "a.md",
+		Ext: ".md", Size: 5, Kind: "text", FileType: "markdown",
+	})
+	defer RemoveUploadedFile("f-1")
 
 	if !IsUploadOwner("f-1", "u1") {
 		t.Error("本人应可访问自己的上传文件")
@@ -457,10 +461,10 @@ func TestUploadOwnership(t *testing.T) {
 		t.Error("文件不存在应返回 false")
 	}
 
-	if _, err := GetUploadedFile("f-1", "u2"); err == nil {
+	if _, err := GetUploadedFile(context.Background(), "f-1", "u2"); err == nil {
 		t.Error("跨用户读取应被拒绝")
 	}
-	up, err := GetUploadedFile("f-1", "u1")
+	up, err := GetUploadedFile(context.Background(), "f-1", "u1")
 	if err != nil {
 		t.Fatalf("本人读取失败：%v", err)
 	}

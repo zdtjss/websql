@@ -232,25 +232,6 @@ export function useDataQuery(params: DataQueryParams) {
     return pattern.test(filterExpr.value)
   }
 
-  async function fetchFullData() {
-    let orderBy = ''
-    if (sortColumn.value && sortOrder.value) {
-      const dir = sortOrder.value === 'descending' ? 'DESC' : 'ASC'
-      orderBy = quoteId(sortColumn.value, effectiveDbType.value) + ' ' + dir
-    }
-    const sql = buildSelectSQL(params.tableName() || '', effectiveDbType.value, {
-      where: filterExpr.value.trim() || undefined,
-      orderBy: orderBy || undefined,
-    })
-    const urlParams = new URLSearchParams()
-    urlParams.append('connId', params.connId() || '')
-    urlParams.append('schema', params.schema() || '')
-    urlParams.append('tableName', params.tableName() || '')
-    urlParams.append('sql', sql)
-    urlParams.append('maxLine', '100000')
-    return await http.post('/execSQL', urlParams)
-  }
-
   function clearAllFilters() {
     filterExpr.value = ''
     columnFilterConditions.value = {}
@@ -292,7 +273,6 @@ export function useDataQuery(params: DataQueryParams) {
     loadData,
     fetchTotal,
     fetchData,
-    fetchFullData,
     onPageChange,
     onSizeChange,
     handleSort,

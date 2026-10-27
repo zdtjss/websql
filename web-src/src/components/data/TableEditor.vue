@@ -344,6 +344,19 @@
             <el-button type="primary" @click="createForeignKey">创建</el-button>
         </template>
     </el-dialog>
+
+    <!-- 表结构变更预览：服务端生成方言 DDL，用户确认后再执行 -->
+    <el-dialog v-model="ddlPreviewVisible" :title="ddlPreviewTitle" width="720px" :draggable="true" destroy-on-close>
+        <el-alert v-if="ddlPreviewWarnings.length" type="warning" :closable="false" show-icon style="margin-bottom: 10px;">
+            <div v-for="(w, i) in ddlPreviewWarnings" :key="i">{{ w }}</div>
+        </el-alert>
+        <div class="ddl-preview-label">即将执行的 SQL（不可回滚）</div>
+        <pre class="ddl-preview-sql">{{ ddlPreviewSql }}</pre>
+        <template #footer>
+            <el-button @click="ddlPreviewVisible = false">取消</el-button>
+            <el-button type="primary" :loading="ddlApplying" @click="confirmApplyDdl">确认执行</el-button>
+        </template>
+    </el-dialog>
 </template>
 <script setup>
 import { computed, ref, useTemplateRef, watch } from 'vue'
@@ -355,6 +368,8 @@ import { format } from 'sql-formatter'
 import { highlightSql } from '@/utils/lazyDeps'
 import copyToClipboard from '@/utils/copy-to-clipboard'
 import { getSqlDialect } from '@/utils/sqlHelper'
+import { applyDdl, planDdl } from '@/api/sql'
+import { handleError } from '@/utils/errorHandler'
 
 const activeName = ref("colums")
 
@@ -430,6 +445,104 @@ function quoteIdent(name) {
 
 function escapeStr(str) {
     return (str || '').replace(/'/g, "''")
+}
+
+// 当前列的完整定义（类型/可空性/默认值/注释），交给服务端生成方言 DDL。
+function currentColumnDef(col, overrides = {}) {
+    const nullable = typeof col.isNullable === 'boolean'
+        ? col.isNullable
+        : col.isNullable === undefined || col.isNullable === null || col.isNullable === ''
+            ? undefined
+            : String(col.isNullable).toUpperCase() !== 'NO'
+    return {
+        name: col.columnName || '',
+        type: col.columnType || '',
+        nullable,
+        default: col.columnDefault ?? null,
+        comment: col.columnComment || '',
+        ...overrides,
+    }
+}
+
+// 表结构变更预览状态
+const ddlPreviewVisible = ref(false)
+const ddlPreviewTitle = ref('')
+const ddlPreviewSql = ref('')
+const ddlPreviewWarnings = ref([])
+const ddlApplying = ref(false)
+let pendingDdlPlan = null
+let pendingDdlSuccess = null
+
+// 统一的 DDL 入口：服务端生成计划 → 用户确认 SQL → 按计划执行。
+// 不再在前端拼 SQL：方言差异（默认值表达式、NOT NULL、标识符转义）统一由服务端处理。
+async function applyDdlChanges(changes, actionLabel, onSuccess) {
+    if (!changes || changes.length === 0) return
+    let plan = null
+    try {
+        const resp = await planDdl({
+            connId: tableMeta.connId,
+            schema: tableMeta.schema,
+            table: tableMeta.tableName,
+            changes,
+        })
+        plan = resp?.data?.data
+    } catch (e) {
+        handleError(e, `${actionLabel}（生成预览）`)
+        return
+    }
+
+    if (!plan || !plan.statements || plan.statements.length === 0) {
+        const detail = plan?.unsupported?.length
+            ? `当前数据库不支持：${plan.unsupported.join(', ')}`
+            : '未生成任何语句'
+        ElMessage({
+            message: `${actionLabel}：${detail}。请在 SQL 编辑器中重建表后迁移数据`,
+            type: 'warning',
+        })
+        return
+    }
+
+    pendingDdlPlan = plan
+    pendingDdlSuccess = onSuccess
+    ddlPreviewTitle.value = `${actionLabel} - 确认执行`
+    ddlPreviewSql.value = plan.statements.map(s => s.sql).join(';\n')
+    ddlPreviewWarnings.value = [
+        ...(plan.warnings || []),
+        ...plan.statements.filter(s => s.message).map(s => s.message),
+    ]
+    ddlPreviewVisible.value = true
+}
+
+async function confirmApplyDdl() {
+    if (!pendingDdlPlan) return
+    ddlApplying.value = true
+    try {
+        const resp = await applyDdl({
+            planId: pendingDdlPlan.planId,
+            connId: tableMeta.connId,
+            schema: tableMeta.schema,
+        })
+        const data = resp?.data?.data
+        if (data?.partial) {
+            // 已部分生效：DDL 不可回滚，必须把“到哪里失败了”告诉用户
+            const failedSql = data?.failed?.sql ? `\n失败语句：${data.failed.sql}` : ''
+            ElMessage({
+                message: `部分执行成功（${data.executed?.length || 0} 条），后续语句失败：${data.error || '未知错误'}${failedSql}`,
+                type: 'error',
+                duration: 8000,
+            })
+        } else {
+            ElMessage({ message: '表结构已更新', type: 'success' })
+        }
+        ddlPreviewVisible.value = false
+        if (pendingDdlSuccess) pendingDdlSuccess()
+    } catch (e) {
+        handleError(e, '执行表结构变更')
+    } finally {
+        ddlApplying.value = false
+        pendingDdlPlan = null
+        pendingDdlSuccess = null
+    }
 }
 
 function queryTypeOptions(queryString, cb) {
@@ -743,78 +856,61 @@ function formatStatsValue(key, val) {
 }
 
 // ========== 字段操作 ==========
-function formatDefaultValue(defaultVal) {
-    if (defaultVal == null || defaultVal === '') return 'NULL'
-    return "'" + defaultVal.replace(/'/g, "''") + "'"
-}
-
 function modifyColumnName(seq, newName) {
     const col = columnListOrigin[seq]
-    if (isOracle()) {
-        const sql = 'ALTER TABLE ' + quoteIdent(tableMeta.tableName) + ' RENAME COLUMN ' + quoteIdent(col.columnName) + ' TO ' + quoteIdent(newName)
-        execSql(sql, () => {
-            columnListOrigin[seq].columnName = newName
-            columnList.value[seq].onColumnNameEdit = false
-        })
+    if (!newName || newName === col.columnName) {
+        columnList.value[seq].onColumnNameEdit = false
         return
     }
-    const sql = "alter table `" + tableMeta.tableName + "` change `" + col.columnName + "` `" + newName + "` " + col.columnType + " DEFAULT " + formatDefaultValue(col.columnDefault) + " comment '" + escapeStr(col.columnComment || '') + "'"
-    execSql(sql, () => {
-        columnListOrigin[seq].columnName = newName
-        columnList.value[seq].onColumnNameEdit = false
-    })
+    applyDdlChanges(
+        [{
+            kind: 'rename_column',
+            oldName: col.columnName,
+            name: newName,
+            column: currentColumnDef(col, { name: newName }),
+        }],
+        '重命名字段',
+        () => {
+            columnListOrigin[seq].columnName = newName
+            columnList.value[seq].onColumnNameEdit = false
+        }
+    )
 }
 
 function modifyColumnType(seq, newType) {
     const col = columnListOrigin[seq]
-    if (isOracle()) {
-        const sql = 'ALTER TABLE ' + quoteIdent(tableMeta.tableName) + ' MODIFY (' + quoteIdent(col.columnName) + ' ' + newType + ')'
-        execSql(sql, () => {
+    applyDdlChanges(
+        [{ kind: 'modify_column', column: currentColumnDef(col, { type: newType }) }],
+        '修改字段类型',
+        () => {
             columnListOrigin[seq].columnType = newType
             columnList.value[seq].onColumnTypeEdit = false
-        })
-        return
-    }
-    const sql = "alter table `" + tableMeta.tableName + "` modify `" + col.columnName + "` " + newType + " DEFAULT " + formatDefaultValue(col.columnDefault) + " comment '" + escapeStr(col.columnComment || '') + "'"
-    execSql(sql, () => {
-        columnListOrigin[seq].columnType = newType
-        columnList.value[seq].onColumnTypeEdit = false
-    })
+        }
+    )
 }
 
 function modifyColumnDefault(seq, newDefault) {
     const col = columnListOrigin[seq]
-    const defaultVal = (newDefault === null || newDefault === undefined || newDefault === '') ? 'NULL' : "'" + newDefault.replace(/'/g, "''") + "'"
-    if (isOracle()) {
-        const sql = 'ALTER TABLE ' + quoteIdent(tableMeta.tableName) + ' MODIFY (' + quoteIdent(col.columnName) + ' DEFAULT ' + defaultVal + ')'
-        execSql(sql, () => {
+    applyDdlChanges(
+        [{ kind: 'modify_column', column: currentColumnDef(col, { default: newDefault }) }],
+        '修改字段默认值',
+        () => {
             columnListOrigin[seq].columnDefault = newDefault
             columnList.value[seq].onColumnDefaultEdit = false
-        })
-        return
-    }
-    const sql = "alter table `" + tableMeta.tableName + "` modify `" + col.columnName + "` " + col.columnType + " DEFAULT " + defaultVal + " comment '" + escapeStr(col.columnComment || '') + "'"
-    execSql(sql, () => {
-        columnListOrigin[seq].columnDefault = newDefault
-        columnList.value[seq].onColumnDefaultEdit = false
-    })
+        }
+    )
 }
 
 function modifyColumnComment(seq, newComment) {
     const col = columnListOrigin[seq]
-    if (isOracle()) {
-        const sql = "COMMENT ON COLUMN " + quoteIdent(tableMeta.tableName) + "." + quoteIdent(col.columnName) + " IS '" + escapeStr(newComment || '') + "'"
-        execSql(sql, () => {
+    applyDdlChanges(
+        [{ kind: 'modify_column', column: currentColumnDef(col, { comment: newComment }) }],
+        '修改字段注释',
+        () => {
             columnListOrigin[seq].columnComment = newComment
             columnList.value[seq].onColumnCommentEdit = false
-        })
-        return
-    }
-    const sql = "alter table `" + tableMeta.tableName + "` modify `" + col.columnName + "` " + col.columnType + " DEFAULT " + formatDefaultValue(col.columnDefault) + " comment '" + escapeStr(newComment || '') + "'"
-    execSql(sql, () => {
-        columnListOrigin[seq].columnComment = newComment
-        columnList.value[seq].onColumnCommentEdit = false
-    })
+        }
+    )
 }
 
 function addCol(targetIdx) {
@@ -837,30 +933,15 @@ function cancelAdd(targetIdx) {
 }
 
 function doColAdd(column) {
-    let sql = ""
-    const tbl = quoteIdent(tableMeta.tableName)
-    const col = quoteIdent(column.columnName)
-    if (isOracle()) {
-        sql = "ALTER TABLE " + tbl + " ADD (" + col + " " + column.columnType
-        if ("YES" !== column.isNullable) sql += " NOT NULL"
-        if (column.columnDefault) sql += " DEFAULT '" + column.columnDefault.replace(/'/g, "''") + "'"
-        sql += ")"
-        if (column.columnComment) {
-            sql += ";\nCOMMENT ON COLUMN " + tbl + "." + col + " IS '" + escapeStr(column.columnComment) + "'"
-        }
-    } else {
-        sql = "alter table `" + tableMeta.tableName + "` add `" + column.columnName + "` " + column.columnType
-        if ("YES" === column.isNullable) {
-            sql += " default null "
-        } else {
-            sql += " not null "
-        }
-        if (column.columnDefault) {
-            sql += " default '" + column.columnDefault.replace(/'/g, "''") + "' "
-        }
-        sql += " comment '" + escapeStr(column.columnComment || '') + "' after `" + column.after + "`"
+    if (!column.columnName || !column.columnType) {
+        ElMessage({ message: '请先填写字段名与字段类型', type: 'warning' })
+        return
     }
-    execSql(sql, () => loadData('colums'))
+    applyDdlChanges(
+        [{ kind: 'add_column', column: currentColumnDef(column, { after: column.after || '' }) }],
+        '新增字段',
+        () => loadData('colums')
+    )
 }
 
 function delCol(seq) {
@@ -994,21 +1075,6 @@ function resetColumnOrder() {
     ElMessage({ message: '已恢复原字段顺序', type: 'info' })
 }
 
-function buildModifySql(col, prevColName) {
-    const tbl = quoteIdent(tableMeta.tableName)
-    const c = quoteIdent(col.columnName)
-    let sql = `alter table ${tbl} modify ${c} ${col.columnType}`
-    if (col.isNullable === 'YES') {
-        sql += col.columnDefault ? ` default '${escapeStr(col.columnDefault)}'` : ' default null'
-    } else {
-        sql += ' not null'
-        if (col.columnDefault) sql += ` default '${escapeStr(col.columnDefault)}'`
-    }
-    sql += ` comment '${escapeStr(col.columnComment || '')}'`
-    sql += prevColName ? ` after ${quoteIdent(prevColName)}` : ' first'
-    return sql
-}
-
 function saveColumnOrder() {
     if (hasNewCol.value) {
         ElMessage({ message: '请先完成新增字段再保存顺序', type: 'warning' })
@@ -1034,17 +1100,25 @@ function saveColumnOrder() {
     // MySQL / MariaDB：仅为真正移动的字段生成 MODIFY ... AFTER/FIRST
     // （处于最长公共子序列中的字段相对顺序未变，无需修改；被挤位的字段无需处理）
     const moves = computeOrderMoves(oldNames, newNames)
-    const sqls = moves.map(k => buildModifySql(newList[k], k > 0 ? newList[k - 1].columnName : null))
-    ElMessageBox.confirm(
-        `将执行 ${sqls.length} 条 ALTER TABLE 语句调整字段顺序，DDL 执行后不可回滚，是否继续？`,
-        '保存字段顺序',
-        { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
-    ).then(() => {
-        execSql(sqls.join(';'), () => {
-            ElMessage({ message: '字段顺序已更新', type: 'success' })
-            loadData('colums')
-        })
-    }).catch(() => {})
+    // 字段排序：走服务端 DDL 计划（MySQL 用 MODIFY ... AFTER/FIRST）
+    const changes = moves.map(k => ({
+        kind: 'modify_column',
+        column: {
+            ...currentColumnDef(newList[k]),
+            after: k > 0 ? newList[k - 1].columnName : '',
+            first: k === 0,
+        },
+    }))
+    if (changes.length === 0) {
+        columnOrderDirty.value = false
+        ElMessage({ message: '字段顺序未发生变化', type: 'info' })
+        return
+    }
+    applyDdlChanges(changes, '调整字段顺序', () => {
+        columnOrderDirty.value = false
+        ElMessage({ message: '字段顺序已更新', type: 'success' })
+        loadData('colums')
+    })
 }
 
 // 计算调整字段顺序所需的最小移动集合：
@@ -1274,7 +1348,8 @@ function execSql(sql, succ) {
     params.append("maxLine", 1)
     http.post("/execSQL", params)
         .then((resp) => { if (succ) succ(resp) })
-        .catch((error) => { console.log(error) });
+        // 表结构变更失败必须让用户看到原因：原先只 console.log，导致“点了保存但没反应”
+        .catch((error) => { handleError(error, '执行表结构变更') });
 }
 
 function copyCreateScript() {
@@ -1286,6 +1361,28 @@ function copyCreateScript() {
 </script>
 
 <style lang="less" scoped>
+/* 表结构变更预览 */
+.ddl-preview-label {
+    font-size: 12px;
+    color: var(--db-text-tertiary);
+    margin-bottom: 6px;
+}
+
+.ddl-preview-sql {
+    margin: 0;
+    padding: 10px;
+    max-height: 320px;
+    overflow: auto;
+    font-family: Consolas, Menlo, Monaco, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: var(--bg-toolbar);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+}
+
 .table-editor-tabs {
     display: flex;
     flex-direction: column;

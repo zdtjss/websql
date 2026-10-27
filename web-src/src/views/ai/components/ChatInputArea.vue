@@ -90,15 +90,29 @@
             :value="model.id">
             <div class="model-option-content">
               <span class="model-option-name">{{ model.model }}</span>
+              <!-- 能力徽标：图片/视频输入能力（上传对应类型文件的前置条件） -->
+              <span v-if="hasCapability(model, 'vision')" class="model-cap-badge" title="支持图片输入">图片</span>
+              <span v-if="hasCapability(model, 'video')" class="model-cap-badge video" title="支持视频输入">视频</span>
             </div>
           </el-option>
         </el-select>
       </div>
     </div>
 
-    <!-- 输入框 + 操作按钮 -->
+    <!-- 输入框 + 待发送文件卡片（卡片位于输入框内部上方）+ 操作按钮 -->
     <div class="input-action-row">
       <div class="textarea-wrapper">
+        <!-- 待发送文件卡片（上传进度/失败重试/移除；发送后进入聊天历史） -->
+        <div v-if="attachments.length > 0" class="attachment-row">
+          <ChatFileCard
+            v-for="file in attachments"
+            :key="file.localId"
+            :file="file"
+            mode="pending"
+            @remove="emit('remove-attachment', $event)"
+            @retry="emit('retry-attachment', $event)"
+          />
+        </div>
         <el-input
           v-model="questionRef"
           type="textarea"
@@ -140,14 +154,18 @@
  */
 import { computed } from 'vue'
 import { Promotion, VideoPause } from '@element-plus/icons-vue'
+import ChatFileCard from './ChatFileCard.vue'
+import type { FileAttachmentItem } from '../utils/uploadState'
 
 const props = defineProps<{
   /** 输入框内容 */
   question: string
   /** 是否正在加载 */
   loading: boolean
-  /** 是否有已上传文件 */
+  /** 是否有已上传文件（可发送） */
   hasUploadedFile: boolean
+  /** 待发送文件队列（上传中/失败项也在其中） */
+  attachments: FileAttachmentItem[]
   /** 选中的 schema 列表 */
   selectedSchemas: string[]
   /** 选中的表列表 */
@@ -164,8 +182,8 @@ const props = defineProps<{
   tableList: { name: string; comment?: string; schema?: string; label?: string }[]
   /** 表是否加载中 */
   tablesLoading: boolean
-  /** AI 模型列表 */
-  aiModelList: { id: string; model: string }[]
+  /** AI 模型列表（含生效能力集合，用于图片/视频能力徽标） */
+  aiModelList: { id: string; model: string; capabilities?: string[] | null }[]
   /** 获取表注释 */
   getTableComment: (value: string) => string
 }>()
@@ -185,7 +203,16 @@ const emit = defineEmits<{
   (e: 'send'): void
   /** 停止生成 */
   (e: 'stop'): void
+  /** 移除待发送文件 */
+  (e: 'remove-attachment', file: FileAttachmentItem): void
+  /** 重试上传失败的文件 */
+  (e: 'retry-attachment', file: FileAttachmentItem): void
 }>()
+
+/** 模型是否具备指定能力（vision/video） */
+function hasCapability(model: { capabilities?: string[] | null }, capability: string): boolean {
+  return (model.capabilities || []).includes(capability)
+}
 
 const questionRef = computed({
   get: () => props.question,
@@ -363,6 +390,26 @@ const modelRef = computed({
   margin: 0;
 }
 
+/* ========== 待发送文件卡片（位于输入框内部上方） ========== */
+.attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
+  max-height: 132px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.attachment-row::-webkit-scrollbar {
+  width: 4px;
+}
+
+.attachment-row::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: 2px;
+}
+
 /* ========== 输入区域 ========== */
 .input-action-row {
   display: flex;
@@ -371,30 +418,42 @@ const modelRef = computed({
   flex-shrink: 0;
 }
 
+/* 输入框容器：边框/背景/焦点态由容器统一承载，文件卡片与文本同处一个框内 */
 .textarea-wrapper {
   position: relative;
-}
-
-.question-input :deep(.el-textarea__inner) {
-  border-radius: 12px;
   border: 1.5px solid var(--border-primary);
-  transition: all 0.25s ease;
-  font-size: 14px;
-  line-height: 1.6;
+  border-radius: 12px;
   background: var(--bg-primary);
-  padding-right: 52px;
-  padding-bottom: 44px;
-  resize: none;
+  transition: all 0.25s ease;
+  box-sizing: border-box;
 }
 
-.question-input :deep(.el-textarea__inner:hover) {
+.textarea-wrapper:hover {
   border-color: var(--border-secondary);
   box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.06);
 }
 
-.question-input :deep(.el-textarea__inner:focus) {
+.textarea-wrapper:focus-within {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.1);
+}
+
+.question-input :deep(.el-textarea__inner) {
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  transition: all 0.25s ease;
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 10px 52px 44px 12px;
+  resize: none;
+}
+
+.question-input :deep(.el-textarea__inner:hover),
+.question-input :deep(.el-textarea__inner:focus) {
+  border: none;
+  box-shadow: none;
   outline: none;
 }
 
@@ -484,6 +543,22 @@ const modelRef = computed({
   font-size: 13px;
 }
 
+/* 模型能力徽标（图片/视频输入） */
+.model-cap-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(64, 158, 255, 0.12);
+  color: #409eff;
+  flex-shrink: 0;
+}
+
+.model-cap-badge.video {
+  background: rgba(103, 194, 58, 0.12);
+  color: #67c23a;
+}
+
 /* ========== 暗色主题 ========== */
 [data-theme="dark"] .input-area {
   background: var(--bg-secondary);
@@ -491,20 +566,24 @@ const modelRef = computed({
   box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.2);
 }
 
-[data-theme="dark"] .question-input :deep(.el-textarea__inner) {
+[data-theme="dark"] .textarea-wrapper {
   background: #202032;
   border-color: var(--border-primary);
-  color: var(--text-primary);
 }
 
-[data-theme="dark"] .question-input :deep(.el-textarea__inner:hover) {
+[data-theme="dark"] .textarea-wrapper:hover {
   border-color: var(--border-secondary);
   box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.06);
 }
 
-[data-theme="dark"] .question-input :deep(.el-textarea__inner:focus) {
+[data-theme="dark"] .textarea-wrapper:focus-within {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.1);
+}
+
+[data-theme="dark"] .question-input :deep(.el-textarea__inner) {
+  background: transparent;
+  color: var(--text-primary);
 }
 
 [data-theme="dark"] .question-input :deep(.el-textarea__inner::placeholder) {

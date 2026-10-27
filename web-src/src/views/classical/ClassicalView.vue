@@ -86,6 +86,7 @@
                             <el-dropdown-item command="openBackupDialog">📦 备份恢复</el-dropdown-item>
                             <el-dropdown-item command="openDictDialog">📖 数据字典</el-dropdown-item>
                             <el-dropdown-item command="openCompareDialog" divided>🔍 结构比较</el-dropdown-item>
+                                                        <el-dropdown-item command="togglePin" divided>{{ isPinnedConn(data) ? '取消置顶' : '★ 置顶连接' }}</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -268,7 +269,7 @@ const storage = useStorage()
 import { client, parsers, server } from '@passwordless-id/webauthn'
 import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts, UserFilled } from '@element-plus/icons-vue'
 import { MagicStick, SwitchButton, User } from '@element-plus/icons-vue'
-import { onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
+import { computed, onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { resetDefaultHomepageCache } from '@/router'
 import TableEditor from '@/components/data/TableEditor.vue'
@@ -676,7 +677,7 @@ function loadTree(node, resolve) {
         // 懒加载目录时收集展开出的连接节点(目录下的连接不在 treeData 中)
         cacheConnNames(resp.data.data)
         patchTabConnNames()
-        resolve(resp.data.data)
+        resolve(sortByPinned(resp.data.data))
       }
     })
     .catch((error) => {
@@ -911,7 +912,7 @@ function refreshTree() {
   Object.keys(schemaTreeCached).forEach(k => delete schemaTreeCached[k])
   showTree({ connId: "", key: "", type: "dir", level: 0 })
     .then((resp) => {
-      treeData.value = resp.data.data
+      treeData.value = sortByPinned(resp.data.data)
       // 收集一级节点中的连接名,并为缺少连接名的数据浏览页签补充(兼容旧存储恢复的页签)
       cacheConnNames(treeData.value)
       patchTabConnNames()
@@ -1142,8 +1143,65 @@ function openDbUserManager(node) {
   dbMgntDialogVisible.value = true
 }
 
+// ===== 侧边栏连接置顶 =====
+const PIN_STORAGE_KEY = 'pinnedConns'
+const pinnedConnIds = ref([])
+const pinnedSet = computed(() => new Set(pinnedConnIds.value))
+
+function loadPinnedConns() {
+  try {
+    const raw = storage.getItem(PIN_STORAGE_KEY)
+    pinnedConnIds.value = Array.isArray(raw) ? raw.map(String) : []
+  } catch {
+    pinnedConnIds.value = []
+  }
+}
+
+function persistPinnedConns() {
+  try {
+    storage.setItem(PIN_STORAGE_KEY, pinnedConnIds.value)
+  } catch {
+    // 存储失败不影响功能
+  }
+}
+
+function isPinnedConn(data) {
+  return !!data && data.type === 'conn' && pinnedSet.value.has(String(data.id))
+}
+
+function togglePinConn(node) {
+  const data = node?.data
+  if (!data || data.type !== 'conn') {
+    ElMessage({ message: '仅连接节点支持置顶', type: 'info' })
+    return
+  }
+  const id = String(data.id)
+  const pinned = pinnedConnIds.value.includes(id)
+  pinnedConnIds.value = pinned
+    ? pinnedConnIds.value.filter((x) => x !== id)
+    : [id, ...pinnedConnIds.value]
+  persistPinnedConns()
+  ElMessage({ message: pinned ? '已取消置顶' : '已置顶该连接', type: 'success' })
+  refreshTree()
+}
+
+// 同层连接中置顶的排在前面，其余保持原有顺序
+function sortByPinned(nodes) {
+  if (!Array.isArray(nodes) || pinnedConnIds.value.length === 0) return nodes
+  const pinned = pinnedSet.value
+  return [...nodes].sort((a, b) => {
+    const pa = a && a.type === 'conn' && pinned.has(String(a.id)) ? 0 : 1
+    const pb = b && b.type === 'conn' && pinned.has(String(b.id)) ? 0 : 1
+    return pa - pb
+  })
+}
+
+// 启动时恢复置顶列表（由 storage KV 同步，桌面端重启不丢）
+loadPinnedConns()
+
 function handleTreeDropdownAction(node, command) {
   switch (command) {
+    case 'togglePin': togglePinConn(node); break
     case 'refreshNode': refreshTree(); break
     case 'viewServerStatus': viewServerStatus(node); break
     case 'openMonitorPanel': openMonitorPanel(node); break

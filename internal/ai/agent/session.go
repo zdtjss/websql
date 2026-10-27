@@ -54,6 +54,9 @@ type SessionMessage struct {
 	ToolName         string            `json:"tool_name,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	// Attachments 该条用户消息携带的上传文件引用（仅 user 消息使用）。
+	// 用途：历史回看时还原文件卡片、追问时向模型保留 fileId；内容仍按需读取。
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -698,13 +701,63 @@ func (s *SessionStore) Delete(id, userID string) error {
 	if err := s.checkOwnership(id, userID); err != nil {
 		return err
 	}
+	// 会话内引用的上传文件随会话一起清理：每次上传生成独立 fileId，
+	// 删除会话后这些文件不再有引用方，不必等 TTL（30 分钟）到期才释放磁盘。
+	fileIDs := s.sessionAttachmentIDs(id)
 	s.mu.Lock()
 	if sess, ok := s.cache[id]; ok {
 		sess.Cancel()
 	}
 	delete(s.cache, id)
 	s.mu.Unlock()
-	return deleteSessionInDB(id)
+	if err := deleteSessionInDB(id); err != nil {
+		// 会话删除失败时不清理文件，避免历史会话中的文件卡片指向已删除的文件
+		return err
+	}
+	RemoveSessionAttachments(fileIDs, userID)
+	return nil
+}
+
+// sessionAttachmentIDs 收集会话消息中引用的上传文件 ID（去重，保持出现顺序）。
+//
+// 优先取内存态（正在使用的会话），未命中缓存时回源数据库；
+// 读取/解析失败按「无附件」处理：删除会话本身不因文件清理失败而中断。
+func (s *SessionStore) sessionAttachmentIDs(id string) []string {
+	s.mu.Lock()
+	sess, ok := s.cache[id]
+	s.mu.Unlock()
+
+	var messages []SessionMessage
+	if ok {
+		messages = sess.GetMessages()
+	} else {
+		sessDB, err := getSessionByID(id)
+		if err != nil || sessDB == nil || sessDB.Messages == "" {
+			return nil
+		}
+		if err := json.Unmarshal([]byte(sessDB.Messages), &messages); err != nil {
+			log.Printf("[SessionStore] 解析会话消息失败，跳过附件清理 - id=%s, err=%v\n", id, err)
+			return nil
+		}
+	}
+	return collectAttachmentIDs(messages)
+}
+
+// collectAttachmentIDs 汇总消息列表中引用的上传文件 ID（去重，保持出现顺序）。
+func collectAttachmentIDs(messages []SessionMessage) []string {
+	seen := make(map[string]bool, len(messages))
+	var ids []string
+	for _, m := range messages {
+		for _, ref := range m.Attachments {
+			fileID := strings.TrimSpace(ref.FileID)
+			if fileID == "" || seen[fileID] {
+				continue
+			}
+			seen[fileID] = true
+			ids = append(ids, fileID)
+		}
+	}
+	return ids
 }
 
 // GetDetail 获取会话详情（含完整消息和上下文），仅允许读取归属 userID 的会话
@@ -740,7 +793,11 @@ func (s *SessionStore) GetDetail(id, userID string) (*SessionDetail, error) {
 		Context:   sessionCtx,
 	}
 	for _, msg := range displayMsgs {
-		detail.Messages = append(detail.Messages, SessionDetailMessage{Role: msg.Role, Content: msg.Content})
+		detail.Messages = append(detail.Messages, SessionDetailMessage{
+			Role:        msg.Role,
+			Content:     msg.Content,
+			Attachments: msg.Attachments, // 供前端还原文件卡片（含过期态判定）
+		})
 	}
 	if detail.Title == "" {
 		detail.Title = "未命名会话"

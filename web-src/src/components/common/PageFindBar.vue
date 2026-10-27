@@ -88,6 +88,7 @@
 
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { isInsideCodeEditor } from '@/utils/editorTarget'
 
 /**
  * 页面内查找/替换栏 + 全局快捷键处理（桌面模式专用）。
@@ -297,6 +298,11 @@ function shouldYieldEscapeToPage(): boolean {
  * 桌面模式下 Wails 已禁用 WebView2 浏览器加速键（AreBrowserAcceleratorKeysEnabled=false），
  * 所以 Ctrl+F 等不会触发原生行为，keydown 事件可正常到达 document。
  */
+/**
+ * 判断事件是否发生在代码编辑器内部（CodeMirror 6 根节点带 .cm-editor）。
+ * 编辑器内的 Ctrl+F 属于编辑器查找，必须交还给 CodeMirror。
+ * 判定逻辑已抽到 utils/editorTarget 以便单测覆盖。
+ */
 function handleGlobalKeydown(e: KeyboardEvent) {
   // Esc：查找栏可见时处理关闭，但必须避让页面上其他需要 Esc 的场景
   if (e.key === 'Escape' && visible.value) {
@@ -317,6 +323,11 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 
   // Ctrl/Cmd+F：打开查找栏；已打开则聚焦查找输入框并展开替换栏
   if (key === 'f') {
+    // 编辑器聚焦时交还 CodeMirror 的查找/替换面板；
+    // 需要恢复旧的「页内查找」行为时，设 localStorage.editorSearch=0
+    if (isInsideCodeEditor(e.target) && localStorage.getItem('editorSearch') !== '0') {
+      return
+    }
     e.preventDefault()
     e.stopPropagation()
     if (!visible.value) {

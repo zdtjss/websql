@@ -41,7 +41,20 @@
         </template>
       </el-table-column>
     </el-table>
-    <el-empty v-if="!loading && filteredList.length === 0" description="没有符合条件的连接" :image-size="60" />
+    <el-alert
+      v-if="loadError"
+      :title="loadError"
+      type="error"
+      show-icon
+      :closable="false"
+      class="session-error"
+    >
+      <div class="session-error-body">
+        <span>会话列表取自服务端进程视图，失败通常由账号权限不足或数据库版本差异引起。</span>
+        <el-button size="small" type="primary" link @click="load">重试</el-button>
+      </div>
+    </el-alert>
+    <el-empty v-if="!loading && !loadError && filteredList.length === 0" description="没有符合条件的连接" :image-size="60" />
   </div>
 </template>
 
@@ -75,11 +88,14 @@ const filter = ref('')
 const interval = ref(0) // 0 表示不自动
 let timer: ReturnType<typeof setInterval> | null = null
 const loaded = ref(false)
+// 加载失败时在表格区域展示原因，而不是只弹一次 toast 后留空白表格
+const loadError = ref('')
 
 // 通过 /monitor/processes 接口获取（后端已做方言适配：MySQL SHOW PROCESSLIST / Oracle v$session）
 async function load() {
   if (!props.connId) return
   loading.value = true
+  loadError.value = ''
   try {
     const res = await getMonitorProcesses(props.connId)
     const rows = res.data?.data?.processes || []
@@ -94,7 +110,9 @@ async function load() {
       info: p.info || '',
     }))
   } catch (e) {
-    handleError(e, '加载会话列表')
+    // silent：错误统一在上方 alert 里常驻展示，避免 toast 与空表同时出现造成误解
+    loadError.value = handleError(e, '加载会话列表', { silent: true })
+    list.value = []
   } finally {
     loading.value = false
     loaded.value = true
@@ -184,5 +202,17 @@ defineExpose({ refresh: load })
 .session-count {
   color: var(--db-text-tertiary);
   font-size: 12px;
+}
+
+/* 加载失败时常驻错误态（避免只弹 toast 留空白表格） */
+.session-error {
+  margin-bottom: 10px;
+}
+
+.session-error-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 </style>

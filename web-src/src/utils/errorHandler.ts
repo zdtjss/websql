@@ -151,11 +151,14 @@ function extractAxiosErrorMsg(err: unknown): string {
   // 有 HTTP 响应
   const resp = e.response
   const respData = resp.data
-  // 后端统一响应格式 { code, msg, data }
+  // 后端统一响应格式 { code, msg, data, errCode?, hint? }
   if (respData && typeof respData === 'object') {
-    const dataObj = respData as { msg?: unknown }
+    const dataObj = respData as { msg?: unknown; hint?: unknown; errCode?: unknown }
     if (dataObj.msg) {
-      return extractErrorMsg(String(dataObj.msg))
+      const base = extractErrorMsg(String(dataObj.msg))
+      const hint = typeof dataObj.hint === 'string' ? dataObj.hint.trim() : ''
+      // 服务端已做分类时带上修复建议（errCode 用于埋点/引导，不直接展示）
+      return hint && !base.includes(hint) ? `${base}（${hint}）` : base
     }
     // blob 错误体
     if (respData instanceof Blob) {

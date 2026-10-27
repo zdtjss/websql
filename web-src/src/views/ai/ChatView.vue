@@ -71,7 +71,8 @@
           v-model:selected-tables="selectedTables"
           v-model:selected-model="selectedModel"
           :loading="loading"
-          :has-uploaded-file="!!uploadedExcel"
+          :has-uploaded-file="fileUpload.hasReady.value"
+          :attachments="fileUpload.items.value"
           :processed-conn-list="processedConnList"
           :should-show-schema-selector="shouldShowSchemaSelector"
           :schemas-loading="schemasLoading"
@@ -82,21 +83,18 @@
           @schema-change="handleSchemaChange"
           @send="handleSend"
           @stop="chatStream.stopGeneration"
+          @remove-attachment="handleRemoveAttachment"
+          @retry-attachment="handleRetryAttachment"
         >
           <template #toolbar>
-            <div style="display: flex; gap: 0px;">
-              <!-- 已上传的文件信息 -->
-              <div v-if="uploadedExcel" class="uploaded-file-info" style="margin-left: 12px;">
-                <span>{{ uploadedExcel.name }}
-                  <template v-if="uploadedExcel.fileType === 'markdown'">(Markdown, {{ uploadedExcel.charCount }} 字符)</template>
-                  <template v-else>({{ uploadedExcel.rows }} 行, {{ uploadedExcel.columns.length }} 列)</template>
-                </span>
-                <el-button size="small" text type="danger" @click="clearUploadedExcel">✕</el-button>
-              </div>
-              <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" style="margin-left: 12px;" accept=".xlsx,.xls,.csv,.md,.markdown"
-                :on-change="handleExcelUpload" :disabled="excelUploading">
-                <el-button class="toolbar-btn" size="small" title="上传数据文件（Excel/CSV/Markdown，可分析/结合数据库/导入）" :loading="excelUploading">
-                  <el-icon v-if="!excelUploading"><Upload /></el-icon>
+            <div class="chat-toolbar">
+              <!-- 文件上传（多文件；上传后以文件卡片形式展示在输入框上方，支持进度/重试/移除） -->
+              <el-upload ref="excelUploadRef" :auto-upload="false" :show-file-list="false" :multiple="true"
+                :accept="ACCEPT_ATTR" :on-change="handleFileChange" :disabled="fileUpload.uploading.value">
+                <el-button class="toolbar-btn" size="small"
+                  title="上传文件（Excel/CSV/文本/文档/图片/视频，可分析/结合数据库；图片/视频需模型具备对应能力）"
+                  :loading="fileUpload.uploading.value">
+                  <el-icon v-if="!fileUpload.uploading.value"><Upload /></el-icon>
                 </el-button>
               </el-upload>
               <!-- 高级导出开关：开启后本次对话强制用 export_by_code（仅 Python、只读临时代码）生成文件 -->
@@ -236,7 +234,7 @@
                   </template>
                 </el-dialog>
                 <template #reference>
-                  <el-button class="toolbar-btn" circle size="small" title="常用提示词" style="margin-left: 12px;">
+                  <el-button class="toolbar-btn" circle size="small" title="常用提示词">
                     <el-icon><ChatLineRound /></el-icon>
                   </el-button>
                 </template>
@@ -259,7 +257,7 @@
                   @delete-session="chatHistory.deleteSession"
                 />
                 <template #reference>
-                  <el-button class="toolbar-btn" size="small" title="历史会话" style="margin-left: 12px;">
+                  <el-button class="toolbar-btn" size="small" title="历史会话">
                     <el-icon><Document /></el-icon>
                   </el-button>
                 </template>
@@ -319,13 +317,14 @@ import { getPromptList, delPrompt, getAIModels } from '@/api/ai'
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
 import { getSystemConfig } from '@/api/system'
-import { sanitizeError } from '@/utils/errorHandler'
 import { useTheme } from '@/utils/useTheme'
 import { useStorage } from '@/composables/useStorage'
 import { useMarkdownRenderer } from './composables/useMarkdownRenderer'
 import { useChatHistory } from './composables/useChatHistory'
 import { useSqlConfirm } from './composables/useSqlConfirm'
-import { useChatStream, type UploadedExcel } from './composables/useChatStream'
+import { useChatStream } from './composables/useChatStream'
+import { useFileUpload } from './composables/useFileUpload'
+import { ACCEPT_ATTR } from './utils/fileTypes'
 import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Download, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
@@ -345,7 +344,6 @@ const selectedTables = ref<string[]>([])
 const selectedSchemas = ref<string[]>([])
 const selectedModel = ref('')
 const sessionId = ref('')
-const uploadedExcel = ref<UploadedExcel | null>(null)
 const tableList = ref<{ name: string; comment?: string; schema?: string; label?: string }[]>([])
 const msgListComponent = useTemplateRef('msgListRef')
 // ChatMessageList 通过 defineExpose 暴露 containerRef（DOM 元素）
@@ -386,7 +384,7 @@ const connList = ref<unknown[]>([])
 const connSchemaList = ref<unknown[]>([])
 const schemasLoading = ref(false)
 const tablesLoading = ref(false)
-const aiModelList = ref<{ id: string; model: string }[]>([])
+const aiModelList = ref<{ id: string; model: string; capabilities?: string[] | null }[]>([])
 const modelLoading = ref(false)
 
 // ── 提示词状态 ──
@@ -407,9 +405,8 @@ const systemPromptCurrentPage = ref(1)
 const promptPageSize = ref(10)
 let promptSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
-// ── Excel 上传 ──
+// ── 文件上传（新链路：暂存 + 延迟解析，多文件队列） ──
 const excelUploadRef = useTemplateRef('excelUploadRef')
-const excelUploading = ref(false)
 
 // ── 后期绑定的函数包装器（解决 composable 间循环依赖） ──
 let doRenderMermaidBlocksFn = async (_scroll?: boolean): Promise<void> => { }
@@ -536,6 +533,13 @@ const sqlConfirm = useSqlConfirm({
   handleSessionExpired,
 })
 
+// ── 3.5 创建 useFileUpload（多文件队列：上传进度/重试/移除；能力校验用当前模型能力） ──
+const fileUpload = useFileUpload({
+  selectedModel,
+  aiModelList,
+  handleSessionExpired,
+})
+
 // ── 4. 创建 useChatStream（需要以上所有） ──
 const chatStream = useChatStream({
   chatHistory: chatHistory.chatHistory,
@@ -546,7 +550,8 @@ const chatStream = useChatStream({
   selectedModel,
   question,
   advancedExport,
-  uploadedExcel,
+  uploads: fileUpload.items,
+  markAttachmentsSent: fileUpload.markSent,
   loading,
   abortController,
   streamingExecContent,
@@ -593,11 +598,15 @@ ${source}
 // ── 6. 定义 clearSession（协调所有 composable 的重置） ──
 function clearSession(showMsg?: boolean): void {
   chatStream.stopGeneration()
+  // 释放已发送文件卡片的本地预览地址（Object URL），避免图片/视频内存泄漏
+  for (const m of chatHistory.chatHistory.value) {
+    if (m.role === 'file' && m.file?.previewUrl) URL.revokeObjectURL(m.file.previewUrl)
+  }
   chatHistory.clearMessages()
   sessionId.value = ''
   chatStream.resetStreamState()
   sqlConfirm.resetConfirmState()
-  uploadedExcel.value = null
+  fileUpload.reset()
   if (showMsg) {
     ElMessage({ message: '已新建会话', type: 'success' })
   }
@@ -870,68 +879,36 @@ function handleFillFromDetail(): void {
   }
 }
 
-// ── Excel 上传 ──
-async function handleExcelUpload(file: any): Promise<void> {
-  const rawFile = file.raw || file
-  const formData = new FormData()
-  formData.append('file', rawFile)
-  const lowerName = rawFile.name.toLowerCase()
-  const isMarkdown = lowerName.endsWith('.md') || lowerName.endsWith('.markdown')
-  if (!isMarkdown && rawFile.size > 20 * 1024 * 1024) { ElMessage.error('文件大小不能超过 20MB'); return }
-  excelUploading.value = true
-  try {
-    const apiBase = import.meta.env.VITE_API_URL || ''
-    const auth = sessionStorage.getItem('authentication') || ''
-    const resp = await fetch(apiBase + '/ai/agent/uploadExcel', { method: 'POST', headers: { Authorization: auth }, body: formData })
-    if (resp.status === 401) {
-      const errorData = await resp.json().catch(() => ({}))
-      if (errorData.code === 401) { ElMessage({ message: errorData.msg || '登录已过期，请重新登录', type: 'warning' }); handleSessionExpired(); return }
-    }
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}))
-      throw new Error(sanitizeError(errData.error) || `上传失败：${resp.status}`)
-    }
-    const data = await resp.json()
-    const result = data.data || {}
-    uploadedExcel.value = { fileId: result.fileId, name: result.fileName, fileType: result.fileType, columns: result.columns || [], rows: result.totalRows || 0, charCount: result.charCount || 0 }
-    let previewText = `📎 已上传文件：**${result.fileName}**\n`
-    if (result.fileType === 'markdown') {
-      previewText += `Markdown 文档，共 ${result.charCount} 字符\n\n内容预览：\n\n${result.textPreview || ''}\n`
-    } else {
-      const typeLabel = result.fileType === 'csv' ? 'CSV' : 'Excel'
-      previewText += `${typeLabel} 文件，共 ${result.totalRows} 行数据，${result.columns.length} 列\n\n列名：\`${result.columns.join('`, `')}\`\n\n`
-      const previewRows = result.preview || []
-      if (previewRows.length > 0) {
-        previewText += `前 ${previewRows.length} 行原始数据预览：\n`
-        previewText += '| ' + result.columns.join(' | ') + ' |\n'
-        previewText += '| ' + result.columns.map(() => '---').join(' | ') + ' |\n'
-        for (const row of previewRows) {
-          const cells = result.columns.map((_: any, i: number) => {
-            const val = row[i] !== undefined && row[i] !== null ? String(row[i]) : ''
-            return val.length > 50 ? val.substring(0, 50) + '…' : (val || ' ')
-          })
-          previewText += '| ' + cells.join(' | ') + ' |\n'
-        }
-        if (result.totalRows > previewRows.length) previewText += `\n*共 ${result.totalRows} 行，以上仅展示前 ${previewRows.length} 行*\n`
-      }
-    }
-    chatHistory.chatHistory.value.push({ role: 'assistant', content: previewText, hasSql: false })
-    scrollToBottom()
-    void mdRenderer.doRenderMermaidBlocks()
-    if (result.fileType === 'markdown') {
-      ElMessage.success(`已上传 ${result.fileName}，可让我分析/解读这份文档，或结合数据库表分析`)
-    } else {
-      ElMessage.success(`已上传 ${result.fileName}，可让我：分析这份数据 / 结合数据库表分析 / 导入到数据库`)
-    }
-  } catch (e) {
-    console.error('[App] 上传 Excel 文件失败:', e)
-    ElMessage.error('上传 Excel 文件失败，请检查文件格式')
-  } finally {
-    excelUploading.value = false
-  }
+// ── 文件上传（新链路） ──
+// el-upload 多选时 on-change 会按文件逐个触发（同一事件循环内），
+// 这里用微任务缓冲合并为一批，避免逐个弹错误提示、并只清理一次内部文件列表。
+let pendingRawFiles: File[] = []
+let pendingFlushScheduled = false
+
+function handleFileChange(file: any): void {
+  const raw = file?.raw as File | undefined
+  if (raw) pendingRawFiles.push(raw)
+  if (pendingFlushScheduled) return
+  pendingFlushScheduled = true
+  queueMicrotask(() => {
+    pendingFlushScheduled = false
+    const batch = pendingRawFiles
+    pendingRawFiles = []
+    fileUpload.addFiles(batch)
+    // 清理 el-upload 内部列表：否则同名文件再次选择不会触发 on-change
+    excelUploadRef.value?.clearFiles()
+  })
 }
 
-function clearUploadedExcel(): void { uploadedExcel.value = null }
+/** 移除待发送文件（已上传成功的同步删除服务端暂存） */
+function handleRemoveAttachment(file: { localId: string }): void {
+  fileUpload.remove(file.localId)
+}
+
+/** 重试上传失败的文件 */
+function handleRetryAttachment(file: { localId: string }): void {
+  fileUpload.retry(file.localId)
+}
 
 // ── 语音识别 ──
 function initSpeechRecognition(): any {
@@ -1067,6 +1044,8 @@ onMounted(() => {
   setSendToAIHandler(handlePromptSendToAI)
   getSysModel()
   loadModelList()
+  // 预热文件能力自检（环境解析器可用性/体积上限），用于文件选择阶段的前置校验提示
+  void fileUpload.ensureFileSupport()
   void loadConnList().then(() => {
     if (loginSucc.value || !isRemote.value) {
       void loadTableListForSchemas().then(() => {
@@ -1246,6 +1225,17 @@ onUnmounted(() => {
 }
 
 /* 工具栏按钮美化 */
+/* 工具栏：统一由 gap 控制间距，覆盖 Element Plus 相邻按钮默认的 margin-left */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toolbar .el-button {
+  margin-left: 0;
+}
+
 .toolbar-btn {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 6px;
@@ -1385,18 +1375,6 @@ onUnmounted(() => {
   background: var(--bg-row-changed);
   margin: 8px 16px;
   flex-shrink: 0;
-}
-
-/* Excel 上传 */
-.uploaded-file-info {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  background: var(--bg-active);
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--accent-color);
 }
 
 /* 提示词弹窗 */

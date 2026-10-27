@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"websql/internal/app/admin"
 	"websql/internal/config"
@@ -12,6 +13,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/crypto"
 	"websql/internal/pkg/lazyinit"
+	"websql/internal/pkg/mask"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -54,16 +56,119 @@ var (
 	ErrConnPingFailed = errors.New("连接失败，请检查数据库配置")
 )
 
+// connOpenError 保留 errors.Is(err, ErrConnOpenFailed) 语义，
+// 同时把面向用户的友好文案（不含驱动原文、主机名、账号）作为 Error()。
+type connOpenError struct{ msg string }
+
+func (e *connOpenError) Error() string { return e.msg }
+
+func (e *connOpenError) Is(target error) bool { return target == ErrConnOpenFailed }
+
+func newConnOpenError(err error) error {
+	return &connOpenError{msg: connErrMessage(err)}
+}
+
+// connErrMessage 把连接错误转为面向用户的提示；驱动原文只进服务端日志。
+func connErrMessage(err error) string {
+	if err == nil {
+		return ErrConnPingFailed.Error()
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "access denied"), strings.Contains(msg, "1045"), strings.Contains(msg, "ora-01017"):
+		return "连接失败：用户名或口令错误"
+	case strings.Contains(msg, "unknown database"), strings.Contains(msg, "1049"):
+		return "连接失败：数据库不存在"
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "no such host"),
+		strings.Contains(msg, "i/o timeout"), strings.Contains(msg, "dial tcp"), strings.Contains(msg, "network"):
+		return "连接失败：无法连接数据库主机，请检查地址与端口"
+	case strings.Contains(msg, "1251"), strings.Contains(msg, "plugin"), strings.Contains(msg, "authentication"):
+		return "连接失败：认证方式不兼容，请检查账号认证插件"
+	default:
+		return "连接失败，请检查连接配置（详情见服务端日志）"
+	}
+}
+
+// metaCacheInvalidator 由 dbops 包注册（conn → dbops 直引会形成循环依赖）。
+// 连接目标变更后必须失效表元数据缓存，否则 5 分钟内仍会返回旧库的主键/注释。
+var metaCacheInvalidator func(connId string)
+
+// SetMetaCacheInvalidator 注册表元数据缓存失效回调。
+func SetMetaCacheInvalidator(fn func(connId string)) {
+	metaCacheInvalidator = fn
+}
+
+func invalidateConnMetaCache(connID string) {
+	if metaCacheInvalidator != nil && connID != "" {
+		metaCacheInvalidator(connID)
+	}
+}
+
+// strPtr 安全解引用可空字符串字段。
+func strPtr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// connTargetChanged 判断是否需要重建连接池：只比较影响物理连接的字段。
+// 名称/分组/默认 schema 变化不需要重连；本次提交带了口令则视为目标变更。
+func connTargetChanged(old, cur *ConnCfg) bool {
+	if old == nil || cur == nil {
+		return true
+	}
+	if old.DbType != cur.DbType || strPtr(old.Url) != strPtr(cur.Url) ||
+		strPtr(old.User) != strPtr(cur.User) || strPtr(old.Charset) != strPtr(cur.Charset) {
+		return true
+	}
+	return cur.Pwd != nil && *cur.Pwd != ""
+}
+
 // SaveConn 保存连接配置，返回保存后的配置（不含密码）
 func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
-	dbParam := ConvertToDBParam(cfg)
-	db := database.GetConn(dbParam)
-	if db == nil {
-		return nil, ErrConnOpenFailed
+	// 目标变更检测需要在更新前读取旧配置（仅用于判断是否需要重建连接池）
+	dsnChanged := true
+	if cfg.Id != "" {
+		if oldList, oldErr := s.repo.FindConnById(cfg.Id); oldErr == nil && len(oldList) > 0 {
+			dsnChanged = connTargetChanged(&oldList[0], cfg)
+		}
 	}
-	defer database.ReleaseConn(dbParam)
 
-	dbSchema, dbVersion, actualDbType := getDbVersionAndSchema(db, cfg.DbType)
+	// 保存前用一次性连接校验：不进共享池，避免未保存的连接互相串池，
+	// 也避免保存动作把别人正在使用的连接关掉。
+	dbParam := ConvertToDBParam(cfg)
+	var closeEphemeral func()
+	if cfg.SSH != nil {
+		// 新建/编辑时可能刚改过 SSH 配置，先用临时隧道验证（不依赖已保存的配置）
+		forwarded, closeFn, tunnelErr := OpenEphemeralTunnel(cfg.SSH, cfg.DbType, strPtr(cfg.Url))
+		if tunnelErr != nil {
+			log.Printf("[SaveConn] SSH 隧道建立失败 - name=%s, err=%s\n", strPtr(cfg.Name), mask.MaskSecret(tunnelErr.Error()))
+			return nil, newConnOpenError(tunnelErr)
+		}
+		dbParam.Url = forwarded
+		closeEphemeral = closeFn
+	} else if cfg.Id != "" {
+		// 未改 SSH 配置但已有已保存的跳板机：用已存配置建链
+		resolved, tunnelErr := ResolveConnURL(cfg.Id, cfg.DbType, strPtr(cfg.Url))
+		if tunnelErr != nil {
+			log.Printf("[SaveConn] SSH 隧道建立失败 - id=%s, err=%s\n", cfg.Id, mask.MaskSecret(tunnelErr.Error()))
+			return nil, newConnOpenError(tunnelErr)
+		}
+		dbParam.Url = resolved
+	}
+	if closeEphemeral != nil {
+		defer closeEphemeral()
+	}
+	var dbSchema, dbVersion, actualDbType string
+	err := database.WithTempConn(dbParam, func(db *sqlx.DB) error {
+		dbSchema, dbVersion, actualDbType = getDbVersionAndSchema(db, cfg.DbType)
+		return nil
+	})
+	if err != nil {
+		log.Printf("[SaveConn] 连接校验失败 - name=%s, dbType=%s, err=%s\n", strPtr(cfg.Name), cfg.DbType, mask.MaskSecret(err.Error()))
+		return nil, newConnOpenError(err)
+	}
 	// 自动修正 dbType：用户在前端可能误选 MySQL/MariaDB，这里根据 VERSION() 实际值修正
 	cfg.DbType = actualDbType
 
@@ -89,6 +194,21 @@ func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 		}
 	}
 
+	// 配置已变更：元数据缓存必须失效；仅当连接目标变化时才延迟替换连接池，
+	// 避免「只改个名称」就把在途查询打断。
+	invalidateConnMetaCache(savedId)
+	if dsnChanged {
+		database.CloseConnLater(savedId, 3*time.Second)
+	}
+	// 只读标记与 SSH 配置单独持久化（不落在 t_conn，无需迁移）
+	if err := SetReadOnly(savedId, cfg.ReadOnly); err != nil {
+		log.Printf("[SaveConn] 保存只读标记失败 - id=%s, err=%v\n", savedId, err)
+	}
+	if err := SaveSSHConfig(savedId, cfg.SSH); err != nil {
+		log.Printf("[SaveConn] 保存 SSH 配置失败 - id=%s, err=%v\n", savedId, err)
+		return nil, fmt.Errorf("保存 SSH 配置失败: %w", err)
+	}
+
 	saved, err := s.repo.FindConnByIdWithParent(savedId)
 	if err != nil {
 		return nil, err
@@ -102,19 +222,38 @@ func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 
 // TestDbConn 测试数据库连接，返回版本、schema 和实际数据库类型信息
 func (s *connService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
+	// 一次性连接：测试永远不会复用到其他（尤其是其他未保存连接的）连接池，
+	// 也避免测试连接长期占用池与健康检查 goroutine。
 	dbParam := ConvertToDBParam(cfg)
-	db := database.GetConn(dbParam)
-	if db == nil {
-		return "", "", "", ErrConnOpenFailed
+	var closeEphemeral func()
+	if cfg.SSH != nil {
+		forwarded, closeFn, tunnelErr := OpenEphemeralTunnel(cfg.SSH, cfg.DbType, strPtr(cfg.Url))
+		if tunnelErr != nil {
+			log.Printf("[TestDbConn] SSH 隧道建立失败 - dbType=%s, err=%s\n", cfg.DbType, mask.MaskSecret(tunnelErr.Error()))
+			return "", "", "", newConnOpenError(tunnelErr)
+		}
+		dbParam.Url = forwarded
+		closeEphemeral = closeFn
+		defer closeEphemeral()
+	} else if cfg.Id != "" {
+		resolved, tunnelErr := ResolveConnURL(cfg.Id, cfg.DbType, strPtr(cfg.Url))
+		if tunnelErr != nil {
+			return "", "", "", newConnOpenError(tunnelErr)
+		}
+		dbParam.Url = resolved
 	}
-
-	err := db.Ping()
+	var dbSchema, dbVersion, actualDbType string
+	err := database.WithTempConn(dbParam, func(db *sqlx.DB) error {
+		if pingErr := db.Ping(); pingErr != nil {
+			return pingErr
+		}
+		dbSchema, dbVersion, actualDbType = getDbVersionAndSchema(db, cfg.DbType)
+		return nil
+	})
 	if err != nil {
-		log.Printf("[TestDbConn] 数据库连接失败 - err=%v\n", err)
-		return "", "", "", ErrConnPingFailed
+		log.Printf("[TestDbConn] 数据库连接失败 - dbType=%s, err=%s\n", cfg.DbType, mask.MaskSecret(err.Error()))
+		return "", "", "", newConnOpenError(err)
 	}
-
-	dbSchema, dbVersion, actualDbType := getDbVersionAndSchema(db, cfg.DbType)
 	return dbSchema, dbVersion, actualDbType, nil
 }
 
@@ -122,6 +261,9 @@ func (s *connService) TestDbConn(cfg *ConnCfg) (string, string, string, error) {
 // 原实现忽略删除错误，保持一致
 func (s *connService) DeleteConn(id string) {
 	_ = s.repo.DeleteConn(id)
+	// 同步清理只读标记与 SSH 配置（含隧道），避免 id 复用时继承旧设置
+	DeleteReadOnlyFlag(id)
+	DeleteSSHConfig(id)
 }
 
 // ListConn 按父节点查询连接列表并构建树节点
@@ -141,10 +283,23 @@ func (s *connService) ListConn(parentId string, userPower *admin.UserPower) []*T
 	return tree
 }
 
-// ListConn2 分页查询连接列表
+// ListConn2 分页查询连接列表，并补充只读标记与 SSH 配置（不含口令）
 func (s *connService) ListConn2(name, parentId string, page, pageSize int) ([]ConnCfg, int, error) {
 	offset := (page - 1) * pageSize
-	return s.repo.FindConnList2(name, parentId, pageSize, offset)
+	list, total, err := s.repo.FindConnList2(name, parentId, pageSize, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range list {
+		list[i].ReadOnly = IsReadOnly(list[i].Id)
+		if sshCfg := LoadSSHConfig(list[i].Id); sshCfg != nil {
+			safe := *sshCfg
+			safe.Password = ""
+			safe.KeyPassphrase = ""
+			list[i].SSH = &safe
+		}
+	}
+	return list, total, nil
 }
 
 // ListConnBase 查询连接基础列表
@@ -219,6 +374,18 @@ func (s *connService) GetConn(id string, authorization string) *sqlx.DB {
 	}
 	cfgList[0].Pwd = &pwd
 
+	// SSH 隧道：配置了跳板机时把连接串换成本地转发地址；失败则拒绝连接（不回退直连）
+	rawURL := ""
+	if cfgList[0].Url != nil {
+		rawURL = *cfgList[0].Url
+	}
+	resolvedURL, tunnelErr := ResolveConnURL(id, cfgList[0].DbType, rawURL)
+	if tunnelErr != nil {
+		logger.PrintErrf("SSH 隧道建立失败: %s", tunnelErr, id)
+		return nil
+	}
+	cfgList[0].Url = &resolvedURL
+
 	db := database.GetConn(ConvertToDBParam(&cfgList[0]))
 	if db == nil {
 		logger.PrintErrf("数据库连接创建失败: %s", nil, id)
@@ -261,9 +428,15 @@ func (s *connService) GetConnNoCheck(connId string) *sqlx.DB {
 		url = *cfgList[0].Url
 	}
 
+	resolvedURL, tunnelErr := ResolveConnURL(connId, cfgList[0].DbType, url)
+	if tunnelErr != nil {
+		logger.PrintErrf("SSH 隧道建立失败: %s", tunnelErr, connId)
+		return nil
+	}
+
 	return database.GetConn(&database.DBParam{
 		Id: cfgList[0].Id, Name: name, DbType: cfgList[0].DbType,
-		User: user, Pwd: pwd, Url: url,
+		User: user, Pwd: pwd, Url: resolvedURL,
 	})
 }
 

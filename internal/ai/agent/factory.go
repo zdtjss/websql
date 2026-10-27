@@ -10,6 +10,7 @@ import (
 	"time"
 
 	system "websql/internal/app/system"
+	"websql/internal/pkg/ttlcache"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -27,7 +28,7 @@ const (
 
 type AgentFactory struct {
 	buildMu  sync.Mutex
-	cache    *TTLCache[*SQLAgent]
+	cache    *ttlcache.TTLCache[*SQLAgent]
 	sessions *SessionStore
 }
 
@@ -41,7 +42,7 @@ func GetAgentFactory() *AgentFactory {
 			log.Printf("[AgentFactory] 创建 SessionStore 失败 - err=%v\n", err)
 			sessions, _ = NewSessionStore()
 		}
-		agentCache := NewTTLCache[*SQLAgent](agentCacheTTL, agentCacheCleanSec)
+		agentCache := ttlcache.New[*SQLAgent](agentCacheTTL, agentCacheCleanSec)
 		agentCache.SetMaxEntries(maxCachedAgents)
 		globalAgentFactory = &AgentFactory{
 			cache:    agentCache,

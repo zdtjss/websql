@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +14,8 @@ import (
 	"time"
 
 	"websql/internal/config"
+	"websql/internal/pkg/idgen"
+	"websql/internal/pkg/mask"
 	"websql/internal/pkg/safego"
 
 	"github.com/go-sql-driver/mysql"
@@ -38,7 +42,15 @@ var (
 	dbMapMu     sync.RWMutex
 	dbLastUsed  = make(map[string]time.Time)
 	dbCancels   = make(map[string]context.CancelFunc) // 每个 DB 连接的健康检查 cancel
+	dbTimeouts  = make(map[string]time.Duration)      // 每个 DB 连接的语句超时
 	maxPoolSize = 100                                 // 最大连接池数量
+)
+
+const (
+	// defaultConnectTimeout 连接超时：数据库不可达时必须尽快失败，而不是挂住请求。
+	defaultConnectTimeout = 10 * time.Second
+	// defaultQueryTimeout 语句超时：保留原有 5 分钟行为，可由连接配置覆盖。
+	defaultQueryTimeout = 5 * time.Minute
 )
 
 func InitMngtDbConn() {
@@ -63,7 +75,7 @@ func OpenMngtDB(cfg *config.Config) (*sqlx.DB, error) {
 	if cfg.DB.DriverName == "sqlite" {
 		dsn = WithSQLitePragmas(dsn, true)
 	}
-	log.Printf("管理库连接 - driver=%s, dsn=%s", cfg.DB.DriverName, dsn)
+	log.Printf("管理库连接 - driver=%s, dsn=%s", cfg.DB.DriverName, mask.MaskDSN(dsn))
 	sqlxDb, err := sqlx.Connect(cfg.DB.DriverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("管理库连接失败: %w", err)
@@ -131,6 +143,19 @@ func initSQLitePragma(db *sqlx.DB) {
 }
 
 func GetConn(param *DBParam) *sqlx.DB {
+	if param == nil {
+		panic(fmt.Errorf("连接参数为空"))
+	}
+	// 复制一份再补默认超时，避免修改调用方持有的结构体
+	p := *param
+	if p.ConnectTimeoutSec <= 0 {
+		p.ConnectTimeoutSec = config.Get().DB.ConnectTimeoutSec
+	}
+	if p.QueryTimeoutSec <= 0 {
+		p.QueryTimeoutSec = config.Get().DB.QueryTimeoutSec
+	}
+	param = &p
+
 	key := createKey(param)
 
 	dbMapMu.Lock()
@@ -143,11 +168,26 @@ func GetConn(param *DBParam) *sqlx.DB {
 		return val
 	}
 
-	db, err := sqlx.Connect(param.DbType, makeDsn(param))
+	db, err := sqlx.Open(param.DbType, makeDsn(param))
 	if err != nil {
-		log.Printf("连接数据库失败 - err=%v, param=%+v\n", err, param)
-		// 抛出异常由 middleware.CustomRecovery 捕获，将驱动返回的错误消息透传给用户
+		log.Printf("创建数据库连接失败 - name=%s, dbType=%s, err=%v\n", param.Name, param.DbType, err)
 		panic(err)
+	}
+	// 连接超时必须可控：sqlx.Connect 内部的 Ping 没有超时，数据库不可达时会长时间挂住。
+	connectTimeout := time.Duration(param.ConnectTimeoutSec) * time.Second
+	if connectTimeout <= 0 {
+		connectTimeout = defaultConnectTimeout
+	}
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), connectTimeout)
+	pingErr := db.PingContext(pingCtx)
+	pingCancel()
+	if pingErr != nil {
+		_ = db.Close()
+		// 不使用 %+v 打印 DBParam：它包含明文口令。
+		log.Printf("连接数据库失败 - name=%s, dbType=%s, user=%s, url=%s, err=%v\n",
+			param.Name, param.DbType, param.User, mask.MaskDSN(param.Url), mask.MaskSecret(pingErr.Error()))
+		// 抛出异常由 middleware.CustomRecovery 捕获，将驱动返回的错误消息透传给用户
+		panic(pingErr)
 	}
 	dbCfg := config.Get().DB
 	maxOpen := 50
@@ -185,9 +225,13 @@ func GetConn(param *DBParam) *sqlx.DB {
 
 	DBMap[key] = db
 	dbLastUsed[key] = time.Now()
+	queryTimeout := time.Duration(param.QueryTimeoutSec) * time.Second
+	if queryTimeout > 0 {
+		dbTimeouts[key] = queryTimeout
+	}
 	dbMapMu.Unlock()
 
-	log.Printf("数据库连接成功， env = %s, db = %s", param.Name, param.User)
+	log.Printf("[DBPool] 连接成功 - name=%s, dbType=%s, user=%s", param.Name, param.DbType, param.User)
 
 	go func() {
 		defer safego.Recover("db-healthcheck")
@@ -264,8 +308,21 @@ func closeConnLocked(key string) {
 		cancel()
 		delete(dbCancels, key)
 	}
+	delete(dbTimeouts, key)
 	delete(DBMap, key)
 	delete(dbLastUsed, key)
+}
+
+// ConnQueryTimeout 返回指定连接的语句超时。
+// 未配置时回退到默认 5 分钟（保持原有行为）。
+func ConnQueryTimeout(connID string) time.Duration {
+	dbMapMu.RLock()
+	t, ok := dbTimeouts[connID]
+	dbMapMu.RUnlock()
+	if ok && t > 0 {
+		return t
+	}
+	return defaultQueryTimeout
 }
 
 func makeDsn(param *DBParam) string {
@@ -297,6 +354,57 @@ func ReleaseConn(param *DBParam) {
 	dbMapMu.Unlock()
 }
 
+// WithTempConn 用一次性 key 创建连接，执行完 fn 后必定关闭并从池中移除。
+// 用于「测试连接」「保存前校验」等不应污染共享连接池的场景：
+// 既不会复用到别人的连接，也不会把临时连接留在池里占着健康检查 goroutine。
+// GetConn 在连接失败时会 panic（由 HTTP 恢复中间件兜底），这里就地转成 error 返回。
+func WithTempConn(param *DBParam, fn func(db *sqlx.DB) error) (err error) {
+	if param == nil {
+		return fmt.Errorf("连接参数为空")
+	}
+	if fn == nil {
+		return fmt.Errorf("连接校验函数为空")
+	}
+	tmp := *param
+	tmp.Id = "tmp:" + idgen.SecureRandomToken()[:16]
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+
+	db := GetConn(&tmp)
+	defer ReleaseConn(&tmp)
+	return fn(db)
+}
+
+// CloseConnLater 延迟关闭指定连接的池，给在途查询留出完成窗口。
+// 连接配置变更后若立即 Close，正在执行的查询会报 "database is closed"；
+// 延迟期间新请求仍可复用旧连接（最多 delay 时长），代价可接受。
+// 仅当该 key 仍指向同一个池时才关闭，避免误关变更后新建的池。
+func CloseConnLater(id string, delay time.Duration) {
+	if id == "" {
+		return
+	}
+	dbMapMu.RLock()
+	db, ok := DBMap[id]
+	dbMapMu.RUnlock()
+	if !ok {
+		return
+	}
+
+	log.Printf("[DBPool] 连接配置变更，%s 后关闭旧连接池: id=%s", delay, id)
+	time.AfterFunc(delay, func() {
+		defer safego.Recover("db-pool-close-later")
+		dbMapMu.Lock()
+		if current, exists := DBMap[id]; exists && current == db {
+			closeConnLocked(id)
+		}
+		dbMapMu.Unlock()
+	})
+}
+
 // CloseAllConns 关闭所有数据库连接池（服务关闭时调用）
 func CloseAllConns() {
 	dbMapMu.Lock()
@@ -308,7 +416,23 @@ func CloseAllConns() {
 }
 
 func createKey(param *DBParam) string {
-	return param.Id
+	if param.Id != "" {
+		return param.Id
+	}
+	// 临时连接（新建连接测试 / 保存前校验）没有 Id，必须按目标指纹分池。
+	// 若统一用空串做 key，所有未保存的连接会共用一个池，
+	// 出现「测完 A 库再测 B 库」时复用 A 的连接，把 B 的版本 / Schema 写错的问题。
+	return tempConnKey(param)
+}
+
+// tempConnKey 生成临时连接池 key：DbType/Url/User/口令/默认 schema 的指纹，不含明文。
+func tempConnKey(param *DBParam) string {
+	h := sha256.New()
+	for _, part := range []string{param.DbType, param.Url, param.User, param.Pwd, param.DbSchema} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return "tmp:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 type DBParam struct {
@@ -320,6 +444,9 @@ type DBParam struct {
 	DbType    string `json:"dbType"`
 	DbSchema  string `json:"dbSchema"`
 	DbVersion string `json:"dbVersion"`
+	// 连接超时（秒），<=0 使用默认 10s；语句超时（秒），<=0 使用默认 300s
+	ConnectTimeoutSec int `json:"connectTimeoutSec"`
+	QueryTimeoutSec   int `json:"queryTimeoutSec"`
 }
 
 func LoadConfigFromDB() {

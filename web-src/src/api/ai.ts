@@ -51,6 +51,14 @@ export interface AIModel {
   temperature?: number
   maxContextTokens?: number
   enableThinking?: boolean
+  /**
+   * 模型能力集合（vision/video）。
+   * 缺省（null/undefined）表示未配置，由后端按模型名自动推断；
+   * 空数组表示明确声明仅文本能力（不再推断）。
+   */
+  capabilities?: string[] | null
+  /** 能力来源：configured（管理端配置）/ inferred（按模型名推断） */
+  capabilitiesSource?: string
   [key: string]: unknown
 }
 
@@ -74,6 +82,13 @@ export interface ChatSchemaRef {
   schema: string
 }
 
+/** chatStream 请求中携带的文件附件引用（仅 fileId 必填，其余服务端回填） */
+export interface ChatAttachmentRef {
+  fileId: string
+  fileName?: string
+  fileKind?: string
+}
+
 /** chatStream 请求参数 */
 export interface ChatStreamParams {
   sessionId: string
@@ -84,6 +99,8 @@ export interface ChatStreamParams {
   tableContext: unknown[]
   modelId: string
   excelData?: unknown
+  /** 本轮携带的上传文件引用（新上传链路，多文件） */
+  attachments?: ChatAttachmentRef[]
 }
 
 /** chatStream 回调 */

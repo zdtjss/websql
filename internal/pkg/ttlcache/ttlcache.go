@@ -1,4 +1,8 @@
-package agent
+// Package ttlcache 提供带 TTL 过期与后台清理的泛型内存缓存。
+//
+// 从 internal/ai/agent/ttlcache.go 下沉而来：Agent 缓存、上传文件暂存、
+// 解析结果缓存等多个域都需要同一实现，避免各自重复造一份带锁清理逻辑。
+package ttlcache
 
 import (
 	"sync"
@@ -7,8 +11,8 @@ import (
 	"websql/internal/pkg/safego"
 )
 
-// ttlEntry 是 TTLCache 中的缓存条目
-type ttlEntry[V any] struct {
+// entry 是缓存中的条目
+type entry[V any] struct {
 	value     V
 	createdAt time.Time
 }
@@ -19,7 +23,7 @@ type OnEvict[V any] func(key string, value V)
 // TTLCache 是一个带 TTL 过期和后台清理的泛型缓存
 type TTLCache[V any] struct {
 	mu       sync.RWMutex
-	items    map[string]*ttlEntry[V]
+	items    map[string]*entry[V]
 	ttl      time.Duration
 	cleanSec time.Duration
 	stopCh   chan struct{}
@@ -30,10 +34,10 @@ type TTLCache[V any] struct {
 	maxEntries int
 }
 
-// NewTTLCache 创建一个泛型 TTL 缓存，自动启动后台清理 goroutine
-func NewTTLCache[V any](ttl, cleanSec time.Duration, onEvict ...OnEvict[V]) *TTLCache[V] {
+// New 创建一个泛型 TTL 缓存，自动启动后台清理 goroutine
+func New[V any](ttl, cleanSec time.Duration, onEvict ...OnEvict[V]) *TTLCache[V] {
 	c := &TTLCache[V]{
-		items:    make(map[string]*ttlEntry[V]),
+		items:    make(map[string]*entry[V]),
 		ttl:      ttl,
 		cleanSec: cleanSec,
 		stopCh:   make(chan struct{}),
@@ -55,17 +59,17 @@ func (c *TTLCache[V]) SetMaxEntries(n int) {
 // Get 获取缓存值，未命中或已过期返回零值和 false
 func (c *TTLCache[V]) Get(key string) (V, bool) {
 	c.mu.RLock()
-	entry, ok := c.items[key]
+	item, ok := c.items[key]
 	c.mu.RUnlock()
 	if !ok {
 		var zero V
 		return zero, false
 	}
-	if time.Since(entry.createdAt) > c.ttl {
+	if time.Since(item.createdAt) > c.ttl {
 		var zero V
 		return zero, false
 	}
-	return entry.value, true
+	return item.value, true
 }
 
 // Set 写入缓存值；超过容量上限时按创建时间淘汰最旧条目
@@ -86,7 +90,7 @@ func (c *TTLCache[V]) Set(key string, value V) {
 			delete(c.items, oldestKey)
 		}
 	}
-	c.items[key] = &ttlEntry[V]{value: value, createdAt: time.Now()}
+	c.items[key] = &entry[V]{value: value, createdAt: time.Now()}
 	c.mu.Unlock()
 
 	// 回调移出锁：回调可能访问缓存/做 I/O，持锁调用会造成死锁与阻塞
@@ -98,21 +102,28 @@ func (c *TTLCache[V]) Set(key string, value V) {
 // Delete 删除缓存条目，触发 onEvict 回调
 func (c *TTLCache[V]) Delete(key string) {
 	c.mu.Lock()
-	entry, ok := c.items[key]
+	item, ok := c.items[key]
 	if ok {
 		delete(c.items, key)
 	}
 	c.mu.Unlock()
 
 	if ok && c.onEvict != nil {
-		c.onEvict(key, entry.value)
+		c.onEvict(key, item.value)
 	}
+}
+
+// Len 返回当前缓存条目数（含已过期但尚未清理的条目）
+func (c *TTLCache[V]) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.items)
 }
 
 // InvalidateAll 清空所有缓存条目（不触发 onEvict）
 func (c *TTLCache[V]) InvalidateAll() {
 	c.mu.Lock()
-	c.items = make(map[string]*ttlEntry[V])
+	c.items = make(map[string]*entry[V])
 	c.mu.Unlock()
 }
 

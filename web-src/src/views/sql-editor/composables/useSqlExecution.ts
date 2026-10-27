@@ -1,6 +1,6 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue'
 import { ElMessage, ElLoading } from 'element-plus'
-import { execSQL } from '@/api/sql'
+import { cancelSql, execSQL, newRequestId, pageQuery } from '@/api/sql'
 import { isCancel } from '@/api'
 import { exportToCsv, exportToJson, exportToCsvMulti } from '@/utils/exportHelper'
 import excel from '@/utils/excel'
@@ -62,6 +62,14 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
     const currentSelectTable = ref('')
 
     let abortController: AbortController | null = null
+    // 当前执行的 requestId：终止时用于通知服务端取消（释放数据库连接）
+    let currentRequestId = ''
+    // 结果集分页：「继续加载」与截断提示（缺陷 D7）
+    const hasMoreResults = ref(false)
+    const loadingMore = ref(false)
+    let lastPageSql = ''
+    let lastPageSchema = ''
+    let lastPageConnId = ''
 
     // ── 计算属性 ──
     const batchDisplayTabs = computed(() => {
@@ -491,6 +499,11 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         if (checkSql(effiectiveSql)) {
             return
         }
+        // 记录分页上下文：语句自身带 LIMIT 时不再提供「继续加载」
+        lastPageSql = effiectiveSql
+        lastPageSchema = schema
+        lastPageConnId = connId
+        hasMoreResults.value = false
         currentSelectTable.value = extractTableName(sqlExec)
         isBatchMode.value = false
         batchResults.value = []
@@ -499,13 +512,26 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         sqlError.value = ''
         const startTime = performance.now()
         abortController = new AbortController()
+        currentRequestId = newRequestId()
         execSQL(
-            { connId, schema, sql: effiectiveSql, maxLine: maxLine.value, tableName: currentSelectTable.value },
+            {
+                connId,
+                schema,
+                sql: effiectiveSql,
+                maxLine: maxLine.value,
+                tableName: currentSelectTable.value,
+                requestId: currentRequestId,
+            },
             abortController.signal
         )
             .then((resp) => {
                 executionTime.value = Math.round(performance.now() - startTime)
                 applyResultToUI(resp.data.data)
+                // 行数达上限 → 视为可能被截断，允许继续加载（语句自带 LIMIT 时除外）
+                const cap = Number(maxLine.value)
+                const rowCount = Array.isArray(resp.data.data?.data) ? resp.data.data.data.length : 0
+                hasMoreResults.value =
+                    cap > 0 && rowCount >= cap && !/\blimit\b/i.test(effiectiveSql)
                 exectingSql.value = false
                 abortController = null
             })
@@ -542,7 +568,8 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         const fullSql = statements.join(';')
 
         abortController = new AbortController()
-        execSQL({ connId, schema, sql: fullSql, maxLine: maxLine.value, batch: 'true' }, abortController.signal)
+        currentRequestId = newRequestId()
+        execSQL({ connId, schema, sql: fullSql, maxLine: maxLine.value, batch: 'true', requestId: currentRequestId }, abortController.signal)
             .then((resp) => {
                 executionTime.value = Math.round(performance.now() - startTime)
                 batchResults.value = resp.data.data.results || []
@@ -598,10 +625,53 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         executeCurrentStatement()
     }
 
+    // loadMoreResults 结果集「继续加载」：按当前 offset 向 /query/page 拉取下一页并追加。
+    async function loadMoreResults() {
+        if (!hasMoreResults.value || loadingMore.value || !lastPageSql) return
+        loadingMore.value = true
+        try {
+            const cap = Number(maxLine.value) > 0 ? Number(maxLine.value) : 200
+            const resp = await pageQuery({
+                connId: lastPageConnId,
+                schema: lastPageSchema,
+                sql: lastPageSql,
+                offset: result.value.length,
+                limit: cap,
+            })
+            const page = resp?.data?.data
+            if (!page || page.canPage === false) {
+                hasMoreResults.value = false
+                if (!page) ElMessage({ message: '当前语句不支持分页加载', type: 'warning' })
+                return
+            }
+            const names = (page.columns || []).map(c => c.name)
+            const appended = (page.rows || []).map((rowArr: unknown[]) => {
+                const obj: Record<string, any> = {}
+                names.forEach((name, idx) => { obj[name] = rowArr[idx] ?? null })
+                return obj
+            })
+            result.value = [...result.value, ...appended]
+            hasMoreResults.value = !!page.hasMore
+            if (appended.length === 0) {
+                ElMessage({ message: '已无更多数据', type: 'info' })
+            }
+        } catch (e: any) {
+            hasMoreResults.value = false
+            sqlError.value = e?.message || '加载更多失败'
+        } finally {
+            loadingMore.value = false
+        }
+    }
+
     function stopExec() {
         if (abortController) {
             abortController.abort()
             abortController = null
+        }
+        // 仅 abort 浏览器请求不足以让数据库停下：服务端同步取消，及时释放连接
+        if (currentRequestId) {
+            cancelSql(currentRequestId).catch(() => {})
+            currentRequestId = ''
         }
         exectingSql.value = false
         sqlError.value = '执行已终止'
@@ -627,8 +697,9 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
 
         const startTime = performance.now()
         abortController = new AbortController()
+        currentRequestId = newRequestId()
         execSQL(
-            { connId, schema, sql: text, maxLine: maxLine.value, batch: 'true', isFile: 'true' },
+            { connId, schema, sql: text, maxLine: maxLine.value, batch: 'true', isFile: 'true', requestId: currentRequestId },
             abortController.signal
         )
             .then((resp) => {
@@ -879,6 +950,10 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         // computed
         batchDisplayTabs,
         canInlineEdit,
+        // 分页
+        hasMoreResults,
+        loadingMore,
+        loadMoreResults,
         // methods
         exec,
         execSmart,

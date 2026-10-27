@@ -106,7 +106,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	}
 
 	var permAgentTool tool.BaseTool
-	if scope.IsRemote && !scope.HasFullConnAccess {
+	// 未选择数据库连接（纯文件分析）时无需构建数据库权限审核 Agent
+	if scope.IsRemote && !scope.HasFullConnAccess && connID != "" {
 		permSchemaNames := buildSchemaNames(schemas)
 		if len(permSchemaNames) == 0 && dbSchema != "" {
 			permSchemaNames = []string{dbSchema}
