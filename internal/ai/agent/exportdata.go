@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -61,8 +62,75 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef, scop
 		if err != nil {
 			return nil, err
 		}
-		return export.QueryResultToTable(qr, limit), nil
+		table := export.QueryResultToTable(qr, limit)
+		if table == nil {
+			return nil, nil
+		}
+
+		// 导出结果会直接落盘，没有结果过滤兜底：先按「输出列 → 原始列」脱敏，再交给渲染器。
+		masker := GetMaskerProvider().Get()
+		if masker == nil {
+			recordDegraded("masker", "export_blocked")
+			return nil, &PermissionError{Message: "脱敏规则不可用，已阻止导出数据"}
+		}
+		origins := resolveColumnOriginsForNames(ref.SQL, table.Headers, scope)
+		table.Rows = masker.MaskTable(table.Headers, table.Rows, origins)
+		if masker.HasRules() {
+			recordMaskEvent(StageExport, "report_table")
+		}
+		return table, nil
 	}
+}
+
+// maskExportArgs 对导出工具参数中的 content 正文做文本脱敏。
+//
+// 导出文件内容不经 SSE 审计，必须在渲染前单独处理；脱敏器不可用时返回错误
+// （fail-closed，不以原文落盘）。
+func (m *PermissionMiddleware) maskExportArgs(ctx context.Context, args string) (string, error) {
+	sec, err := RunSecurityFrom(ctx)
+	if err != nil {
+		return "", err
+	}
+	if sec.Masker == nil {
+		return "", &PermissionError{Message: "脱敏规则不可用，已阻止导出"}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return args, nil
+	}
+	content, ok := raw["content"].(string)
+	if !ok || content == "" {
+		return args, nil
+	}
+	masked := sec.Masker.MaskText(content)
+	if masked == content {
+		return args, nil
+	}
+	raw["content"] = masked
+	out, marshalErr := json.Marshal(raw)
+	if marshalErr != nil {
+		return "", marshalErr
+	}
+	recordMaskEvent(StageExport, "content")
+	return string(out), nil
+}
+
+// exportByCodeAllowed 判断高级导出是否允许注册/执行。
+//
+// 条件：完整连接权限 + Python 可用 + OS 级隔离可用 + 不存在生效脱敏规则。
+// 直连脚本会绕过应用层脱敏，因此只要配置了任何列级规则就不开放。
+func exportByCodeAllowed(scope *PermissionScope) bool {
+	if scope == nil || !scope.SkipChecks() {
+		return false
+	}
+	if !export.IsPythonAvailable() || !export.CodegenIsolationAvailable() {
+		return false
+	}
+	masker := GetMaskerProvider().Get()
+	if masker == nil {
+		return false // 规则存储不可用：按最严格策略不开放
+	}
+	return !masker.HasRules()
 }
 
 // validateExportReadSQL 导出 SQL 的程序化校验（不依赖权限 Agent，确定性）：
@@ -97,46 +165,12 @@ func validateExportReadSQL(scope *PermissionScope, sql string) error {
 
 // checkSelectColumnsStrict 列级校验（供权限中间件与导出数据源共用）。
 // rejectStar=true 时，column 级权限表上的 SELECT * 一律拒绝。
+//
+// 实现已统一到 authorizeColumnsInSQL：按方言解析 alias→table，逐列确定真实来源，
+// 来源不明时拒绝（导出没有结果过滤兜底，必须严格）。
 func checkSelectColumnsStrict(scope *PermissionScope, sql string, tables []string, rejectStar bool) error {
-	selectCols := appperm.ExtractSelectColumns(appperm.StripComments(strings.TrimSpace(sql)))
-	for _, sc := range selectCols {
-		if sc.IsStar {
-			if !rejectStar {
-				continue
-			}
-			for _, table := range tables {
-				if scope.GetTableAccessLevel(table) == "column" {
-					return &PermissionError{
-						Message: fmt.Sprintf("表 %s 仅开放部分字段，导出时必须显式列出允许字段，禁止使用 SELECT *", table),
-						Objects: []string{table},
-					}
-				}
-			}
-			continue
-		}
-		colName := sc.ColumnName
-		allDenied := false
-		hasColumnLevelTable := false
-		for _, table := range tables {
-			if scope.GetTableAccessLevel(table) == "column" {
-				hasColumnLevelTable = true
-				if scope.IsColumnAllowed(table, colName) {
-					allDenied = false
-					break
-				}
-				allDenied = true
-			}
-		}
-		if hasColumnLevelTable && allDenied {
-			displayName := colName
-			if sc.TableAlias != "" {
-				displayName = sc.TableAlias + "." + colName
-			}
-			return &PermissionError{
-				Message: fmt.Sprintf("无权访问字段 %s", displayName),
-				Objects: []string{displayName},
-			}
-		}
-	}
-	return nil
+	return authorizeColumnsInSQL(scope, sql, tables, columnCheckOptions{
+		RejectStar:         rejectStar,
+		RequireKnownOrigin: true,
+	})
 }

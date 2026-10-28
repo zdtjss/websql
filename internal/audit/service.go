@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -25,8 +27,8 @@ var once sync.Once
 func GetAuditService() *AuditService {
 	once.Do(func() {
 		instance = &AuditService{
-			writer:  newAsyncWriter(),
-			config:  LoadAuditConfig(),
+			writer: newAsyncWriter(),
+			config: LoadAuditConfig(),
 		}
 	})
 	return instance
@@ -91,7 +93,7 @@ func (s *AuditService) Record(entry *AuditEntry) {
 	}
 
 	now := time.Now()
-	log := &AuditLog{
+	record := &AuditLog{
 		ID:           idgen.RandomStr(),
 		UserID:       entry.UserID,
 		UserName:     entry.UserName,
@@ -99,7 +101,7 @@ func (s *AuditService) Record(entry *AuditEntry) {
 		ConnName:     entry.ConnName,
 		SchemaName:   entry.SchemaName,
 		SessionID:    entry.SessionID,
-		SQLText:      MaskSQL(entry.SQLText),
+		SQLText:      maskAuditText(entry.SQLText),
 		SQLType:      entry.SQLType,
 		RiskLevel:    entry.RiskLevel,
 		Status:       entry.Status,
@@ -112,7 +114,14 @@ func (s *AuditService) Record(entry *AuditEntry) {
 		ClientIP:     entry.ClientIP,
 	}
 
-	s.writer.enqueue(log)
+	// 高风险事件可靠兜底：异步队列满时同步写入，避免「拒绝已作出但审计丢失」。
+	// 兜底失败只记录元信息（不含 SQL 正文），并把丢弃计数暴露给运行时可观测性。
+	if !s.writer.enqueue(record) && entry.RiskLevel == "high" {
+		if err := s.writer.flushBatch([]*AuditLog{record}); err != nil {
+			logger.PrintErrf("高风险审计同步兜底失败", fmt.Errorf("sqlType=%s tool=%s source=%s: %w",
+				record.SQLType, record.ToolName, record.Source, err))
+		}
+	}
 }
 
 // DroppedCount 返回因队列满被丢弃的审计记录累计条数，供运行时可观测性使用。
@@ -189,18 +198,19 @@ func newAsyncWriter() *asyncWriter {
 	return w
 }
 
-func (w *asyncWriter) enqueue(record *AuditLog) {
+func (w *asyncWriter) enqueue(record *AuditLog) bool {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		return
+		return false
 	}
 	w.mu.Unlock()
 
 	select {
 	case w.ch <- record:
+		return true
 	default:
-		// 队列满：累计丢弃条数（原子计数，可观测），
+		// 队列满：累加丢弃条数（原子计数，可观测）；
 		// 首次丢弃与之后每累计 100 条告警一次，避免刷日志。
 		// 告警只带元信息（toolName/userId/source），不带 SQL 正文。
 		n := w.dropped.Add(1)
@@ -208,6 +218,7 @@ func (w *asyncWriter) enqueue(record *AuditLog) {
 			log.Printf("[Audit] 审计日志队列已满，丢弃记录（累计 %d 条）- toolName=%s userId=%s source=%s\n",
 				n, record.ToolName, record.UserID, record.Source)
 		}
+		return false
 	}
 }
 
@@ -244,13 +255,13 @@ func (w *asyncWriter) consume() {
 	}
 }
 
-func (w *asyncWriter) flushBatch(batch []*AuditLog) {
+func (w *asyncWriter) flushBatch(batch []*AuditLog) error {
 	if len(batch) == 0 {
-		return
+		return nil
 	}
 	db := getDB()
 	if db == nil {
-		return
+		return errors.New("审计库不可用")
 	}
 
 	err := database.RetryOnBusy(func() error {
@@ -272,10 +283,10 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 		defer stmt.Close()
 
 		for _, r := range batch {
-			// 落库边界二次脱敏（MaskSQL 幂等），确保任何调用方写入的 SQL 均不落明文
+			// 落库边界二次脱敏（幂等），确保任何调用方写入的 SQL/错误文本均不落明文
 			_, err := stmt.Exec(r.ID, r.UserID, r.UserName, r.ConnID, r.ConnName, r.SchemaName,
-				r.SessionID, MaskSQL(r.SQLText), r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
-				r.AffectedRows, r.ExecTimeMs, r.ExecTime, r.ErrorMsg, r.ClientIP)
+				r.SessionID, maskAuditText(r.SQLText), r.SQLType, r.RiskLevel, r.Status, r.Source, r.ToolName,
+				r.AffectedRows, r.ExecTimeMs, r.ExecTime, maskAuditText(r.ErrorMsg), r.ClientIP)
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -291,6 +302,7 @@ func (w *asyncWriter) flushBatch(batch []*AuditLog) {
 	if err != nil {
 		logger.PrintErrf("审计日志写入失败(已重试)", err)
 	}
+	return err
 }
 
 // ─── cleanup scheduler ───

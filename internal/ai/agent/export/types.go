@@ -1,6 +1,7 @@
 package export
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,32 @@ import (
 type QueryResult struct {
 	Columns []string
 	Data    []map[string]any
+}
+
+// QueryRunner 由调用方（agent 层）注入，用于在导出取数前完成权限校验与结果脱敏。
+//
+// 导出包不依赖权限模型：未注入 Runner 时退化为直接查询（仅限独立测试/脚本）；
+// Agent 链路必须注入，否则 Excel 等原生导出会绕过列级脱敏。
+type QueryRunner interface {
+	QueryForExport(ctx context.Context, sql string, maxRows int) (*QueryResult, error)
+}
+
+// firstQueryRunner 取第一个非空 Runner（兼容旧构造函数的可变参数形式）。
+func firstQueryRunner(runners []QueryRunner) QueryRunner {
+	for _, runner := range runners {
+		if runner != nil {
+			return runner
+		}
+	}
+	return nil
+}
+
+// runExportQuery 统一取数入口：有 Runner 时走权限校验执行器，否则直接查询。
+func runExportQuery(ctx context.Context, conn *sqlx.DB, runner QueryRunner, sql string) (*QueryResult, error) {
+	if runner != nil {
+		return runner.QueryForExport(ctx, sql, maxExportRows)
+	}
+	return QueryForExport(conn, sql)
 }
 
 // maxExportRows 导出工具的行数硬上限（读取上限 + 1 行用于判定是否超限）。

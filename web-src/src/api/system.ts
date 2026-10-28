@@ -9,29 +9,45 @@ export interface Role {
   id: string
   name: string
   viewClassic?: number
+  /** 全局数据修改能力（同时影响经典 SQL 与 AI） */
   allowModify?: number
+  /** 仅约束 AI 数据写工具，需与 allowModify 同时开启 */
+  aiAllowModify?: number
+  /** 权限摘要（并发编辑乐观锁） */
+  permissionDigest?: string
   powerList?: RolePower[]
-  [key: string]: unknown
 }
 
-/** 角色权限项 */
+/** 角色权限项（与后端 PowerDetail 对齐） */
 export interface RolePower {
-  connId?: string
-  schemaName?: string
-  tableName?: string
-  columnName?: string
-  [key: string]: unknown
+  id?: string
+  roleId?: string
+  connId: string
+  connName?: string | null
+  schemaName: string | null
+  tableName: string | null
+  columnName: string | null
+  level: 'conn' | 'schema' | 'table' | 'column'
 }
 
-/** 保存角色参数 */
+/** 保存角色参数（含并发控制与 AI 独立开关） */
 export interface SaveRoleParams {
   id: string
   name: string
-  addPowers: unknown[]
-  delPowers: unknown[]
+  addPowers: RolePower[]
+  delPowers: RolePower[]
   viewClassic: number
   allowModify: number
-  [key: string]: unknown
+  aiAllowModify?: number
+  /** 加载角色时的权限摘要；缺省表示不做乐观锁校验（兼容旧客户端） */
+  expectedDigest?: string
+}
+
+/** 角色能力配置（决定是否展示 AI 开关） */
+export interface RoleCapability {
+  capabilityVersion: number
+  aiPolicyEnforce: boolean
+  maskVersion?: string
 }
 
 /** 权限树查询参数 */
@@ -139,9 +155,15 @@ export function getRoleList(): Promise<AxiosResponse<ApiResponse<Role[]>>> {
   return http.get('/roleList')
 }
 
+/** 查询角色能力配置（AI 开关是否开放），对应 GET /roleCapability */
+export function getRoleCapability(): Promise<AxiosResponse<ApiResponse<RoleCapability>>> {
+  return http.get('/roleCapability')
+}
+
 /** 保存角色，对应 POST /saveRole */
 export function saveRole(params: SaveRoleParams): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/saveRole', params)
+  // skipGlobalError：409 与参数错误由页面统一处理，避免重复提示
+  return http.post('/saveRole', params, { skipGlobalError: true })
 }
 
 /** 删除角色，对应 POST /delRole */

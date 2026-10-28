@@ -35,10 +35,11 @@ CREATE TABLE IF NOT EXISTS t_role (
 	id TEXT PRIMARY KEY,
 	name TEXT,
 	view_classic INTEGER DEFAULT 0,
-	allow_modify INTEGER DEFAULT 1
+	allow_modify INTEGER DEFAULT 1,
+	ai_allow_modify INTEGER NOT NULL DEFAULT 1
 );
 
-insert or ignore into t_role (id, name, view_classic, allow_modify) values ('825683877266722816', 'admin', 1, 1);
+insert or ignore into t_role (id, name, view_classic, allow_modify, ai_allow_modify) values ('825683877266722816', 'admin', 1, 1, 1);
 
 CREATE TABLE IF NOT EXISTS t_tree (
 	id TEXT PRIMARY KEY,
@@ -225,3 +226,29 @@ CREATE TABLE IF NOT EXISTS t_user_storage (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_storage_user_key ON t_user_storage(user_id, storage_key);
 CREATE INDEX IF NOT EXISTS idx_user_storage_user_id ON t_user_storage(user_id);
+
+-- 全局权限修订号（单行表）：角色/权限变更与 Revision 同事务提交
+CREATE TABLE IF NOT EXISTS t_permission_revision (
+    id         INTEGER PRIMARY KEY,
+    revision   BIGINT NOT NULL DEFAULT 0,
+    updated_at DATETIME
+);
+
+INSERT OR IGNORE INTO t_permission_revision (id, revision, updated_at) VALUES (1, 0, CURRENT_TIMESTAMP);
+
+-- 数据脱敏规则：管理员对已授权列配置的数据保护策略
+CREATE TABLE IF NOT EXISTS t_data_mask_rule (
+    id          TEXT PRIMARY KEY,
+    conn_id     TEXT NOT NULL,
+    schema_name TEXT NOT NULL DEFAULT '',
+    table_name  TEXT NOT NULL,
+    column_name TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_data_mask_rule
+    ON t_data_mask_rule (conn_id, schema_name, table_name, column_name);
+
+CREATE INDEX IF NOT EXISTS idx_data_mask_rule_conn ON t_data_mask_rule (conn_id);

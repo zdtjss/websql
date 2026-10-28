@@ -145,10 +145,16 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/delRole", admin.DelRole)
 	routerGroup.GET("/roleList", admin.RoleList)
 	routerGroup.GET("/roleBaseList", admin.RoleBaseList)
+	routerGroup.GET("/roleCapability", admin.GetRoleCapability)
 	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
 	routerGroup.GET("/permissionTree", admin.GetPermissionTree)
 	routerGroup.GET("/canUseClassicView", admin.CanUseClassicView)
 	routerGroup.GET("/canModifyData", admin.CanModifyData)
+
+	// 数据脱敏规则（管理员对已授权列配置的数据保护策略，不改变权限层级）
+	routerGroup.GET("/dataMaskRuleList", admin.ListMaskRulesHandler)
+	routerGroup.POST("/saveDataMaskRule", admin.SaveMaskRuleHandler)
+	routerGroup.POST("/delDataMaskRule", admin.DeleteMaskRuleHandler)
 
 	routerGroup.GET("/promptList", admin.PromptList)
 	routerGroup.GET("/promptListByRole", admin.PromptListByRole)
@@ -208,6 +214,8 @@ func MainRegister(router *gin.Engine) {
 		routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 		routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
 		routerGroup.POST("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
+		// 安全指标快照：仅聚合计数，不含用户/连接/表/列/会话标识
+		routerGroup.GET("/ai/securityMetrics", agent.GetAISecurityMetrics)
 	}
 	routerGroup.GET("/exports/:filename", handleExportDownload)
 	// 同时注册不带 /api 前缀的路由，兼容前端未拼接 apiBase 的导出链接

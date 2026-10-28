@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"websql/internal/pkg/strutil"
+	"websql/internal/audit"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -77,10 +77,28 @@ func userFacingError(err error) string {
 	return "AI 处理出错，请稍后重试或换一种问法"
 }
 
-// streamAttempt 累积单次模型流式输出（一次尝试）
+// pendingResourceInfo 工具调用对应的资源溯源及其完整性。
+type pendingResourceInfo struct {
+	refs     []ResourceRef
+	complete bool
+}
+
+// streamAttempt 累积单次模型流式输出（一次尝试）。
+//
+// 安全语义：
+//   - content/thinking 为原始接收内容，只用于长度统计与重复检测，禁止落库或推给前端；
+//   - safeContent/safeThinking 为经过 OutputGuard 审计后的内容（可推送、可落库）；
+//   - emittedContent/emittedThinking 只记录「已推送给用户」的净化前缀，供 retract 使用。
 type streamAttempt struct {
-	content   strings.Builder
-	thinking  strings.Builder
+	content  strings.Builder
+	thinking strings.Builder
+
+	safeContent  strings.Builder
+	safeThinking strings.Builder
+
+	emittedContent  strings.Builder
+	emittedThinking strings.Builder
+
 	toolCalls []schema.ToolCall
 	chunks    int
 }
@@ -97,10 +115,20 @@ type streamAttempt struct {
 //     不能当作助手正文推给前端。
 //   - 流中途出现非 EOF 错误时，不完整的 tool_calls 参数不落库（下一轮会因 dangling
 //     tool_calls 被 patchtoolcalls 补占位，而残缺的 JSON 参数会污染后续上下文）。
-func (a *SQLAgent) processEvents(runID string, iter *adk.AsyncIterator[*adk.AgentEvent], flush func(StreamChunk), sess *Session, checkPointID string) bool {
+func (a *SQLAgent) processEvents(ctx context.Context, runID string, iter *adk.AsyncIterator[*adk.AgentEvent], flush func(StreamChunk), sess *Session, checkPointID string) bool {
 	interrupted := false
 	eventIdx, toolResultCnt, assistantCnt := 0, 0, 0
 	overallStart := time.Now()
+
+	// 安全上下文必须在整个事件消费期间可用；缺失时立即终止，不推送任何内容。
+	sec, secErr := RunSecurityFrom(ctx)
+	if secErr != nil {
+		log.Printf("[Agent] 事件消费缺少安全上下文 - err=%v\n", secErr)
+		flush(StreamChunk{Type: "error", Content: "安全上下文无效，本次请求已终止"})
+		return false
+	}
+	// toolCallID → 资源溯源：assistant 消息里的 tool_calls 先登记，tool 消息到达时附带。
+	pendingResources := make(map[string]pendingResourceInfo)
 
 	for {
 		event, ok := iter.Next()
@@ -110,6 +138,16 @@ func (a *SQLAgent) processEvents(runID string, iter *adk.AsyncIterator[*adk.Agen
 			break
 		}
 		eventIdx++
+
+		// 每个安全批次推送前复核权限修订号：旧 Scope 不得继续放行数据。
+		if !sec.RevisionStillValid() {
+			log.Printf("[Agent] 运行中权限变更或租约过期，终止输出 - eventIdx=%d\n", eventIdx)
+			recordSecurityEvent(StageRevision, "stream", "stop")
+			auditSecurityDenied("revision", "stream", "permission_revision_changed", sec.UserID)
+			flush(StreamChunk{Type: "error", Content: "权限已发生变化，本次回复已停止，请重新发起"})
+			_ = sess.CleanAndSave()
+			return false
+		}
 
 		if event.Err != nil {
 			if a.handleEventError(eventIdx, event.Err, flush, sess) {
@@ -143,11 +181,11 @@ func (a *SQLAgent) processEvents(runID string, iter *adk.AsyncIterator[*adk.Agen
 		switch {
 		case mo.IsStreaming && mo.MessageStream != nil && role == schema.Tool:
 			toolResultCnt++
-			a.consumeToolStream(eventIdx, mo, sess)
+			a.consumeToolStream(eventIdx, mo, sess, sec, pendingResources)
 		case mo.IsStreaming && mo.MessageStream != nil:
 			assistantCnt++
-			if a.consumeAssistantStream(runID, eventIdx, mo.MessageStream, flush, sess) {
-				// 检测到模型输出退化（重复内容），已请求取消本次运行
+			if a.consumeAssistantStream(runID, eventIdx, mo.MessageStream, flush, sess, sec) {
+				// 检测到模型输出退化（重复内容）或审计异常，已请求取消本次运行
 				return false
 			}
 		case role == schema.Tool && mo.Message != nil:
@@ -155,32 +193,60 @@ func (a *SQLAgent) processEvents(runID string, iter *adk.AsyncIterator[*adk.Agen
 			msg := mo.Message
 			log.Printf("[Agent] 工具结果 - eventIdx=%d, toolName=%s, callID=%s, contentLen=%d\n",
 				eventIdx, msg.ToolName, msg.ToolCallID, len(msg.Content))
+			safe, guardErr := guardWholeText(sec, msg.Content)
+			if guardErr != nil {
+				log.Printf("[Agent] 工具结果审计失败，拒绝落库 - eventIdx=%d, err=%v\n", eventIdx, guardErr)
+				recordSecurityEvent(StageOutput, "tool_result", "deny")
+				auditSecurityDenied("output", "tool_result", "output_guard_failed", sec.UserID)
+				flush(StreamChunk{Type: "error", Content: "工具结果未通过安全检查，已停止本次生成"})
+				_ = sess.CleanAndSave()
+				return false
+			}
 			sess.AppendMessageNoSave(SessionMessage{
 				Role:       "tool",
-				Content:    msg.Content,
+				Content:    safe,
 				ToolCallID: msg.ToolCallID,
 				ToolName:   firstNonEmptyStr(msg.ToolName, mo.ToolName),
+				Security:   newMessageSecurityWithTrace(sec, safe, pendingResources[msg.ToolCallID].refs, !pendingResources[msg.ToolCallID].complete),
 			})
 		case role == schema.Assistant && mo.Message != nil:
 			assistantCnt++
 			msg := mo.Message
+			// 非流式正文与流式共用同一审计算法（整段 Push + Close）。
+			safeContent, guardErr := guardWholeText(sec, msg.Content)
+			if guardErr != nil {
+				log.Printf("[Agent] 助手正文审计失败，拒绝推送 - eventIdx=%d, err=%v\n", eventIdx, guardErr)
+				recordSecurityEvent(StageOutput, "assistant", "deny")
+				auditSecurityDenied("output", "assistant", "output_guard_failed", sec.UserID)
+				flush(StreamChunk{Type: "error", Content: "回复内容未通过安全检查，已停止本次生成"})
+				_ = sess.CleanAndSave()
+				return false
+			}
 			if len(msg.ToolCalls) > 0 {
 				names := make([]string, 0, len(msg.ToolCalls))
 				for _, tc := range msg.ToolCalls {
 					names = append(names, tc.Function.Name)
+					refs, complete := resourcesFromToolCall(tc.Function.Name, tc.Function.Arguments, sec)
+					pendingResources[tc.ID] = pendingResourceInfo{refs: refs, complete: complete}
 				}
 				log.Printf("[Agent] 助手工具调用请求 - eventIdx=%d, funcs=%v, contentLen=%d\n", eventIdx, names, len(msg.Content))
-				if msg.Content != "" {
-					flush(StreamChunk{Type: "content", Content: msg.Content})
+				if safeContent != "" {
+					flush(StreamChunk{Type: "content", Content: safeContent})
 				}
 				sess.AppendMessageNoSave(SessionMessage{
 					Role:      "assistant",
-					Content:   msg.Content,
-					ToolCalls: sessionToolCallsFromSchema(msg.ToolCalls),
+					Content:   safeContent,
+					ToolCalls: sanitizeToolCallsForPersist(sec, msg.ToolCalls),
+					// 工具调用承载的数据来源无法逐列枚举，权限变化后必须隔离
+					Security: newMessageSecurityWithTrace(sec, safeContent, nil, true),
 				})
-			} else if msg.Content != "" {
-				flush(StreamChunk{Type: "content", Content: msg.Content})
-				sess.AppendMessageNoSave(SessionMessage{Role: "assistant", Content: msg.Content})
+			} else if safeContent != "" {
+				flush(StreamChunk{Type: "content", Content: safeContent})
+				sess.AppendMessageNoSave(SessionMessage{
+					Role:     "assistant",
+					Content:  safeContent,
+					Security: newMessageSecurity(sec, safeContent, nil),
+				})
 			}
 		}
 
@@ -237,10 +303,11 @@ func (a *SQLAgent) handleInterrupt(eventIdx int, info *adk.InterruptInfo, flush 
 		hasDangerConfirm = true
 		log.Printf("[Agent] 危险 SQL 中断 - eventIdx=%d, id=%s, riskLevel=%s, sqlType=%s, sqlLen=%d\n",
 			eventIdx, ictx.ID, sqlInfo.RiskLevel, sqlInfo.SQLType, len(sqlInfo.SQL))
+		// 展示副本只保留 SQL 结构，字面量内容脱敏；待执行的原始语句只保存在服务端 checkpoint。
 		flush(StreamChunk{
 			Type:         "danger_confirm",
 			Content:      "检测到需要确认的写操作",
-			SQL:          sqlInfo.SQL,
+			SQL:          audit.MaskSQL(sqlInfo.SQL),
 			InterruptID:  ictx.ID,
 			CheckPointID: checkPointID,
 		})
@@ -252,8 +319,10 @@ func (a *SQLAgent) handleInterrupt(eventIdx int, info *adk.InterruptInfo, flush 
 	return hasDangerConfirm
 }
 
-// consumeToolStream 消费流式工具结果并按 tool 消息落库
-func (a *SQLAgent) consumeToolStream(eventIdx int, mo *adk.MessageVariant, sess *Session) {
+// consumeToolStream 消费流式工具结果并按 tool 消息落库。
+//
+// 落库副本必须经脱敏；工具结果可能包含查询到的明细数据与错误原文。
+func (a *SQLAgent) consumeToolStream(eventIdx int, mo *adk.MessageVariant, sess *Session, sec *RunSecurityContext, pendingResources map[string]pendingResourceInfo) {
 	defer mo.MessageStream.Close()
 	var content strings.Builder
 	callID, toolName := "", mo.ToolName
@@ -278,21 +347,82 @@ func (a *SQLAgent) consumeToolStream(eventIdx int, mo *adk.MessageVariant, sess 
 	}
 	log.Printf("[Agent] 工具结果（流式）- eventIdx=%d, toolName=%s, callID=%s, contentLen=%d\n",
 		eventIdx, toolName, callID, content.Len())
+	safe, guardErr := guardWholeText(sec, content.String())
+	if guardErr != nil {
+		// fail-closed：不落库、不返回；用一个安全占位代替原始内容
+		log.Printf("[Agent] 流式工具结果审计失败 - eventIdx=%d, err=%v\n", eventIdx, guardErr)
+		recordSecurityEvent(StageOutput, "tool_result_stream", "deny")
+		auditSecurityDenied("output", "tool_result_stream", "output_guard_failed", sec.UserID)
+		safe = HistoryQuarantinePlaceholder
+	}
+	info := pendingResources[callID]
 	sess.AppendMessageNoSave(SessionMessage{
 		Role:       "tool",
-		Content:    content.String(),
+		Content:    safe,
 		ToolCallID: callID,
 		ToolName:   toolName,
+		Security:   newMessageSecurityWithTrace(sec, safe, info.refs, !info.complete),
 	})
 }
 
-// consumeAssistantStream 消费一次模型流式输出。返回 true 表示检测到输出退化并已取消运行。
-func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *schema.StreamReader[*schema.Message], flush func(StreamChunk), sess *Session) bool {
+// consumeAssistantStream 消费一次模型流式输出。返回 true 表示检测到输出退化或审计异常并已取消运行。
+//
+// 关键安全语义：
+//   - content 与 thinking 使用独立 guard，防止跨通道拼接绕过检测；
+//   - 只有通过审计的前缀才会推送与落库；holdback 在 EOF 时审计后释放；
+//   - 重试只撤回「已推送的净化文本」，绝不引用原始 attempt 内容；
+//   - 审计异常时丢弃未推送缓冲并终止运行，不回退为推送原文。
+func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *schema.StreamReader[*schema.Message], flush func(StreamChunk), sess *Session, sec *RunSecurityContext) bool {
 	defer stream.Close()
 	var att streamAttempt
 	start := time.Now()
 	repeatCount, lastChunk := 0, ""
 	const maxRepeats = 10
+
+	masker := sec.Masker
+	if masker == nil {
+		masker = NewNoopMasker()
+	}
+	contentGuard := NewOutputGuard(masker, 0)
+	thinkingGuard := NewOutputGuard(masker, 0)
+
+	// push 把审计后的安全前缀写入累加器并推送。
+	push := func(guard *OutputGuard, text string, safeBuilder, emitted *strings.Builder, typ string) error {
+		safe, err := guard.Push(text)
+		if err != nil {
+			return err
+		}
+		if safe == "" {
+			return nil
+		}
+		safeBuilder.WriteString(safe)
+		emitted.WriteString(safe)
+		flush(StreamChunk{Type: typ, Content: safe})
+		return nil
+	}
+	// closeGuard 在 EOF / 流异常时释放 holdback 并推送尾部。
+	closeGuard := func(guard *OutputGuard, safeBuilder, emitted *strings.Builder, typ string) error {
+		safe, err := guard.Close()
+		if err != nil {
+			return err
+		}
+		if safe == "" {
+			return nil
+		}
+		safeBuilder.WriteString(safe)
+		emitted.WriteString(safe)
+		flush(StreamChunk{Type: typ, Content: safe})
+		return nil
+	}
+
+	failClosed := func(err error) bool {
+		log.Printf("[Agent] 输出审计失败，丢弃未推送缓冲并终止 - eventIdx=%d, err=%v\n", eventIdx, err)
+		recordSecurityEvent(StageOutput, "guard", "deny")
+		auditSecurityDenied("output", "stream", "output_guard_failed", sec.UserID)
+		flush(StreamChunk{Type: "error", Content: "回复内容未通过安全检查，已停止本次生成"})
+		a.Cancel(runID)
+		return true
+	}
 
 	for {
 		chunk, err := stream.Recv()
@@ -300,22 +430,34 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 			var retryErr *adk.WillRetryError
 			switch {
 			case errors.Is(err, io.EOF):
-				a.persistAttempt(&att, sess)
+				if err := closeGuard(contentGuard, &att.safeContent, &att.emittedContent, "content"); err != nil {
+					return failClosed(err)
+				}
+				if err := closeGuard(thinkingGuard, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+					return failClosed(err)
+				}
+				a.persistAttempt(&att, sess, sec)
 			case errors.As(err, &retryErr):
-				// 该次尝试作废：撤回已推送的文本，不落库，等待下一次尝试的事件
-				log.Printf("[Agent] 模型流式输出将重试，撤回本次输出 - eventIdx=%d, attempt=%d, contentLen=%d\n",
-					eventIdx, retryErr.RetryAttempt, att.content.Len())
-				if att.content.Len() > 0 || att.thinking.Len() > 0 {
-					flush(StreamChunk{Type: "retract", Content: att.content.String(), Thinking: att.thinking.String()})
+				// 该次尝试作废：只撤回已推送的净化文本，不落库；guard 直接丢弃（不 Close，不释放缓冲）。
+				log.Printf("[Agent] 模型流式输出将重试，撤回本次输出 - eventIdx=%d, attempt=%d, emittedLen=%d\n",
+					eventIdx, retryErr.RetryAttempt, att.emittedContent.Len())
+				if att.emittedContent.Len() > 0 || att.emittedThinking.Len() > 0 {
+					flush(StreamChunk{Type: "retract", Content: att.emittedContent.String(), Thinking: att.emittedThinking.String()})
 				}
 			default:
-				// 流中途异常：保留已输出的正文，丢弃可能残缺的 tool_calls
+				// 流中途异常：释放已审计前缀，丢弃可能残缺的 tool_calls
 				log.Printf("[Agent] 模型流异常结束 - eventIdx=%d, chunks=%d, err=%v\n", eventIdx, att.chunks, err)
 				att.toolCalls = nil
-				a.persistAttempt(&att, sess)
+				if err := closeGuard(contentGuard, &att.safeContent, &att.emittedContent, "content"); err != nil {
+					return failClosed(err)
+				}
+				if err := closeGuard(thinkingGuard, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+					return failClosed(err)
+				}
+				a.persistAttempt(&att, sess, sec)
 			}
 			log.Printf("[Agent] 模型流结束 - eventIdx=%d, chunks=%d, contentLen=%d, toolCalls=%d, elapsed=%v\n",
-				eventIdx, att.chunks, att.content.Len(), len(att.toolCalls), time.Since(start))
+				eventIdx, att.chunks, att.safeContent.Len(), len(att.toolCalls), time.Since(start))
 			return false
 		}
 		if chunk == nil {
@@ -324,16 +466,18 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 		att.chunks++
 		if chunk.ReasoningContent != "" {
 			att.thinking.WriteString(chunk.ReasoningContent)
-			flush(StreamChunk{Type: "thinking", Content: chunk.ReasoningContent})
+			if err := push(thinkingGuard, chunk.ReasoningContent, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+				return failClosed(err)
+			}
 		}
 		if chunk.Content != "" {
 			if chunk.Content == lastChunk {
 				repeatCount++
 				if repeatCount >= maxRepeats {
-					log.Printf("[Agent] 检测到模型重复输出，取消本次运行 - eventIdx=%d, chunk=%q\n",
-						eventIdx, strutil.TruncateBytes(chunk.Content, 40))
+					log.Printf("[Agent] 检测到模型重复输出，取消本次运行 - eventIdx=%d, chunkLen=%d\n",
+						eventIdx, len(chunk.Content))
 					att.toolCalls = nil
-					a.persistAttempt(&att, sess)
+					a.persistAttempt(&att, sess, sec)
 					flush(StreamChunk{Type: "error", Content: "模型输出异常（重复内容），已自动停止本次生成"})
 					a.Cancel(runID)
 					return true
@@ -343,7 +487,9 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 			}
 			lastChunk = chunk.Content
 			att.content.WriteString(chunk.Content)
-			flush(StreamChunk{Type: "content", Content: chunk.Content})
+			if err := push(contentGuard, chunk.Content, &att.safeContent, &att.emittedContent, "content"); err != nil {
+				return failClosed(err)
+			}
 		}
 		if len(chunk.ToolCalls) > 0 {
 			att.toolCalls = append(att.toolCalls, chunk.ToolCalls...)
@@ -351,14 +497,21 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 	}
 }
 
-// persistAttempt 把一次完整的模型输出写入会话（不立即落库，由 debounce/运行结束统一保存）
-func (a *SQLAgent) persistAttempt(att *streamAttempt, sess *Session) {
-	if att.content.Len() == 0 && len(att.toolCalls) == 0 {
+// persistAttempt 把一次完整的模型输出写入会话（不立即落库，由 debounce/运行结束统一保存）。
+//
+// 落库副本必须使用审计后的净化内容；原始 att.content 永不写库。
+func (a *SQLAgent) persistAttempt(att *streamAttempt, sess *Session, sec *RunSecurityContext) {
+	safe := att.safeContent.String()
+	if safe == "" && len(att.toolCalls) == 0 {
 		return
 	}
-	sm := SessionMessage{Role: "assistant", Content: att.content.String()}
+	sm := SessionMessage{
+		Role:     "assistant",
+		Content:  safe,
+		Security: newMessageSecurity(sec, safe, nil),
+	}
 	if len(att.toolCalls) > 0 {
-		sm.ToolCalls = sessionToolCallsFromSchema(mergeToolCalls(att.toolCalls))
+		sm.ToolCalls = sanitizeToolCallsForPersist(sec, mergeToolCalls(att.toolCalls))
 	}
 	sess.AppendMessageNoSave(sm)
 }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"websql/internal/app/admin"
@@ -117,6 +118,34 @@ func GetSystemConfigValue(key string) string {
 	return cfg.ConfigValue
 }
 
+// 系统配置变更钩子：由上层（container）注册需要感知配置变化的组件。
+//
+// system 包不能反向依赖 agent（后者已依赖 system）；钩子只在保存成功后触发。
+var (
+	configChangeHooksMu sync.Mutex
+	configChangeHooks   []func(key string)
+)
+
+// OnSystemConfigChanged 注册配置保存成功后的回调。
+func OnSystemConfigChanged(fn func(key string)) {
+	if fn == nil {
+		return
+	}
+	configChangeHooksMu.Lock()
+	configChangeHooks = append(configChangeHooks, fn)
+	configChangeHooksMu.Unlock()
+}
+
+func notifySystemConfigChanged(key string) {
+	configChangeHooksMu.Lock()
+	hooks := make([]func(string), len(configChangeHooks))
+	copy(hooks, configChangeHooks)
+	configChangeHooksMu.Unlock()
+	for _, fn := range hooks {
+		fn(key)
+	}
+}
+
 func SaveSystemConfig(cfg *SystemConfigSave) {
 	existCfg := GetSystemConfigByKey(cfg.ConfigKey)
 	db := getDB()
@@ -135,12 +164,14 @@ func SaveSystemConfig(cfg *SystemConfigSave) {
 						log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
 						return
 					}
+					notifySystemConfigChanged(cfg.ConfigKey)
 					return
 				}
 			}
 			log.Printf("[SaveSystemConfig] 插入配置失败: %v", err)
 			return
 		}
+		notifySystemConfigChanged(cfg.ConfigKey)
 	} else {
 		_, err := db.Exec("update t_system_config set config_value = ?, config_type = ?, remark = ?, update_time = ? where id = ?",
 			cfg.ConfigValue, cfg.ConfigType, cfg.Remark, time.Now(), existCfg.Id)
@@ -148,6 +179,7 @@ func SaveSystemConfig(cfg *SystemConfigSave) {
 			log.Printf("[SaveSystemConfig] 更新配置失败: %v", err)
 			return
 		}
+		notifySystemConfigChanged(cfg.ConfigKey)
 	}
 }
 

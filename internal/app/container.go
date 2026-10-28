@@ -1,6 +1,9 @@
 package app
 
 import (
+	"log"
+	"sync"
+
 	"websql/internal/ai/agent"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
@@ -88,11 +91,39 @@ func NewContainerWithDB(db *sqlx.DB) *Container {
 		AuditService: audit.GetAuditService(),
 	}
 	appContainer = c
+
+	// 权限修订号对账：远程模式启动 500ms 轮询（桌面/本地模式内部自动跳过）。
+	// 必须在管理库与 config 就绪后启动，否则无法判断运行时 Profile。
+	admin.StartPermissionRevisionWatcher()
+	registerAIConfigChangeHooks()
 	return c
+}
+
+// aiConfigHooksOnce 避免多次构建容器时重复注册配置变更钩子。
+var aiConfigHooksOnce sync.Once
+
+// registerAIConfigChangeHooks 在系统配置保存后失效 AI 安全相关的进程内缓存。
+//
+// 灰度配置与脱敏密钥均存放于 t_system_config：保存后必须立即失效，
+// 否则最长会有一个刷新周期（5s）的旧配置窗口。
+func registerAIConfigChangeHooks() {
+	aiConfigHooksOnce.Do(func() {
+		system.OnSystemConfigChanged(func(key string) {
+			switch key {
+			case agent.PolicyRolloutConfigKey, admin.AIPolicyEnforceKey, admin.RoleCapabilityVersionKey, "ai.deploymentSalt":
+				agent.InvalidateRolloutCache()
+			case "ai.maskKey", "ai.maskKeyVersion":
+				if err := agent.GetMaskerProvider().Refresh(); err != nil {
+					log.Printf("[AIConfigHook] 脱敏密钥/规则刷新失败（保留上一已验证快照） - err=%v", err)
+				}
+			}
+		})
+	})
 }
 
 // Close 释放容器持有的资源。
 func (c *Container) Close() {
+	admin.StopPermissionRevisionWatcher()
 	if c.Mngtdb != nil {
 		c.Mngtdb.Close()
 	}

@@ -158,8 +158,26 @@ func (s *sseStream) write(payload string) bool {
 	})
 }
 
+// allowedSSETypes SSE 事件类型白名单。
+//
+// 未知类型默认不推送：避免未来新增字段（如内部调试信息）未经审计就出域。
+var allowedSSETypes = map[string]bool{
+	"session":        true,
+	"content":        true,
+	"thinking":       true,
+	"done":           true,
+	"error":          true,
+	"retract":        true,
+	"cancelled":      true,
+	"danger_confirm": true,
+}
+
 // flush 推送一个事件（JSON）
 func (s *sseStream) flush(chunk StreamChunk) {
+	if !allowedSSETypes[chunk.Type] {
+		log.Printf("[SSE] 拒绝推送未登记事件类型 - type=%s\n", chunk.Type)
+		return
+	}
 	data, err := json.Marshal(chunk)
 	if err != nil {
 		return
@@ -195,10 +213,11 @@ type requestParams struct {
 	dbVersion string
 	schemas   []SchemaRef
 	scope     *PermissionScope
+	sec       *RunSecurityContext
 	auditCtx  *ExecAuditCtx
 }
 
-func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, error) {
+func resolveRequestParams(c *gin.Context, req *ChatRequest, isResume bool) (*requestParams, error) {
 	cfg := system.GetSelectedModelConfig(req.ModelId)
 	if cfg == nil {
 		return nil, errAIConfigMissing
@@ -236,7 +255,63 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		dbSchema = req.Schema
 	}
 	schemaNames := collectSchemaNames(connID, dbSchema, req)
-	scope := BuildPermissionScope(user.Id, connID, schemaNames)
+	profile := CurrentRuntimeProfile()
+
+	// 脱敏规则不可用（管理库读取失败）时禁止数据出域：不能降级为「不脱敏继续查」。
+	masker := GetMaskerProvider().Get()
+	egressBlocked := false
+	if masker == nil {
+		log.Printf("[Handler] 脱敏规则不可用，本轮禁止数据出域 - user=%s\n", user.Id)
+		recordDegraded("masker", "unavailable")
+		masker = NewNoopMasker()
+		egressBlocked = true
+	}
+
+	revision := admin.CurrentPermissionRevision()
+	revisionUnavailable := false
+	if profile.RequiresRevisionLease() {
+		if _, fresh := admin.SnapshotPermissionRevision(); !fresh {
+			log.Printf("[Handler] 权限修订号不可信（租约过期），本轮禁止数据工具 - user=%s\n", user.Id)
+			recordDegraded("revision", "stale_lease")
+			revisionUnavailable = true
+		}
+	}
+
+	sec, err := BuildRunSecurityContext(profile, user.Id, connID, req.Schemas, revision, masker)
+	if err != nil {
+		return nil, err
+	}
+	sec.DataEgressBlocked = egressBlocked
+	sec.RevisionUnavailable = revisionUnavailable
+
+	// 输入先校验、后进入会话与模型：规范化 + 注入风险 + 写能力收缩。
+	// Resume 请求不携带新提问，不能按空输入拒绝（其安全约束由 checkpoint 快照保证）。
+	if !isResume {
+		clean, err := PreprocessQuestion(req.Question, nil)
+		if err != nil {
+			var permErr *PermissionError
+			if errors.As(err, &permErr) {
+				recordSecurityEvent(StageInput, "injection", "deny")
+				auditSecurityDenied(StageInput, "preprocess", "input_high_risk", user.Id)
+			}
+			return nil, err
+		}
+		req.Question = clean.Text
+		if clean.RestrictWrites {
+			sec = sec.RestrictForInputRisk()
+		}
+	}
+	// 客户端声明不能扩大权限：表范围只能是受支持标识符且逐表校验授权。
+	req.TableContext = sanitizeTableContext(req.TableContext, sec)
+
+	// 默认连接 Scope 作为 Agent 构建期快照；工具层始终按目标连接从 sec.Scopes 取。
+	scope, err := sec.DefaultScope()
+	if err != nil {
+		scope = BuildPermissionScope(user.Id, connID, schemaNames)
+	}
+	if sec.RestrictWrites {
+		scope = scope.CloneWithRestrictedWrites()
+	}
 
 	return &requestParams{
 		cfg:       cfg,
@@ -247,6 +322,7 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 		dbVersion: dbVersion,
 		schemas:   req.Schemas,
 		scope:     scope,
+		sec:       sec,
 		auditCtx: &ExecAuditCtx{
 			ConnID:   connID,
 			UserID:   user.Id,
@@ -260,11 +336,18 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest) (*requestParams, err
 
 // writeParamsError 在 SSE 建立前以普通 JSON 响应返回参数/鉴权错误
 func writeParamsError(c *gin.Context, err error) {
+	var permErr *PermissionError
 	switch {
 	case errors.Is(err, errUnauthenticated):
 		response.WriteAuthErr(c, err.Error())
 	case errors.Is(err, errAIConfigMissing):
 		response.WriteErr(c, http.StatusInternalServerError, 500, err.Error())
+	case errors.Is(err, ErrInputRejected):
+		response.WriteErr(c, http.StatusBadRequest, 400, "提问为空、过长或编码无效")
+	case errors.As(err, &permErr):
+		// 权限类错误（含无权访问所选连接、输入触发安全策略）在 SSE 建立前直接拒绝，
+		// 不进入会话与模型，避免未授权对象名进入上下文。
+		response.WriteErr(c, http.StatusForbidden, 403, permErr.Message)
 	default:
 		response.WriteErr(c, http.StatusInternalServerError, 500, "请求处理失败")
 	}
@@ -293,7 +376,7 @@ func (h *Handler) prepareSession(req *ChatRequest, runnerCancel context.CancelFu
 
 func (h *Handler) createAgent(ctx context.Context, params *requestParams) (*SQLAgent, error) {
 	return GetAgentFactory().GetOrCreate(ctx, params.cfg, params.connID, params.dbType, params.dbSchema,
-		params.dbVersion, params.schemas, params.scope, params.auditCtx)
+		params.dbVersion, params.schemas, params.scope, params.sec, params.auditCtx)
 }
 
 // hasFileDataSource 判断本次请求是否携带文件数据来源（多文件附件或 legacy 单文件）。
@@ -334,7 +417,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	params, err := resolveRequestParams(c, &req)
+	params, err := resolveRequestParams(c, &req, isResume)
 	if err != nil {
 		writeParamsError(c, err)
 		return
@@ -349,6 +432,10 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	sse := newSSEStream(c)
 	defer sse.close(false)
 
+	// 安全上下文必须在进入会话与模型之前就绪：
+	// 输入预处理、历史过滤、工具授权、输出审计都从这里取同一份事实。
+	runCtx := WithRunSecurity(sse.runnerCtx, params.sec)
+
 	sess, err := h.prepareSession(&req, sse.runnerCancel)
 	if err != nil {
 		log.Printf("[Handler] 会话归属校验失败 - sessionId=%s, userId=%s, err=%v\n", req.SessionID, req.UserID, err)
@@ -357,7 +444,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 	defer sess.ClearCancel()
 
-	agent, err := h.createAgent(sse.runnerCtx, params)
+	agent, err := h.createAgent(runCtx, params)
 	if err != nil {
 		log.Printf("[Handler] 创建 Agent 失败 - err=%v\n", err)
 		sse.fail("创建 AI 智能体失败，请稍后重试")
@@ -387,11 +474,19 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		for _, id := range req.InterruptIDs {
 			targets[id] = req.Confirmed
 		}
-		binding := CheckpointBinding{UserID: req.UserID, SessionID: req.SessionID, ConnID: params.connID}
-		if err := agent.ResumeStream(sse.runnerCtx, runID, req.CheckPointID, binding, targets, sse.flush, sess); err != nil {
+		// checkpoint 绑定权限快照：恢复前比较当前权限，收缩或摘要不一致时要求重新发起。
+		binding := CheckpointBinding{
+			UserID:      req.UserID,
+			SessionID:   req.SessionID,
+			ConnID:      params.connID,
+			Revision:    params.sec.Revision,
+			ScopeDigest: params.sec.ScopeDigest,
+		}
+		if err := agent.ResumeStream(runCtx, runID, req.CheckPointID, binding, targets, sse.flush, sess); err != nil {
 			log.Printf("[Handler] 恢复执行失败 - sessionId=%s, err=%v\n", req.SessionID, err)
 			switch {
-			case errors.Is(err, ErrCheckpointNotFound), errors.Is(err, ErrCheckpointForbidden), errors.Is(err, ErrCheckpointInFlight):
+			case errors.Is(err, ErrCheckpointNotFound), errors.Is(err, ErrCheckpointForbidden),
+				errors.Is(err, ErrCheckpointInFlight), errors.Is(err, ErrCheckpointStale):
 				sse.flush(StreamChunk{Type: "error", Content: err.Error()})
 			default:
 				sse.flush(StreamChunk{Type: "error", Content: "恢复执行失败，请重新发起操作"})
@@ -402,7 +497,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 	}
 
 	// 业务错误已在 RunStream 内通过 SSE 事件推送给前端
-	if _, runErr := agent.RunStream(sse.runnerCtx, runID, req, sse.flush); runErr != nil {
+	if _, runErr := agent.RunStream(runCtx, runID, req, sse.flush); runErr != nil {
 		log.Printf("[Handler] Agent 执行失败 - err=%v\n", runErr)
 		if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
 			sse.flush(StreamChunk{Type: "error", Content: "AI 处理出错，请稍后重试"})

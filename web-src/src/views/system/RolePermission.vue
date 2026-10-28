@@ -46,7 +46,7 @@
                 </el-breadcrumb-item>
               </el-breadcrumb>
               <div class="action-buttons">
-                <el-button type="primary" size="small" @click="savePermissions" :loading="saving">
+                <el-button type="primary" size="small" @click="savePermissions" :loading="editor.state.saving">
                   <el-icon><Check /></el-icon> 保存
                 </el-button>
                 <el-button size="small" @click="cancelEdit"><el-icon><Close /></el-icon> 取消</el-button>
@@ -54,26 +54,37 @@
             </div>
             <el-alert title="勾选复选框授予权限，点击节点名称进入下一级。上级权限包含下级（如勾选连接则拥有其下所有权限）。「子级已选」表示下级有权限配置但当前节点本身未直接授权。" type="info" :closable="false" style="margin-bottom: 12px; flex-shrink: 0;" />
             <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
-              <el-switch v-model="classicViewEnabled" active-text="允许使用经典视图" inactive-text="禁止使用经典视图" @change="onClassicViewChanged" />
-              <el-switch v-model="modifyDataEnabled" style="margin-left: 20px;" active-text="允许修改数据" inactive-text="禁止修改数据" @change="onModifyDataChanged" />
+              <el-switch v-model="classicViewEnabled" active-text="允许使用经典视图" inactive-text="禁止使用经典视图" />
+              <el-switch v-model="modifyDataEnabled" style="margin-left: 20px;" active-text="允许修改数据" inactive-text="禁止修改数据" />
+              <el-tooltip v-if="showAISwitch" content="仅约束 AI 对话的数据写操作；需同时开启「允许修改数据」才生效" placement="top">
+                <el-switch
+                  v-model="aiModifyEnabled"
+                  style="margin-left: 20px;"
+                  :disabled="!modifyDataEnabled"
+                  active-text="允许 AI 对话修改数据"
+                  inactive-text="禁止 AI 对话修改数据"
+                />
+              </el-tooltip>
+              <span v-if="showAISwitch && !modifyDataEnabled" class="switch-hint">需先允许修改数据</span>
+            </div>
+            <div v-if="editor.state.conflict" class="conflict-banner">
+              <el-alert
+                title="权限已被其他管理员修改，当前编辑基于旧快照。请查看最新配置后重新编辑并保存。"
+                type="warning"
+                :closable="false"
+                show-icon
+              />
             </div>
             <div class="permission-tree-wrapper">
-              <div class="permission-tree-container">
-                <el-tree ref="treeRef" :key="treeKey" :data="treeData" :props="treeProps" node-key="id" show-checkbox check-strictly :default-expand-all="true" :default-checked-keys="treeCheckedKeys" :check-on-click-leaf="false" @check="handleCheck" @node-click="handleNodeClick">
-                  <template #default="{ node, data }">
-                    <span class="tree-node">
-                      <el-icon v-if="data.level === 'dir'"><Folder /></el-icon>
-                      <el-icon v-else-if="data.level === 'conn'"><Connection /></el-icon>
-                      <el-icon v-else-if="data.level === 'schema'"><Folder /></el-icon>
-                      <el-icon v-else-if="data.level === 'table'"><Grid /></el-icon>
-                      <el-icon v-else-if="data.level === 'column'"><Document /></el-icon>
-                      <span class="node-label" :class="{ 'node-clickable': data.level !== 'column' && data.level !== 'dir' }">{{ node.label }}</span>
-                      <el-tag v-if="isImplicitNode(getNodeFullKey(data))" size="small" type="warning" class="implicit-tag">子级已选</el-tag>
-                      <span v-if="data.data && data.data.comment" class="node-comment">{{ data.data.comment }}</span>
-                    </span>
-                  </template>
-                </el-tree>
-              </div>
+              <RolePermissionTree
+                ref="treeComp"
+                :data="treeData"
+                :checked-keys="treeCheckedKeys"
+                :implicit-keys="implicitKeys"
+                :tree-key="treeKey"
+                @check="handleCheck"
+                @node-click="handleNodeClick"
+              />
             </div>
           </div>
         </div>
@@ -82,16 +93,39 @@
   </div>
 </template>
 
-<script setup>
-import { ref, reactive, onMounted, nextTick, useTemplateRef } from 'vue'
+<script setup lang="ts">
+import { nextTick, onMounted, ref, useTemplateRef } from 'vue'
 import { Delete, Plus, Close, Check, Connection, Folder, Grid, Document } from '@element-plus/icons-vue'
-import { getRoleList, saveRole, delRole, getPermissionTree } from '@/api/system'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  getPermissionTree,
+  getRoleCapability,
+  getRoleList,
+  saveRole,
+  delRole,
+  type Role,
+  type RoleCapability,
+} from '@/api/system'
+import RolePermissionTree from './rolePermission/RolePermissionTree.vue'
+import { useRolePermissionEditor, type EditorRole } from './rolePermission/useRolePermissionEditor'
+import { computeImplicitKeys } from './rolePermission/permissionPolicy'
 
-const roles = ref([])
-const currentRole = ref(null)
+type Level = 'conn' | 'schema' | 'table' | 'column'
 
-const currentLevel = ref('conn')
+interface TreeNode {
+  id: string
+  label: string
+  level: 'dir' | 'conn' | 'schema' | 'table' | 'column'
+  children?: TreeNode[]
+  data?: { comment?: string; schemaName?: string; tableName?: string }
+}
+
+const roles = ref<Role[]>([])
+const currentRole = ref<Role | null>(null)
+const capability = ref<RoleCapability>({ capabilityVersion: 1, aiPolicyEnforce: false })
+const editor = useRolePermissionEditor()
+
+const currentLevel = ref<Level>('conn')
 const selectedConnId = ref('')
 const selectedConnLabel = ref('')
 const selectedSchema = ref('')
@@ -99,44 +133,69 @@ const selectedSchemaLabel = ref('')
 const selectedTable = ref('')
 const selectedTableLabel = ref('')
 
-const treeRef = useTemplateRef('treeRef')
-const treeData = ref([])
-const treeKey = ref(0) // 递增 key，强制 el-tree 重建以确保 default-checked-keys 生效
-const treeCheckedKeys = ref([]) // 计算好的勾选 key 列表，传给 default-checked-keys
-const saving = ref(false)
-const treeProps = { children: 'children', label: 'label' }
+const treeComp = useTemplateRef('treeComp')
+const treeData = ref<TreeNode[]>([])
+const treeKey = ref(0)
+const treeCheckedKeys = ref<string[]>([])
+const implicitKeys = ref<Set<string>>(new Set())
+const currentTreeNodeKeys = ref<Set<string>>(new Set())
 
-// explicitKeys: 用户手动勾选的权限 key（只有这些会保存到后端）
-const explicitKeys = reactive(new Set())
-// implicitKeys: 因为下级有权限而需要在视觉上标记的父级 key（不保存到后端）
-const implicitKeys = reactive(new Set())
-// currentTreeNodeKeys: 当前树中所有节点的 key
-const currentTreeNodeKeys = reactive(new Set())
-// baselineCheckedKeys: 保存时用于对比新增/删除的基准（只来自 role.powerList）
-const baselineCheckedKeys = reactive(new Set())
-// serverCheckedKeys: API 返回的 checked=true 状态（包含向上传播的权限），用于显示
-const serverCheckedKeys = reactive(new Set())
-// uncheckedKeys: 用户显式取消勾选的 key（防止被 serverCheckedKeys 重新勾选）
-const uncheckedKeys = reactive(new Set())
-// classicViewEnabled: 是否允许该角色使用经典视图
 const classicViewEnabled = ref(false)
-// classicViewDirty: 经典视图开关是否有变更
-let classicViewDirty = false
-// modifyDataEnabled: 是否允许该角色修改数据
-const modifyDataEnabled = ref(true)
-// modifyDataDirty: 修改数据开关是否有变更
-let modifyDataDirty = false
+const modifyDataEnabled = ref(false)
+const aiModifyEnabled = ref(false)
 
-let isProgrammatic = false
+/** AI 开关仅在能力版本 2 且策略已生效时展示。 */
+const showAISwitch = ref(false)
 
 onMounted(() => {
+  loadCapability()
   loadRoles()
 })
 
+function loadCapability() {
+  getRoleCapability()
+    .then((resp) => {
+      capability.value = resp.data.data || { capabilityVersion: 1, aiPolicyEnforce: false }
+      showAISwitch.value =
+        capability.value.capabilityVersion >= 2 && capability.value.aiPolicyEnforce === true
+    })
+    .catch(() => {
+      showAISwitch.value = false
+    })
+}
+
+function asEditorRole(role: Role): EditorRole {
+  return {
+    id: role.id,
+    name: role.name,
+    viewClassic: role.viewClassic ?? 0,
+    allowModify: role.allowModify ?? 0,
+    aiAllowModify: role.aiAllowModify ?? 0,
+    permissionDigest: role.permissionDigest,
+    powerList: role.powerList,
+  }
+}
+
 function loadRoles() {
-  getRoleList().then(resp => {
+  getRoleList().then((resp) => {
     roles.value = resp.data.data || []
+    if (currentRole.value) {
+      const fresh = roles.value.find((r) => r.id === currentRole.value?.id)
+      if (fresh) {
+        currentRole.value = fresh
+        editor.load(asEditorRole(fresh))
+        syncSwitches(fresh)
+      } else {
+        currentRole.value = null
+      }
+    }
   })
+}
+
+function syncSwitches(role: Role) {
+  classicViewEnabled.value = !!role.viewClassic
+  modifyDataEnabled.value = !!role.allowModify
+  aiModifyEnabled.value = !!role.aiAllowModify
 }
 
 function createRole() {
@@ -146,24 +205,34 @@ function createRole() {
     inputPattern: /.+/,
     inputErrorMessage: '角色名称不能为空',
   }).then(({ value }) => {
-    saveRole({ id: '', name: value, addPowers: [], delPowers: [], viewClassic: 0, allowModify: 1 }).then(() => {
+    saveRole({
+      id: '',
+      name: value,
+      addPowers: [],
+      delPowers: [],
+      viewClassic: 0,
+      allowModify: 1,
+      // AIPolicyEnforce 生效后由服务端默认写入 0（AI 只读）；兼容期不提交该字段。
+      aiAllowModify: showAISwitch.value ? 0 : undefined,
+    }).then(() => {
       loadRoles()
     })
   })
 }
 
-function handleRoleChange(role) {
-  if (!role) return
+// el-table 的 current-change 事件类型为 DefaultRow，这里在函数内收窄为 Role。
+function handleRoleChange(row: unknown) {
+  const role = row as Role | null
+  if (!role?.id) return
   currentRole.value = role
-  classicViewEnabled.value = !!(role.viewClassic)
-  classicViewDirty = false
-  modifyDataEnabled.value = !!(role.allowModify)
-  modifyDataDirty = false
-  initExplicitKeysFromRole(role)
+  syncSwitches(role)
+  editor.load(asEditorRole(role))
   navigateToLevel('conn')
 }
 
-function deleteRole(role) {
+function deleteRole(row: unknown) {
+  const role = row as Role
+  if (!role?.id) return
   ElMessageBox.confirm(`确定要删除角色 "${role.name}" 吗？`, '确认删除', {
     confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
   }).then(() => {
@@ -175,29 +244,7 @@ function deleteRole(role) {
   })
 }
 
-function initExplicitKeysFromRole(role) {
-  explicitKeys.clear()
-  implicitKeys.clear()
-  baselineCheckedKeys.clear()
-  uncheckedKeys.clear()
-  const powers = role.powerList || []
-  for (const p of powers) {
-    const key = permToKey(p)
-    explicitKeys.add(key)
-    baselineCheckedKeys.add(key)
-  }
-}
-
-function permToKey(p) {
-  const parts = [p.connId]
-  if (p.schemaName) parts.push(p.schemaName)
-  if (p.tableName) parts.push(p.tableName)
-  if (p.columnName) parts.push(p.columnName)
-  return parts.join('::')
-}
-
-function navigateToLevel(level) {
-  currentLevel.value = level
+function resetSelection(level: Level) {
   if (level === 'conn') {
     selectedConnId.value = ''
     selectedConnLabel.value = ''
@@ -214,637 +261,124 @@ function navigateToLevel(level) {
     selectedTable.value = ''
     selectedTableLabel.value = ''
   }
+}
+
+function navigateToLevel(level: Level) {
+  currentLevel.value = level
+  resetSelection(level)
   loadTree()
 }
 
 function loadTree() {
-  const params = { level: currentLevel.value, roleId: currentRole.value?.id }
+  const params: { level: string; roleId?: string; connId?: string; schema?: string; table?: string } = {
+    level: currentLevel.value,
+    roleId: currentRole.value?.id,
+  }
   if (selectedConnId.value) params.connId = selectedConnId.value
   if (selectedSchema.value) params.schema = selectedSchema.value
   if (selectedTable.value) params.table = selectedTable.value
 
-  getPermissionTree(params).then(resp => {
-    treeData.value = resp.data.data || []
-    currentTreeNodeKeys.clear()
-    collectNodeKeys(treeData.value)
-    captureServerChecked(treeData.value)
-    // 计算应该勾选的 keys，然后通过递增 treeKey 强制 el-tree 重建
-    // 重建时 default-checked-keys 会在树初始化阶段直接生效，不存在时序问题
-    computeAndApplyCheckedKeys()
+  getPermissionTree(params).then((resp) => {
+    treeData.value = (resp.data.data || []) as unknown as TreeNode[]
+    const keys = new Set<string>()
+    collectNodeKeys(treeData.value, keys)
+    currentTreeNodeKeys.value = keys
+    refreshTreeState(true)
   })
 }
 
-function computeAndApplyCheckedKeys() {
-  // 使用 explicitKeys 和 serverCheckedKeys 的并集来决定显示状态
-  // 但要排除用户显式取消勾选的 key
-  const combinedKeys = new Set()
-  for (const key of explicitKeys) {
-    combinedKeys.add(key)
-  }
-  for (const key of serverCheckedKeys) {
-    if (!uncheckedKeys.has(key)) {
-      combinedKeys.add(key)
-    }
-  }
-
-  const checkedKeys = []
-  for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) continue
-    if (combinedKeys.has(key)) {
-      checkedKeys.push(key)
-    }
-  }
-
-  implicitKeys.clear()
-  computeImplicitKeysFromCombined(combinedKeys)
-
-  const allVisualKeys = [...checkedKeys]
-  for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) continue
-    if (implicitKeys.has(key) && !allVisualKeys.includes(key)) {
-      allVisualKeys.push(key)
-    }
-  }
-
-  // 处理 dir 节点的全选状态
-  for (const key of currentTreeNodeKeys) {
-    if (!key.startsWith('dir::')) continue
-    const dirNode = findNodeInTree(treeData.value, key)
-    if (!dirNode || !dirNode.children || dirNode.children.length === 0) continue
-    const connChildren = dirNode.children.filter(c => c.level === 'conn')
-    if (connChildren.length === 0) continue
-    const selectedCount = connChildren.filter(c => allVisualKeys.includes(c.id)).length
-    if (selectedCount === connChildren.length) {
-      allVisualKeys.push(key)
-    } else if (selectedCount > 0) {
-      implicitKeys.add(key)
-    }
-  }
-
-  // 设置 default-checked-keys 并递增 key 强制重建树
-  treeCheckedKeys.value = allVisualKeys
-  treeKey.value++
-}
-
-function getNodeFullKey(n) {
-  return n.id
-}
-
-function captureServerChecked(nodes) {
-  serverCheckedKeys.clear()
-  _collectServerChecked(nodes)
-}
-
-function _collectServerChecked(nodes) {
-  for (const n of nodes) {
-    if (n.checked && !n.id.startsWith('dir::')) {
-      serverCheckedKeys.add(getNodeFullKey(n))
-    }
-    if (n.children && n.children.length > 0) {
-      _collectServerChecked(n.children)
-    }
+function collectNodeKeys(nodes: TreeNode[], into: Set<string>) {
+  for (const node of nodes) {
+    into.add(node.id)
+    if (node.children?.length) collectNodeKeys(node.children, into)
   }
 }
 
-function collectNodeKeys(nodes) {
-  for (const n of nodes) {
-    currentTreeNodeKeys.add(getNodeFullKey(n))
-    if (n.children && n.children.length > 0) collectNodeKeys(n.children)
-  }
-}
-
-function syncTreeVisual() {
-  if (!treeRef.value) return
-  isProgrammatic = true
-
-  // 使用 explicitKeys 和 serverCheckedKeys 的并集来决定显示状态
-  // 但要排除用户显式取消勾选的 key
-  const combinedKeys = new Set()
-  for (const key of explicitKeys) {
-    combinedKeys.add(key)
-  }
-  for (const key of serverCheckedKeys) {
-    if (!uncheckedKeys.has(key)) {
-      combinedKeys.add(key)
-    }
-  }
-
-  const checkedKeys = []
-  for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) continue
-    if (combinedKeys.has(key)) {
-      checkedKeys.push(key)
-    }
-  }
-
-  implicitKeys.clear()
-  computeImplicitKeysFromCombined(combinedKeys)
-
-  const allVisualKeys = [...checkedKeys]
-  for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) continue
-    if (implicitKeys.has(key) && !allVisualKeys.includes(key)) {
-      allVisualKeys.push(key)
-    }
-  }
-
-  for (const key of currentTreeNodeKeys) {
-    if (!key.startsWith('dir::')) continue
-    const dirNode = findNodeInTree(treeData.value, key)
-    if (!dirNode || !dirNode.children || dirNode.children.length === 0) continue
-    const connChildren = dirNode.children.filter(c => c.level === 'conn')
-    if (connChildren.length === 0) continue
-    const selectedCount = connChildren.filter(c => allVisualKeys.includes(c.id)).length
-    if (selectedCount === connChildren.length) {
-      allVisualKeys.push(key)
-    } else if (selectedCount > 0) {
-      implicitKeys.add(key)
-    }
-  }
-
-  // 用户交互后同步视觉状态，此时树节点已存在，setCheckedKeys 可靠
-  treeRef.value.setCheckedKeys(allVisualKeys)
-  nextTick(() => { isProgrammatic = false })
-}
-
-function computeImplicitKeysFromCombined(combinedKeys) {
-  implicitKeys.clear()
-  for (const key of combinedKeys) {
-    const ancestors = getAncestorKeys(key)
-    for (const ancestor of ancestors) {
-      if (!combinedKeys.has(ancestor) && currentTreeNodeKeys.has(ancestor)) {
-        implicitKeys.add(ancestor)
-      }
-    }
-  }
-}
-
-function getAncestorKeys(key) {
-  if (key.startsWith('dir::')) return []
-  const parts = key.split('::')
-  const ancestors = []
-  for (let i = parts.length - 1; i >= 1; i--) {
-    ancestors.push(parts.slice(0, i).join('::'))
-  }
-  return ancestors
-}
-
-function findNodeInTree(nodes, key) {
-  for (const n of nodes) {
-    if (getNodeFullKey(n) === key) return n
-    if (n.children) {
-      const found = findNodeInTree(n.children, key)
-      if (found) return found
-    }
-  }
-  return null
-}
-
-function isImplicitNode(nodeId) {
-  return implicitKeys.has(nodeId)
-}
-
-function onClassicViewChanged() {
-  classicViewDirty = true
-}
-
-function onModifyDataChanged() {
-  modifyDataDirty = true
-}
-
-function handleCheck(nodeData, checkState) {
-  if (isProgrammatic) { return }
-  const nodeKey = getNodeFullKey(nodeData)
-  if (nodeData.id.startsWith('dir::')) {
-    if (nodeData.children) {
-      const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
-      for (const child of nodeData.children) {
-        if (child.level === 'conn') {
-          const childKey = getNodeFullKey(child)
-          const shouldBeChecked = explicitKeys.has(childKey) || (serverCheckedKeys.has(childKey) && !uncheckedKeys.has(childKey))
-          if (isNowChecked !== shouldBeChecked) {
-            if (isNowChecked) {
-              explicitKeys.add(childKey)
-              uncheckedKeys.delete(childKey)
-            } else {
-              explicitKeys.delete(childKey)
-              uncheckedKeys.add(childKey)
-              const toUncheck = []
-              for (const key of explicitKeys) {
-                if (isDescendantOf(key, childKey)) {
-                  toUncheck.push(key)
-                }
-              }
-              for (const key of serverCheckedKeys) {
-                if (!uncheckedKeys.has(key) && isDescendantOf(key, childKey)) {
-                  toUncheck.push(key)
-                }
-              }
-              for (const key of toUncheck) {
-                explicitKeys.delete(key)
-                uncheckedKeys.add(key)
-              }
-            }
-          }
-        }
-      }
-    }
-    nextTick(() => syncTreeVisual())
+/**
+ * 重新计算展示态。
+ * rebuild=true 时递增 treeKey 强制重建（加载新树）；否则直接同步勾选，避免丢失展开状态。
+ */
+function refreshTreeState(rebuild: boolean) {
+  const workingKeys = editor.state.working.keys()
+  implicitKeys.value = computeImplicitKeys(workingKeys, currentTreeNodeKeys.value)
+  treeCheckedKeys.value = editor.checkedKeysFor(currentTreeNodeKeys.value)
+  if (rebuild) {
+    treeKey.value++
     return
   }
-
-  const isNowChecked = checkState.checkedKeys.includes(nodeData.id)
-  const shouldBeChecked = explicitKeys.has(nodeKey) || (serverCheckedKeys.has(nodeKey) && !uncheckedKeys.has(nodeKey))
-
-  if (isNowChecked === shouldBeChecked) return
-
-  if (isNowChecked) {
-    explicitKeys.add(nodeKey)
-    uncheckedKeys.delete(nodeKey)
-  } else {
-    explicitKeys.delete(nodeKey)
-    uncheckedKeys.add(nodeKey)
-    const toUncheck = []
-    for (const key of explicitKeys) {
-      if (isDescendantOf(key, nodeKey)) {
-        toUncheck.push(key)
-      }
-    }
-    for (const key of serverCheckedKeys) {
-      if (!uncheckedKeys.has(key) && isDescendantOf(key, nodeKey)) {
-        toUncheck.push(key)
-      }
-    }
-    for (const key of toUncheck) {
-      explicitKeys.delete(key)
-      uncheckedKeys.add(key)
-    }
-  }
-  nextTick(() => syncTreeVisual())
+  nextTick(() => {
+    treeComp.value?.setCheckedKeys(treeCheckedKeys.value)
+  })
 }
 
-function handleNodeClick(nodeData) {
-  if (nodeData.level === 'dir') return
-  if (nodeData.level === 'conn') {
-    selectedConnId.value = nodeData.id
-    selectedConnLabel.value = nodeData.label
+function handleCheck(node: TreeNode, checked: boolean) {
+  if (node.level === 'dir') {
+    const connChildren = (node.children || []).filter((child) => child.level === 'conn')
+    editor.toggleMany(connChildren.map((child) => child.id), checked)
+  } else {
+    editor.toggle(node.id, checked)
+  }
+  refreshTreeState(false)
+}
+
+function handleNodeClick(node: TreeNode) {
+  if (node.level === 'dir') return
+  if (node.level === 'conn') {
+    selectedConnId.value = node.id
+    selectedConnLabel.value = node.label
     navigateToLevel('schema')
-  } else if (nodeData.level === 'schema') {
-    selectedSchema.value = nodeData.data?.schemaName || nodeData.id
-    selectedSchemaLabel.value = nodeData.label
+  } else if (node.level === 'schema') {
+    selectedSchema.value = node.data?.schemaName || node.id
+    selectedSchemaLabel.value = node.label
     navigateToLevel('table')
-  } else if (nodeData.level === 'table') {
-    selectedTable.value = nodeData.data?.tableName || nodeData.id
-    selectedTableLabel.value = nodeData.label
+  } else if (node.level === 'table') {
+    selectedTable.value = node.data?.tableName || node.id
+    selectedTableLabel.value = node.label
     navigateToLevel('column')
   }
 }
 
-function getKeyLevel(key) {
-  if (key.startsWith('dir::')) return 'dir'
-  const parts = key.split('::')
-  if (parts.length >= 4 && parts[3]) return 'column'
-  if (parts.length >= 3 && parts[2]) return 'table'
-  if (parts.length >= 2 && parts[1]) return 'schema'
-  return 'conn'
-}
-
-function isDescendantOf(childKey, parentKey) {
-  if (!childKey.startsWith(parentKey + '::')) return false
-  return childKey.split('::').length > parentKey.split('::').length
-}
-
 function savePermissions() {
   if (!currentRole.value) return
-  saving.value = true
-
-  // 直接从 el-tree 获取当前勾选状态
-  // 关键修复：用 uncheckedKeys 过滤，防止 el-tree 脏状态（check-strictly 模式下 setCheckedKeys 后
-  // getCheckedKeys 可能返回旧数据）将 handleCheck 级联删除的子级重新加入 explicitKeys
-  const treeChecked = treeRef.value
-    ? new Set(treeRef.value.getCheckedKeys().filter(k => !k.startsWith('dir::') && !uncheckedKeys.has(k)))
-    : new Set()
-
-  // 保存修改前的 explicitKeys/baseline 快照，用于判断隐式父级和检测变更
-  const originalExplicitKeys = new Set(explicitKeys)
-  const originalBaselineKeys = new Set(baselineCheckedKeys)
-
-  // 只同步当前层级的树状态到 explicitKeys/uncheckedKeys
-  for (const key of currentTreeNodeKeys) {
-    if (key.startsWith('dir::')) continue
-    if (getKeyLevel(key) !== currentLevel.value) continue
-
-    // 核心判断：该节点是否为隐式父级（因 descendants 有权限而视觉选中，本身不是真实权限）
-    // 隐式父级不应参与保存逻辑：不加入 explicitKeys、不加入 uncheckedKeys、不触发级联删除
-    if (implicitKeys.has(key)) continue
-
-    if (treeChecked.has(key)) {
-      // 节点已勾选且非隐式 → 真实权限
-      explicitKeys.add(key)
-      uncheckedKeys.delete(key)
-    } else {
-      // 节点未勾选
-      const wasExplicit = originalExplicitKeys.has(key) || originalBaselineKeys.has(key)
-      if (wasExplicit) {
-        // 原本就是显式权限，现在被取消 → 删除并级联
-        explicitKeys.delete(key)
-        uncheckedKeys.add(key)
-        const descendantsToUncheck = []
-        for (const childKey of explicitKeys) {
-          if (isDescendantOf(childKey, key)) {
-            descendantsToUncheck.push(childKey)
-          }
-        }
-        for (const childKey of descendantsToUncheck) {
-          explicitKeys.delete(childKey)
-          uncheckedKeys.add(childKey)
-        }
-      } else {
-        // 原本不是显式权限，检查是否为被用户取消勾选的隐式父级
-        // （handleCheck 已级联删除了 descendants，此处需记录到 uncheckedKeys）
-        let hadExplicitDescendant = false
-        for (const ek of originalExplicitKeys) {
-          if (isDescendantOf(ek, key)) { hadExplicitDescendant = true; break }
-        }
-        if (hadExplicitDescendant) {
-          uncheckedKeys.add(key)
-        }
-      }
-    }
-  }
-
-  // 根据当前编辑的层级，筛选出该层级的权限用于对比
-  // 其他层级的权限保持不变，不发送 add/del 请求
-  const currentExplicitKeys = new Set()
-  for (const key of explicitKeys) {
-    if (getKeyLevel(key) === currentLevel.value) {
-      currentExplicitKeys.add(key)
-    }
-  }
-
-  const currentBaselineKeys = new Set()
-  for (const key of baselineCheckedKeys) {
-    if (getKeyLevel(key) === currentLevel.value) {
-      currentBaselineKeys.add(key)
-    }
-  }
-
-  const currentPowers = []
-  for (const key of currentExplicitKeys) {
-    if (key.startsWith('dir::')) continue
-    const parts = key.split('::')
-    const connId = parts[0]
-    const schema = parts[1] || ''
-    const table = parts[2] || ''
-    const column = parts[3] || ''
-    let level = 'conn'
-    if (column) level = 'column'
-    else if (table) level = 'table'
-    else if (schema) level = 'schema'
-
-    currentPowers.push({
-      connId,
-      connName: null,
-      schemaName: schema || null,
-      tableName: table || null,
-      columnName: column || null,
-      level,
-    })
-  }
-
-  // 从全量 explicitKeys 计算有 table/column 子级的 schema
-  // 这样才能正确判断 schema 权限是否需要过滤
-  const schemaKeysWithTableChildren = new Set()
-  for (const key of explicitKeys) {
-    if (key.startsWith('dir::')) continue
-    const parts = key.split('::')
-    if (parts.length >= 3 && parts[2]) {
-      schemaKeysWithTableChildren.add(parts[0] + '::' + parts[1])
-    }
-  }
-
-  function shouldKeepPower(p) {
-    if (p.level === 'schema' && p.schemaName) {
-      const schemaKey = p.connId + '::' + p.schemaName
-      if (schemaKeysWithTableChildren.has(schemaKey)) {
-        return false
-      }
-    }
-    return true
-  }
-
-  const filteredPowers = currentPowers.filter(shouldKeepPower)
-  const newKeySet = new Set(filteredPowers.map(permToKey))
-
-  // 对 baseline 也应用同样的过滤，确保对比对称
-  // 注意：需要基于全量 explicitKeys 来判断 baseline 中的 schema 是否应该被过滤
-  const baselineSchemaKeysWithTableChildren = new Set()
-  for (const key of baselineCheckedKeys) {
-    if (key.startsWith('dir::')) continue
-    const parts = key.split('::')
-    if (parts.length >= 3 && parts[2]) {
-      baselineSchemaKeysWithTableChildren.add(parts[0] + '::' + parts[1])
-    }
-  }
-
-  function shouldKeepBaseline(p) {
-    if (p.level === 'schema' && p.schemaName) {
-      const schemaKey = p.connId + '::' + p.schemaName
-      if (baselineSchemaKeysWithTableChildren.has(schemaKey)) {
-        let hasActiveChildren = false
-        for (const key of explicitKeys) {
-          if (isDescendantOf(key, schemaKey)) {
-            hasActiveChildren = true
-            break
-          }
-        }
-        if (hasActiveChildren) {
-          return false
-        }
-      }
-    }
-    return true
-  }
-
-  const filteredBaseline = new Set()
-  for (const id of currentBaselineKeys) {
-    const parts = id.split('::')
-    const connId = parts[0]
-    const schema = parts[1] || null
-    const table = parts[2] || null
-    const column = parts[3] || null
-    let level = 'conn'
-    if (column) level = 'column'
-    else if (table) level = 'table'
-    else if (schema) level = 'schema'
-    if (shouldKeepBaseline({ connId, schemaName: schema, tableName: table, columnName: column, level })) {
-      filteredBaseline.add(id)
-    }
-  }
-
-  const roleId = currentRole.value.id
-
-  const addPowers = filteredPowers.filter(p => {
-    const key = permToKey(p)
-    return !filteredBaseline.has(key)
-  }).map(p => ({ ...p, id: '', roleId }))
-
-  const delPowers = []
-  for (const id of filteredBaseline) {
-    if (!newKeySet.has(id)) {
-      const parts = id.split('::')
-      const connId = parts[0]
-      const schema = parts[1] || null
-      const table = parts[2] || null
-      const column = parts[3] || null
-      let level = 'conn'
-      if (column) level = 'column'
-      else if (table) level = 'table'
-      else if (schema) level = 'schema'
-
-      delPowers.push({
-        id: '',
-        roleId,
-        connId,
-        connName: null,
-        schemaName: schema,
-        tableName: table,
-        columnName: column,
-        level,
-      })
-    }
-  }
-
-  const deletedCurrentLevelKeys = new Set()
-  for (const key of currentBaselineKeys) {
-    if (!currentExplicitKeys.has(key)) {
-      deletedCurrentLevelKeys.add(key)
-    }
-  }
-  for (const key of uncheckedKeys) {
-    if (getKeyLevel(key) === currentLevel.value) {
-      deletedCurrentLevelKeys.add(key)
-    }
-  }
-  for (const key of baselineCheckedKeys) {
-    if (key.startsWith('dir::')) continue
-    if (explicitKeys.has(key)) continue
-    const keyLevel = getKeyLevel(key)
-    if (keyLevel === currentLevel.value) continue
-    let isCascaded = false
-    for (const deletedKey of deletedCurrentLevelKeys) {
-      if (isDescendantOf(key, deletedKey)) {
-        isCascaded = true
-        break
-      }
-    }
-    if (!isCascaded) continue
-    const parts = key.split('::')
-    const connId = parts[0]
-    const schema = parts[1] || null
-    const table = parts[2] || null
-    const column = parts[3] || null
-    let level = 'conn'
-    if (column) level = 'column'
-    else if (table) level = 'table'
-    else if (schema) level = 'schema'
-    delPowers.push({
-      id: '',
-      roleId,
-      connId,
-      connName: null,
-      schemaName: schema,
-      tableName: table,
-      columnName: column,
-      level,
-    })
-  }
-
-  const roleData = {
-    id: currentRole.value.id,
-    name: currentRole.value.name,
-    addPowers,
-    delPowers,
+  const role = currentRole.value
+  const payload = editor.buildPayload(asEditorRole(role), {
     viewClassic: classicViewEnabled.value ? 1 : 0,
     allowModify: modifyDataEnabled.value ? 1 : 0,
+    aiAllowModify: showAISwitch.value ? (aiModifyEnabled.value ? 1 : 0) : undefined,
+  })
+  if (!payload) {
+    ElMessage.info('没有需要保存的变更')
+    return
   }
 
-  saveRole(roleData).then(() => {
-    saving.value = false
-    classicViewDirty = false
-    modifyDataDirty = false
-    // 更新 explicitKeys：移除当前层级的旧权限，加入当前层级过滤后的权限
-    for (const key of currentBaselineKeys) {
-      explicitKeys.delete(key)
-      uncheckedKeys.delete(key)
-    }
-    for (const key of newKeySet) {
-      explicitKeys.add(key)
-      uncheckedKeys.delete(key)
-    }
-    // 清理级联删除的下级权限
-    for (const key of baselineCheckedKeys) {
-      if (key.startsWith('dir::')) continue
-      let isCascaded = false
-      for (const deletedKey of deletedCurrentLevelKeys) {
-        if (isDescendantOf(key, deletedKey)) {
-          isCascaded = true
-          break
-        }
+  editor.state.saving = true
+  saveRole(payload)
+    .then((resp) => {
+      const digest = (resp.data?.data as { permissionDigest?: string } | undefined)?.permissionDigest
+      editor.markSaved(digest)
+      ElMessage.success('保存成功')
+      loadRoles()
+      loadTree()
+    })
+    .catch((err) => {
+      // 409：并发编辑冲突。只提示并重新加载，禁止自动覆盖重试。
+      if (err?.response?.status === 409) {
+        editor.markConflict()
+        ElMessage.warning('角色权限已被其他管理员修改，已标记冲突，请确认最新配置后重新保存')
+        loadRoles()
+        return
       }
-      if (isCascaded) {
-        explicitKeys.delete(key)
-        uncheckedKeys.delete(key)
-      }
-    }
-    // 清理 uncheckedKeys：保存成功后，新状态已体现在 explicitKeys 和 baselineCheckedKeys 中
-    // 编辑期间的 uncheckedKeys 已完成其使命，清空以避免跨层级/跨 schema 的残留干扰
-    uncheckedKeys.clear()
-    // 更新 baselineCheckedKeys：同步全量状态
-    baselineCheckedKeys.clear()
-    for (const key of explicitKeys) {
-      baselineCheckedKeys.add(key)
-    }
-    currentRole.value.powerList = []
-    for (const key of explicitKeys) {
-      if (key.startsWith('dir::')) continue
-      const parts = key.split('::')
-      const connId = parts[0]
-      const schema = parts[1] || null
-      const table = parts[2] || null
-      const column = parts[3] || null
-      let level = 'conn'
-      if (column) level = 'column'
-      else if (table) level = 'table'
-      else if (schema) level = 'schema'
-      currentRole.value.powerList.push({
-        id: '',
-        roleId: currentRole.value.id,
-        connId,
-        connName: null,
-        schemaName: schema,
-        tableName: table,
-        columnName: column,
-        level,
-      })
-    }
-    currentRole.value.viewClassic = classicViewEnabled.value ? 1 : 0
-    currentRole.value.allowModify = modifyDataEnabled.value ? 1 : 0
-    loadRoles()
-    navigateToLevel(currentLevel.value)
-    ElMessage.success('保存成功')
-  }).catch(() => {
-    saving.value = false
-  })
+      editor.state.saving = false
+      const msg = err?.response?.data?.msg || '保存失败'
+      ElMessage.error(msg)
+    })
 }
 
 function cancelEdit() {
-  if (currentRole.value) {
-    classicViewEnabled.value = !!(currentRole.value.viewClassic)
-    modifyDataEnabled.value = !!(currentRole.value.allowModify)
-    initExplicitKeysFromRole(currentRole.value)
-    loadTree()
-  }
+  if (!currentRole.value) return
+  syncSwitches(currentRole.value)
+  editor.reset()
+  loadTree()
 }
 </script>
 
@@ -913,6 +447,17 @@ function cancelEdit() {
 .classic-view-toggle {
   padding: 8px 0;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.switch-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.conflict-banner {
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 .permission-tree-wrapper {
   flex: 1;
@@ -920,35 +465,6 @@ function cancelEdit() {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
-}
-.permission-tree-container {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: auto;
-}
-.tree-node {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.node-label {
-  flex-shrink: 0;
-}
-.node-label.node-clickable {
-  cursor: pointer;
-  color: var(--accent-color);
-}
-.node-label.node-clickable:hover {
-  text-decoration: underline;
-}
-.node-comment {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin-left: 8px;
-}
-.implicit-tag {
-  margin-left: 8px;
-  font-size: 11px;
 }
 :deep(.el-tree) .is-checked .el-checkbox__inner {
   background-color: var(--accent-color);

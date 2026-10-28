@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	admin "websql/internal/app/admin"
-	"websql/internal/config"
 )
 
 type PermissionScope struct {
@@ -19,7 +21,18 @@ type PermissionScope struct {
 	AllSchemasFull    bool            // 所有选中的 schema 均有完整访问权限（快速路径）
 	AllowedTables     map[string]bool
 	AllowedColumns    map[string]map[string]bool
-	AllowModify       bool
+	// AllowModify 现有全局数据修改能力（经典 SQL + AI + 代码/文件工具），保持原角色并集语义。
+	AllowModify bool
+	// AIAllowModify 是否存在「同一角色同时授予 allow_modify 与 ai_allow_modify」的 AI 写能力。
+	// 禁止把角色 A 的 allow_modify 与角色 B 的 ai_allow_modify 拼成新能力。
+	AIAllowModify bool
+	// AIPolicyEnforce 为 true 时 AI 写能力取 AllowModify && AIAllowModify 双门槛；
+	// 兼容期为 false，直接取 AllowModify，保证升级前后行为一致。
+	AIPolicyEnforce bool
+	// Revision 构建该 Scope 时的权限修订号，用于运行中权限变更检测。
+	Revision uint64
+	// Profile 运行时 Profile（远程严格 / 桌面完整）。
+	Profile RuntimeProfile
 }
 
 type PermissionError struct {
@@ -32,15 +45,20 @@ func (e *PermissionError) Error() string {
 }
 
 func BuildPermissionScope(userId, connId string, schemaNames []string) *PermissionScope {
+	profile := CurrentRuntimeProfile()
 	scope := &PermissionScope{
 		UserID:            userId,
 		ConnID:            connId,
 		SchemaName:        firstNonEmpty(schemaNames),
-		IsRemote:          !config.IsLocalMode(),
+		IsRemote:          profile.Remote(),
 		FullAccessSchemas: make(map[string]bool),
 		AllowedTables:     make(map[string]bool),
 		AllowedColumns:    make(map[string]map[string]bool),
 		AllowModify:       true,
+		AIAllowModify:     true,
+		AIPolicyEnforce:   true,
+		Profile:           profile,
+		Revision:          admin.CurrentPermissionRevision(),
 	}
 
 	if !scope.IsRemote {
@@ -48,14 +66,12 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 		return scope
 	}
 
+	// AI 双门槛：兼容期（AIPolicyEnforce=false）CanAIModifyData 直接取 AllowModify，
+	// 保证升级前后行为一致；开关打开后同一角色必须双允许。
+	scope.AIPolicyEnforce = admin.AIPolicyEnforced()
 	scope.AllowModify = false
-	roles := admin.FindUserRoles(userId)
-	for _, role := range roles {
-		if role.AllowModify > 0 {
-			scope.AllowModify = true
-			break
-		}
-	}
+	scope.AIAllowModify = false
+	applyRoleCapabilities(scope, admin.FindUserRoles(userId))
 
 	powerList := admin.FindUserPowerDetails(userId)
 	log.Printf("[PermScope] 用户权限记录数=%d - user=%s, conn=%s\n", len(powerList), userId, connId)
@@ -163,6 +179,94 @@ func firstNonEmpty(ss []string) string {
 		}
 	}
 	return ""
+}
+
+// applyRoleCapabilities 计算角色能力：先在每个角色内部取双与，再跨角色取并集。
+//
+// 这保证「角色 A 的 allow_modify + 角色 B 的 ai_allow_modify」不会拼出
+// 任何单一角色都未授予的 AI 写能力。
+func applyRoleCapabilities(scope *PermissionScope, roles []*admin.Role) {
+	// 双与与并集语义统一由 admin 包实现（role_capability.go），
+	// 避免配置层与运行层对「A(1,0)+B(0,1)」这类组合给出不同结论。
+	scope.AllowModify = admin.RolesAllowModify(roles)
+	scope.AIAllowModify = admin.RolesAllowAIModify(roles)
+}
+
+// CanAIModifyData 判断 AI 数据写工具（exec_sql 及未来 CapabilityAIWrite 工具）是否可用。
+//
+// 兼容期（AIPolicyEnforce=false）沿用 AllowModify，避免升级瞬间改变现有行为。
+func (s *PermissionScope) CanAIModifyData() bool {
+	if s == nil {
+		return false
+	}
+	if !s.AIPolicyEnforce {
+		return s.AllowModify
+	}
+	return s.AllowModify && s.AIAllowModify
+}
+
+// CloneWithRestrictedWrites 返回一个禁止本轮 AI 写操作的副本
+// （输入中风险时使用，不影响共享 Scope 与其他并发运行）。
+func (s *PermissionScope) CloneWithRestrictedWrites() *PermissionScope {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.AllowModify = false
+	cp.AIAllowModify = false
+	return &cp
+}
+
+// ScopeDigest 计算权限快照摘要（与具体密码/密钥无关），用于：
+//   - 会话消息的安全溯源；
+//   - Resume checkpoint 绑定；
+//   - Agent 缓存 key。
+func (s *PermissionScope) ScopeDigest() string {
+	if s == nil {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "u=%s\nc=%s\ns=%s\nr=%t\nfull=%t\nall=%t\nam=%t\nai=%t\nenf=%t\nrev=%d\nprofile=%d\n",
+		s.UserID, s.ConnID, s.SchemaName, s.IsRemote, s.HasFullConnAccess, s.AllSchemasFull,
+		s.AllowModify, s.AIAllowModify, s.AIPolicyEnforce, s.Revision, uint8(s.Profile))
+
+	schemaNames := make([]string, 0, len(s.FullAccessSchemas))
+	for name := range s.FullAccessSchemas {
+		schemaNames = append(schemaNames, name)
+	}
+	sort.Strings(schemaNames)
+	for _, name := range schemaNames {
+		fmt.Fprintf(h, "fs=%s\n", name)
+	}
+
+	tables := make([]string, 0, len(s.AllowedTables))
+	for t := range s.AllowedTables {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	for _, t := range tables {
+		fmt.Fprintf(h, "t=%s\n", t)
+	}
+
+	colTables := make([]string, 0, len(s.AllowedColumns))
+	for t := range s.AllowedColumns {
+		colTables = append(colTables, t)
+	}
+	sort.Strings(colTables)
+	for _, t := range colTables {
+		cols := make([]string, 0, len(s.AllowedColumns[t]))
+		for c := range s.AllowedColumns[t] {
+			cols = append(cols, c)
+		}
+		sort.Strings(cols)
+		fmt.Fprintf(h, "ct=%s:%s\n", t, strings.Join(cols, ","))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// IsWriteRestrictedByInput 判断本轮是否因输入风险被收缩了写能力。
+func (s *PermissionScope) IsWriteRestrictedByInput() bool {
+	return s != nil && !s.AllowModify
 }
 
 // scopeKey 构造权限键「schema.table」（权限配置与判定共用同一规则，保留原始大小写）。
@@ -342,6 +446,48 @@ func (s *PermissionScope) IsTableAllowedIgnoreCase(table string) bool {
 	return s.tableLevel(s.scopeKeysFold(table)) != "none"
 }
 
+// IsTableAllowedStrict 严格大小写的表访问判定（与 Authorizer 同语义）。
+//
+// 供无法取得 RunSecurityContext 的路径（如跨库工具的两侧 Scope）使用：
+// AllSchemasFull 只对构建时完整评估过的 Schema 放行，不回退 IgnoreCase。
+// schema 为空表示未限定 Schema：按“同名表多 schema 交集”判定（fail-closed）。
+func (s *PermissionScope) IsTableAllowedStrict(schema, table string) bool {
+	if s.SkipChecks() {
+		return true
+	}
+	effectiveSchema := schema
+	if effectiveSchema == "" {
+		effectiveSchema = s.SchemaName
+	}
+	if s.AllSchemasFull {
+		if effectiveSchema == "" {
+			// 未限定表名且所有评估 Schema 均为完整访问：可确定落在已授权 Schema 内
+			return true
+		}
+		return s.FullAccessSchemas[effectiveSchema]
+	}
+	if effectiveSchema != "" && s.FullAccessSchemas[effectiveSchema] {
+		return true
+	}
+	return s.tableLevel(s.scopeKeys(scopeKey(schema, table))) != "none"
+}
+
+// IsTableRefAllowed 按 SQL/工具参数中的表引用（可能带 schema 限定）判定。
+//
+// 未限定表名保留原始（不自动补默认 Schema）：历史上裸表名表示
+// “任意同名 Schema 的交集”，补默认 Schema 会把旧权限键判为无权限。
+func (s *PermissionScope) IsTableRefAllowed(ref string) bool {
+	t := trimIdent(ref)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, ".") {
+		parts := splitScopeKey(t)
+		return s.IsTableAllowedStrict(parts.schema, parts.table)
+	}
+	return s.IsTableAllowedStrict("", t)
+}
+
 func (s *PermissionScope) IsColumnAllowed(table, column string) bool {
 	if s.SkipChecks() || s.AllSchemasFull {
 		return true
@@ -437,8 +583,8 @@ func (s *PermissionScope) FilterResultColumns(columns []string, data []map[strin
 
 func (s *PermissionScope) DescribeForPrompt() string {
 	if !s.IsRemote || s.HasFullConnAccess {
-		if !s.AllowModify {
-			return "\n\n## 数据权限（违反将被拦截并记录安全事件）\n⛔ **禁止修改数据**。不得生成或执行 INSERT/UPDATE/DELETE/ALTER/DROP/CREATE/TRUNCATE。用户要求修改时告知：当前角色无修改权限，请联系管理员。\n"
+		if !s.CanAIModifyData() {
+			return "\n\n## 数据权限（违反将被拦截并记录安全事件）\n⛔ **禁止修改数据（含 AI 数据写操作）**。不得生成或执行 INSERT/UPDATE/DELETE/ALTER/DROP/CREATE/TRUNCATE。用户要求修改时告知：当前角色未开放 AI 数据修改权限，请联系管理员。\n"
 		}
 		return ""
 	}
@@ -449,8 +595,8 @@ func (s *PermissionScope) DescribeForPrompt() string {
 			schemaNames = append(schemaNames, name)
 		}
 		schemaDesc := strings.Join(schemaNames, ", ")
-		if !s.AllowModify {
-			return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n⛔ **禁止修改数据**。不得生成或执行任何写操作 SQL。用户要求修改时告知：当前角色无修改权限。\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
+		if !s.CanAIModifyData() {
+			return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n⛔ **禁止修改数据（含 AI 数据写操作）**。不得生成或执行任何写操作 SQL。用户要求修改时告知：当前角色未开放 AI 数据修改权限。\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
 		}
 		return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
 	}
@@ -486,8 +632,8 @@ func (s *PermissionScope) DescribeForPrompt() string {
 	sb.WriteString("⚠️ 对 column 级别的表使用 SELECT * **会被拒绝**，必须显式列出允许字段。\n")
 	sb.WriteString("⚠️ 权限拒绝时直接向用户说明缺少哪张表/哪个字段的权限并给出替代方案，**禁止**换表名变体、注释包装、导出链路内嵌 SQL 等方式尝试绕过。\n")
 
-	if !s.AllowModify {
-		sb.WriteString("⛔ **禁止修改数据**。不得生成或执行任何写操作 SQL。\n")
+	if !s.CanAIModifyData() {
+		sb.WriteString("⛔ **禁止修改数据（含 AI 数据写操作）**。不得生成或执行任何写操作 SQL。\n")
 	}
 
 	return sb.String()

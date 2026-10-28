@@ -483,6 +483,49 @@ func splitMetricColumn(column string) (prefix, col string) {
 	return "", column
 }
 
+// maskCrossDBJoinResult 对跨库关联结果样本行执行列级脱敏。
+//
+// 样本行的列名形如 left.xxx / right.xxx：按前缀映射到各自连接的 Scope 与表，
+// 再按列规则处理；无规则字符串仍执行内置文本保护。
+func maskCrossDBJoinResult(sec *RunSecurityContext, payload string, leftScope, rightScope *PermissionScope) (string, error) {
+	if sec == nil || sec.Masker == nil || !sec.Masker.HasRules() {
+		return payload, nil
+	}
+	var out CrossDBJoinOutput
+	if err := json.Unmarshal([]byte(payload), &out); err != nil {
+		return "", &PermissionError{Message: "关联结果格式校验失败，已阻止返回数据"}
+	}
+	_, leftTable := splitSchemaTable(out.LeftTable, "")
+	_, rightTable := splitSchemaTable(out.RightTable, "")
+
+	for _, row := range out.Sample {
+		for key, val := range row {
+			prefix, col := splitMetricColumn(key)
+			scope, table := leftScope, leftTable
+			if prefix == "right" {
+				scope, table = rightScope, rightTable
+			}
+			if scope == nil || table == "" || col == "" || col == "*" {
+				continue
+			}
+			action := sec.Masker.ActionFor(scope.ConnID, scope.SchemaName, table, col)
+			if action != "" {
+				row[key] = sec.Masker.maskWithAction(action, val)
+				continue
+			}
+			if text, ok := val.(string); ok {
+				row[key] = sec.Masker.MaskText(text)
+			}
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	recordMaskEvent(StageTool, "cross_db_join")
+	return string(data), nil
+}
+
 // ── 取数（服务端执行，仅 SELECT） ───────────────────────────────────────────
 
 // fetchJoinRows 取一侧数据。取 limit+1 行以精确判断是否被截断：

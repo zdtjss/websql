@@ -230,7 +230,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		startTime := time.Now()
 		auditCtx := auditCtx.ForRun(ctx)
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
-		log.Printf("[Tool:query_data] connId=%s sql=%s \n", targetConnID, input.SQL)
+		log.Printf("[Tool:query_data] connId=%s sql{%s}\n", targetConnID, safeSQLSummary(input.SQL))
 		conn, dbType := GetConn(targetConnID, userId)
 		if conn == nil {
 			msg := fmt.Sprintf("db conn not found: %s", targetConnID)
@@ -619,7 +619,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 		startTime := time.Now()
 		auditCtx := auditCtx.ForRun(ctx)
 		targetConnID := resolveConnID(connId, input.ConnID, connLookup)
-		log.Printf("[Tool:exec_sql] sql=%s connId=%s\n", input.SQL, targetConnID)
+		log.Printf("[Tool:exec_sql] sql{%s} connId=%s\n", safeSQLSummary(input.SQL), targetConnID)
 		sql := strings.TrimSpace(input.SQL)
 		if sql == "" {
 			return nil, errors.New("SQL is empty")

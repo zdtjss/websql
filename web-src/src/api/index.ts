@@ -102,8 +102,19 @@ http.interceptors.response.use(
         return Promise.reject(error)
       }
 
+      // 409：并发编辑冲突（如角色权限摘要不一致）。调用方可自行处理时跳过全局提示。
+      if (status === 409) {
+        const msg409 = error.response.data?.msg || '数据已被其他用户修改，请刷新后重试'
+        if (!error.config?.skipGlobalError) {
+          ElMessage.warning(sanitizeError(msg409))
+        }
+        return Promise.reject(error)
+      }
+
       const rawMsg = error.response.data?.msg || error.response.statusText || '服务异常'
-      ElMessage.error(sanitizeError(rawMsg))
+      if (!error.config?.skipGlobalError) {
+        ElMessage.error(sanitizeError(rawMsg))
+      }
     } else if (error.request) {
       ElMessage.error('网络异常，请检查网络连接')
     } else {

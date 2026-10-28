@@ -743,9 +743,14 @@ func checkTableAccessWithRoles(byRole map[string][]*admin.PowerDetail, schemaNam
 
 type SelectColumn struct {
 	TableAlias string
-	ColumnName string
-	IsStar     bool
-	Expression string
+	// TableName 方言解析后的真实来源表（由 ResolveSelectColumns 填充）。
+	// 为空表示无法确定来源（未登记别名、多表裸列、派生表）。
+	TableName string
+	// TableSchema 来源表所属 Schema（解析成功且唯一时填充）。
+	TableSchema string
+	ColumnName  string
+	IsStar      bool
+	Expression  string
 }
 
 func ExtractSelectColumns(sql string) []SelectColumn {
@@ -838,7 +843,7 @@ func findTopLevelKeyword(sql, keyword string) int {
 	upper := strings.ToUpper(sql)
 	kwLen := len(keyword)
 
-	for i := 0; i < len(upper)-kwLen; i++ {
+	for i := 0; i <= len(upper)-kwLen; i++ {
 		switch upper[i] {
 		case '(':
 			depth++
@@ -896,15 +901,15 @@ func splitByCommaRespectParens(s string) []string {
 	return parts
 }
 
+// selectAliasRE 匹配 SELECT 表达式的显式别名（贪婪前缀取最后一个 AS）。
+var selectAliasRE = regexp.MustCompile(`(?is)^(.*)\s+as\s+\S+\s*$`)
+
 func removeAlias(expr string) string {
-	upper := strings.ToUpper(strings.TrimSpace(expr))
-
-	asIdx := findTopLevelKeyword(upper, " AS ")
-	if asIdx >= 0 {
-		return strings.TrimSpace(expr[:asIdx])
+	trimmed := strings.TrimSpace(expr)
+	if m := selectAliasRE.FindStringSubmatch(trimmed); m != nil {
+		return strings.TrimSpace(m[1])
 	}
-
-	return strings.TrimSpace(expr)
+	return trimmed
 }
 
 func isFunctionCall(expr string) bool {

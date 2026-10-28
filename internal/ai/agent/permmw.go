@@ -99,28 +99,46 @@ func keysOf(m map[string]bool) []string {
 
 // BeforeModelRewriteState 在模型调用前根据权限动态过滤 ToolInfos（Eino v0.9 新增）。
 // 无权限的工具直接从模型可见列表中移除，减少无效的工具调用尝试。
+//
+// 与 Wrap*ToolCall 的能力校验共用同一 ToolPolicy：注册阶段裁剪 + 执行阶段双保险。
 func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
-	if m.Scope.SkipChecks() && m.Scope.AllowModify {
-		return ctx, state, nil // 完整权限，无需过滤
-	}
-
-	if state.ToolInfos == nil {
+	if state.ToolInfos == nil || m.Scope == nil {
 		return ctx, state, nil
 	}
 
-	// 如果不允许修改数据，从工具列表中移除写操作/命令执行工具
-	if !m.Scope.AllowModify {
-		filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
-		for _, ti := range state.ToolInfos {
-			if isPrivilegedWriteTool(ti.Name) {
-				log.Printf("%s [ToolInfos] 移除写操作/命令执行工具 - tool=%s\n", m.logPrefix(), ti.Name)
-				continue
-			}
-			filtered = append(filtered, ti)
-		}
-		state.ToolInfos = filtered
+	// 允许的写能力：AI 写双门槛 + 代码/文件既有 allow_modify
+	allowAIWrite := m.Scope.CanAIModifyData()
+	allowCodeExec := m.Scope.AllowModify
+	if allowAIWrite && allowCodeExec && m.Scope.SkipChecks() {
+		return ctx, state, nil // 完整权限且无能力收缩，无需过滤
 	}
 
+	filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
+	for _, ti := range state.ToolInfos {
+		if ti == nil {
+			continue
+		}
+		policy, ok := lookupToolPolicy(normalizeToolName(ti.Name))
+		if !ok {
+			// 未登记工具不向模型展示（执行阶段同样 fail-closed）
+			log.Printf("%s [ToolInfos] 移除未登记工具 - tool=%s\n", m.logPrefix(), ti.Name)
+			continue
+		}
+		switch policy.Capability {
+		case CapabilityAIWrite:
+			if !allowAIWrite {
+				log.Printf("%s [ToolInfos] 移除 AI 写工具 - tool=%s\n", m.logPrefix(), ti.Name)
+				continue
+			}
+		case CapabilityCodeExecute:
+			if !allowCodeExec {
+				log.Printf("%s [ToolInfos] 移除代码/文件写工具 - tool=%s\n", m.logPrefix(), ti.Name)
+				continue
+			}
+		}
+		filtered = append(filtered, ti)
+	}
+	state.ToolInfos = filtered
 	return ctx, state, nil
 }
 
@@ -128,48 +146,33 @@ func (m *PermissionMiddleware) logPrefix() string {
 	return fmt.Sprintf("[PermMW] user=%s conn=%s", m.Scope.UserID, m.Scope.ConnID)
 }
 
-// privilegedWriteTools 需要「数据修改权限（AllowModify）」才能使用的工具。
+// tableAllowedStrict 严格判定 SQL 中出现的表是否被授权（保留 schema 限定）。
 //
-// 除数据写入（exec_sql）外，还包括：
-//   - write_file / edit_file：任意文件落盘，可被提示注入用于写出恶意脚本或覆盖配置
-//   - execute：任意命令执行（Skills 的 python 渲染入口）
-//
-// 只读角色必须一并失去这些能力，否则可通过执行代码/写盘绕过数据权限约束。
-var privilegedWriteTools = map[string]bool{
-	"exec_sql":   true,
-	"write_file": true,
-	"edit_file":  true,
-	"execute":    true,
+// 与 Authorizer 同语义：不回退 IgnoreCase，AllSchemasFull 只对评估过的 Schema 放行。
+func (m *PermissionMiddleware) tableAllowedStrict(table string) bool {
+	return m.Scope.IsTableRefAllowed(table)
 }
 
-func isPrivilegedWriteTool(name string) bool {
-	return privilegedWriteTools[name]
+// verifyTablesStrict 在快速路径上仍逐表校验，避免 AllSchemasFull 放行评估集合外的 Schema。
+func (m *PermissionMiddleware) verifyTablesStrict(toolName string, tables []string) error {
+	for _, table := range tables {
+		if !m.tableAllowedStrict(table) {
+			m.logDeny(toolName, "快速路径表权限拦截", []string{table})
+			return &PermissionError{
+				Message: fmt.Sprintf("无权访问表 %s", table),
+				Objects: []string{table},
+			}
+		}
+	}
+	return nil
 }
 
-// fsWriteTools 文件写入类工具：路径已由 export 包沙箱限制，但「写了什么文件」必须留痕，
-// 否则提示注入写出脚本/覆盖文件的行为在审计中不可见。
+// privilegedWriteTools 工具能力分类已统一到 toolpolicy.go（Capability）。
+// 保留 fsWriteTools 仅用于文件写入审计（路径留痕），能力判定不再使用本表。
 var fsWriteTools = map[string]bool{"write_file": true, "edit_file": true}
 
-// readOnlyUnmonitoredTools 免权限策略的只读工具白名单。
-//
-// 这些工具不访问数据库、不落盘，也不依赖 PermissionScope：
-//   - get_current_date_info：返回当前日期时间
-//   - read_file_data：读取本人上传的暂存文件（工具内部做 fileId 归属校验）
-//   - ls / read_file / glob / grep：Eino Filesystem 中间件的只读文件工具，
-//     路径由 export.OSFilesystemBackend 沙箱限制（工作区 / exports / skills 只读 / 临时目录），
-//     其中 write_file / edit_file / execute 已在其他分支按写权限处理
-//
-// 【安全约定】工具分发采用 fail-closed：未在 switch 中登记、也不在本白名单里的
-// 工具一律拒绝。新增数据/文件/命令类工具时必须显式登记权限策略，
-// 禁止依赖「默认放行」——否则新增工具会在无任何权限校验的情况下暴露给模型。
-var readOnlyUnmonitoredTools = map[string]bool{
-	"get_current_date_info": true,
-	"read_file_data":        true,
-	"ls":                    true,
-	"read_file":             true,
-	"glob":                  true,
-	"grep":                  true,
-}
+// readOnlyUnmonitoredTools 已由 toolpolicy.go 的 ToolPolicy 注册表取代。
+// 保留注释供历史对照：未登记工具一律拒绝（fail-closed）。
 
 // unregisteredToolError 构造未登记工具的统一拒绝错误
 func unregisteredToolError(name string) *PermissionError {
@@ -272,61 +275,56 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 	endpoint adk.InvokableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
-	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
-			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
-			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-				return "", &PermissionError{
-					Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
-					Objects: []string{},
-				}
-			}, nil
-		}
-		m.logAllow(tCtx.Name, "skip(conn_full)")
-		return endpoint, nil
-	}
+	toolName := normalizeToolName(tCtx.Name)
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
-			m.logDeny(tCtx.Name, "角色禁止修改数据", nil)
-			return "", &PermissionError{
-				Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
-				Objects: []string{},
-			}
+		// 未登记工具：执行阶段同样 fail-closed（不只依赖 ToolInfos 裁剪）。
+		if _, ok := lookupToolPolicy(toolName); !ok {
+			m.logDeny(tCtx.Name, "工具未登记权限策略(fail-closed)", nil)
+			return "", unregisteredToolError(tCtx.Name)
 		}
-		switch tCtx.Name {
+		// 按目标连接取 Scope + 校验安全依赖可用性；失败即拒绝。
+		scoped, _, err := m.resolveRunScopedMiddleware(ctx, toolName, argumentsInJSON)
+		if err != nil {
+			m.logDeny(tCtx.Name, "运行安全上下文拒绝", permErrorObjects(err))
+			return "", err
+		}
+		// 能力双保险：模型伪造 tool_call 也不能绕过。
+		if err := scoped.denyByCapability(toolName); err != nil {
+			m.logDeny(tCtx.Name, "能力校验拒绝", permErrorObjects(err))
+			return "", err
+		}
+
+		switch toolName {
 		case "get_table_schema":
-			return m.checkSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "list_tables":
-			return m.postFilterSync(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
+			return scoped.postFilterSync(ctx, argumentsInJSON, endpoint, "list_tables", scoped.filterListTablesResult, opts...)
 		case "query_data":
-			return m.checkQueryAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkQueryAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "cross_db_join":
-			// 跨库 join 工具：结构化参数（非自由 SQL），程序化校验两侧表/列权限后放行
-			return m.checkCrossDBJoinAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkCrossDBJoinAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
-			return m.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
-			return m.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+			return scoped.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "export_by_code":
-			return m.checkExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
-			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
-			m.logAllow(tCtx.Name, "skill_read_only")
+			scoped.logAllow(tCtx.Name, "skill_read_only")
 			return endpoint(ctx, argumentsInJSON, opts...)
 		case "execute":
-			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
-			// 此处增加审计记录 + 间接危险命令检测
-			return m.checkExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
-			if isFsWriteTool(tCtx.Name) {
-				return m.withFsWriteAudit(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+			if isFsWriteTool(toolName) {
+				return scoped.withFsWriteAudit(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 			}
-			if readOnlyUnmonitoredTools[tCtx.Name] {
-				m.logAllow(tCtx.Name, "read_only_allowlist")
+			if !isDataTool(toolName) {
+				scoped.logAllow(tCtx.Name, "read_only_registered")
 				return endpoint(ctx, argumentsInJSON, opts...)
 			}
-			m.logDeny(tCtx.Name, "工具未登记权限策略(fail-closed)", nil)
+			// 已在注册表登记但未在分发中显式处理的数据库工具：拒绝，防止默认放行
+			scoped.logDeny(tCtx.Name, "数据库工具未登记分发策略(fail-closed)", nil)
 			return "", unregisteredToolError(tCtx.Name)
 		}
 	}, nil
@@ -337,53 +335,44 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 	endpoint adk.StreamableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.StreamableToolCallEndpoint, error) {
-	if m.Scope.SkipChecks() {
-		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
-			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
-			return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-				return nil, &PermissionError{
-					Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
-					Objects: []string{},
-				}
-			}, nil
-		}
-		m.logAllow(tCtx.Name+"(stream)", "skip(conn_full)")
-		return endpoint, nil
-	}
+	toolName := normalizeToolName(tCtx.Name)
 
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		if !m.Scope.AllowModify && isPrivilegedWriteTool(tCtx.Name) {
-			m.logDeny(tCtx.Name+"(stream)", "角色禁止修改数据", nil)
-			return nil, &PermissionError{
-				Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
-				Objects: []string{},
-			}
+		if _, ok := lookupToolPolicy(toolName); !ok {
+			m.logDeny(tCtx.Name+"(stream)", "工具未登记权限策略(fail-closed)", nil)
+			return nil, unregisteredToolError(tCtx.Name)
 		}
-		switch tCtx.Name {
+		scoped, _, err := m.resolveRunScopedMiddleware(ctx, toolName, argumentsInJSON)
+		if err != nil {
+			m.logDeny(tCtx.Name+"(stream)", "运行安全上下文拒绝", permErrorObjects(err))
+			return nil, err
+		}
+		if err := scoped.denyByCapability(toolName); err != nil {
+			m.logDeny(tCtx.Name+"(stream)", "能力校验拒绝", permErrorObjects(err))
+			return nil, err
+		}
+
+		switch toolName {
 		case "get_table_schema":
-			return m.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "list_tables":
-			return m.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", m.filterListTablesResult, opts...)
+			return scoped.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", scoped.filterListTablesResult, opts...)
 		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
-			return m.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+			return scoped.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "export_by_code":
-			return m.checkStreamExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkStreamExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
-			// skill 工具仅读取 SKILL.md 文件，无安全风险，直接放行
-			m.logAllow(tCtx.Name+"(stream)", "skill_read_only")
+			scoped.logAllow(tCtx.Name+"(stream)", "skill_read_only")
 			return endpoint(ctx, argumentsInJSON, opts...)
 		case "execute":
-			// execute 工具执行 shell 命令，安全校验由 OSFilesystemBackend.validateCommand 负责
-			// 审计记录 + 间接危险命令检测（流式版本）
-			return m.checkStreamExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
+			return scoped.checkStreamExecuteAccess(ctx, argumentsInJSON, endpoint, opts...)
 		default:
-			// 只读白名单工具与文件写入类工具（写权限已由上方 privilegedWriteTools 拦截、
-			// 路径已由 export 沙箱限制）直接放行；其余未登记工具一律拒绝
-			if readOnlyUnmonitoredTools[tCtx.Name] || isFsWriteTool(tCtx.Name) {
-				m.logAllow(tCtx.Name+"(stream)", "read_only_allowlist")
+			// 文件写入类已由能力校验拦截；只读文件工具直接放行
+			if isFsWriteTool(toolName) || !isDataTool(toolName) {
+				scoped.logAllow(tCtx.Name+"(stream)", "read_only_registered")
 				return endpoint(ctx, argumentsInJSON, opts...)
 			}
-			m.logDeny(tCtx.Name+"(stream)", "工具未登记权限策略(fail-closed)", nil)
+			scoped.logDeny(tCtx.Name+"(stream)", "数据库工具未登记分发策略(fail-closed)", nil)
 			return nil, unregisteredToolError(tCtx.Name)
 		}
 	}, nil
@@ -394,10 +383,11 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 // 该工具仅在「用户拥有连接完整权限」时才会注册（直连会绕过应用层表/列权限）；
 // 此处再 fail-closed 兜底，并记录审计（代码执行类操作，RiskLevel=medium）。
 func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
-	if !m.Scope.SkipChecks() {
-		m.logDeny("export_by_code", "高级导出仅限连接完整权限用户", nil)
+	// 防御性重算：Agent 可能来自缓存，构建后新增的脱敏规则不应被旧实例绕过。
+	if !exportByCodeAllowed(m.Scope) {
+		m.logDeny("export_by_code", "高级导出条件不满足（完整权限 / Python / OS 隔离 / 无生效脱敏规则）", nil)
 		return "", &PermissionError{
-			Message: "高级导出仅对拥有该连接完整权限的用户开放（限完整权限以避免绕过表/列级权限）",
+			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
 			Objects: []string{},
 		}
 	}
@@ -427,10 +417,10 @@ func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args
 
 // checkStreamExportByCodeAccess 高级导出的流式版本。
 func (m *PermissionMiddleware) checkStreamExportByCodeAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
-	if !m.Scope.SkipChecks() {
-		m.logDeny("export_by_code(stream)", "高级导出仅限连接完整权限用户", nil)
+	if !exportByCodeAllowed(m.Scope) {
+		m.logDeny("export_by_code(stream)", "高级导出条件不满足", nil)
 		return nil, &PermissionError{
-			Message: "高级导出仅对拥有该连接完整权限的用户开放（限完整权限以避免绕过表/列级权限）",
+			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
 			Objects: []string{},
 		}
 	}
@@ -499,7 +489,7 @@ func (m *PermissionMiddleware) validateContentSQLBindings(toolName, content stri
 			m.auditPermDenied(toolName, "embedded_sql_blocked: "+err.Error(), objects)
 			return err
 		}
-		m.logInfo(toolName, "内嵌SQL校验通过 - sql=%s", truncateForLog(ref.SQL))
+		m.logInfo(toolName, "内嵌SQL校验通过 - sql{%s}", safeSQLSummary(ref.SQL))
 	}
 	return nil
 }
@@ -516,7 +506,7 @@ func (m *PermissionMiddleware) buildPermError(decision *PermDecisionOutput) *Per
 
 func (m *PermissionMiddleware) denyEmptySQL(toolName string, args string) error {
 	m.logDeny(toolName, "无法解析SQL参数，拒绝执行", nil)
-	log.Printf("%s [安全] 原始参数(截断) - args=%s\n", m.logPrefix(), truncateForLog(args))
+	log.Printf("%s [安全] 参数解析失败 - args{%s}\n", m.logPrefix(), safeTextSummary(args))
 	return &PermissionError{
 		Message: "权限检查失败：无法解析SQL语句，已拒绝执行",
 		Objects: nil,
@@ -535,7 +525,7 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 	filtered := make([]string, 0)
 	deniedTables := make([]string, 0)
 	for _, table := range input.Tables {
-		if m.Scope.IsTableAllowedIgnoreCase(table) {
+		if m.tableAllowedStrict(table) {
 			filtered = append(filtered, table)
 		} else {
 			deniedTables = append(deniedTables, table)
@@ -619,16 +609,20 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return "", m.denyEmptySQL("query_data", args)
 	}
 
-	m.logInfo("query_data", "sql=%s", truncateForLog(sql))
+	m.logInfo("query_data", "sql{%s}", safeSQLSummary(sql))
 
 	if m.Scope.AllSchemasFull {
 		m.logAllow("query_data", "schema_full(fast)")
 		tables := appperm.ExtractTablesFromSQL(sql)
+		// 快速路径仍逐表校验：AllSchemasFull 只覆盖构建时评估过的 Schema。
+		if err := m.verifyTablesStrict("query_data", tables); err != nil {
+			return "", err
+		}
 		result, err := endpoint(ctx, args, opts...)
 		if err != nil {
 			return "", err
 		}
-		return m.applyQueryResultFilter(result, tables)
+		return m.applyQueryResultFilterMasked(ctx, sql, result, tables)
 	}
 
 	// 程序化预检：如果所有涉及的表都是 full 级别，直接放行，无需调用 Permission Agent
@@ -647,7 +641,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		if err != nil {
 			return "", err
 		}
-		return m.applyQueryResultFilter(result, tables)
+		return m.applyQueryResultFilterMasked(ctx, sql, result, tables)
 	}
 
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "query_data")
@@ -664,7 +658,7 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 	// 双重验证：Permission Agent（LLM）允许后，追加程序化表级校验。
 	// 与 exec_sql 的 doubleCheckHighRiskExec 同一设计目的——防止 LLM 误判或
 	// 被 SQL 内嵌文本（注释/字面量）注入诱导放行导致越权读取。
-	if err := m.doubleCheckReadAccess(sql, tables); err != nil {
+	if err := m.doubleCheckReadAccess(ctx, sql, tables); err != nil {
 		objects := permErrorObjects(err)
 		m.logDeny("query_data", "双重验证拦截(agent允许但程序化拒绝)", objects)
 		m.auditPermDenied("query_data", "double_check_blocked: "+err.Error(), objects)
@@ -676,33 +670,42 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 	if err != nil {
 		return "", err
 	}
-	return m.applyQueryResultFilter(result, tables)
+	return m.applyQueryResultFilterMasked(ctx, sql, result, tables)
 }
 
 // doubleCheckReadAccess 对 query_data 做程序化表级双重验证。
 //
 // 设计原则与 doubleCheckHighRiskExec 一致：
-//   - 仅做表级验证（轻量且确定），列级由 Permission Agent + 结果列过滤协同完成
-//   - 提取不到表名时（如 SELECT 1 / SHOW TABLES）无法做表级验证，
-//     记录日志并放行，由 applyQueryResultFilter 的 fail-closed 策略兜底
-func (m *PermissionMiddleware) doubleCheckReadAccess(sql string, tables []string) error {
+//   - 使用 Authorizer 的严格大小写语义，不回退 IgnoreCase（IgnoreCase 仅用于只会更严格的结果过滤）；
+//   - AllSchemasFull 只对构建时完整评估过的 Schema 放行；
+//   - 提取不到表名时由无资源查询白名单判定。
+func (m *PermissionMiddleware) doubleCheckReadAccess(ctx context.Context, sql string, tables []string) error {
 	if len(tables) == 0 {
 		tables = appperm.ExtractTablesFromSQL(sql)
 	}
 	if len(tables) == 0 {
-		m.logInfo("query_data", "双重验证：无法从 SQL 提取表名，跳过表级校验（结果列过滤兜底）")
+		// 无法提取表名：受限用户只放行「已证明不访问任何资源」的常量查询（如 SELECT 1），
+		// 其余一律拒绝，不能依赖「查完再过滤」兜底。
+		if !m.Scope.SkipChecks() && !appperm.IsVerifiedNoResourceQuery(sql) {
+			m.logDeny("query_data", "无法确认 SQL 的数据访问范围", nil)
+			return &PermissionError{
+				Message: "无法确认 SQL 的数据访问范围，已拒绝执行。请改写为明确的单表查询。",
+				Objects: []string{},
+			}
+		}
+		m.logInfo("query_data", "无法从 SQL 提取表名，按无资源查询白名单处理")
 		return nil
 	}
 
 	var deniedTables []string
 	for _, table := range tables {
-		if !m.Scope.IsTableAllowedIgnoreCase(table) {
+		if !m.Scope.IsTableRefAllowed(table) {
 			deniedTables = append(deniedTables, table)
 		}
 	}
 	if len(deniedTables) > 0 {
-		log.Printf("%s [双重验证] query_data Permission Agent 允许但程序化检查拦截 - sql=%s, deniedTables=%v\n",
-			m.logPrefix(), truncateForLog(sql), deniedTables)
+		log.Printf("%s [双重验证] query_data Permission Agent 允许但程序化检查拦截 - sql{%s}, deniedTables=%v\n",
+			m.logPrefix(), safeSQLSummary(sql), deniedTables)
 		return &PermissionError{
 			Message: fmt.Sprintf("双重验证拦截：无权限访问表 %v，请改用您有权限的表重新生成查询。", deniedTables),
 			Objects: deniedTables,
@@ -712,31 +715,53 @@ func (m *PermissionMiddleware) doubleCheckReadAccess(sql string, tables []string
 }
 
 // checkCrossDBJoinAccess 校验 cross_db_join 工具的表级/列级权限。
-// 该工具为结构化参数（非自由 SQL），无需 Permission Agent 语义分析，
-// 程序化校验两侧表与显式引用的列即可（与 query_data fallback 同一套权限模型）。
+//
+// 两侧必须分别使用各自连接 Scope：禁止跨连接合并 allowlist，
+// 否则 A 连接的授权会放宽 B 连接的表/列限制。
 func (m *PermissionMiddleware) checkCrossDBJoinAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
-	if m.Scope.SkipChecks() {
-		m.logAllow("cross_db_join", "skip(conn_full)")
-		return endpoint(ctx, args, opts...)
+	sec, err := RunSecurityFrom(ctx)
+	if err != nil {
+		return "", err
 	}
-
 	var input CrossDBJoinInput
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		m.logDeny("cross_db_join", "参数解析失败", nil)
 		return "", err
 	}
 
-	// 表级校验（支持 schema.table 形式，取表名部分判断）
+	connLookup := buildConnLookup(m.Schemas)
+	leftConnID := resolveConnID(sec.DefaultConnID, input.LeftConnID, connLookup)
+	rightConnID := resolveConnID(sec.DefaultConnID, input.RightConnID, connLookup)
+	leftScope, err := sec.ScopeFor(leftConnID)
+	if err != nil {
+		m.logDeny("cross_db_join", "左侧连接不在授权范围内", []string{leftConnID})
+		return "", err
+	}
+	rightScope, err := sec.ScopeFor(rightConnID)
+	if err != nil {
+		m.logDeny("cross_db_join", "右侧连接不在授权范围内", []string{rightConnID})
+		return "", err
+	}
+
+	if leftScope.SkipChecks() && rightScope.SkipChecks() {
+		m.logAllow("cross_db_join", "skip(both_conn_full)")
+		return endpoint(ctx, args, opts...)
+	}
+
+	// 表级校验（支持 schema.table 形式；严格大小写，不回退 IgnoreCase）
 	var deniedTables []string
-	for _, t := range []struct {
+	for _, side := range []struct {
 		table string
-		label string
-	}{{input.LeftTable, "leftTable"}, {input.RightTable, "rightTable"}} {
-		if t.table == "" {
+		scope *PermissionScope
+	}{
+		{input.LeftTable, leftScope},
+		{input.RightTable, rightScope},
+	} {
+		if side.table == "" {
 			continue
 		}
-		_, tableName := splitSchemaTable(t.table, "")
-		if !m.Scope.IsTableAllowedIgnoreCase(tableName) {
+		_, tableName := splitSchemaTable(side.table, side.scope.SchemaName)
+		if !side.scope.IsTableRefAllowed(side.table) {
 			deniedTables = append(deniedTables, tableName)
 		}
 	}
@@ -748,8 +773,8 @@ func (m *PermissionMiddleware) checkCrossDBJoinAccess(ctx context.Context, args 
 		}
 	}
 
-	// 列级校验：显式 select 列、join key、metrics 列
-	if err := m.checkCrossDBJoinColumns(&input); err != nil {
+	// 列级校验：显式 select 列、join key、where 列、metrics 列，分别用各自连接 Scope
+	if err := checkCrossDBJoinColumnsWithScopes(&input, leftScope, rightScope); err != nil {
 		if pe, ok := err.(*PermissionError); ok {
 			m.logDeny("cross_db_join", "无权访问字段", pe.Objects)
 		} else {
@@ -759,18 +784,27 @@ func (m *PermissionMiddleware) checkCrossDBJoinAccess(ctx context.Context, args 
 	}
 
 	m.logAllow("cross_db_join", "scope_filter")
-	return endpoint(ctx, args, opts...)
+	result, err := endpoint(ctx, args, opts...)
+	if err != nil {
+		return "", err
+	}
+	return maskCrossDBJoinResult(sec, result, leftScope, rightScope)
 }
 
-// checkCrossDBJoinColumns 校验 cross_db_join 中显式引用的列（column 级权限表）。
+// checkCrossDBJoinColumns 保留旧签名（默认两侧同 Scope），供内部复用与测试。
+func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) error {
+	return checkCrossDBJoinColumnsWithScopes(input, m.Scope, m.Scope)
+}
+
+// checkCrossDBJoinColumnsWithScopes 校验 cross_db_join 中显式引用的列（column 级权限表）。
 // 注意：column 级权限表必须显式列出 select 列（禁止省略或 *），否则工具内部会
 // 取全列并绕过列级过滤（query_data 有结果列过滤兜底，本工具没有）。
-func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) error {
-	check := func(table, col string) error {
+func checkCrossDBJoinColumnsWithScopes(input *CrossDBJoinInput, leftScope, rightScope *PermissionScope) error {
+	check := func(scope *PermissionScope, table, col string) error {
 		if col == "" || col == "*" {
 			return nil
 		}
-		if m.Scope.GetTableAccessLevel(table) == "column" && !m.Scope.IsColumnAllowed(table, col) {
+		if scope.GetTableAccessLevel(table) == "column" && !scope.IsColumnAllowed(table, col) {
 			return &PermissionError{
 				Message: fmt.Sprintf("无权访问字段 %s.%s", table, col),
 				Objects: []string{table + "." + col},
@@ -785,10 +819,14 @@ func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) 
 	// column 级权限表禁止隐式全列/星号（防列级过滤绕过）
 	for _, t := range []struct {
 		table      string
+		scope      *PermissionScope
 		selectCols []string
 		label      string
-	}{{leftTable, input.LeftSelect, "leftSelect"}, {rightTable, input.RightSelect, "rightSelect"}} {
-		if m.Scope.GetTableAccessLevel(t.table) != "column" {
+	}{
+		{leftTable, leftScope, input.LeftSelect, "leftSelect"},
+		{rightTable, rightScope, input.RightSelect, "rightSelect"},
+	} {
+		if t.scope.GetTableAccessLevel(t.table) != "column" {
 			continue
 		}
 		if len(t.selectCols) == 0 || containsStarColumn(t.selectCols) {
@@ -809,22 +847,22 @@ func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) 
 		return err
 	}
 	for _, k := range leftKeys {
-		if err := check(leftTable, k); err != nil {
+		if err := check(leftScope, leftTable, k); err != nil {
 			return err
 		}
 	}
 	for _, k := range rightKeys {
-		if err := check(rightTable, k); err != nil {
+		if err := check(rightScope, rightTable, k); err != nil {
 			return err
 		}
 	}
 	for _, c := range input.LeftSelect {
-		if err := check(leftTable, c); err != nil {
+		if err := check(leftScope, leftTable, c); err != nil {
 			return err
 		}
 	}
 	for _, c := range input.RightSelect {
-		if err := check(rightTable, c); err != nil {
+		if err := check(rightScope, rightTable, c); err != nil {
 			return err
 		}
 	}
@@ -832,8 +870,12 @@ func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) 
 	// where 过滤条件：先做语法白名单校验，再校验引用的列
 	for _, w := range []struct {
 		where string
+		scope *PermissionScope
 		table string
-	}{{input.LeftWhere, leftTable}, {input.RightWhere, rightTable}} {
+	}{
+		{input.LeftWhere, leftScope, leftTable},
+		{input.RightWhere, rightScope, rightTable},
+	} {
 		if strings.TrimSpace(w.where) == "" {
 			continue
 		}
@@ -844,7 +886,7 @@ func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) 
 			}
 		}
 		for _, col := range extractWhereColumns(w.where) {
-			if err := check(w.table, col); err != nil {
+			if err := check(w.scope, w.table, col); err != nil {
 				return err
 			}
 		}
@@ -854,11 +896,11 @@ func (m *PermissionMiddleware) checkCrossDBJoinColumns(input *CrossDBJoinInput) 
 		prefix, col := splitMetricColumn(mt.Column)
 		switch prefix {
 		case "left":
-			if err := check(leftTable, col); err != nil {
+			if err := check(leftScope, leftTable, col); err != nil {
 				return err
 			}
 		case "right":
-			if err := check(rightTable, col); err != nil {
+			if err := check(rightScope, rightTable, col); err != nil {
 				return err
 			}
 		}
@@ -885,7 +927,7 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 
 	tables := appperm.ExtractTablesFromSQL(input.SQL)
 	for _, table := range tables {
-		if !m.Scope.IsTableAllowed(table) {
+		if !m.tableAllowedStrict(table) {
 			m.logDeny("query_data", "无权访问表", []string{table})
 			return "", &PermissionError{Message: "无权访问表", Objects: []string{table}}
 		}
@@ -900,7 +942,7 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 	if err != nil {
 		return "", err
 	}
-	return m.applyQueryResultFilter(result, tables)
+	return m.applyQueryResultFilterMasked(ctx, input.SQL, result, tables)
 }
 
 func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
@@ -913,10 +955,13 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 		return "", m.denyEmptySQL("exec_sql", args)
 	}
 
-	m.logInfo("exec_sql", "sql=%s", truncateForLog(sql))
+	m.logInfo("exec_sql", "sql{%s}", safeSQLSummary(sql))
 
 	if m.Scope.AllSchemasFull {
 		m.logAllow("exec_sql", "schema_full(fast)")
+		if err := m.verifyTablesStrict("exec_sql", appperm.ExtractTablesFromSQL(sql)); err != nil {
+			return "", err
+		}
 		return endpoint(ctx, args, opts...)
 	}
 
@@ -978,7 +1023,7 @@ func (m *PermissionMiddleware) checkExecAccessFallback(ctx context.Context, args
 	}
 
 	for _, table := range appperm.ExtractTablesFromSQL(input.SQL) {
-		if !m.Scope.IsTableAllowed(table) {
+		if !m.tableAllowedStrict(table) {
 			m.logDeny("exec_sql", "无权访问表", []string{table})
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
 		}
@@ -1011,14 +1056,14 @@ func (m *PermissionMiddleware) doubleCheckHighRiskExec(sql string, tables []stri
 
 	var deniedTables []string
 	for _, table := range tables {
-		if !m.Scope.IsTableAllowedIgnoreCase(table) {
+		if !m.tableAllowedStrict(table) {
 			deniedTables = append(deniedTables, table)
 		}
 	}
 
 	if len(deniedTables) > 0 {
 		log.Printf("%s [双重验证] Permission Agent 允许但程序化检查拦截 - sql=%s, deniedTables=%v\n",
-			m.logPrefix(), truncateForLog(sql), deniedTables)
+			m.logPrefix(), safeSQLSummary(sql), deniedTables)
 		return &PermissionError{
 			Message: fmt.Sprintf("双重验证拦截：Permission Agent 判定允许，但程序化检查发现无权访问表 %v", deniedTables),
 			Objects: deniedTables,
@@ -1043,12 +1088,24 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		}
 	}
 
+	// 正文在渲染前再经文本脱敏：SSE 审计覆盖不到导出文件内容，
+	// 脱敏失败则拒绝导出（不能以原文落盘）。
+	checkedArgs := args
+	if strings.TrimSpace(content) != "" {
+		maskedArgs, err := m.maskExportArgs(ctx, args)
+		if err != nil {
+			m.logDeny(toolName, "导出正文脱敏失败", nil)
+			return "", err
+		}
+		checkedArgs = maskedArgs
+	}
+
 	if sql == "" {
 		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
 		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
 		if strings.TrimSpace(content) != "" {
 			m.logAllow(toolName, "content_mode(no_sql)")
-			return endpoint(ctx, args, opts...)
+			return endpoint(ctx, checkedArgs, opts...)
 		}
 		return "", m.denyEmptySQL("export", args)
 	}
@@ -1063,12 +1120,15 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		}
 	}
 
-	m.logInfo("export", "sql=%s", truncateForLog(sql))
+	m.logInfo("export", "sql{%s}", safeSQLSummary(sql))
 	tables := appperm.ExtractTablesFromSQL(sql)
 
 	if m.Scope.AllSchemasFull {
 		m.logAllow("export", "schema_full(fast)")
-		return endpoint(ctx, args, opts...)
+		if err := m.verifyTablesStrict("export", tables); err != nil {
+			return "", err
+		}
+		return endpoint(ctx, checkedArgs, opts...)
 	}
 
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "export")
@@ -1084,7 +1144,7 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 
 	// 双重验证：与 query_data 保持一致，Permission Agent 允许后追加程序化
 	// 表级 + 列级校验。导出结果直接落盘、没有结果过滤兜底，必须执行前拦截。
-	if err := m.doubleCheckReadAccess(sql, tables); err != nil {
+	if err := m.doubleCheckReadAccess(ctx, sql, tables); err != nil {
 		objects := permErrorObjects(err)
 		m.logDeny(toolName, "双重验证拦截(agent允许但程序化拒绝)", objects)
 		m.auditPermDenied(toolName, "double_check_blocked: "+err.Error(), objects)
@@ -1098,7 +1158,7 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 	}
 
 	m.logAllow(toolName, "agent+double_check")
-	return endpoint(ctx, args, opts...)
+	return endpoint(ctx, checkedArgs, opts...)
 }
 
 func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
@@ -1136,7 +1196,7 @@ func (m *PermissionMiddleware) checkStreamSchemaAccess(ctx context.Context, args
 	filtered := make([]string, 0)
 	deniedTables := make([]string, 0)
 	for _, table := range input.Tables {
-		if m.Scope.IsTableAllowedIgnoreCase(table) {
+		if m.tableAllowedStrict(table) {
 			filtered = append(filtered, table)
 		} else {
 			deniedTables = append(deniedTables, table)
@@ -1243,6 +1303,10 @@ func (m *PermissionMiddleware) getPermCheckFunc(toolName string) func(ctx contex
 	return func(ctx context.Context, sql string) (*permCheckResult, error) {
 		if m.Scope.AllSchemasFull {
 			tables := appperm.ExtractTablesFromSQL(sql)
+			// 快速路径仍逐表校验：AllSchemasFull 不能放行评估集合外的 Schema。
+			if err := m.verifyTablesStrict(toolName, tables); err != nil {
+				return nil, err
+			}
 			needFilter := toolName == "query_data" && m.hasColumnRestrictions(tables)
 			return &permCheckResult{allowed: true, tables: tables, needFilter: needFilter}, nil
 		}
@@ -1292,7 +1356,10 @@ func (m *PermissionMiddleware) checkSelectColumnAccessStrict(sql string, tables 
 }
 
 func (m *PermissionMiddleware) checkSelectColumnAccessWithStar(sql string, tables []string, toolName string, rejectStar bool) error {
-	err := checkSelectColumnsStrict(m.Scope, sql, tables, rejectStar)
+	err := m.authorizeSelectedColumns(sql, tables, columnCheckOptions{
+		RejectStar:         rejectStar,
+		RequireKnownOrigin: true,
+	})
 	if err == nil {
 		return nil
 	}
@@ -1350,15 +1417,20 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
 		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
 		if strings.TrimSpace(content) != "" {
+			maskedArgs, maskErr := m.maskExportArgs(ctx, args)
+			if maskErr != nil {
+				m.logDeny(toolName+"(stream)", "导出正文脱敏失败", nil)
+				return streamFromStr("导出失败：脱敏规则不可用"), nil
+			}
 			m.logAllow(toolName+"(stream)", "content_mode(no_sql)")
-			return endpoint(ctx, args, opts...)
+			return endpoint(ctx, maskedArgs, opts...)
 		}
 		m.logDeny(toolName+"(stream)", "无法解析SQL参数，拒绝执行", nil)
-		log.Printf("%s [安全] 原始参数(截断) - args=%s\n", m.logPrefix(), truncateForLog(args))
+		log.Printf("%s [安全] 参数解析失败 - args{%s}\n", m.logPrefix(), safeTextSummary(args))
 		return streamFromStr("权限检查失败：无法解析SQL语句，已拒绝执行"), nil
 	}
 
-	m.logInfo(toolName+"(stream)", "sql=%s", truncateForLog(sql))
+	m.logInfo(toolName+"(stream)", "sql{%s}", safeSQLSummary(sql))
 
 	checkFunc := m.getPermCheckFunc(toolName)
 	result, err := checkFunc(ctx, sql)
@@ -1380,7 +1452,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 	}
 
 	if result.needFilter {
-		return m.applyStreamQueryResultFilter(reader, result.tables), nil
+		return m.applyStreamQueryResultFilterMasked(ctx, sql, reader, result.tables), nil
 	}
 
 	return reader, nil
@@ -1404,7 +1476,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 	tables := appperm.ExtractTablesFromSQL(sqlStr)
 	if sqlStr != "" {
 		for _, table := range tables {
-			if !m.Scope.IsTableAllowed(table) {
+			if !m.tableAllowedStrict(table) {
 				m.logDeny(toolName+"(stream)", "无权访问表", []string{table})
 				return streamFromStr(fmt.Sprintf("无权访问表：%s", table)), nil
 			}
@@ -1422,18 +1494,13 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 	}
 
 	if toolName == "query_data" && m.hasColumnRestrictions(tables) {
-		return m.applyStreamQueryResultFilter(reader, tables), nil
+		return m.applyStreamQueryResultFilterMasked(ctx, sqlStr, reader, tables), nil
 	}
 
 	return reader, nil
 }
 
-func truncateForLog(s string) string {
-	if len(s) > 300 {
-		return strutil.TruncateBytes(s, 300) + "..."
-	}
-	return strings.ReplaceAll(s, "\n", " ")
-}
+// 日志中的 SQL / 参数一律使用 safeSQLSummary / safeTextSummary（只记录长度与哈希）。
 
 // ──────────────────────────────────────────────
 // execute 工具审计与安全增强

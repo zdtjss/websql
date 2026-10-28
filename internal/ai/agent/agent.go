@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"websql/internal/ai/agent/export"
+	admin "websql/internal/app/admin"
 	connpkg "websql/internal/app/conn"
 	system "websql/internal/app/system"
 	idgen "websql/internal/pkg/idgen"
@@ -201,6 +202,54 @@ func (a *SQLAgent) Cancel(runID ...string) {
 	}
 }
 
+// recheckSecurityBeforeRun 在历史装配前复核权限修订号。
+//
+// 语义：
+//   - unchanged：沿用当前不可变 Scope；
+//   - expanded：权限只增，改用新上下文（不追溯解除已隔离历史）；
+//   - shrunk：改用更严格的新 Scope，由 filterHistoryForRun 按新旧 digest 隔离历史；
+//   - unavailable：不回退旧 Scope，只标记 RevisionUnavailable 由数据工具 fail-closed。
+func (a *SQLAgent) recheckSecurityBeforeRun(req ChatRequest, sec *RunSecurityContext) *RunSecurityContext {
+	if sec == nil {
+		return sec
+	}
+	rebuild := func() (*RunSecurityContext, error) {
+		revision, fresh := admin.SnapshotPermissionRevision()
+		if sec.Profile.RequiresRevisionLease() && !fresh {
+			return nil, admin.ErrPermissionRevisionUnavailable
+		}
+		next, buildErr := BuildRunSecurityContext(sec.Profile, sec.UserID, sec.DefaultConnID, req.Schemas, revision, sec.Masker)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		// 运行内固定属性必须继承：灰度模式一次运行固定；输入风险收缩与脱敏可用性不因复核重置。
+		next.Mode = sec.Mode
+		next.DataEgressBlocked = sec.DataEgressBlocked
+		if sec.RestrictWrites {
+			next = next.RestrictForInputRisk()
+		}
+		return next, nil
+	}
+	state, next, err := sec.Recheck(rebuild)
+	if err != nil || next == nil {
+		sec.RevisionUnavailable = true
+		recordDegraded("revision", "recheck_failed")
+		log.Printf("[Agent] 运行中权限复核失败，数据工具将 fail-closed - session=%s, err=%v\n", req.SessionID, err)
+		return sec
+	}
+	switch state {
+	case RevisionShrunk:
+		recordSecurityEvent(StageRevision, "shrink", "rebuild")
+		log.Printf("[Agent] 运行中权限已收缩，重建 Scope 并隔离受影响历史 - session=%s\n", req.SessionID)
+	case RevisionExpanded:
+		recordSecurityEvent(StageRevision, "expand", "rebuild")
+	case RevisionUnavailable:
+		next.RevisionUnavailable = true
+		recordDegraded("revision", "unavailable_in_run")
+	}
+	return next
+}
+
 // RunStream 流式执行（首次查询）
 // RunStream 执行一次对话
 //
@@ -219,10 +268,21 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		return "", errors.New("userId 不能为空")
 	}
 
+	// 安全上下文必须由请求入口构建：缺失时拒绝运行，不在 Agent 内部自行推断权限。
+	sec, err := RunSecurityFrom(ctx)
+	if err != nil {
+		return "", err
+	}
+	scope := a.scope
+	if s, scopeErr := sec.DefaultScope(); scopeErr == nil {
+		scope = s
+	}
+
 	sess, err := a.sessions.GetOrCreate(sessionID, req.UserID)
 	if err != nil {
 		return "", err
 	}
+	sess.SetLatestSecurity(sec)
 	flush(StreamChunk{Type: "session", Content: sess.ID})
 
 	// 同一会话互斥：多 tab / 重复提交并发运行会交错写消息、破坏 tool_calls 配对
@@ -237,11 +297,19 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		Role:        "user",
 		Content:     req.Question,
 		Attachments: req.Attachments, // 空切片时 omitempty 不落库
+		Security:    newMessageSecurity(sec, req.Question, nil),
 	}); err != nil {
 		return sessionID, err
 	}
 
-	allMsgs := sess.GetMessages()
+	// 历史装配前先复核权限修订号：必须在 summarization/reduction 之前完成，
+	// 否则无权数据会被摘要压缩后失去资源溯源。
+	sec = a.recheckSecurityBeforeRun(req, sec)
+	sess.SetLatestSecurity(sec)
+	if s, scopeErr := sec.DefaultScope(); scopeErr == nil {
+		scope = s
+	}
+	allMsgs := filterHistoryForRun(sess.GetMessages(), sec)
 	log.Printf("[Agent] 历史消息 - total=%d, maxContextTokens=%d\n", len(allMsgs), a.maxContextTokens)
 
 	// 数据来源可为数据库或文件：无数据库权限时，只要本次或历史消息中携带了文件，仍可进行文件分析
@@ -252,7 +320,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 			break
 		}
 	}
-	if !a.scope.HasAnyAccess() && !hasFileDataSource(&req) && !hasHistoryFile {
+	if !scope.HasAnyAccess() && !hasFileDataSource(&req) && !hasHistoryFile {
 		// done 事件由 handler 统一发送，这里只推送错误，避免前端收到两次 done
 		flush(StreamChunk{Type: "error", Content: "您暂时没有可访问的数据表权限，请选择有权限的数据库或上传文件。"})
 		return sessionID, nil
@@ -262,7 +330,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	if defaultConnID == "" && len(req.Schemas) > 0 {
 		defaultConnID = req.Schemas[0].ConnID
 	}
-	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, a.scope, req.Schemas, export.GetSkillEnv() != nil)
+	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, scope, req.Schemas, export.GetSkillEnv() != nil)
 
 	if detectPreviousExecution(allMsgs) {
 		sysPrompt += "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +
@@ -397,12 +465,18 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	// 而不是缓存 Agent 构建时烘焙进工具的旧值）
 	ctx = WithRunIdentity(ctx, RunIdentity{SessionID: sessionID, UserID: req.UserID})
 
-	// 登记 checkpoint 归属：恢复时校验用户/会话/连接一致，并保证一次性消费
-	globalCheckPointStore.Bind(checkPointID, CheckpointBinding{UserID: req.UserID, SessionID: sessionID, ConnID: defaultConnID})
+	// 登记 checkpoint 归属：恢复时校验用户/会话/连接与权限快照一致，并保证一次性消费
+	globalCheckPointStore.Bind(checkPointID, CheckpointBinding{
+		UserID:      req.UserID,
+		SessionID:   sessionID,
+		ConnID:      defaultConnID,
+		Revision:    sec.Revision,
+		ScopeDigest: sec.ScopeDigest,
+	})
 
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID), cancelOpt)
 
-	interrupted := a.processEvents(runID, iter, flush, sess, checkPointID)
+	interrupted := a.processEvents(ctx, runID, iter, flush, sess, checkPointID)
 	// 未停在「等待确认」上的 checkpoint（含取消时保存的不可恢复状态）立即释放
 	globalCheckPointStore.Release(checkPointID, interrupted)
 
@@ -441,6 +515,16 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 	}
 	defer globalCheckPointStore.EndResume(checkPointID, version)
 
+	// 恢复链路必须与 RunStream 共用同一安全上下文：输出审计、工具授权、持久化守卫
+	// 都从 context 取事实，不能因为走 Resume 而绕过。
+	sec, err := RunSecurityFrom(ctx)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		sess.SetLatestSecurity(sec)
+	}
+
 	targetsAny := make(map[string]any, len(targets))
 	for id, approved := range targets {
 		targetsAny[id] = SQLApprovalResult{Approved: approved}
@@ -466,7 +550,7 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 		return fmt.Errorf("恢复执行失败：%w", err)
 	}
 
-	interrupted := a.processEvents(runID, iter, flush, sess, checkPointID)
+	interrupted := a.processEvents(ctx, runID, iter, flush, sess, checkPointID)
 
 	log.Printf("[Agent] resume 完成 - elapsed=%v, awaitingConfirm=%v\n", time.Since(resumeStart), interrupted)
 
@@ -609,11 +693,13 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		auditUserID = auditCtx.UserID
 	}
 	dataSource := newReportDataSource(connID, auditUserID, schemas, scope)
-	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 数据表格（Go 原生渲染：表头样式/冻结首行/筛选/数字格式）。须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx))
-	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出含图表的 Excel（Go 原生可编辑图表 + 分析摘要 + 数据明细）。须传入 sql 与 charts（X/Y 字段名须与查询结果列一致）", export.NewExportExcelWithChartFunc(conn, exportAuditCtx))
-	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（Go 原生渲染：封面/目录/章节页/指标卡/原生可编辑图表/分页表格，theme=tech 为深色科技风）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx, dataSource))
-	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成 Word 数据分析报告（Go 原生渲染：封面/目录/页眉页脚/指标卡/原生可编辑图表/分页表格）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表/提示框），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn, exportAuditCtx, dataSource))
-	exportHTMLTool, _ := utils.InferTool("export_html", "生成自包含 HTML 报告（服务端渲染、内联 SVG 图表、断网可读、支持 Mermaid 图示与公式）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportHTMLFunc(conn, exportAuditCtx, dataSource))
+	// 原生导出取数统一走安全执行器：只读 + 表/列权限 + 结果脱敏后再落盘。
+	exportRunner := newExportQueryRunner(conn, scope, scope.UserID)
+	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 数据表格（Go 原生渲染：表头样式/冻结首行/筛选/数字格式）。须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx, exportRunner))
+	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出含图表的 Excel（Go 原生可编辑图表 + 分析摘要 + 数据明细）。须传入 sql 与 charts（X/Y 字段名须与查询结果列一致）", export.NewExportExcelWithChartFunc(conn, exportAuditCtx, exportRunner))
+	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（Go 原生渲染：封面/目录/章节页/指标卡/原生可编辑图表/分页表格，theme=tech 为深色科技风）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx, dataSource, exportRunner))
+	exportDocxTool, _ := utils.InferTool("export_analysis_docx", "生成 Word 数据分析报告（Go 原生渲染：封面/目录/页眉页脚/指标卡/原生可编辑图表/分页表格）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表/提示框），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportAnalysisDocxFunc(conn, exportAuditCtx, dataSource, exportRunner))
+	exportHTMLTool, _ := utils.InferTool("export_html", "生成自包含 HTML 报告（服务端渲染、内联 SVG 图表、断网可读、支持 Mermaid 图示与公式）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式", export.NewExportHTMLFunc(conn, exportAuditCtx, dataSource, exportRunner))
 
 	for _, t := range []tool.BaseTool{exportExcelTool, exportExcelChartTool, exportPPTTool, exportDocxTool, exportHTMLTool} {
 		if t != nil {
@@ -623,11 +709,11 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 
 	// 高级导出（export_by_code）：由模型编写 Python 连接「用户选中连接」（只读）查询并生成
 	// 任意格式文件。仅在满足以下条件时注册（fail-closed）：
-	//   1. 用户对该连接拥有完整权限（SkipChecks）——直连会绕过应用层表/列权限，
-	//      存在表/列级限制的用户不得使用，避免越权读取未授权表；
+	//   1. 用户对该连接拥有完整权限（SkipChecks）——直连会绕过应用层表/列权限；
 	//   2. 检测到可用的 Python 运行环境；
-	//   3. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）。
-	if scope.SkipChecks() && export.IsPythonAvailable() && export.CodegenIsolationAvailable() {
+	//   3. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）；
+	//   4. 不存在生效的脱敏规则（直连脚本无法传递脱敏策略）。
+	if exportByCodeAllowed(scope) {
 		if dbInfo := resolveCodegenDBInfo(connID, dbSchema); dbInfo != nil {
 			exportByCodeTool, _ := utils.InferTool(
 				"export_by_code",
@@ -644,7 +730,10 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		}
 	}
 
-	if scope.AllowModify {
+	// exec_sql 的注册条件是「AI 数据写能力」而非全局 AllowModify：
+	// ai_allow_modify 打开后，只有同一角色同时允许两项能力才注册。
+	// 模型看不到未授权的写工具，Middleware 再做一层伪造调用拦截（双保险）。
+	if scope.AllowModify && scope.CanAIModifyData() {
 		execTool, _ := utils.InferTool("exec_sql", "执行 INSERT/UPDATE/DELETE/ALTER 等写操作 SQL", NewExecFunc(connID, schemas, auditCtx, scope.UserID))
 		if execTool != nil {
 			deferredTools = append(deferredTools, execTool)

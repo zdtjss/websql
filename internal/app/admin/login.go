@@ -122,6 +122,11 @@ func notifyPermissionChanged() {
 	for _, fn := range cbs {
 		fn()
 	}
+	// 单进程立即生效：权限写入提交后同步刷新本地修订号。
+	// 多实例仍由 500ms 轮询对账；刷新失败只告警，不阻断已提交的权限变更。
+	if err := SyncPermissionRevision(); err != nil {
+		log.Printf("[PermRevision] 权限变更后刷新修订号失败（将由轮询补偿） - err=%v", err)
+	}
 }
 
 func GetCachedUserAndPower(authorization string) (*User, *UserPower) {

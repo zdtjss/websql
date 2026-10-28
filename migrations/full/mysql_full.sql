@@ -28,10 +28,11 @@ create table if not exists t_role (
 	id varchar(36) primary key,
 	name varchar(64),
 	view_classic integer default 0,
-	allow_modify integer default 1
+	allow_modify integer default 1,
+	ai_allow_modify integer not null default 1
 );
 
-insert ignore into t_role (id, name, view_classic, allow_modify) values ('825683877266722816', 'admin', 1, 1);
+insert ignore into t_role (id, name, view_classic, allow_modify, ai_allow_modify) values ('825683877266722816', 'admin', 1, 1, 1);
 
 create table if not exists t_tree (
 	id varchar(36) primary key,
@@ -229,3 +230,26 @@ CREATE TABLE IF NOT EXISTS t_schema_migration (
     checksum     VARCHAR(64),
     applied_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 全局权限修订号（单行表）：角色/权限变更与 Revision 同事务提交
+CREATE TABLE IF NOT EXISTS t_permission_revision (
+    id         INT PRIMARY KEY,
+    revision   BIGINT NOT NULL DEFAULT 0,
+    updated_at DATETIME
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+INSERT IGNORE INTO t_permission_revision (id, revision, updated_at) VALUES (1, 0, NOW());
+
+-- 数据脱敏规则：管理员对已授权列配置的数据保护策略
+CREATE TABLE IF NOT EXISTS t_data_mask_rule (
+    id          VARCHAR(36) PRIMARY KEY,
+    conn_id     VARCHAR(64) NOT NULL,
+    schema_name VARCHAR(128) NOT NULL DEFAULT '',
+    table_name  VARCHAR(128) NOT NULL,
+    column_name VARCHAR(128) NOT NULL,
+    action      VARCHAR(16) NOT NULL,
+    enabled     TINYINT NOT NULL DEFAULT 1,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_data_mask_rule (conn_id, schema_name, table_name, column_name),
+    KEY idx_data_mask_rule_conn (conn_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

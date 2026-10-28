@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -103,6 +104,82 @@ func (m *PermissionMiddleware) applyQueryResultFilter(result string, tables []st
 	}
 	outputJSON, _ := json.Marshal(output)
 	return string(outputJSON), nil
+}
+
+// applyQueryResultFilterMasked 先过滤未授权列，再按「输出列 → 原始列」脱敏。
+//
+// 顺序不能颠倒：先脱敏会把即将被删除的未授权列也过一遍规则，且无法确认列来源。
+// 实现只解析一次 JSON，避免大结果集重复序列化开销。
+func (m *PermissionMiddleware) applyQueryResultFilterMasked(ctx context.Context, sql, result string, tables []string) (string, error) {
+	start := time.Now()
+	defer func() { recordSecurityDuration(StageOutput, time.Since(start)) }()
+	sec, secErr := RunSecurityFrom(ctx)
+	if secErr != nil {
+		return "", secErr
+	}
+	if strings.Contains(result, `"error":true`) {
+		// 错误载荷可能含 SQL 值/连接地址：只做文本脱敏后透传，保留模型自我修复能力。
+		return maskTextOrRaw(sec, result), nil
+	}
+	masker := sec.Masker
+	if masker == nil {
+		masker = NewNoopMasker()
+	}
+
+	var out QueryOutput
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		log.Printf("%s [过滤] query_data 结果解析失败，按 fail-closed 拒绝返回 - err=%v\n", m.logPrefix(), err)
+		return "", &PermissionError{
+			Message: "查询结果校验失败（结果格式异常），已阻止返回数据。请重试或联系管理员。",
+			Objects: []string{},
+		}
+	}
+
+	beforeColCount := len(out.Columns)
+	beforeRowCount := len(out.Data)
+	origins := resolveColumnOriginsForNames(sql, out.Columns, m.Scope)
+	masker.MaskQueryOutput(&out, tables, origins, m.Scope)
+	// 候选策略 2：高敏感列名整列脱敏（shadow 只记指标，enforce 才替换）。
+	if candidateColumns := candidateMaskHighRiskColumns(sec, out.Columns, origins, masker); len(candidateColumns) > 0 {
+		redactQueryOutputColumns(&out, candidateColumns)
+	}
+
+	removedCount := beforeColCount - len(out.Columns)
+	if removedCount > 0 {
+		log.Printf("%s [过滤] query_data 结果集列过滤 - 输入列数=%d, 输出列数=%d, 移除=%d, 输入行数=%d, 输出行数=%d\n",
+			m.logPrefix(), beforeColCount, len(out.Columns), removedCount, beforeRowCount, len(out.Data))
+	}
+	if masker.HasRules() {
+		recordMaskEvent(StageTool, "query_result")
+	}
+
+	data, err := json.Marshal(out)
+	if err != nil {
+		recordSecurityEvent(StageTool, "mask", "deny")
+		return "", err
+	}
+	return string(data), nil
+}
+
+// applyStreamQueryResultFilterMasked 流式版本：先聚合再过滤与脱敏。
+//
+// 流式工具结果最终也是一次性交给模型的，聚合不会改变语义，但能保证
+// 「先权限过滤、后脱敏」的固定顺序。
+func (m *PermissionMiddleware) applyStreamQueryResultFilterMasked(ctx context.Context, sql string, reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {
+	var sb strings.Builder
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr != nil {
+			break
+		}
+		sb.WriteString(chunk)
+	}
+	masked, err := m.applyQueryResultFilterMasked(ctx, sql, sb.String(), tables)
+	if err != nil {
+		// 与同步路径一致：不回退原始结果，向模型返回安全错误
+		return schema.StreamReaderFromArray([]string{`{"error":true,"message":"查询结果校验失败，已阻止返回数据"}`})
+	}
+	return schema.StreamReaderFromArray([]string{masked})
 }
 
 func (m *PermissionMiddleware) applyStreamQueryResultFilter(reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {

@@ -20,8 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"websql/internal/pkg/strutil"
-
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -103,17 +101,13 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 		tcCount := len(msg.ToolCalls)
 		if tcCount > 0 {
 			totalToolCalls += tcCount
-			// 记录新出现的工具调用 ID（仅前 10 个）
+			// 记录新出现的工具调用 ID（仅前 10 个）；参数只记录长度与哈希
 			if len(seenToolCallIDs) < 10 {
 				for _, tc := range msg.ToolCalls {
 					if tc.ID != "" && !seenToolCallIDs[tc.ID] {
 						seenToolCallIDs[tc.ID] = true
-						argsPreview := tc.Function.Arguments
-						if len(argsPreview) > 120 {
-							argsPreview = strutil.TruncateBytes(argsPreview, 120) + "..."
-						}
-						log.Printf("[Model:Stream] 工具调用 - callID=%s, func=%s, args=%s\n",
-							tc.ID, tc.Function.Name, argsPreview)
+						log.Printf("[Model:Stream] 工具调用 - callID=%s, func=%s, args{%s}\n",
+							tc.ID, tc.Function.Name, safeTextSummary(tc.Function.Arguments))
 					}
 				}
 			}
@@ -166,11 +160,6 @@ func summarizeOutputMessage(msg *schema.Message) string {
 	for _, tc := range msg.ToolCalls {
 		tcNames = append(tcNames, tc.Function.Name)
 	}
-	preview := msg.Content
-	if len(preview) > 100 {
-		preview = strutil.TruncateBytes(preview, 100) + "..."
-	}
-	preview = strings.ReplaceAll(preview, "\n", " ")
-	return fmt.Sprintf("contentLen=%d, reasoningLen=%d, toolCalls=%d(%v), preview=%q",
-		contentLen, reasoningLen, tcCount, tcNames, preview)
+	return fmt.Sprintf("contentLen=%d, reasoningLen=%d, toolCalls=%d(%v), content{%s}",
+		contentLen, reasoningLen, tcCount, tcNames, safeTextSummary(msg.Content))
 }

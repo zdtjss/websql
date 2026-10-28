@@ -129,13 +129,14 @@ func newRemoteScope(allowedTables []string, allowedColumns map[string][]string) 
 
 func TestDoubleCheckReadAccess(t *testing.T) {
 	mw := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil)}
+	ctx := testRunContext(mw)
 
 	// 有权表 → 放行
-	if err := mw.doubleCheckReadAccess("SELECT id FROM orders", []string{"orders"}); err != nil {
+	if err := mw.doubleCheckReadAccess(ctx, "SELECT id FROM orders", []string{"orders"}); err != nil {
 		t.Errorf("有权表应放行，实际：%v", err)
 	}
 	// 无权表 → 拦截
-	err := mw.doubleCheckReadAccess("SELECT * FROM secret", []string{"secret"})
+	err := mw.doubleCheckReadAccess(ctx, "SELECT * FROM secret", []string{"secret"})
 	if err == nil {
 		t.Fatal("无权表应被拦截，实际放行")
 	}
@@ -146,9 +147,12 @@ func TestDoubleCheckReadAccess(t *testing.T) {
 	if len(permErrorObjects(err)) != 1 || permErrorObjects(err)[0] != "secret" {
 		t.Errorf("拦截对象应为 secret，实际 %v", pe.Objects)
 	}
-	// 提取不到表名 → 不误拦（由结果过滤兜底）
-	if err := mw.doubleCheckReadAccess("SELECT 1", nil); err != nil {
-		t.Errorf("无法提取表名时不应拦截，实际：%v", err)
+	// 无资源常量查询 → 放行；其他无法解析资源范围的语句 → 拒绝（fail-closed）
+	if err := mw.doubleCheckReadAccess(ctx, "SELECT 1", nil); err != nil {
+		t.Errorf("无资源常量查询不应拦截，实际：%v", err)
+	}
+	if err := mw.doubleCheckReadAccess(ctx, "SELECT some_func(1) FROM", nil); err == nil {
+		t.Error("无法确认资源范围的语句应拒绝")
 	}
 }
 
@@ -330,7 +334,8 @@ func TestSessionBelongsTo(t *testing.T) {
 	}{
 		{"u1", "u1", true},
 		{"u1", "u2", false},
-		{"", "u1", true},  // 存量无归属：兼容放行
+		// 默认测试环境未设置 config → 按远程严格模式处理：无归属会话必须隔离
+		{"", "u1", false},
 		{"u1", "", false}, // 未认证：拒绝
 	}
 	for _, c := range cases {
@@ -338,6 +343,21 @@ func TestSessionBelongsTo(t *testing.T) {
 			t.Errorf("sessionBelongsTo(%q,%q) = %v, want %v", c.owner, c.requester, got, c.want)
 		}
 	}
+}
+
+// testRunContext 为工具权限测试构造最小可用的运行安全上下文。
+//
+// 安全性：使用桌面 Profile 只影响「是否需要角色 Scope 与修订号租约」，
+// 已构建的 Scope 仍按远程权限规则判定，不会放宽表/列限制。
+func testRunContext(mw *PermissionMiddleware) context.Context {
+	sec := &RunSecurityContext{
+		Profile:       ProfileDesktopLocal,
+		UserID:        mw.Scope.UserID,
+		DefaultConnID: mw.Scope.ConnID,
+		Scopes:        map[string]*PermissionScope{mw.Scope.ConnID: mw.Scope},
+		Masker:        NewNoopMasker(),
+	}
+	return WithRunSecurity(context.Background(), sec)
 }
 
 // ─── 9. 工具分发 fail-closed（未登记工具拒绝） ─────────────────
@@ -357,11 +377,12 @@ func TestToolDispatch_UnregisteredToolDenied(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ep, err := mw.WrapInvokableToolCall(context.Background(), endpoint, &adk.ToolContext{Name: tc.name})
+			ctx := testRunContext(mw)
+			ep, err := mw.WrapInvokableToolCall(ctx, endpoint, &adk.ToolContext{Name: tc.name})
 			if err != nil {
 				t.Fatalf("WrapInvokableToolCall 失败：%v", err)
 			}
-			_, callErr := ep(context.Background(), "{}")
+			_, callErr := ep(ctx, "{}")
 			if tc.wantDeny {
 				var pe *PermissionError
 				if callErr == nil || !errors.As(callErr, &pe) {
@@ -482,10 +503,11 @@ func mdFence(lang, body string) string {
 
 func TestCheckExportAccess_ContentEmbeddedSQL(t *testing.T) {
 	mw := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil), ConnID: "conn1"}
+	ctx := testRunContext(mw)
 	endpoint := func(_ context.Context, _ string, _ ...tool.Option) (string, error) { return "ok", nil }
 	call := func(content string) error {
 		args, _ := json.Marshal(export.ExportReportInput{Content: content})
-		_, err := mw.checkExportAccess(context.Background(), string(args), endpoint, "export_html")
+		_, err := mw.checkExportAccess(ctx, string(args), endpoint, "export_html")
 		return err
 	}
 
@@ -520,7 +542,7 @@ func TestCheckExportAccess_ContentEmbeddedSQL(t *testing.T) {
 
 	// 顶层 sql 与 content 同时存在：内嵌 SQL 同样被校验
 	args, _ := json.Marshal(export.ExportReportInput{SQL: "SELECT id FROM orders", Content: badMD})
-	if _, err := mw.checkExportAccess(context.Background(), string(args), endpoint, "export_html"); err == nil {
+	if _, err := mw.checkExportAccess(ctx, string(args), endpoint, "export_html"); err == nil {
 		t.Error("同时提供 sql 与 content 时，content 内嵌越权 SQL 也应被拒绝")
 	}
 }

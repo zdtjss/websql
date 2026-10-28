@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/jmoiron/sqlx"
 
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/safego"
@@ -57,6 +59,9 @@ type SessionMessage struct {
 	// Attachments 该条用户消息携带的上传文件引用（仅 user 消息使用）。
 	// 用途：历史回看时还原文件卡片、追问时向模型保留 fileId；内容仍按需读取。
 	Attachments []AttachmentRef `json:"attachments,omitempty"`
+	// Security 消息安全元数据（权限快照、脱敏版本、资源溯源）。
+	// 旧版本 JSON 无该字段时按「无元数据」处理，远程受限用户会被隔离。
+	Security *MessageSecurityMeta `json:"security,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -79,9 +84,30 @@ type Session struct {
 	// RunStream/ResumeStream 通过 TryBeginRun 互斥。
 	running atomic.Bool
 
+	// latestSecurity 本会话最近一次运行的安全上下文（只保留必要字段）。
+	// 用途：落库守卫在清洗时使用「当前策略」而非会话创建时的旧策略。
+	latestSecurity *RunSecurityContext
+
 	debounceTimer *time.Timer
 	pendingSave   bool
 	lastAccess    time.Time
+}
+
+// SetLatestSecurity 记录本会话最近一次运行的安全上下文（不含请求级 context）。
+func (s *Session) SetLatestSecurity(sec *RunSecurityContext) {
+	if sec == nil {
+		return
+	}
+	s.mu.Lock()
+	s.latestSecurity = sec
+	s.mu.Unlock()
+}
+
+// LatestSecurity 返回最近一次运行的安全上下文；未运行时返回 nil。
+func (s *Session) LatestSecurity() *RunSecurityContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.latestSecurity
 }
 
 // TryBeginRun 尝试进入运行态；已有运行中的 Run 时返回 false。
@@ -422,45 +448,203 @@ func patchDanglingToolCallsOnLoad(messages []SessionMessage) []SessionMessage {
 	return result
 }
 
+// maxSessionBytes 单会话落库大小上限（8 MiB）。
+//
+// 超大历史（大量工具结果）不应被静默写入：先由 reduction/summarization 压缩，
+// 超限时终止本次写入并保留数据库旧值。
+const maxSessionBytes = 8 << 20
+
+// doSave 落库守卫：不信任「上游已经处理过」，在此重新执行：
+//  1. 内容净化（消息副本，不回写内存态，避免重复脱敏漂移）；
+//  2. 上下文净化（表范围/Schema 按当前权限过滤）；
+//  3. 大小校验；
+//  4. 归属条件 + RowsAffected 校验（0 行时回查区分「值未变」与「越权/不存在」）。
+//
+// 调用方必须持有 s.mu。
 func (s *Session) doSave() error {
-	data, err := json.Marshal(s.messages)
-	if err != nil {
-		return err
-	}
-	title := ""
-	for _, msg := range s.messages {
-		if msg.Role == "user" && msg.Content != "" {
-			title = msg.Content
-			if len([]rune(title)) > 60 {
-				title = string([]rune(title)[:60]) + "..."
-			}
-			break
-		}
-	}
-	ctx := s.Context
-	if ctx == "" {
-		ctx = "{}"
-	}
+	start := time.Now()
+	defer func() { recordSecurityDuration(StagePersist, time.Since(start)) }()
 	db := getDBOrNil()
 	if db == nil {
 		return nil // 管理库不可用（启动期/测试环境）：跳过持久化，不阻断对话
 	}
-	// WHERE 追加归属条件：即使内存中出现了 ID 冲突的会话对象，也不会整行覆盖他人会话
-	// （user_id 为空的存量会话按兼容策略允许写入）
-	_, err = db.Exec(`
-		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ?
-		WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
-	`, string(data), title, ctx, time.Now(), s.ID, s.UserID)
-	if err != nil && dberr.IsColumnNotExist(err) {
-		_, err = db.Exec(`
-			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ?
-			WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
-		`, string(data), title, time.Now(), s.ID, s.UserID)
+
+	sec := s.latestSecurity
+	cleanMessages, err := s.sanitizedMessagesLocked(sec)
+	if err != nil {
+		// 净化失败终止写入：绝不用原始内容重试
+		log.Printf("[Session] 净化失败，终止本次写入 - session=%s, err=%v\n", s.ID, err)
+		recordSecurityEvent(StagePersist, "sanitize", "deny")
+		auditSecurityDenied(StagePersist, "sanitize", "session_sanitize_failed", s.UserID)
+		return err
 	}
-	if err != nil && dberr.IsTableNotExist(err) {
+
+	cleanContext := s.Context
+	if cleanContext == "" {
+		cleanContext = "{}"
+	}
+	if sec != nil {
+		sanitizedContext, ctxErr := SanitizeSessionContext(s.Context, sec)
+		if ctxErr != nil {
+			log.Printf("[Session] 上下文净化失败，终止本次写入 - session=%s, err=%v\n", s.ID, ctxErr)
+			return ctxErr
+		}
+		cleanContext = sanitizedContext
+	}
+
+	data, err := json.Marshal(cleanMessages)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxSessionBytes {
+		recordSecurityEvent(StagePersist, "size", "deny")
+		return fmt.Errorf("会话大小超过上限: %d bytes", len(data))
+	}
+
+	title := sanitizedTitle(cleanMessages, 60)
+	enforcing := sec != nil && sec.Profile.Remote()
+
+	result, err := execSessionUpdate(db, enforcing, s.ID, s.UserID, string(data), title, cleanContext)
+	if err != nil && dberr.IsColumnNotExist(err) {
+		// 存量库无 context 列：退化为不写 context
+		result, err = execSessionUpdateLegacy(db, enforcing, s.ID, s.UserID, string(data), title)
+	}
+	if err != nil {
+		if dberr.IsTableNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
 		return nil
 	}
-	return err
+
+	// MySQL 对「值完全未变化」的 UPDATE 也可能返回 0，必须回查而不能直接判越权。
+	same, matchErr := persistedSessionMatches(s.ID, s.UserID, string(data), cleanContext)
+	if matchErr != nil {
+		return matchErr
+	}
+	if same {
+		return nil
+	}
+	log.Printf("[Session] 拒绝写入非归属会话 - session=%s, user=%s\n", s.ID, s.UserID)
+	recordSecurityEvent(StagePersist, "owner", "deny")
+	auditSecurityDenied(StagePersist, "owner", "session_write_forbidden", s.UserID)
+	return ErrSessionForbidden
+}
+
+func execSessionUpdate(db *sqlx.DB, enforcing bool, id, userID, data, title, ctx string) (sql.Result, error) {
+	if enforcing {
+		return db.Exec(`
+			UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ?
+			WHERE id = ? AND user_id = ?
+		`, data, title, ctx, time.Now(), id, userID)
+	}
+	// 本地/兼容模式：允许存量无归属会话写入，避免历史会话全部不可用
+	return db.Exec(`
+		UPDATE t_ai_session SET messages = ?, title = ?, context = ?, updated_at = ?
+		WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
+	`, data, title, ctx, time.Now(), id, userID)
+}
+
+func execSessionUpdateLegacy(db *sqlx.DB, enforcing bool, id, userID, data, title string) (sql.Result, error) {
+	if enforcing {
+		return db.Exec(`
+			UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ?
+			WHERE id = ? AND user_id = ?
+		`, data, title, time.Now(), id, userID)
+	}
+	return db.Exec(`
+		UPDATE t_ai_session SET messages = ?, title = ?, updated_at = ?
+		WHERE id = ? AND (user_id = ? OR user_id = '' OR user_id IS NULL)
+	`, data, title, time.Now(), id, userID)
+}
+
+// persistedSessionMatches 回查持久化内容是否与待写入内容一致。
+func persistedSessionMatches(id, userID, data, ctx string) (bool, error) {
+	db := getDBOrNil()
+	if db == nil {
+		return false, nil
+	}
+	var row struct {
+		UserID   string `db:"user_id"`
+		Messages string `db:"messages"`
+		Context  string `db:"context"`
+	}
+	err := db.Get(&row, "select user_id, messages, context from t_ai_session where id = ?", id)
+	if err != nil {
+		if dberr.IsNoRows(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if row.UserID != userID {
+		return false, nil
+	}
+	return row.Messages == data && row.Context == ctx, nil
+}
+
+// sanitizedMessagesLocked 生成落库用的净化副本（调用方持锁）。
+//
+// 只对内存消息做复制与文本脱敏，不修改内存态：避免同一条消息在多次 debounce
+// 保存中被反复脱敏，导致展示层看到与模型不同的内容。
+func (s *Session) sanitizedMessagesLocked(sec *RunSecurityContext) ([]SessionMessage, error) {
+	out := make([]SessionMessage, 0, len(s.messages))
+	for _, msg := range s.messages {
+		if strings.TrimSpace(msg.Role) == "" {
+			return nil, errors.New("会话消息缺少角色")
+		}
+		cp := msg
+		cp.Content = maskTextOrRaw(sec, msg.Content)
+		cp.ReasoningContent = ""
+
+		// 数据消息（tool/assistant）默认视为不可溯源：避免旧消息在落库时被「洗白」成
+		// 当前快照下的可信历史（否则一次保存就能绕过权限变更后的历史隔离）。
+		isDataMessage := cp.Role == "tool" || cp.Role == "assistant"
+		switch {
+		case cp.Security == nil:
+			if sec != nil {
+				cp.Security = newMessageSecurityWithTrace(sec, cp.Content, nil, isDataMessage)
+			} else {
+				cp.Security = &MessageSecurityMeta{
+					Sanitized:   true,
+					ContentSHA:  contentSHA(cp.Content),
+					Untraceable: isDataMessage,
+				}
+			}
+		default:
+			cp.Security.ContentSHA = contentSHA(cp.Content)
+			cp.Security.Sanitized = true
+			if sec != nil && cp.Security.ScopeDigest == "" {
+				cp.Security.ScopeDigest = sec.ScopeDigest
+				if isDataMessage && len(cp.Security.Resources) == 0 {
+					cp.Security.Untraceable = true
+				}
+			}
+		}
+		out = append(out, cp)
+	}
+	return out, nil
+}
+
+// sanitizedTitle 从净化后的首条用户消息生成标题。
+func sanitizedTitle(messages []SessionMessage, maxRunes int) string {
+	for _, msg := range messages {
+		if msg.Role != "user" || msg.Content == "" {
+			continue
+		}
+		title := []rune(msg.Content)
+		if len(title) > maxRunes {
+			return string(title[:maxRunes]) + "..."
+		}
+		return string(title)
+	}
+	return ""
 }
 
 // ──────────────────────────────────────────────
@@ -541,14 +725,19 @@ func (s *SessionStore) Close() {
 var ErrSessionForbidden = errors.New("会话不存在或无权访问")
 
 // sessionBelongsTo 判断会话归属是否匹配请求用户。
-// 存量数据 user_id 为空时记为“无归属”，仅告警并放行（避免历史会话全部不可用），
-// 其余情况严格比对，防止跨用户读写/删除会话。
+//
+// 远程模式（enforcing）：无归属会话一律拒绝，避免任意登录用户接管；
+// 桌面/本地模式：保持历史兼容策略（无归属会话可用），不执行远程迁移隔离。
 func sessionBelongsTo(ownerID, requesterID string) bool {
 	if requesterID == "" {
 		return false
 	}
 	if ownerID == "" {
-		log.Printf("[SessionStore] 会话缺少归属用户，按兼容策略放行 - requester=%s\n", requesterID)
+		if CurrentRuntimeProfile().Remote() {
+			log.Printf("[SessionStore] 远程模式拒绝无归属会话 - requester=%s\n", requesterID)
+			return false
+		}
+		log.Printf("[SessionStore] 本地模式会话缺少归属用户，按兼容策略放行 - requester=%s\n", requesterID)
 		return true
 	}
 	return ownerID == requesterID

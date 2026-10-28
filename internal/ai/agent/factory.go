@@ -59,11 +59,15 @@ func (f *AgentFactory) Close() {
 	log.Printf("[AgentFactory] 已关闭\n")
 }
 
-func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
-	// 缓存 key 纳入「模型配置指纹 + 权限范围指纹」：
-	//   - 用户切换模型 / 管理员修改模型参数后立即生效（旧 key 只含连接与用户，最长 10 分钟仍用旧模型）
-	//   - 管理员调整用户权限后，新的权限范围会构建新的 Agent（工具与提示词中的权限描述随之更新）
+func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSchema, dbVersion string, schemas []SchemaRef, scope *PermissionScope, sec *RunSecurityContext, auditCtx *ExecAuditCtx) (*SQLAgent, error) {
+	// 缓存 key 纳入「模型配置指纹 + 权限范围指纹 + 全量 ScopeSet 摘要 + 修订号」：
+	//   - 用户切换模型 / 管理员修改模型参数后立即生效；
+	//   - 管理员调整用户权限后，新的权限范围会构建新的 Agent；
+	//   - 多连接 Scope 变化或权限回收后不得复用旧 Agent（旧实例内含旧工具与旧提示词）。
 	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas) + "::" + configFingerprint(cfg, scope)
+	if sec != nil {
+		key += "::" + sec.ScopeDigest
+	}
 
 	if agent, ok := f.cache.Get(key); ok {
 		return agent, nil
@@ -97,8 +101,9 @@ func configFingerprint(cfg *system.AIConfig, scope *PermissionScope) string {
 	}
 	if scope != nil {
 		// fmt 对 map 按 key 排序输出，结果稳定
-		fmt.Fprintf(h, "|%v|%v|%v|%v|%v|%v|%v", scope.IsRemote, scope.HasFullConnAccess, scope.AllSchemasFull,
-			scope.AllowModify, scope.FullAccessSchemas, scope.AllowedTables, scope.AllowedColumns)
+		fmt.Fprintf(h, "|%v|%v|%v|%v|%v|%v|%v|%v|%v|%d|%d", scope.IsRemote, scope.HasFullConnAccess, scope.AllSchemasFull,
+			scope.AllowModify, scope.AIAllowModify, scope.AIPolicyEnforce, scope.FullAccessSchemas,
+			scope.AllowedTables, scope.AllowedColumns, scope.Revision, uint8(scope.Profile))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }

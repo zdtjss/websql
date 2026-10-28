@@ -7,14 +7,16 @@ import (
 	"websql/internal/pkg/lazyinit"
 )
 
-// RoleService 封装角色相关的业务逻辑：审计记录、缓存失效等
+// RoleService 封装角色相关的业务逻辑：集中校验、审计记录、缓存失效等。
 type RoleService interface {
-	SaveRole(role *RoleSave, currentUserId, currentUserName string) error
+	// SaveRole 保存角色与权限，返回提交后的权限摘要（供前端刷新 baseline）。
+	SaveRole(role *RoleSave, currentUserId, currentUserName string) (string, error)
 	DeleteRole(id, currentUserId, currentUserName string) error
 	RoleList() ([]*Role, error)
 	RoleBaseList() ([]*Role, error)
 	FindUserByRole(roleId string) ([]*User, error)
 	SaveRolePermission(role *RoleSave, currentUserId, currentUserName string) error
+	RolePermissionDigest(roleID string) (string, error)
 }
 
 type roleService struct {
@@ -35,10 +37,25 @@ func getDefaultRole() RoleService {
 	})
 }
 
-// SaveRole 保存角色及权限，并记录审计日志、清除认证缓存
-func (s *roleService) SaveRole(role *RoleSave, currentUserId, currentUserName string) error {
+// SaveRole 保存角色及权限，并记录审计日志、清除认证缓存。
+//
+// 校验集中在服务层（不在 HTTP handler 堆业务逻辑）：
+//  1. 参数规范化与完整性校验；
+//  2. 事务内基于库内当前快照校验 expectedDigest，冲突返回 ErrRolePermissionConflict；
+//  3. 提交成功后清缓存并记录审计。
+func (s *roleService) SaveRole(role *RoleSave, currentUserId, currentUserName string) (string, error) {
+	if err := normalizeAndValidateRoleSave(role); err != nil {
+		return "", err
+	}
+	// 兼容期：新建角色默认 AI 只读需在 AIPolicyEnforce=true 后由服务端显式写入 0。
+	// 这里只做「未显式提交时保持语义明确」，不改变旧客户端行为。
+	if role.Id == "" && role.AIAllowModify == nil && AIPolicyEnforced() {
+		zero := 0
+		role.AIAllowModify = &zero
+	}
+
 	if err := s.repo.SaveRole(role); err != nil {
-		return err
+		return "", err
 	}
 	recordPermissionAudit("save_role", fmt.Sprintf("角色 %s (id=%s) 保存，新增权限%d条，删除权限%d条，详情: add=%s, del=%s",
 		role.Name, role.Id, len(role.AddPowers), len(role.DelPowers),
@@ -46,7 +63,13 @@ func (s *roleService) SaveRole(role *RoleSave, currentUserId, currentUserName st
 
 	// 权限变更后清除认证缓存，确保新权限立即生效
 	InvalidateAllAuthCache()
-	return nil
+
+	digest, err := s.repo.RolePermissionDigest(role.Id)
+	if err != nil {
+		// 摘要读取失败不影响已提交的保存事实，前端会重新加载角色列表。
+		return "", nil
+	}
+	return digest, nil
 }
 
 // DeleteRole 删除角色及关联权限，并记录审计日志、清除认证缓存
@@ -61,7 +84,7 @@ func (s *roleService) DeleteRole(id string, currentUserId, currentUserName strin
 	return nil
 }
 
-// RoleList 查询角色列表并填充权限详情
+// RoleList 查询角色列表并填充权限详情与权限摘要。
 func (s *roleService) RoleList() ([]*Role, error) {
 	roleList, err := s.repo.FindRoleList()
 	if err != nil {
@@ -78,6 +101,8 @@ func (s *roleService) RoleList() ([]*Role, error) {
 	}
 	for _, role := range roleList {
 		role.PowerList = rolePowerMap[role.Id]
+		role.PermissionDigest = computePermissionDigest(role.Id, role.PowerList,
+			role.ViewClassic, role.AllowModify, role.AIAllowModify)
 	}
 	return roleList, nil
 }
@@ -92,8 +117,11 @@ func (s *roleService) FindUserByRole(roleId string) ([]*User, error) {
 	return s.repo.FindUsersByRoleId(roleId)
 }
 
-// SaveRolePermission 保存角色权限变更，并记录审计日志、清除认证缓存
+// SaveRolePermission 保存角色权限变更，并记录审计日志、清除认证缓存。
 func (s *roleService) SaveRolePermission(role *RoleSave, currentUserId, currentUserName string) error {
+	if err := normalizeAndValidatePowers(role); err != nil {
+		return err
+	}
 	if err := s.repo.SaveRolePermission(role); err != nil {
 		return err
 	}
@@ -104,6 +132,11 @@ func (s *roleService) SaveRolePermission(role *RoleSave, currentUserId, currentU
 	// 权限变更后清除认证缓存
 	InvalidateAllAuthCache()
 	return nil
+}
+
+// RolePermissionDigest 返回角色当前权限摘要。
+func (s *roleService) RolePermissionDigest(roleID string) (string, error) {
+	return s.repo.RolePermissionDigest(roleID)
 }
 
 // summarizePowers 将权限列表序列化为可读的审计摘要

@@ -1,6 +1,21 @@
 package audit
 
-import "strings"
+import (
+	"strings"
+
+	maskpkg "websql/internal/pkg/mask"
+)
+
+// maskAuditText 审计文本的统一脱敏入口。
+//
+// 顺序：先 MaskSQL（单引号字面量 → ***），再对内层洞与普通文本执行文本级脱敏
+// （密钥赋值、身份证、手机号、邮箱）。两步均幂等，Record 与落库边界反复调用安全。
+func maskAuditText(text string) string {
+	if text == "" {
+		return text
+	}
+	return maskpkg.MaskText(MaskSQL(text))
+}
 
 // maskSQLMaxLen 审计日志中保留的 SQL 最大字符数（按 rune 计），超出部分截断。
 const maskSQLMaxLen = 4000
@@ -12,7 +27,7 @@ const maskSQLTruncatedSuffix = "...(truncated)"
 // （手机号 / 身份证 / 人名等）：
 //
 //  1. 单引号字符串字面量的内容替换为 ***（保留引号本身），
-//     正确处理 '' 转义（如 'O''Brien' 视为一个字面量）；
+//     正确处理 ” 转义（如 'O”Brien' 视为一个字面量）；
 //  2. 识别 -- / # 行注释与 /* */ 块注释边界：注释区域原样保留，
 //     其内部的引号不会被当作字面量起点，注释外的 SQL 结构不受影响；
 //  3. 超过 maskSQLMaxLen 个字符时截断并追加 "...(truncated)"。

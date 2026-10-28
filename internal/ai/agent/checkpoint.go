@@ -28,6 +28,9 @@ var (
 	ErrCheckpointForbidden = errors.New("无权恢复该操作")
 	// ErrCheckpointInFlight 同一中断正在恢复执行（重复提交）
 	ErrCheckpointInFlight = errors.New("该操作正在执行中，请勿重复提交")
+	// ErrCheckpointStale 中断产生后权限已变化（收缩或无法确认），旧 checkpoint 不再可恢复。
+	// 安全语义：不允许用旧快照恢复写操作，必须由用户基于当前权限重新发起。
+	ErrCheckpointStale = errors.New("权限已发生变化，待确认的操作已失效，请重新发起")
 )
 
 // CheckpointBinding 中断状态的归属信息。
@@ -39,6 +42,10 @@ type CheckpointBinding struct {
 	UserID    string
 	SessionID string
 	ConnID    string
+	// Revision 创建 checkpoint 时的权限修订号
+	Revision uint64
+	// ScopeDigest 创建 checkpoint 时的权限快照摘要
+	ScopeDigest string
 }
 
 type cpEntry struct {
@@ -147,6 +154,18 @@ func (s *InMemoryCheckPointStore) BeginResume(id string, b CheckpointBinding) (u
 	}
 	if e.inflight {
 		return 0, ErrCheckpointInFlight
+	}
+	// 权限快照必须一致：权限收缩、无法确认（摘要为空）或修订号不同都不允许沿用旧 checkpoint，
+	// 即使修订号变化只代表权限增加，也要求重新发起（不沿用旧参数扩大能力）。
+	if b.ScopeDigest != "" || e.binding.ScopeDigest != "" {
+		if b.ScopeDigest != e.binding.ScopeDigest {
+			log.Printf("[CheckPoint] 拒绝权限快照不一致的恢复 - id=%s\n", id)
+			return 0, ErrCheckpointStale
+		}
+	}
+	if b.Revision != 0 && e.binding.Revision != 0 && b.Revision != e.binding.Revision {
+		log.Printf("[CheckPoint] 拒绝修订号不一致的恢复 - id=%s, old=%d, new=%d\n", id, e.binding.Revision, b.Revision)
+		return 0, ErrCheckpointStale
 	}
 	e.inflight = true
 	return e.version, nil

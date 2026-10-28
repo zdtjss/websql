@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"strings"
-	"time"
 
 	"websql/internal/logger"
 	"websql/internal/pkg/idgen"
@@ -111,7 +110,7 @@ func (r *userRepo) FindUserPowerDetails(userId string) []*PowerDetail {
 func (r *userRepo) FindUserRoles(userId string) []*Role {
 	roles := []*Role{}
 	err := r.db.Select(&roles,
-		"select r.id, r.name, r.allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", userId)
+		"select r.id, r.name, r.allow_modify, r.ai_allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", userId)
 	if err != nil {
 		logger.PrintErr(err)
 		return nil
@@ -127,7 +126,7 @@ func (r *userRepo) FindUserRole(userIdList []any) (map[string][]*UserRole, error
 	var (
 		sqlBuf = bytes.Buffer{}
 	)
-	sqlBuf.WriteString("select ur.*, r.name role_name from t_user_role ur left join t_role r on ur.role_id = r.id where ")
+	sqlBuf.WriteString("select ur.*, r.name role_name, r.allow_modify, r.ai_allow_modify from t_user_role ur left join t_role r on ur.role_id = r.id where ")
 	sqlBuf.WriteString("user_id in ( ")
 	sqlBuf.WriteString(strings.Repeat("?,", userCount)[0 : userCount*2-1])
 	sqlBuf.WriteString(") ")
@@ -223,26 +222,46 @@ func (r *userRepo) CheckUserExist(user *User) error {
 	return nil
 }
 
+// Save 保存用户及其角色绑定。
+//
+// 用户角色变更直接影响 AI 数据权限，必须在同一事务内递增权限修订号；
+// 否则其他实例会在轮询对账前继续使用旧 Scope。
 func (r *userRepo) Save(user *User) error {
-	tx, _ := r.db.Beginx()
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
+
 	if user.Id == "" {
 		user.Id = idgen.RandomStr()
-		stmt, _ := tx.Prepare("insert into t_user (id, name, login_name, pwd, bio) values (?, ?, ?, ?, '')")
-		tx.Stmt(stmt).Exec(user.Id, user.Name, user.LoginName, user.Pwd)
+		if _, err := tx.Exec("insert into t_user (id, name, login_name, pwd, bio) values (?, ?, ?, ?, '')",
+			user.Id, user.Name, user.LoginName, user.Pwd); err != nil {
+			return err
+		}
 	} else {
-		stmt, _ := tx.Prepare("update t_user set name = ?, login_name = ?, pwd = ? where id = ?")
-		tx.Stmt(stmt).Exec(user.Name, user.LoginName, user.Pwd, user.Id)
-		tx.Exec("delete from t_user_role where user_id = ?", user.Id)
-	}
-	if len(user.RoleId) > 0 {
-		stmt, _ := tx.Prepare("insert into t_user_role (id, role_id, user_id) values (?, ?, ?)")
-		for _, rid := range user.RoleId {
-			time.Sleep(3 * time.Millisecond)
-			tx.Stmt(stmt).Exec(idgen.RandomStr(), rid, user.Id)
+		if _, err := tx.Exec("update t_user set name = ?, login_name = ?, pwd = ? where id = ?",
+			user.Name, user.LoginName, user.Pwd, user.Id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("delete from t_user_role where user_id = ?", user.Id); err != nil {
+			return err
 		}
 	}
-	return tx.Commit()
+	for _, rid := range user.RoleId {
+		if _, err := tx.Exec("insert into t_user_role (id, role_id, user_id) values (?, ?, ?)",
+			idgen.RandomStr(), rid, user.Id); err != nil {
+			return err
+		}
+	}
+	if err := BumpPermissionRevisionTx(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	syncRevisionAfterCommit()
+	return nil
 }
 
 func (r *userRepo) SaveUserBio(userId, hashedBioKey string) error {
@@ -263,6 +282,24 @@ func (r *userRepo) InitUser(userId, name, loginName, hashedPwd string) error {
 }
 
 func (r *userRepo) Delete(id string) error {
-	_, err := r.db.Exec("delete from t_user where id = ?", id)
-	return err
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("delete from t_user_role where user_id = ?", id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("delete from t_user where id = ?", id); err != nil {
+		return err
+	}
+	if err := BumpPermissionRevisionTx(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	syncRevisionAfterCommit()
+	return nil
 }

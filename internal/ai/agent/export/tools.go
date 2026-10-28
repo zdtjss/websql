@@ -91,7 +91,7 @@ func queryRowsAny(qr *QueryResult) [][]any {
 // buildExportDocument 构建报告文档：
 //   - content 模式：解析扩展 Markdown（```kpi/```chart/```table 等），并回填内嵌 SQL 数据；
 //   - sql 模式：由查询结果自动生成「指标卡 + 图表 + 明细表」图文报告。
-func buildExportDocument(ctx context.Context, conn *sqlx.DB, ds DataSource, title, subtitle, content, sql string) (*report.Document, error) {
+func buildExportDocument(ctx context.Context, conn *sqlx.DB, ds DataSource, runner QueryRunner, title, subtitle, content, sql string) (*report.Document, error) {
 	content = strings.TrimSpace(content)
 	sql = strings.TrimSpace(sql)
 	switch {
@@ -100,7 +100,7 @@ func buildExportDocument(ctx context.Context, conn *sqlx.DB, ds DataSource, titl
 		BindDocument(ctx, doc, ds)
 		return doc, nil
 	case sql != "":
-		qr, err := QueryForExport(conn, sql)
+		qr, err := runExportQuery(ctx, conn, runner, sql)
 		if err != nil {
 			return nil, err
 		}
@@ -111,12 +111,13 @@ func buildExportDocument(ctx context.Context, conn *sqlx.DB, ds DataSource, titl
 }
 
 // NewExportExcelFunc 创建 Excel 数据导出工具（Go 原生渲染：表头样式/冻结/筛选/数字格式）。
-func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
+func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...QueryRunner) func(ctx context.Context, input *ExportExcelInput) (*ExportExcelOutput, error) {
+	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportExcelInput) (out *ExportExcelOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_excel", start, err) }()
 
-		qr, err := QueryForExport(conn, input.SQL)
+		qr, err := runExportQuery(ctx, conn, runner, input.SQL)
 		if err != nil {
 			return nil, err
 		}
@@ -153,12 +154,13 @@ func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Cont
 
 // NewExportExcelWithChartFunc 创建带图表的 Excel 导出工具。
 // 产出：分析摘要（指标卡/统计）+ 数据明细 + 原生可编辑图表（工作表）+ 说明（取数 SQL）。
-func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
+func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...QueryRunner) func(ctx context.Context, input *ExportExcelWithChartInput) (*ExportExcelWithChartOutput, error) {
+	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportExcelWithChartInput) (out *ExportExcelWithChartOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_excel_with_chart", start, err) }()
 
-		qr, err := QueryForExport(conn, input.SQL)
+		qr, err := runExportQuery(ctx, conn, runner, input.SQL)
 		if err != nil {
 			return nil, err
 		}
@@ -210,12 +212,13 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx) func(ctx con
 //
 // content 模式支持扩展 Markdown（```kpi/```chart/```table/提示框/公式/分页），
 // 内嵌 SQL 由注入的 DataSource 经权限校验后取数；仅给 sql 时自动生成图文报告。
-func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners ...QueryRunner) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_analysis_docx", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
+		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
 		if err != nil {
 			return nil, err
 		}
@@ -241,12 +244,13 @@ func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource)
 
 // NewExportPPTFunc 创建 PPT 导出工具（Go 原生渲染：封面/目录/章节页/指标卡/
 // 原生可编辑图表/分页表格/洞察面板）。
-func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners ...QueryRunner) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_ppt", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
+		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
 		if err != nil {
 			return nil, err
 		}
@@ -274,12 +278,13 @@ func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx
 
 // NewExportHTMLFunc 创建 HTML 报告导出工具。
 // 服务端渲染、全文转义、图表内联 SVG，断网可用；含 mermaid 图示/公式时才引入 CDN 渐进增强。
-func NewExportHTMLFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+func NewExportHTMLFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners ...QueryRunner) func(ctx context.Context, input *ExportReportInput) (*ExportReportOutput, error) {
+	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
 		defer func() { recordExportAudit(auditCtx, "export_html", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, input.Title, input.Subtitle, input.Content, input.SQL)
+		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
 		if err != nil {
 			return nil, err
 		}

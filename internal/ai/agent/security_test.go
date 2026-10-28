@@ -264,7 +264,8 @@ func TestDoubleCheckHighRiskExec(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name: "大小写不敏感匹配 → 放行",
+			// 契约变更：表权限沿用历史严格大小写匹配，IgnoreCase 仅用于只会更严格的结果过滤。
+			name: "大小写不同 → 拒绝（严格匹配）",
 			scope: &PermissionScope{
 				IsRemote:       true,
 				AllSchemasFull: false,
@@ -273,6 +274,18 @@ func TestDoubleCheckHighRiskExec(t *testing.T) {
 			},
 			sql:    "DROP TABLE USERS",
 			tables: []string{"USERS"},
+			wantOK: false,
+		},
+		{
+			name: "大小写一致 → 放行",
+			scope: &PermissionScope{
+				IsRemote:       true,
+				AllSchemasFull: false,
+				AllowedTables:  map[string]bool{"Users": true},
+				AllowedColumns: map[string]map[string]bool{},
+			},
+			sql:    "DROP TABLE Users",
+			tables: []string{"Users"},
 			wantOK: true,
 		},
 		{
