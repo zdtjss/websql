@@ -40,6 +40,9 @@ func codegenIsolationAvailable() bool {
 	return isolationUsable
 }
 
+// isolateCodegenRunDir Linux 下无需预处理（bwrap --bind 保证仅 runDir 可写）。
+func isolateCodegenRunDir(string) error { return nil }
+
 // applyCodegenIsolation 将原始命令包装为 bwrap 沙箱调用（原地改写 cmd.Path/Args）。
 func applyCodegenIsolation(cmd *exec.Cmd, runDir string) (func(), error) {
 	if bwrapPath == "" {

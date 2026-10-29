@@ -94,40 +94,6 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
-/* ========== 聊天消息容器 ========== */
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 8px 5px;
-  min-height: 0;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.06);
-  overflow-x: hidden;
-}
-
-/* 自定义滚动条 - 蓝灰色 */
-.chat-messages::-webkit-scrollbar {
-  width: 6px;
-}
-
-.chat-messages::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.03);
-  border-radius: 3px;
-}
-
-.chat-messages::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, #546e7a 0%, #37474f 100%);
-  border-radius: 3px;
-  transition: background 0.3s ease;
-}
-
-.chat-messages::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, #607d8b 0%, #455a64 100%);
-}
-
 /* ========== 聊天气泡 ========== */
 .chat-bubble {
   border-radius: 16px;
@@ -138,11 +104,12 @@ const emit = defineEmits<{
   animation: slideIn 0.3s ease-out;
   backdrop-filter: blur(10px);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  transition: all 0.3s ease;
+  /* 只过渡阴影：过渡 all 会把位置/尺寸属性也纳入，hover 时容易出现位移与抖动 */
+  transition: box-shadow 0.3s ease;
 }
 
+/* hover 仅加深阴影，不做位移，避免鼠标移入时气泡“跳一下” */
 .chat-bubble:hover {
-  transform: translateY(-2px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
@@ -220,21 +187,23 @@ const emit = defineEmits<{
 }
 
 /* ========== AI 消息操作栏（复制/重试） ========== */
+/* 悬浮在气泡右上角，不参与布局：hover 只切换透明度，
+   避免操作栏撑高气泡导致下方消息整体下移 */
 .msg-action-bar {
+  position: absolute;
+  top: 6px;
+  right: 10px;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-top: 6px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(0, 0, 0, 0.05);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.2s ease;
-  height: 0;
-  overflow: hidden;
+  z-index: 1;
 }
 .chat-bubble.assistant:hover .msg-action-bar {
   opacity: 1;
-  height: auto;
+  pointer-events: auto;
 }
 .msg-action-btn {
   font-size: 12px !important;
@@ -261,12 +230,12 @@ const emit = defineEmits<{
   margin: 8px 0;
   backdrop-filter: blur(10px);
   box-shadow: 0 2px 8px rgba(84, 110, 122, 0.1);
-  transition: all 0.3s ease;
+  transition: box-shadow 0.3s ease;
 }
 
+/* hover 不再横向位移：右移会使块级元素越出容器右边界，产生水平滚动条 */
 .thinking-block:hover {
   box-shadow: 0 4px 12px rgba(84, 110, 122, 0.15);
-  transform: translateX(4px);
 }
 
 .thinking-label {

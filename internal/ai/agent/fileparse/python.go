@@ -145,6 +145,8 @@ type pythonParseResponse struct {
 	Text       string         `json:"text"`
 	TotalChars int            `json:"totalChars"`
 	Pages      int            `json:"pages"`
+	Sections   []Section      `json:"sections"`
+	PageList   []Page         `json:"pageList"`
 	Meta       map[string]any `json:"meta"`
 	Notice     string         `json:"notice"`
 }
@@ -171,6 +173,8 @@ func parseDocKindViaPython(ctx context.Context, src Source, kind string) (*Resul
 		Pages:      resp.Pages,
 		Meta:       resp.Meta,
 		Notice:     resp.Notice,
+		Sections:   resp.Sections,
+		PageList:   resp.PageList,
 	}, nil
 }
 

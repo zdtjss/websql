@@ -89,6 +89,9 @@ func (m *SessionSyncMiddleware) AfterAgent(ctx context.Context, state *adk.ChatM
 		if msg.Extra != nil && msg.Extra[agentsMDExtraKey] != nil {
 			continue
 		}
+		if msg.Extra != nil && msg.Extra[toolSearchReminderExtraKey] != nil {
+			continue
+		}
 		sm := schemaMessageToSession(msg)
 		if sm != nil {
 			compressed = append(compressed, *sm)
@@ -151,6 +154,11 @@ func hasSummarizationMarker(msgs []*schema.Message) bool {
 // 否则注入内容会被落库、下次加载重复累积并污染会话标题。
 const agentsMDExtraKey = "__agentsmd_content__"
 
+// toolSearchReminderExtraKey 与 eino toolsearch 中间件写入 msg.Extra 的标记键一致。
+// 当前已改为静态暴露工具，但旧会话/旧 checkpoint 仍可能带有该消息，
+// 持久化与摘要过滤必须同时覆盖。
+const toolSearchReminderExtraKey = "__toolsearch_reminder__"
+
 // summarizationContentTypeKey / summarizationContentTypeSummary 与 eino v0.9.21
 // summarization 中间件写入 msg.Extra 的标记一致
 // （adk/middlewares/summarization/consts.go: extraKeyContentType / contentTypeSummary）。
@@ -166,6 +174,9 @@ func schemaMessageToSession(msg *schema.Message) *SessionMessage {
 	}
 	if msg.Extra != nil && msg.Extra[agentsMDExtraKey] != nil {
 		return nil // agentsmd 注入消息不持久化
+	}
+	if msg.Extra != nil && msg.Extra[toolSearchReminderExtraKey] != nil {
+		return nil // toolsearch 提醒不持久化
 	}
 
 	sm := &SessionMessage{

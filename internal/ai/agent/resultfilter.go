@@ -96,7 +96,7 @@ func (m *PermissionMiddleware) applyQueryResultFilter(result string, tables []st
 	beforeColCount := len(output.Columns)
 	beforeRowCount := len(output.Data)
 	output.Columns, output.Data = m.Scope.FilterResultColumns(output.Columns, output.Data, tables)
-	output.Count = len(output.Data)
+	refreshQueryOutputStats(&output)
 	removedCount := beforeColCount - len(output.Columns)
 	if removedCount > 0 {
 		log.Printf("%s [过滤] query_data 结果集列过滤 - 输入列数=%d, 输出列数=%d, 移除=%d, 输入行数=%d, 输出行数=%d\n",
@@ -152,6 +152,7 @@ func (m *PermissionMiddleware) applyQueryResultFilterMasked(ctx context.Context,
 	if masker.HasRules() {
 		recordMaskEvent(StageTool, "query_result")
 	}
+	refreshQueryOutputStats(&out)
 
 	data, err := json.Marshal(out)
 	if err != nil {
@@ -159,6 +160,25 @@ func (m *PermissionMiddleware) applyQueryResultFilterMasked(ctx context.Context,
 		return "", err
 	}
 	return string(data), nil
+}
+
+// refreshQueryOutputStats 在列过滤/脱敏后刷新计数与字节估算。
+func refreshQueryOutputStats(out *QueryOutput) {
+	if out == nil {
+		return
+	}
+	out.Count = len(out.Data)
+	out.ReturnedRows = len(out.Data)
+	if out.TotalKnown {
+		if out.RowCount < len(out.Data) {
+			out.RowCount = len(out.Data)
+		}
+	} else {
+		out.RowCount = 0
+	}
+	if encoded, err := json.Marshal(out); err == nil {
+		out.EstimatedBytes = len(encoded)
+	}
 }
 
 // applyStreamQueryResultFilterMasked 流式版本：先聚合再过滤与脱敏。

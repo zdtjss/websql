@@ -20,7 +20,7 @@ func TestExportQueryRunner_RejectsBeforeQuery(t *testing.T) {
 	ctx := WithRunSecurity(context.Background(), sec)
 
 	tableScope := newScopeForContract("c1", map[string]bool{"s1.orders": true}, nil)
-	runner := newExportQueryRunner(nil, tableScope, "u1")
+	runner := newExportQueryRunner("", nil, tableScope, "u1")
 
 	assertPermissionDenied := func(name string, err error) {
 		t.Helper()
@@ -37,7 +37,7 @@ func TestExportQueryRunner_RejectsBeforeQuery(t *testing.T) {
 	assertPermissionDenied("无权表", err)
 
 	columnScope := newScopeForContract("c1", nil, map[string]map[string]bool{"s1.orders": {"id": true}})
-	columnRunner := newExportQueryRunner(nil, columnScope, "u1")
+	columnRunner := newExportQueryRunner("", nil, columnScope, "u1")
 	_, err = columnRunner.QueryForExport(ctx, "SELECT * FROM s1.orders", 100)
 	assertPermissionDenied("列级表 SELECT *", err)
 
@@ -57,7 +57,7 @@ func TestExportQueryRunner_RejectsBeforeQuery(t *testing.T) {
 
 func TestExportQueryRunner_RequiresSecurityContext(t *testing.T) {
 	scope := newScopeForContract("c1", map[string]bool{"s1.orders": true}, nil)
-	runner := newExportQueryRunner(nil, scope, "u1")
+	runner := newExportQueryRunner("", nil, scope, "u1")
 	if _, err := runner.QueryForExport(context.Background(), "SELECT id FROM s1.orders", 100); err == nil {
 		t.Fatal("缺少运行安全上下文时必须拒绝导出")
 	}

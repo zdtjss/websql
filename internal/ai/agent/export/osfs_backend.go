@@ -22,13 +22,30 @@ import (
 type OSFilesystemBackend struct {
 	validateCommand func(string) error
 	pythonPath      string // 检测到的 Python 可执行文件路径（如 "python" 或 "/usr/bin/python3"）
+	userID          string // 沙箱归属用户；空值表示无用户上下文（旧行为/测试）
 }
 
 func NewOSFilesystemBackend() *OSFilesystemBackend {
 	b := &OSFilesystemBackend{}
 	// 使用沙箱校验器：在黑名单之上叠加「python/pip 白名单 + 绝对路径沙箱检查」
-	b.SetValidateCommand(validateSandboxedCommand)
+	b.SetValidateCommand(func(command string) error {
+		return validateSandboxedCommandForUser(b.userID, command)
+	})
 	return b
+}
+
+// CloneForUser 克隆一个绑定指定用户的文件系统后端（共享 pythonPath，不共享沙箱身份）。
+// Agent 实例按用户缓存，因此每个用户的 Agent 持有独立克隆，不会互相串号。
+func (b *OSFilesystemBackend) CloneForUser(userID string) *OSFilesystemBackend {
+	if b == nil {
+		return nil
+	}
+	cp := *b
+	cp.userID = strings.TrimSpace(userID)
+	cp.SetValidateCommand(func(command string) error {
+		return validateSandboxedCommandForUser(cp.userID, command)
+	})
+	return &cp
 }
 
 func (b *OSFilesystemBackend) SetValidateCommand(fn func(string) error) {
@@ -88,7 +105,7 @@ func (b *OSFilesystemBackend) LsInfo(ctx context.Context, req *filesystem.LsInfo
 		return nil, errors.New("path is required")
 	}
 
-	dir, err := resolveReadPath(req.Path)
+	dir, err := resolveReadPathForUser(b.userID, req.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +136,7 @@ func (b *OSFilesystemBackend) Read(ctx context.Context, req *filesystem.ReadRequ
 		return nil, errors.New("filePath is required")
 	}
 
-	filePath, err := resolveReadPath(req.FilePath)
+	filePath, err := resolveReadPathForUser(b.userID, req.FilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +189,7 @@ func (b *OSFilesystemBackend) GrepRaw(ctx context.Context, req *filesystem.GrepR
 
 	var filesToSearch []string
 	if req.Path != "" {
-		searchDir, err := resolveReadPath(req.Path)
+		searchDir, err := resolveReadPathForUser(b.userID, req.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +260,7 @@ func (b *OSFilesystemBackend) GlobInfo(ctx context.Context, req *filesystem.Glob
 		return nil, errors.New("pattern is required")
 	}
 
-	baseDir, err := resolveReadPath(req.Path)
+	baseDir, err := resolveReadPathForUser(b.userID, req.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +292,7 @@ func (b *OSFilesystemBackend) Write(ctx context.Context, req *filesystem.WriteRe
 		return errors.New("filePath is required")
 	}
 
-	filePath, err := resolveWritePath(req.FilePath)
+	filePath, err := resolveWritePathForUser(b.userID, req.FilePath)
 	if err != nil {
 		return err
 	}
@@ -303,7 +320,7 @@ func (b *OSFilesystemBackend) Edit(ctx context.Context, req *filesystem.EditRequ
 		return errors.New("newString must be different from oldString")
 	}
 
-	filePath, err := resolveWritePath(req.FilePath)
+	filePath, err := resolveWritePathForUser(b.userID, req.FilePath)
 	if err != nil {
 		return err
 	}
@@ -400,7 +417,7 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 			return nil, fmt.Errorf("command validation failed: %w", err)
 		}
 	}
-	inv, err := parseSkillCommand(input.Command)
+	inv, err := parseSkillCommandForUser(b.userID, input.Command)
 	if err != nil {
 		return nil, fmt.Errorf("command validation failed: %w", err)
 	}
@@ -409,24 +426,25 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 	argv := append(append(append([]string{}, inv.pyFlags...), inv.script), inv.args...)
 	cmd := exec.CommandContext(execCtx, b.pythonExecutable(), argv...)
 	hideWindow(cmd)
-	if ws := getSandboxRoots().workspace; ws != "" {
+	if ws := rootsForSkillExecution(b.userID).workspace; ws != "" {
 		cmd.Dir = ws
 	}
-	cmd.Env = append(os.Environ(),
-		"PYTHONIOENCODING=utf-8",
-		"PYTHONUTF8=1",
-		"PYTHONDONTWRITEBYTECODE=1",
-		"PYTHONNOUSERSITE=", // 允许使用用户 site-packages 中预装的依赖
-		"WEBSQL_EXPORT_DIR="+exportsDirAbs(),
-	)
+	env := sandboxProcessEnv(map[string]string{
+		"WEBSQL_EXPORT_DIR": exportsDirAbs(),
+		// 保留部署可能设置的 PYTHONPATH（用于定位预装依赖）；不继承其他环境变量。
+		"PYTHONPATH": os.Getenv("PYTHONPATH"),
+		// 临时目录按用户隔离，避免跨用户读写系统临时目录。
+		"TEMP": userTempDir(b.userID), "TMP": userTempDir(b.userID), "TMPDIR": userTempDir(b.userID),
+	})
 	if dir := b.pythonEnvDir(); dir != "" {
-		for i, env := range cmd.Env {
-			if len(env) >= 5 && strings.EqualFold(env[:5], "PATH=") {
-				cmd.Env[i] = "PATH=" + dir + string(os.PathListSeparator) + env[5:]
+		for i, kv := range env {
+			if strings.HasPrefix(kv, "PATH=") {
+				env[i] = "PATH=" + dir + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
 				break
 			}
 		}
 	}
+	cmd.Env = env
 	if inv.stdinFile != "" {
 		f, err := os.Open(inv.stdinFile)
 		if err != nil {

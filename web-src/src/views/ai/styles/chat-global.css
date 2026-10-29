@@ -1764,10 +1764,11 @@ body.mermaid-resizing * {
   animation: chatBubbleSlideIn 0.3s ease-out;
   backdrop-filter: blur(10px);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  transition: all 0.3s ease;
+  /* 只过渡阴影，避免 hover 时位置/尺寸参与过渡产生位移 */
+  transition: box-shadow 0.3s ease;
 }
+/* hover 仅加深阴影，不做位移，避免鼠标移入时气泡“跳一下” */
 .chat-bubble:hover {
-  transform: translateY(-2px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 @keyframes chatBubbleSlideIn {
@@ -1814,11 +1815,11 @@ body.mermaid-resizing * {
   margin: 8px 0;
   backdrop-filter: blur(10px);
   box-shadow: 0 2px 8px rgba(84, 110, 122, 0.1);
-  transition: all 0.3s ease;
+  transition: box-shadow 0.3s ease;
 }
+/* hover 不再横向位移：右移会使块级元素越出容器右边界，产生水平滚动条 */
 .thinking-block:hover {
   box-shadow: 0 4px 12px rgba(84, 110, 122, 0.15);
-  transform: translateX(4px);
 }
 .thinking-label {
   font-size: 13px;

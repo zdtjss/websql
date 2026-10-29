@@ -24,25 +24,27 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-upload
-          :http-request="handleFileSelect"
-          :show-file-list="false"
+        <el-dropdown @command="handleImportCommand">
+          <el-button size="small" type="success">
+            导入<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-item command="insert_xlsx">📊 新增导入 (Excel)</el-dropdown-item>
+            <el-dropdown-item command="update_xlsx">📊 更新导入 (Excel)</el-dropdown-item>
+            <el-dropdown-item command="insert_csv" divided>📄 新增导入 (CSV)</el-dropdown-item>
+            <el-dropdown-item command="update_csv">📄 更新导入 (CSV)</el-dropdown-item>
+            <el-dropdown-item command="insert_json" divided>📋 新增导入 (JSON)</el-dropdown-item>
+            <el-dropdown-item command="update_json">📋 更新导入 (JSON)</el-dropdown-item>
+          </template>
+        </el-dropdown>
+        <!-- 导入文件选择：使用独立原生 input，每次选择后清空 value，保证可重复触发 -->
+        <input
+          ref="importFileInputRef"
+          class="import-file-input"
+          type="file"
           :accept="importAccept"
-        >
-          <el-dropdown @command="handleImportCommand">
-            <el-button size="small" type="success">
-              导入<el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-item command="insert_xlsx">📊 新增导入 (Excel)</el-dropdown-item>
-              <el-dropdown-item command="update_xlsx">📊 更新导入 (Excel)</el-dropdown-item>
-              <el-dropdown-item command="insert_csv" divided>📄 新增导入 (CSV)</el-dropdown-item>
-              <el-dropdown-item command="update_csv">📄 更新导入 (CSV)</el-dropdown-item>
-              <el-dropdown-item command="insert_json" divided>📋 新增导入 (JSON)</el-dropdown-item>
-              <el-dropdown-item command="update_json">📋 更新导入 (JSON)</el-dropdown-item>
-            </template>
-          </el-dropdown>
-        </el-upload>
+          @change="handleImportFileChange"
+        />
         <DataExportDialog :exporting="dataExport.exporting.value" @export="onExport" />
       </div>
       <div class="toolbar-right" v-if="dataQuery.filterExpr.value">
@@ -202,7 +204,7 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
 import { ArrowDown, Filter, Grid, InfoFilled, Refresh, Timer } from '@element-plus/icons-vue'
 import { ElLoading, ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
@@ -431,6 +433,7 @@ async function insertData() {
 const importPreviewVisible = ref(false)
 const dbColumns = ref<string[]>([])
 const importDialogRef = useTemplateRef<InstanceType<typeof ImportPreviewDialog>>('importDialogRef')
+const importFileInputRef = useTemplateRef<HTMLInputElement>('importFileInputRef')
 const importMode = ref('insert')
 const importFormat = ref('xlsx')
 
@@ -453,12 +456,21 @@ function handleImportCommand(command: string) {
     importFormat.value = 'xlsx'
     importMode.value = command.startsWith('insert') ? 'insert' : 'update'
   }
-  const fileInput = document.querySelector('.data-browser input[type="file"]') as HTMLInputElement | null
-  if (fileInput) fileInput.click()
+  // 等待 accept 绑定更新后再唤起文件选择，避免文件类型过滤使用上一次的格式
+  nextTick(() => {
+    const input = importFileInputRef.value
+    if (!input) return
+    input.value = ''
+    input.click()
+  })
 }
 
-async function handleFileSelect(options: any) {
-  const file = options.file
+function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // 立即清空，保证下次选择同一文件也能触发 change
+  input.value = ''
+  if (!file) return
   if (importFormat.value === 'csv') {
     handleCsvFile(file)
   } else if (importFormat.value === 'json') {
@@ -734,5 +746,9 @@ onMounted(() => {
 [data-theme="dark"] .toolbar-filter-hint {
   color: #63b3ed;
   background: #1a2c40;
+}
+
+.import-file-input {
+  display: none;
 }
 </style>

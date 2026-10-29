@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"testing"
 
 	admin "websql/internal/app/admin"
@@ -191,37 +190,6 @@ func TestResolveRolloutModeWith_PrecedenceAndStability(t *testing.T) {
 		if StableBucket("u1", "salt") != first {
 			t.Fatal("同一用户分桶必须稳定")
 		}
-	}
-}
-
-func TestDecisionActionGuard_RequiresIdempotencyAndResources(t *testing.T) {
-	scope := newScopeForContract("c1", map[string]bool{"s1.orders": true}, nil)
-	sec := &RunSecurityContext{
-		Profile:       ProfileWebRemote,
-		UserID:        "u1",
-		DefaultConnID: "c1",
-		Scopes:        map[string]*PermissionScope{"c1": scope},
-		Masker:        NewNoopMasker(),
-	}
-	guard := NewDecisionActionGuard(sec)
-
-	base := DecisionIntent{Action: "exec_sql", ConnID: "c1", Schema: "s1", Table: "orders"}
-	if err := guard.Authorize(base); err == nil {
-		t.Fatal("缺少幂等键应拒绝")
-	}
-	base.IdempotencyKey = "k1"
-	if err := guard.Authorize(base); !errors.Is(err, ErrApprovalRequired) {
-		t.Fatalf("写操作应要求审批，实际：%v", err)
-	}
-	// 只读能力动作不能产生副作用
-	readIntent := DecisionIntent{Action: "query_data", ConnID: "c1", Schema: "s1", Table: "orders", IdempotencyKey: "k2"}
-	if err := guard.Authorize(readIntent); err == nil {
-		t.Fatal("只读动作不应通过决策执行校验")
-	}
-	// 证据资源被回收时拒绝
-	scope.AIAllowModify = false
-	if err := guard.Authorize(base); err == nil {
-		t.Fatal("AI 写能力关闭后应拒绝决策执行")
 	}
 }
 

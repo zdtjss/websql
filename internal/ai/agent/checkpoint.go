@@ -46,6 +46,10 @@ type CheckpointBinding struct {
 	Revision uint64
 	// ScopeDigest 创建 checkpoint 时的权限快照摘要
 	ScopeDigest string
+	// Prompt 创建 checkpoint 时实际注入的系统提示词。
+	// Resume 必须复用同一份提示词：eino 的 Instruction 不随 checkpoint 持久化，
+	// 不保存会导致审批后的模型调用没有 system 消息。仅内存保存，随 checkpoint 过期清理。
+	Prompt string
 }
 
 type cpEntry struct {
@@ -96,6 +100,18 @@ func (s *InMemoryCheckPointStore) Bind(id string, b CheckpointBinding) {
 	e.binding = b
 	e.updatedAt = time.Now()
 	s.evictOverflowLocked()
+}
+
+// Prompt 返回 checkpoint 绑定的系统提示词（调用方需先通过 BeginResume 校验归属）。
+// 仅用于恢复链路的提示词复用，不对外暴露任何权限事实。
+func (s *InMemoryCheckPointStore) Prompt(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.items[id]
+	if !ok {
+		return ""
+	}
+	return e.binding.Prompt
 }
 
 // Set 由 eino Runner 在中断（或带中断信号的取消）时调用。

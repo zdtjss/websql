@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +31,17 @@ type AgentFactory struct {
 	buildMu  sync.Mutex
 	cache    *ttlcache.TTLCache[*SQLAgent]
 	sessions *SessionStore
+
+	// indexMu/keysByUser 维护 userId -> cache keys，用于按用户失效；
+	// 权限变更回调不携带用户维度时仍走 InvalidateAll（或依赖 revision key 自然失效）。
+	indexMu    sync.Mutex
+	keysByUser map[string]map[string]struct{}
+	indexKeys  int
 }
+
+// maxIndexedAgentKeys 限制 userId -> key 索引规模，避免长期运行后索引无限增长；
+// 超出后重置索引（缓存条目仍由 TTL 淘汰，只是暂时失去按用户精确失效能力）。
+const maxIndexedAgentKeys = 4096
 
 var globalAgentFactory *AgentFactory
 var factoryOnce sync.Once
@@ -64,7 +75,7 @@ func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, co
 	//   - 用户切换模型 / 管理员修改模型参数后立即生效；
 	//   - 管理员调整用户权限后，新的权限范围会构建新的 Agent；
 	//   - 多连接 Scope 变化或权限回收后不得复用旧 Agent（旧实例内含旧工具与旧提示词）。
-	key := agentCacheKey(connID, dbSchema, scope.UserID, schemas) + "::" + configFingerprint(cfg, scope)
+	key := agentCacheKey(connID, dbSchema, dbVersion, scope.UserID, schemas) + "::" + configFingerprint(cfg, scope)
 	if sec != nil {
 		key += "::" + sec.ScopeDigest
 	}
@@ -89,6 +100,7 @@ func (f *AgentFactory) GetOrCreate(ctx context.Context, cfg *system.AIConfig, co
 	}
 
 	f.cache.Set(key, newAgent)
+	f.trackKey(scope.UserID, key)
 	log.Printf("[AgentFactory] 创建新 Agent - key=%s\n", key)
 	return newAgent, nil
 }
@@ -108,22 +120,100 @@ func configFingerprint(cfg *system.AIConfig, scope *PermissionScope) string {
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
+// InvalidateAll 清除全部 Agent 缓存。
+//
+// 说明：权限变更回调（admin.OnPermissionChanged）不携带用户维度，
+// 无法安全地只失效受影响用户；这里保持全量失效。缓存 key 已包含 dbVersion，
+// 连接版本变更会自然命中新 key，无需单独失效。
 func (f *AgentFactory) InvalidateAll() {
 	f.cache.InvalidateAll()
+	f.indexMu.Lock()
+	f.keysByUser = nil
+	f.indexKeys = 0
+	f.indexMu.Unlock()
 	log.Printf("[AgentFactory] 缓存已全部清空\n")
 }
 
-func (f *AgentFactory) Invalidate(connID, dbSchema, userID string, schemas []SchemaRef) {
-	key := agentCacheKey(connID, dbSchema, userID, schemas)
-	f.cache.Delete(key)
+// InvalidateUser 只清除指定用户的 Agent，避免权限/配置变更时全量重建。
+func (f *AgentFactory) InvalidateUser(userID string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	f.indexMu.Lock()
+	keys := f.keysByUser[userID]
+	delete(f.keysByUser, userID)
+	f.indexKeys -= len(keys)
+	if f.indexKeys < 0 {
+		f.indexKeys = 0
+	}
+	f.indexMu.Unlock()
+	for key := range keys {
+		f.cache.Delete(key)
+	}
+}
+
+// InvalidateConn 清除指定连接下的所有 Agent（key 前缀为 connID::）。
+func (f *AgentFactory) InvalidateConn(connID string) {
+	connID = strings.TrimSpace(connID)
+	if connID == "" {
+		return
+	}
+	prefix := connID + "::"
+	f.indexMu.Lock()
+	removed := make([]string, 0)
+	for userID, keys := range f.keysByUser {
+		for key := range keys {
+			if strings.HasPrefix(key, prefix) {
+				delete(keys, key)
+				f.indexKeys--
+				removed = append(removed, key)
+			}
+		}
+		if len(keys) == 0 {
+			delete(f.keysByUser, userID)
+		}
+	}
+	if f.indexKeys < 0 {
+		f.indexKeys = 0
+	}
+	f.indexMu.Unlock()
+	for _, key := range removed {
+		f.cache.Delete(key)
+	}
+}
+
+func (f *AgentFactory) trackKey(userID, key string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || key == "" {
+		return
+	}
+	f.indexMu.Lock()
+	defer f.indexMu.Unlock()
+	if f.keysByUser == nil {
+		f.keysByUser = make(map[string]map[string]struct{})
+	}
+	set := f.keysByUser[userID]
+	if set == nil {
+		set = make(map[string]struct{})
+		f.keysByUser[userID] = set
+	}
+	if _, exists := set[key]; !exists {
+		f.indexKeys++
+	}
+	set[key] = struct{}{}
+	if f.indexKeys > maxIndexedAgentKeys {
+		f.keysByUser = nil
+		f.indexKeys = 0
+	}
 }
 
 func (f *AgentFactory) GetSessions() *SessionStore {
 	return f.sessions
 }
 
-func agentCacheKey(connID, dbSchema, userID string, schemas []SchemaRef) string {
-	key := fmt.Sprintf("%s::%s::%s", connID, dbSchema, userID)
+func agentCacheKey(connID, dbSchema, dbVersion, userID string, schemas []SchemaRef) string {
+	key := fmt.Sprintf("%s::%s::%s::%s", connID, dbSchema, dbVersion, userID)
 	for _, s := range schemas {
 		key += fmt.Sprintf("::%s/%s", s.ConnID, s.Schema)
 	}

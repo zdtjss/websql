@@ -1,5 +1,4 @@
 package migration
-package migration
 
 import (
 	"os"

@@ -1,5 +1,5 @@
 import http from './index'
-import type { AxiosResponse } from 'axios'
+import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from './auth'
 
 /** 数据库连接配置 */
@@ -81,13 +81,13 @@ export function listConn(params: ListConnParams): Promise<AxiosResponse<ApiRespo
 }
 
 /** 保存连接，对应 POST /saveConn */
-export function saveConn(row: Connection): Promise<AxiosResponse<ApiResponse<Connection> | ApiResponse>> {
-  return http.post('/saveConn', row)
+export function saveConn(row: Connection, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse<Connection> | ApiResponse>> {
+  return http.post('/saveConn', row, config)
 }
 
 /** 测试数据库连接，对应 POST /testDbConn */
-export function testDbConn(row: Connection): Promise<AxiosResponse<ApiResponse>> {
-  return http.post('/testDbConn', row)
+export function testDbConn(row: Connection, config?: AxiosRequestConfig): Promise<AxiosResponse<ApiResponse>> {
+  return http.post('/testDbConn', row, config)
 }
 
 /** 删除连接，对应 POST /delConn */

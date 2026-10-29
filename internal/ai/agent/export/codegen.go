@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -63,6 +64,18 @@ const (
 
 // codegenBaseDir 高级导出的运行根目录（位于 exports 下，随后续导出清理任务一并淘汰）。
 func codegenBaseDir() string { return filepath.Join("exports", ".codegen") }
+
+// codegenRunBaseDirs 返回运行目录的候选根（按优先级）。
+// 首选 exports/.codegen；Windows 低完整性标注需要目录 ACL 授予 WRITE_OWNER
+// （仅有 Modify 的目录会返回 Access is denied），此时退回系统临时目录。
+func codegenRunBaseDirs() []string {
+	primary := codegenBaseDir()
+	out := []string{primary}
+	if tmp := filepath.Join(os.TempDir(), "websql-codegen"); !strings.EqualFold(tmp, primary) {
+		out = append(out, tmp)
+	}
+	return out
+}
 
 // codegenHelpersDir 注入沙箱的受信助手目录（sitecustomize 导入钩子 + websql_db 只读助手）。
 func codegenHelpersDir() string { return filepath.Join(codegenBaseDir(), "_helpers") }
@@ -178,6 +191,11 @@ func NewExportByCodeFunc(conn *sqlx.DB, dbInfo *CodegenDBInfo, auditCtx *AuditCt
 		if readErr != nil {
 			return nil, fmt.Errorf("读取导出产物失败：%w", readErr)
 		}
+		// 子进程环境包含数据库凭据；脚本可能（被提示注入诱导或自行）把凭据写入产物。
+		// 日志已在 maskCodegenSecrets 中掩码，产物文件同样必须在落盘前拦住。
+		if containsCodegenSecrets(data, dbInfo) {
+			return nil, fmt.Errorf("导出产物包含连接凭据，已阻止下载")
+		}
 		ext := strings.TrimPrefix(filepath.Ext(outRel), ".")
 		if ext == "" {
 			ext = "bin"
@@ -199,16 +217,33 @@ func NewExportByCodeFunc(conn *sqlx.DB, dbInfo *CodegenDBInfo, auditCtx *AuditCt
 }
 
 // createCodegenRunDir 为本次运行创建隔离的随机工作目录。
+// 依次尝试候选根：目录创建成功且隔离标注成功才采用，否则清理后换下一个根。
 func createCodegenRunDir() (string, error) {
 	token, err := secureToken(16)
 	if err != nil {
 		return "", fmt.Errorf("生成运行目录失败：%w", err)
 	}
-	dir := filepath.Join(codegenBaseDir(), "run_"+token)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("创建运行目录失败：%w", err)
+	var lastErr error
+	for _, base := range codegenRunBaseDirs() {
+		dir := filepath.Join(base, "run_"+token)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := isolateCodegenRunDir(dir); err != nil {
+			_ = os.RemoveAll(dir)
+			lastErr = err
+			continue
+		}
+		if base != codegenBaseDir() {
+			log.Printf("[Codegen] exports 运行目录不可用，已退回临时目录：%s\n", dir)
+		}
+		return dir, nil
 	}
-	return dir, nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用的运行目录候选")
+	}
+	return "", fmt.Errorf("创建隔离运行目录失败：%w", lastErr)
 }
 
 func secureToken(n int) (string, error) {
@@ -237,30 +272,48 @@ func prepareCodegenHelpers() error {
 	return nil
 }
 
-// buildCodegenEnv 构造子进程环境：在继承系统环境的基础上覆盖 Python 与数据库相关变量。
+// buildCodegenEnv 构造子进程环境：只保留运行 Python 必需的白名单变量，
+// 不继承父进程全部环境（父进程可能带有 API Key、云凭据等敏感信息）。
 func buildCodegenEnv(runDir string, db *CodegenDBInfo) []string {
-	env := append([]string{}, os.Environ()...)
-	env = setEnvValue(env, "PYTHONIOENCODING", "utf-8")
-	env = setEnvValue(env, "PYTHONUTF8", "1")
-	env = setEnvValue(env, "PYTHONDONTWRITEBYTECODE", "1")
-	// 不把脚本目录加入 sys.path：避免模型自建同名文件覆盖注入的沙箱助手（Python 3.11+ 生效）
-	env = setEnvValue(env, "PYTHONSAFEPATH", "1")
-	// 受信助手目录置于 PYTHONPATH 首位，并保留既有 PYTHONPATH（部署可能用它定位预装依赖）
-	env = setEnvValue(env, "PYTHONPATH", prependPathList(codegenHelpersDir(), os.Getenv("PYTHONPATH")))
-	env = setEnvValue(env, "WEBSQL_EXPORT_DIR", exportsDirAbs())
-	env = setEnvValue(env, "WEBSQL_RUN_DIR", runDir)
-	// 临时目录指向 runDir：低完整性/沙箱下子进程仍可写临时文件，且不越出运行目录
-	env = setEnvValue(env, "TEMP", runDir)
-	env = setEnvValue(env, "TMP", runDir)
-	env = setEnvValue(env, "TMPDIR", runDir)
-	if db != nil {
-		env = setEnvValue(env, "WEBSQL_DB_TYPE", db.DBType)
-		env = setEnvValue(env, "WEBSQL_DB_URL", db.URL)
-		env = setEnvValue(env, "WEBSQL_DB_USER", db.User)
-		env = setEnvValue(env, "WEBSQL_DB_PASSWORD", db.Password)
-		env = setEnvValue(env, "WEBSQL_DB_SCHEMA", db.Schema)
+	extra := map[string]string{
+		"PYTHONIOENCODING": "utf-8",
+		"PYTHONUTF8":       "1",
+		// 不把脚本目录加入 sys.path：避免模型自建同名文件覆盖注入的沙箱助手（Python 3.11+ 生效）。
+		"PYTHONSAFEPATH": "1",
+		// 受信助手目录置于 PYTHONPATH 首位，并保留既有 PYTHONPATH（部署可能用它定位预装依赖）。
+		"PYTHONPATH":        prependPathList(codegenHelpersDir(), os.Getenv("PYTHONPATH")),
+		"WEBSQL_EXPORT_DIR": exportsDirAbs(),
+		"WEBSQL_RUN_DIR":    runDir,
+		// 临时目录指向 runDir：低完整性/沙箱下子进程仍可写临时文件，且不越出运行目录。
+		"TEMP": runDir, "TMP": runDir, "TMPDIR": runDir,
 	}
-	return env
+	if db != nil {
+		extra["WEBSQL_DB_TYPE"] = db.DBType
+		extra["WEBSQL_DB_URL"] = db.URL
+		extra["WEBSQL_DB_USER"] = db.User
+		extra["WEBSQL_DB_PASSWORD"] = db.Password
+		extra["WEBSQL_DB_SCHEMA"] = db.Schema
+	}
+	return sandboxProcessEnv(extra)
+}
+
+// containsCodegenSecrets 判断产物是否包含不应外带的连接凭据。
+func containsCodegenSecrets(data []byte, db *CodegenDBInfo) bool {
+	if db == nil {
+		return false
+	}
+	secrets := []string{db.Password}
+	// URL 中内嵌凭据（user:pass@host）时才扫描，避免把普通主机名误判为泄露。
+	if strings.Contains(db.URL, "@") {
+		secrets = append(secrets, db.URL)
+	}
+	for _, s := range secrets {
+		s = strings.TrimSpace(s)
+		if len(s) >= 4 && bytes.Contains(data, []byte(s)) {
+			return true
+		}
+	}
+	return false
 }
 
 // prependPathList 把 head 置于 tail 之前（tail 为空时只返回 head）。

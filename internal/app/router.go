@@ -482,6 +482,7 @@ func cleanExpiredExports() {
 	}
 	// 同步清理孤儿归属记录（对应文件已删除/过期淘汰）
 	export.CleanupOrphanOwners()
-	// 清理 reduction offload 目录（大结果裁剪落盘副本，7 天后淘汰）
+	// 清理旧版全局 offload 目录（新版按用户/会话隔离）并清理过期副本。
+	agent.CleanupLegacyOffload()
 	agent.CleanupReductionOffload(7 * 24 * time.Hour)
 }

@@ -2,17 +2,15 @@ package agent
 
 // 工具能力策略注册表：把「工具名 → 能力要求 / 是否需要审批 / 资源解析」集中登记。
 //
-// 设计目的：避免每新增一个分析或决策工具就要在多处权限分支里补 switch。
+// 设计目的：避免每新增一个分析或导出工具就要在多处权限分支里补 switch。
 // 未登记工具一律拒绝（fail-closed），登记项必须显式声明能力。
 //
-// 三层划分：
+// 两层划分：
 //   - 控制面：角色能力、连接/表/列权限、allow_modify、ai_allow_modify；
-//   - 数据面：查询、元数据、文件、跨库分析、导出；
-//   - 决策面：模型只能提出 DecisionIntent，副作用必须重新经过 ActionGuard。
+//   - 数据面：查询、元数据、文件、跨库分析、导出。
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	admin "websql/internal/app/admin"
@@ -63,12 +61,20 @@ var toolPolicies = map[string]ToolPolicy{
 	"write_file":              {Capability: CapabilityCodeExecute},
 	"edit_file":               {Capability: CapabilityCodeExecute},
 	"read_file_data":          {Capability: CapabilityFileRead},
-	"read_file":               {Capability: CapabilityFileRead},
-	"ls":                      {Capability: CapabilityFileRead},
-	"glob":                    {Capability: CapabilityFileRead},
-	"grep":                    {Capability: CapabilityFileRead},
-	"skill":                   {Capability: CapabilityNone},
-	"get_current_date_info":   {Capability: CapabilityNone},
+	"read_offload":            {Capability: CapabilityFileRead},
+	"dataset_query":           {Capability: CapabilityRead},
+	// analyze_data 的实际数据权限由子 agent 内部的 PermissionMiddleware 逐工具校验，
+	// 父层只做能力/注册表层面的放行。
+	"analyze_data":          {Capability: CapabilityRead},
+	"read_file":             {Capability: CapabilityFileRead},
+	"ls":                    {Capability: CapabilityFileRead},
+	"glob":                  {Capability: CapabilityFileRead},
+	"grep":                  {Capability: CapabilityFileRead},
+	"skill":                 {Capability: CapabilityNone},
+	"get_current_date_info": {Capability: CapabilityNone},
+	// tool_search 由 eino toolsearch 中间件注入（当前已改为静态暴露工具，
+	// 保留登记以防未来重新启用时被误判为未登记工具而 fail-closed）。
+	"tool_search": {Capability: CapabilityNone},
 }
 
 // lookupToolPolicy 查询工具策略；未登记返回 ok=false。
@@ -109,6 +115,16 @@ func (m *PermissionMiddleware) denyByCapability(toolName string) error {
 		if !m.Scope.AllowModify {
 			return &PermissionError{
 				Message: "当前角色禁止修改数据（含写操作与命令执行），无法执行该工具",
+				Objects: []string{},
+			}
+		}
+	case "export_by_code":
+		// 高级导出会执行模型编写的 Python 代码，本质是代码执行能力；
+		// 与 execute/write_file 同一 allow_modify 门槛，并额外要求 AI 数据写能力
+		//（避免只读/仅经典写角色通过代码绕过 AI 写策略）。
+		if !m.Scope.AllowModify || !m.Scope.CanAIModifyData() {
+			return &PermissionError{
+				Message: "当前角色未开放 AI 数据修改与代码执行权限，无法使用高级导出",
 				Objects: []string{},
 			}
 		}
@@ -187,21 +203,6 @@ func defaultScopeOrDefault(sec *RunSecurityContext, fallback *PermissionScope) *
 		}
 	}
 	return fallback
-}
-
-// DescribeToolPolicy 返回工具策略的简短描述（供诊断与文档，不进入模型 Prompt）。
-func DescribeToolPolicy(toolName string) string {
-	p, ok := lookupToolPolicy(toolName)
-	if !ok {
-		return fmt.Sprintf("%s: unregistered(fail-closed)", toolName)
-	}
-	return fmt.Sprintf("%s: capability=%s approval=%t dataTool=%t",
-		toolName, p.Capability, p.RequiresApproval, p.DataTool)
-}
-
-// capabilityNeedsAIModify 判断能力是否需要 AI 写双门槛。
-func capabilityNeedsAIModify(c Capability) bool {
-	return c == CapabilityAIWrite
 }
 
 // normalizeToolName 统一工具名大小写（注册表使用小写）。

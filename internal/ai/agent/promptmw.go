@@ -12,7 +12,12 @@
 //   - RunStream 用 WithRunPrompt(ctx, prompt) 注入
 //   - BeforeAgent 从 ctx 读取（eino 的 applyBeforeAgent/getRunFunc 使用调用方 ctx，见
 //     eino@v0.9.19/adk/chatmodel.go:812、:1421）
+//
 // 中间件实例因此变为无状态，可被任意并发 Run 安全共享。
+//
+// 注意：系统提示词包含 JSON 示例（kpi/chart 的 {}）。eino 的 defaultGenModelInput
+// 仅在存在 SessionValues 时按 FString 解析 Instruction，届时会因花括号报错。
+// 当前代码未使用 SessionValues；若未来启用，必须提供自定义 GenModelInput 或转义花括号。
 package agent
 
 import (

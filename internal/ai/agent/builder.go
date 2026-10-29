@@ -16,8 +16,7 @@ import (
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/middlewares/agentsmd"
-	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
+	adkfilesystem "github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -74,6 +73,8 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			ContextMessages: 200,
 		},
 		TokenCounter: CountForSummarization,
+		// 压缩后保留完整 transcript 路径，细节可按需回读。
+		Finalize: buildTranscriptFinalize(),
 	})
 
 	if err != nil {
@@ -87,9 +88,17 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	var sm adk.ChatModelAgentMiddleware
 
 	if skillEnv != nil {
+		// 按用户克隆后端：Agent 按用户缓存，文件沙箱根目录随用户隔离。
+		osBackend := skillEnv.FilesystemBackend().CloneForUser(scope.UserID)
+		// 上传文件以 /uploads/<fileId>/... 虚拟路径暴露给 read_file/grep/glob；
+		// 其余路径仍由 OSFilesystemBackend 处理（skills/exports/workspace）。
+		var fsBackend adkfilesystem.Backend = osBackend
+		if os.Getenv("AGENT_UPLOAD_FS") != "0" {
+			fsBackend = newUploadFSBackend(osBackend, scope.UserID)
+		}
 		fsm, err = filesystem.New(ctx, &filesystem.MiddlewareConfig{
-			Backend:        skillEnv.FilesystemBackend(),
-			StreamingShell: skillEnv.FilesystemBackend(),
+			Backend:        fsBackend,
+			StreamingShell: osBackend,
 		})
 		if err != nil {
 			log.Printf("[Agent] 创建 Filesystem 中间件失败 - err=%v\n", err)
@@ -119,29 +128,48 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		}
 	}
 
-	var tsMiddleware adk.ChatModelAgentMiddleware
-	if len(deferredTools) > 0 {
-		// UseModelToolSearch=false：使用客户端工具搜索模式。
-		// 原因：当前 eino-ext 的 OpenAI/Ollama 模型实现（v0.1.13/v0.1.9）不支持
-		// model.WithDeferredTools 和 model.WithToolSearchTool option，底层 go-openai
-		// 库的 Tool 结构也无 defer_loading 字段。若设为 true，动态工具会被移入
-		// DeferredToolInfos 后被模型静默丢弃，导致导出/写操作工具完全不可用。
-		// 客户端搜索模式通过每次模型调用前过滤 ToolInfos 管理工具可见性，
-		// 唯一缺点是 KV-cache 失效，但对当前工具数量影响有限。
-		// 当未来模型实现支持 WithDeferredTools 时，可改为 true 以提升缓存命中率。
-		tsMiddleware, err = toolsearch.New(ctx, &toolsearch.Config{
-			DynamicTools:       deferredTools,
-			UseModelToolSearch: false,
-		})
-		if err != nil {
-			log.Printf("[Agent] 创建 ToolSearch 中间件失败 - err=%v\n", err)
-			coreTools = append(coreTools, deferredTools...)
-			deferredTools = nil
-		}
+	// 工具直接静态暴露：核心工具 + 导出/写工具全部进入 ToolInfos。
+	//
+	// 不再使用 toolsearch 客户端搜索模式：
+	//   - 该模式要求模型先调 tool_search 才能看到延迟工具，而 tool_search 未登记
+	//     ToolPolicy 会被执行层拒绝，导致导出/写工具不可发现；
+	//   - 延迟工具的参数 schema 不进入模型，模型只能猜参数；
+	//   - 当前工具总量（≤16）远低于需要动态发现的程度，静态暴露的 token 成本
+	//     低于 tool_search 自身 2.2k 字符的描述。
+	coreTools = append(coreTools, deferredTools...)
+	deferredTools = nil
+	log.Printf("[Agent] 工具注册完成 - visible=%d\n", len(coreTools))
+	recordAgentMetric("ai_tool_registered_total", fmt.Sprint(len(coreTools)))
+	addAgentMetricValue("ai_tool_schema_tokens", int64(countToolSchemaTokensFromBaseTools(ctx, coreTools)), "visible")
+
+	// promptMW 从 context 读取 per-run 系统提示词，在 BeforeAgent 阶段覆盖 Instruction。
+	promptMW := NewDynamicPromptMiddleware()
+
+	resolvedCtxTokens := cfg.MaxContextTokens
+	if resolvedCtxTokens <= 0 {
+		resolvedCtxTokens = defaultContextTokens
+	}
+	// reduction 必须在 PermissionMiddleware 外层（handlers[0] 最外层）：
+	// permission 先调用内层工具并完成脱敏，reduction 再对脱敏后的结果截断/落盘。
+	// 反过来会导致 offload 文件保存原始未脱敏结果。
+	reductionMW := buildEinoReductionMiddleware(resolvedCtxTokens)
+	var datasetMW adk.ChatModelAgentMiddleware
+	if os.Getenv("AGENT_DATASET") != "0" {
+		datasetMW = NewDatasetMiddleware()
 	}
 
-	// promptMW 持有 per-run 系统提示词，RunStream 每次调用前 SetPrompt
-	promptMW := NewDynamicPromptMiddleware()
+	// analyze_data 子 agent：在隔离上下文中完成多步数据分析，只返回结论/证据。
+	// 失败时降级为不注册，主 agent 仍可直接使用原有工具。
+	// 纯文件分析（无连接）不注册：子 agent 的取数/权限链路依赖数据库连接。
+	if connID != "" && os.Getenv("AGENT_ANALYZE_DATA") != "0" {
+		if analyzeTool, analyzeErr := buildAnalyzeDataTool(ctx, cm, connID, dbType, dbSchema, schemas, auditCtx, scope, permAgentTool, reductionMW, datasetMW); analyzeErr != nil {
+			recordAgentMetric("ai_analyze_data_registered", "failed")
+			log.Printf("[Agent] 创建 analyze_data 子 agent 失败，已跳过 - err=%v\n", analyzeErr)
+		} else if analyzeTool != nil {
+			recordAgentMetric("ai_analyze_data_registered", "ok")
+			coreTools = append(coreTools, analyzeTool)
+		}
+	}
 
 	// 中间件执行顺序（eino v0.9.21，adk/wrappers.go）：
 	//   - BeforeAgent / BeforeModelRewriteState / AfterModelRewriteState：按注册顺序正序执行
@@ -159,15 +187,20 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		handlers = append(handlers, patchMW)
 	}
 	handlers = append(handlers, &ToolCallLoggingMiddleware{})
-	if tsMiddleware != nil {
-		handlers = append(handlers, tsMiddleware)
-	}
 	handlers = append(handlers,
 		// ToolErrorRecovery 必须包在权限/审批/Skill 守卫之外：
 		// 工具返回 error 时 eino ToolsNode 会让整次 Run 以错误结束（compose/tool_node.go），
 		// 权限拒绝（PermissionError）若不转换为工具结果，用户看到的是「AI 处理出错」，
 		// 模型也无法向用户解释缺少哪张表/哪个字段的权限。中断信号（审批）会原样透传。
 		&ToolErrorRecoveryMiddleware{},
+	)
+	if reductionMW != nil {
+		handlers = append(handlers, reductionMW)
+	}
+	if datasetMW != nil {
+		handlers = append(handlers, datasetMW)
+	}
+	handlers = append(handlers,
 		&PermissionMiddleware{Scope: scope, PermAgent: permAgentTool, ConnID: connID, Schemas: schemas},
 		&DangerousSQLApprovalMiddleware{},
 		&SkillGuardMiddleware{
@@ -178,29 +211,12 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 			DBSchema: dbSchema,
 		},
 	)
-	resolvedCtxTokens := cfg.MaxContextTokens
-	if resolvedCtxTokens <= 0 {
-		resolvedCtxTokens = defaultContextTokens
-	}
+	handlers = append(handlers, &InjectedContextFilterMiddleware{}, summarizationMW)
 
-	// 替换自定义 ReductionMiddleware 为 eino 官方的 reduction 中间件
-	// 官方实现支持 Offload to File + 完整的 clear 策略，既能裁剪大结果，
-	// 又能保留流式语义（解决自实现 ReductionMiddleware "Recv 全部再切片"
-	// 破坏流式 UX 的问题）。
-	// clear 阈值与模型上下文窗口联动（见 buildEinoReductionMiddleware）。
-	if reductionMW := buildEinoReductionMiddleware(resolvedCtxTokens); reductionMW != nil {
-		handlers = append(handlers, reductionMW)
-	}
-	handlers = append(handlers, summarizationMW)
-
-	// AgentsMD 中间件：在每次模型调用前注入 Agents.md 补充指令。
-	// 必须在 summarization 之后注册，使注入内容排在压缩之后。
-	// 注入消息会进入 eino state.Messages，但会话持久化层按 Extra 标记过滤（见 sessionmw.go），
-	// 不会落库累积；每次模型调用都看到完整最新规范。
-	agentsmdMW := buildAgentsMDMiddleware(ctx)
-	if agentsmdMW != nil {
-		handlers = append(handlers, agentsmdMW)
-	}
+	// Agents.md 已并入系统提示词（buildAgentsMDSection），不再作为 User 消息注入：
+	//   - 规范以 system 优先级生效，不会被后续用户消息覆盖；
+	//   - 不会进入 summarization 输入/transcript/会话历史；
+	//   - 每次 Run 重新读取磁盘文件，仍支持运行时热更新。
 
 	// SessionSyncMiddleware：对接 Eino Memory/Session，
 	// 在 summarization 压缩消息后自动同步到 SessionStore
@@ -248,7 +264,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 		sessions, _ = NewSessionStore()
 	}
 
-	return &SQLAgent{runner: runner, agent: agent, sessions: sessions, dbType: dbType, dbSchema: dbSchema, dbVersion: dbVersion, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW, promptMW: promptMW}, nil
+	return &SQLAgent{runner: runner, sessions: sessions, dbType: dbType, dbSchema: dbSchema, dbVersion: dbVersion, scope: scope, schemas: schemas, maxContextTokens: resolvedCtxTokens, sessionSync: sessionSyncMW}, nil
 }
 
 // buildShouldRetryFunc 构建 v0.9 ShouldRetry 决策函数。
@@ -329,51 +345,4 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 
 		return &adk.RetryDecision{Retry: false}
 	}
-}
-
-// AgentsMD 中间件：在每次模型调用前注入 Agents.md 补充指令。
-// Agents.md 位于项目根目录，包含数据安全规范、SQL 性能规范、方言兼容性提醒等运行时指南。
-// 必须在 summarization 之后注册，使注入内容排在压缩之后；若被摘要压缩丢弃，
-// 下一次模型调用会重新注入，模型始终能看到完整最新规范。
-//
-// 事实澄清（已核对 eino v0.9.21 源码）：注入的是一条 User 消息且会写入 state.Messages
-// （并非"完全不进入状态"）；会话持久化由 sessionmw.go 按 Extra["__agentsmd_content__"] 标记过滤，
-// 因此不会落库、不会在下次加载时重复累积。
-//
-// 读取优先级：
-//  1. 磁盘文件（工作目录下的 AGENTS.md）— 支持运行时热更新
-//  2. 编译时嵌入的内容（_embedded_agents.md）— 确保打包后可用
-//
-// 返回 nil 表示创建失败或文件不存在（非致命，Agent 仍可正常运行）。
-func buildAgentsMDMiddleware(ctx context.Context) adk.ChatModelAgentMiddleware {
-	// 解析磁盘路径（可能不存在，backend 会回退到嵌入内容）
-	diskPath := "AGENTS.md"
-	if absPath, err := filepath.Abs(diskPath); err == nil {
-		diskPath = absPath
-	}
-
-	// 使用嵌入式后端：优先磁盘 → 回退嵌入
-	backend := &embeddedAgentsMDBackend{diskPath: diskPath}
-
-	// agentsmd 中间件需要一个文件路径作为标识（不影响实际读取，因为 backend 会处理）
-	mw, err := agentsmd.New(ctx, &agentsmd.Config{
-		Backend:             backend,
-		AgentsMDFiles:       []string{diskPath},
-		AllAgentsMDMaxBytes: 100_000,
-		OnLoadWarning: func(filePath string, err error) {
-			log.Printf("[AgentsMD] 加载警告 - file=%s, err=%v\n", filePath, err)
-		},
-	})
-	if err != nil {
-		log.Printf("[Agent] 创建 AgentsMD 中间件失败 - err=%v\n", err)
-		return nil
-	}
-
-	// 检测实际来源
-	if _, statErr := os.Stat(diskPath); statErr == nil {
-		log.Printf("[Agent] AgentsMD 已启用（来源：磁盘文件）- file=%s\n", diskPath)
-	} else {
-		log.Printf("[Agent] AgentsMD 已启用（来源：嵌入内容，%d 字节）\n", len(embeddedAgentsMD))
-	}
-	return mw
 }

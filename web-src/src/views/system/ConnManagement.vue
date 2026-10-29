@@ -202,12 +202,67 @@
           />
         </el-form-item>
         <el-form-item label="连接信息" required>
-          <el-input
-            v-model="connForm.url"
-            type="textarea"
-            :rows="3"
-            placeholder="如 jdbc:mysql://host:3306/db 或 主机:端口/库名"
-          />
+          <div class="url-field">
+            <el-input
+              v-model="connForm.url"
+              type="textarea"
+              :rows="3"
+              :placeholder="jdbcPlaceholder"
+            />
+            <!-- jdbc 串实时识别：拆出主机/端口/库(schema)与参数映射，仅用于本次提交，不额外落库 -->
+            <div v-if="showJdbcPanel" class="jdbc-parse" :class="{ 'is-error': !jdbcInfo.ok }">
+              <div class="jdbc-parse-head">
+                <el-icon :size="13"><MagicStick /></el-icon>
+                <span>JDBC 自动识别</span>
+                <el-tag v-if="jdbcInfo.supported" size="small" effect="plain">{{ getDbTypeLabel(jdbcInfo.dbType) }}</el-tag>
+                <el-tag v-else size="small" type="danger" effect="plain">未接入</el-tag>
+                <span v-if="jdbcInfo.host" class="jdbc-target">
+                  {{ jdbcInfo.host }}:{{ jdbcInfo.port }}
+                  <template v-if="jdbcInfo.schema"> / {{ jdbcInfo.schema }}</template>
+                  <template v-if="jdbcInfo.sid"> / SID {{ jdbcInfo.sid }}</template>
+                </span>
+              </div>
+              <p v-if="!jdbcInfo.ok" class="jdbc-error">{{ jdbcInfo.error }}</p>
+              <!-- 识别明细独立滚动：标题与目标信息常驻，避免长参数串把对话框撑高 -->
+              <div v-else class="jdbc-parse-body">
+                <div class="jdbc-row"><span class="jdbc-row-label">规范化连接串</span><code>{{ jdbcInfo.dsn }}</code></div>
+                <div v-if="jdbcInfo.user" class="jdbc-row">
+                  <span class="jdbc-row-label">串内用户名</span><code>{{ jdbcInfo.user }}</code>
+                  <el-button
+                    v-if="!connForm.user"
+                    type="primary"
+                    size="small"
+                    link
+                    @click="connForm.user = jdbcInfo.user"
+                  >填入用户名</el-button>
+                </div>
+                <div v-if="jdbcInfo.hasPassword" class="jdbc-row jdbc-row--warn">
+                  串内含口令，请在「密码」框单独填写（识别结果不自动写入）
+                </div>
+                <div v-if="jdbcInfo.dbType && jdbcInfo.dbType !== connForm.dbType" class="jdbc-row jdbc-row--warn">
+                  识别为 {{ getDbTypeLabel(jdbcInfo.dbType) }}，与当前所选 {{ getDbTypeLabel(connForm.dbType) }} 不同，测试/保存时按识别结果下发
+                </div>
+                <div v-if="jdbcMappedParams.length || jdbcDroppedParams.length" class="jdbc-params">
+                  <div class="jdbc-params-head" @click="jdbcParamsOpen = !jdbcParamsOpen">
+                    <el-icon :size="12"><component :is="jdbcParamsOpen ? ArrowDown : ArrowRight" /></el-icon>
+                    <span>连接参数共 {{ jdbcMappedParams.length + jdbcDroppedParams.length }} 项（映射 {{ jdbcMappedParams.length }} / 忽略 {{ jdbcDroppedParams.length }}）</span>
+                  </div>
+                  <template v-if="jdbcParamsOpen">
+                    <div v-for="(p, i) in jdbcMappedParams" :key="'m' + i" class="jdbc-param">
+                      <code>{{ p.source }}={{ p.value }}</code> → <code>{{ p.target }}={{ p.targetValue }}</code>
+                      <span class="jdbc-note">{{ p.note }}</span>
+                    </div>
+                    <div v-for="(p, i) in jdbcDroppedParams" :key="'d' + i" class="jdbc-param jdbc-param--drop">
+                      已忽略 <code>{{ p.source }}</code><span class="jdbc-note">{{ p.note }}</span>
+                    </div>
+                  </template>
+                </div>
+                <ul v-if="jdbcInfo.warnings.length" class="jdbc-warnings">
+                  <li v-for="(w, i) in jdbcInfo.warnings" :key="i">{{ w }}</li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="只读连接">
           <div style="display: flex; align-items: center; gap: 10px;">
@@ -280,8 +335,9 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { listConn, saveConn, testDbConn, delConn, listDirTree, delTreeNode, saveTree, unlockConnWrite } from '@/api/conn'
 import { ElMessage } from 'element-plus'
 import { handleError } from '@/utils/errorHandler'
-import { Check, Connection, Delete, Edit, Folder, Plus, Search, UserFilled, Warning } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Check, Connection, Delete, Edit, Folder, MagicStick, Plus, Search, UserFilled, Warning } from '@element-plus/icons-vue'
 import DbUserSchemaManager from '@/components/db-tools/DbUserSchemaManager.vue'
+import { parseJdbcUrl } from '@/utils/jdbcUrl'
 
 // 「未指定（无目录）」虚拟分组节点 id，不落库
 const NONE_DIR_ID = '__none_dir__'
@@ -571,6 +627,31 @@ const dirOptions = computed(() => {
   return map(treeData.value)
 })
 
+// ===== JDBC 串实时识别 =====
+// 仅当输入以 jdbc: 开头时生效：拆出主机/端口/库(schema)与参数映射。
+// 识别结果只服务本次编辑，不新增持久化字段：提交时只把规范化后的连接串写入既有 url。
+const jdbcInfo = computed(() => parseJdbcUrl(connForm.value.url))
+const jdbcMappedParams = computed(() => (jdbcInfo.value ? jdbcInfo.value.params.filter(p => p.action !== 'dropped') : []))
+const jdbcDroppedParams = computed(() => (jdbcInfo.value ? jdbcInfo.value.params.filter(p => p.action === 'dropped') : []))
+const jdbcPlaceholder = 'jdbc:mysql://host:3306/db?characterEncoding=utf8（自动识别）\n或 tcp(主机:端口)/库名?参数、主机:端口/服务名'
+
+// 识别失败时，输入看着还不像完整连接串（没 / @ ( 定界符）就先不打扰，避免逐字报错
+const showJdbcPanel = computed(() => {
+  const j = jdbcInfo.value
+  if (!j) return false
+  return j.ok || /[/@(]/.test(String(connForm.value.url || '').trim().slice(5))
+})
+
+// 参数明细默认展开；长串可手动收起，避免把对话框撑得过高
+const jdbcParamsOpen = ref(true)
+
+// 下发给后端的 url / dbType：jdbc 输入取识别结果，其余原样透传
+const resolveConnTarget = () => {
+  const j = jdbcInfo.value
+  if (!j) return { url: connForm.value.url, dbType: connForm.value.dbType }
+  return { url: j.dsn, dbType: j.dbType || connForm.value.dbType }
+}
+
 const openAddConn = (parentId = '') => {
   hasSavedSsh.value = false
   connForm.value = { id: '', name: '', dbType: 'mysql', parentId: parentId || '', user: '', pwd: '', url: '', readOnly: false, sshEnabled: false, sshHost: '', sshPort: 22, sshUser: '', sshAuthType: 'password', sshPassword: '', sshKeyPath: '', sshKeyPassphrase: '', sshKnownHostsPath: '' }
@@ -616,15 +697,17 @@ const submitConn = () => {
   if (!form.name || !form.name.trim()) { ElMessage.warning('请输入连接名称'); return }
   if (!form.dbType) { ElMessage.warning('请选择数据库类型'); return }
   if (!form.url || !form.url.trim()) { ElMessage.warning('请输入连接信息'); return }
+  if (jdbcInfo.value && !jdbcInfo.value.ok) { ElMessage.warning(jdbcInfo.value.error); return }
 
+  const target = resolveConnTarget()
   const isCreate = !form.id
   const payload = {
     id: form.id || '',
     name: form.name,
-    dbType: form.dbType,
+    dbType: target.dbType,
     parentId: form.parentId || '',
     user: form.user || '',
-    url: form.url,
+    url: target.url,
     readOnly: !!form.readOnly
   }
   if (form.sshEnabled) {
@@ -637,7 +720,8 @@ const submitConn = () => {
   if (form.pwd) payload.pwd = form.pwd
 
   connSaving.value = true
-  saveConn(payload).then((resp) => {
+  // skipGlobalError：避开拦截器全局弹窗与 handleError 叠加成两条提示
+  saveConn(payload, { skipGlobalError: true }).then((resp) => {
     const saved = (resp.data && resp.data.data) || null
     const targetId = saved && saved.parentId != null ? saved.parentId : (form.parentId || '')
 
@@ -646,7 +730,7 @@ const submitConn = () => {
         id: (saved && saved.id) || '',
         label: (saved && saved.name) || form.name,
         type: 'conn',
-        dbType: (saved && saved.dbType) || form.dbType,
+        dbType: (saved && saved.dbType) || target.dbType,
         raw: saved || { ...payload },
         testing: false,
         children: []
@@ -674,6 +758,9 @@ const submitConn = () => {
     if (isCreate && !(saved && saved.id)) {
       loadData().catch(() => {})
     }
+  }).catch((e) => {
+    // 保存前的连接校验与 SSH 隧道建链失败都要把后端原因透传出来，否则用户只看到“没反应”
+    handleError(e, '保存连接')
   }).finally(() => {
     connSaving.value = false
   })
@@ -708,32 +795,34 @@ const validateSshForm = () => {
 
 const testConnForm = () => {
   if (!connForm.value.url) { ElMessage.warning('请先填写连接信息'); return }
+  if (jdbcInfo.value && !jdbcInfo.value.ok) { ElMessage.warning(jdbcInfo.value.error); return }
   if (!validateSshForm()) return
+  const target = resolveConnTarget()
   const ssh = buildSshConfig()
   const payload = {
     id: connForm.value.id || '',
-    dbType: connForm.value.dbType,
+    dbType: target.dbType,
     user: connForm.value.user || '',
-    url: connForm.value.url,
+    url: target.url,
   }
   if (connForm.value.pwd) payload.pwd = connForm.value.pwd
   if (ssh) payload.ssh = ssh
   connTesting.value = true
-  testDbConn(payload)
+  testDbConn(payload, { skipGlobalError: true })
     .then((resp) => {
       if (resp.data.code === 200) ElMessage.success('数据库连接成功')
     })
-    .catch(() => {})
+    .catch((e) => handleError(e, '测试连接'))
     .finally(() => { connTesting.value = false })
 }
 
 const testConnNode = (node) => {
   node.testing = true
-  testDbConn(node.raw)
+  testDbConn(node.raw, { skipGlobalError: true })
     .then((resp) => {
       if (resp.data.code === 200) ElMessage.success('数据库连接成功')
     })
-    .catch(() => {})
+    .catch((e) => handleError(e, '测试连接'))
     .finally(() => { node.testing = false })
 }
 
@@ -954,6 +1043,117 @@ onMounted(() => {
 .readonly-tip {
   font-size: 12px;
   color: var(--db-text-tertiary, #909399);
+}
+
+/* JDBC 识别区：紧跟连接信息输入框，只读展示不落库 */
+.url-field {
+  width: 100%;
+}
+
+.jdbc-parse {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-left: 3px solid var(--accent-color, #409eff);
+  border-radius: 6px;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.02));
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  /* 面板限高：标题常驻，明细区内部滚动，避免拉长对话框 */
+  display: flex;
+  flex-direction: column;
+  max-height: min(30vh, 220px);
+  overflow: hidden;
+}
+
+.jdbc-parse.is-error {
+  border-left-color: var(--el-color-danger, #f56c6c);
+}
+
+.jdbc-parse-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.jdbc-parse-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+/* 长连接串/参数值强制断行，避免滚动区出现横向滚动条 */
+.jdbc-parse-body code {
+  word-break: break-all;
+}
+
+.jdbc-target {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-primary);
+}
+
+.jdbc-error {
+  margin: 6px 0 0;
+  color: var(--el-color-danger, #f56c6c);
+}
+
+.jdbc-row {
+  margin-top: 4px;
+}
+
+.jdbc-row-label {
+  color: var(--text-tertiary);
+  margin-right: 6px;
+}
+
+.jdbc-row--warn {
+  color: var(--warning-color, #e6a23c);
+}
+
+.jdbc-params {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-primary);
+}
+
+.jdbc-params-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+}
+
+.jdbc-params-head:hover {
+  color: var(--accent-color, #409eff);
+}
+
+.jdbc-param code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-primary);
+}
+
+.jdbc-param--drop {
+  color: var(--text-tertiary);
+}
+
+.jdbc-note {
+  margin-left: 6px;
+  color: var(--text-tertiary);
+}
+
+.jdbc-warnings {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--warning-color, #e6a23c);
 }
 
 .conn-meta {

@@ -23,6 +23,9 @@ func codegenIsolationAvailable() bool {
 	return false
 }
 
+// isolateCodegenRunDir 其他平台无隔离实现，创建目录时不做预处理。
+func isolateCodegenRunDir(string) error { return nil }
+
 func applyCodegenIsolation(_ *exec.Cmd, _ string) (func(), error) {
 	return nil, fmt.Errorf("当前平台无可用 OS 级隔离")
 }

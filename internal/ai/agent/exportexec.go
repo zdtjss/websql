@@ -20,13 +20,14 @@ import (
 
 // exportQueryRunner 实现 export.QueryRunner。
 type exportQueryRunner struct {
+	connID string
 	conn   *sqlx.DB
 	scope  *PermissionScope
 	userID string
 }
 
-func newExportQueryRunner(conn *sqlx.DB, scope *PermissionScope, userID string) *exportQueryRunner {
-	return &exportQueryRunner{conn: conn, scope: scope, userID: userID}
+func newExportQueryRunner(connID string, conn *sqlx.DB, scope *PermissionScope, userID string) *exportQueryRunner {
+	return &exportQueryRunner{connID: connID, conn: conn, scope: scope, userID: userID}
 }
 
 // QueryForExport 在导出取数前完成权限校验，并对结果执行脱敏。
@@ -37,6 +38,13 @@ func (r *exportQueryRunner) QueryForExport(ctx context.Context, sqlText string, 
 	sec, err := RunSecurityFrom(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// 优先使用本次运行中目标连接的 Scope，避免沿用构建期快照。
+	scope := r.scope
+	if r.connID != "" {
+		if s, scopeErr := sec.ScopeFor(r.connID); scopeErr == nil {
+			scope = s
+		}
 	}
 	if !sec.DataToolsAllowed() {
 		return nil, &PermissionError{Message: "数据访问安全依赖不可用，已禁止导出"}
@@ -59,7 +67,7 @@ func (r *exportQueryRunner) QueryForExport(ctx context.Context, sqlText string, 
 
 	tables := appperm.ExtractTablesFromSQL(sqlText)
 	for _, table := range tables {
-		if !r.scope.IsTableRefAllowed(table) {
+		if !scope.IsTableRefAllowed(table) {
 			recordSecurityEvent(StageExport, "table", "deny")
 			return nil, &PermissionError{
 				Message: "导出涉及无权访问的数据表",
@@ -68,7 +76,7 @@ func (r *exportQueryRunner) QueryForExport(ctx context.Context, sqlText string, 
 		}
 	}
 	// 导出结果直接落盘，没有结果过滤兜底：严格列校验（禁止 SELECT *、来源必须明确）
-	if err := authorizeColumnsInSQL(r.scope, sqlText, tables, columnCheckOptions{
+	if err := authorizeColumnsInSQL(scope, sqlText, tables, columnCheckOptions{
 		RejectStar:         true,
 		RequireKnownOrigin: true,
 	}); err != nil {
@@ -93,8 +101,8 @@ func (r *exportQueryRunner) QueryForExport(ctx context.Context, sqlText string, 
 		masker = NewNoopMasker()
 	}
 	out := QueryOutput{Columns: qr.Columns, Data: qr.Data, Count: len(qr.Data)}
-	origins := resolveColumnOriginsForNames(sqlText, qr.Columns, r.scope)
-	masker.MaskQueryOutput(&out, tables, origins, r.scope)
+	origins := resolveColumnOriginsForNames(sqlText, qr.Columns, scope)
+	masker.MaskQueryOutput(&out, tables, origins, scope)
 	// 候选策略 2 同样作用于文件结果：shadow 不改变导出内容，enforce 整列脱敏。
 	if candidateColumns := candidateMaskHighRiskColumns(sec, out.Columns, origins, masker); len(candidateColumns) > 0 {
 		redactQueryOutputColumns(&out, candidateColumns)

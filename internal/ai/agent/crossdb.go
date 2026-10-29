@@ -193,28 +193,28 @@ func resolveJoinKeys(keys []string, single string) ([]string, error) {
 }
 
 type CrossDBJoinInput struct {
-	LeftConnID  string       `json:"leftConnId,omitempty"`
-	LeftTable   string       `json:"leftTable" jsonschema:"required"`
-	LeftKey     string       `json:"leftKey,omitempty"`   // 单列 join key（与 leftKeys 二选一，优先 leftKeys）
-	LeftKeys    []string     `json:"leftKeys,omitempty"`  // 复合 join key（多列联合匹配）
-	LeftWhere   string       `json:"leftWhere,omitempty"` // 左侧过滤条件（仅支持简单表达式，见 validateWhereClause）
-	LeftSelect  []string     `json:"leftSelect,omitempty"`
-	RightConnID string       `json:"rightConnId,omitempty"`
-	RightTable  string       `json:"rightTable" jsonschema:"required"`
-	RightKey    string       `json:"rightKey,omitempty"`
-	RightKeys   []string     `json:"rightKeys,omitempty"`
-	RightWhere  string       `json:"rightWhere,omitempty"`
-	RightSelect []string     `json:"rightSelect,omitempty"`
-	JoinType    string       `json:"joinType,omitempty"` // inner|left|right|full
-	Metrics     []JoinMetric `json:"metrics,omitempty"`
-	Limit       int          `json:"limit,omitempty"`
-	SampleLimit int          `json:"sampleLimit,omitempty"`
+	LeftConnID  string       `json:"leftConnId,omitempty" jsonschema_description:"左侧连接 ID 或 Schema 名；不填=默认连接"`
+	LeftTable   string       `json:"leftTable" jsonschema:"required" jsonschema_description:"左表名（可带 schema 前缀）"`
+	LeftKey     string       `json:"leftKey,omitempty" jsonschema_description:"左表单列 join key（与 leftKeys 二选一，优先 leftKeys）"`
+	LeftKeys    []string     `json:"leftKeys,omitempty" jsonschema_description:"左表复合 join key（多列联合匹配）"`
+	LeftWhere   string       `json:"leftWhere,omitempty" jsonschema_description:"左表过滤条件，仅支持「列 操作符 字面量」+ AND/OR/NOT/IN/BETWEEN/LIKE/IS NULL"`
+	LeftSelect  []string     `json:"leftSelect,omitempty" jsonschema_description:"左表显式返回列；列级权限表必须列出允许字段"`
+	RightConnID string       `json:"rightConnId,omitempty" jsonschema_description:"右侧连接 ID 或 Schema 名；不填=默认连接"`
+	RightTable  string       `json:"rightTable" jsonschema:"required" jsonschema_description:"右表名（可带 schema 前缀）"`
+	RightKey    string       `json:"rightKey,omitempty" jsonschema_description:"右表单列 join key（与 rightKeys 二选一，优先 rightKeys）"`
+	RightKeys   []string     `json:"rightKeys,omitempty" jsonschema_description:"右表复合 join key（多列联合匹配）"`
+	RightWhere  string       `json:"rightWhere,omitempty" jsonschema_description:"右表过滤条件，语法同 leftWhere"`
+	RightSelect []string     `json:"rightSelect,omitempty" jsonschema_description:"右表显式返回列；列级权限表必须列出允许字段"`
+	JoinType    string       `json:"joinType,omitempty" jsonschema_description:"关联类型：inner|left|right|full，默认 inner"`
+	Metrics     []JoinMetric `json:"metrics,omitempty" jsonschema_description:"聚合指标列表（count/sum/avg/min/max）"`
+	Limit       int          `json:"limit,omitempty" jsonschema_description:"两侧各取的最大行数（受服务端硬上限约束）"`
+	SampleLimit int          `json:"sampleLimit,omitempty" jsonschema_description:"返回样本行数上限"`
 }
 
 type JoinMetric struct {
-	Func   string `json:"func,omitempty"`   // count|sum|avg|min|max
-	Column string `json:"column,omitempty"` // "left.amount" / "right.amount"（count 可省略）
-	Alias  string `json:"alias,omitempty"`
+	Func   string `json:"func,omitempty" jsonschema_description:"聚合函数：count|sum|avg|min|max"`
+	Column string `json:"column,omitempty" jsonschema_description:"聚合列，格式 left.<col> 或 right.<col>；count 可省略"`
+	Alias  string `json:"alias,omitempty" jsonschema_description:"结果别名"`
 }
 
 type JoinMetricResult struct {

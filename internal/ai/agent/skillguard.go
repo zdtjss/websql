@@ -89,8 +89,8 @@ func (m *SkillGuardMiddleware) WrapInvokableToolCall(
 		// 1. skill 工具：依赖检查 + 活跃 Skill 追踪
 		if tCtx.Name == "skill" {
 			if blocked := m.checkSkillDependencies(ctx, argumentsInJSON); blocked != "" {
-				log.Printf("[SkillGuard] 依赖检查未通过 - args=%s, reason=%s\n",
-					truncateArgsForLog(argumentsInJSON), blocked)
+				log.Printf("[SkillGuard] 依赖检查未通过 - args{%s}, reason=%s\n",
+					safeTextSummary(argumentsInJSON), blocked)
 				// 依赖不满足时清除活跃 Skill，避免其 errorHints 串到后续场景
 				m.clearActiveSkill(ctx)
 				return blocked, nil
@@ -101,8 +101,8 @@ func (m *SkillGuardMiddleware) WrapInvokableToolCall(
 		// 2. exec_sql / query_data 工具：命令黑名单检查
 		if tCtx.Name == "exec_sql" || tCtx.Name == "query_data" {
 			if blocked := m.checkBlacklist(argumentsInJSON); blocked != "" {
-				log.Printf("[SkillGuard] 命令黑名单拦截 - tool=%s, args=%s\n",
-					tCtx.Name, truncateArgsForLog(argumentsInJSON))
+				log.Printf("[SkillGuard] 命令黑名单拦截 - tool=%s, args{%s}\n",
+					tCtx.Name, safeTextSummary(argumentsInJSON))
 				return blocked, nil
 			}
 		}
@@ -121,8 +121,8 @@ func (m *SkillGuardMiddleware) WrapStreamableToolCall(
 		// 1. skill 工具：依赖检查 + 活跃 Skill 追踪
 		if tCtx.Name == "skill" {
 			if blocked := m.checkSkillDependencies(ctx, argumentsInJSON); blocked != "" {
-				log.Printf("[SkillGuard:Stream] 依赖检查未通过 - args=%s, reason=%s\n",
-					truncateArgsForLog(argumentsInJSON), blocked)
+				log.Printf("[SkillGuard:Stream] 依赖检查未通过 - args{%s}, reason=%s\n",
+					safeTextSummary(argumentsInJSON), blocked)
 				// 依赖不满足时清除活跃 Skill，避免其 errorHints 串到后续场景
 				m.clearActiveSkill(ctx)
 				return schema.StreamReaderFromArray([]string{blocked}), nil
@@ -133,8 +133,8 @@ func (m *SkillGuardMiddleware) WrapStreamableToolCall(
 		// 2. exec_sql / query_data 工具：命令黑名单检查
 		if tCtx.Name == "exec_sql" || tCtx.Name == "query_data" {
 			if blocked := m.checkBlacklist(argumentsInJSON); blocked != "" {
-				log.Printf("[SkillGuard:Stream] 命令黑名单拦截 - tool=%s, args=%s\n",
-					tCtx.Name, truncateArgsForLog(argumentsInJSON))
+				log.Printf("[SkillGuard:Stream] 命令黑名单拦截 - tool=%s, args{%s}\n",
+					tCtx.Name, safeTextSummary(argumentsInJSON))
 				return schema.StreamReaderFromArray([]string{blocked}), nil
 			}
 		}

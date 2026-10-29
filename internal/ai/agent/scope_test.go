@@ -61,7 +61,7 @@ func TestPermissionScope_CrossSchemaSameTableIsolation(t *testing.T) {
 
 func TestPermissionScope_SkipChecks(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		scope *PermissionScope
 		want  bool
 	}{
@@ -569,7 +569,7 @@ func TestPermissionScope_FilterResultColumns(t *testing.T) {
 		scope := &PermissionScope{
 			IsRemote:       true,
 			AllSchemasFull: false,
-			AllowedTables:  map[string]bool{"orders": true}, // full access
+			AllowedTables:  map[string]bool{"orders": true},                   // full access
 			AllowedColumns: map[string]map[string]bool{"users": {"id": true}}, // column access
 		}
 		cols := []string{"id", "name", "order_id"}

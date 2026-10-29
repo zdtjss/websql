@@ -10,7 +10,6 @@ import (
 	"time"
 
 	system "websql/internal/app/system"
-	"websql/internal/pkg/strutil"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -227,12 +226,7 @@ func callPermissionAgent(ctx context.Context, permAgent tool.BaseTool, sql, tool
 	}
 
 	startTime := time.Now()
-	sqlPreview := sql
-	if len(sqlPreview) > 200 {
-		sqlPreview = strutil.TruncateBytes(sqlPreview, 200) + "...(truncated)"
-	}
-	sqlPreview = strings.ReplaceAll(sqlPreview, "\n", " ")
-	log.Printf("[PermAgent] 开始权限检查 - tool=%s, sqlLen=%d, sql=%s\n", toolName, len(sql), sqlPreview)
+	log.Printf("[PermAgent] 开始权限检查 - tool=%s, sql{%s}\n", toolName, safeSQLSummary(sql))
 
 	result, err := invokable.InvokableRun(ctx, string(inputJSON))
 	elapsed := time.Since(startTime)
@@ -245,12 +239,8 @@ func callPermissionAgent(ctx context.Context, permAgent tool.BaseTool, sql, tool
 
 	decision, err := unmarshalPermDecision(result)
 	if err != nil {
-		rawPreview := result
-		if len(rawPreview) > 300 {
-			rawPreview = strutil.TruncateBytes(rawPreview, 300) + "...(truncated)"
-		}
-		log.Printf("[PermAgent] 结果解析失败 - tool=%s, duration=%v, err=%v, raw=%s\n", toolName, elapsed, err, rawPreview)
-		return nil, fmt.Errorf("parse permission agent result failed: %w, raw=%s", err, result)
+		log.Printf("[PermAgent] 结果解析失败 - tool=%s, duration=%v, err=%v, raw{%s}\n", toolName, elapsed, err, safeTextSummary(result))
+		return nil, fmt.Errorf("parse permission agent result failed: %w", err)
 	}
 
 	if decision.Allowed {
@@ -326,8 +316,8 @@ func (m *PermToolCallLoggingMiddleware) WrapInvokableToolCall(
 		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
 			iterNum = *ic
 		}
-		argsPreview := truncateArgsForLog(argumentsInJSON)
-		log.Printf("[PermAgentTool] 开始调用 - iter=%d, name=%s, callID=%s, args=%s\n",
+		argsPreview := safeTextSummary(argumentsInJSON)
+		log.Printf("[PermAgentTool] 开始调用 - iter=%d, name=%s, callID=%s, args{%s}\n",
 			iterNum, tCtx.Name, tCtx.CallID, argsPreview)
 
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
@@ -337,9 +327,8 @@ func (m *PermToolCallLoggingMiddleware) WrapInvokableToolCall(
 			log.Printf("[PermAgentTool] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
 				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
 		} else {
-			resultPreview := truncateResultForLog(result)
-			log.Printf("[PermAgentTool] 调用完成 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d, result=%s\n",
-				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(result), resultPreview)
+			log.Printf("[PermAgentTool] 调用完成 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(result))
 		}
 
 		return result, err

@@ -594,6 +594,7 @@ func (s *PermissionScope) DescribeForPrompt() string {
 		for name := range s.FullAccessSchemas {
 			schemaNames = append(schemaNames, name)
 		}
+		sort.Strings(schemaNames)
 		schemaDesc := strings.Join(schemaNames, ", ")
 		if !s.CanAIModifyData() {
 			return fmt.Sprintf("\n\n## 数据权限（违反将被拦截）\n✅ Schema [%s] 全部表和字段可访问\n⛔ **禁止修改数据（含 AI 数据写操作）**。不得生成或执行任何写操作 SQL。用户要求修改时告知：当前角色未开放 AI 数据修改权限。\n❌ 禁止访问未列出的 Schema。\n", schemaDesc)
@@ -613,18 +614,44 @@ func (s *PermissionScope) DescribeForPrompt() string {
 		sb.WriteString("| 表名 | 访问级别 | 可用字段 |\n")
 		sb.WriteString("|------|---------|--------|\n")
 
+		// 稳定排序 + 数量上限：权限表可能包含成百上千张表，
+		// 无上限会挤占上下文，无序会导致每轮 prompt 变化破坏前缀缓存。
+		const (
+			maxPromptTables  = 30
+			maxPromptColumns = 10
+		)
+		tableNames := make([]string, 0, len(s.AllowedTables)+len(s.AllowedColumns))
 		for t := range s.AllowedTables {
-			fmt.Fprintf(&sb, "| %s | full | 全部 |\n", t)
+			tableNames = append(tableNames, t)
 		}
-		for table, cols := range s.AllowedColumns {
+		for t := range s.AllowedColumns {
+			if !s.AllowedTables[t] {
+				tableNames = append(tableNames, t)
+			}
+		}
+		sort.Strings(tableNames)
+		totalTables := len(tableNames)
+		if len(tableNames) > maxPromptTables {
+			tableNames = tableNames[:maxPromptTables]
+		}
+		for _, table := range tableNames {
 			if s.AllowedTables[table] {
+				fmt.Fprintf(&sb, "| %s | full | 全部 |\n", table)
 				continue
 			}
+			cols := s.AllowedColumns[table]
 			colList := make([]string, 0, len(cols))
 			for col := range cols {
 				colList = append(colList, col)
 			}
+			sort.Strings(colList)
+			if len(colList) > maxPromptColumns {
+				colList = append(colList[:maxPromptColumns], fmt.Sprintf("...(+%d)", len(cols)-maxPromptColumns))
+			}
 			fmt.Fprintf(&sb, "| %s | column | %s |\n", table, strings.Join(colList, ", "))
+		}
+		if totalTables > maxPromptTables {
+			fmt.Fprintf(&sb, "\n> 共 %d 张有权限的表，仅列出前 %d 张；其余请用 list_tables 分页查看。\n", totalTables, maxPromptTables)
 		}
 		sb.WriteString("\n")
 	}

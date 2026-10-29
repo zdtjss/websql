@@ -56,17 +56,35 @@ def parse_docx(path):
 
     document = docx.Document(path)
     blocks = []
+    sections = []
+    offset = 0
     for para in document.paragraphs:
         text = (para.text or "").strip()
-        if text:
-            blocks.append(text)
+        if not text:
+            continue
+        style = getattr(getattr(para, "style", None), "name", "") or ""
+        lowered = style.lower()
+        if lowered.startswith("heading"):
+            level = 1
+            digits = "".join(ch for ch in style if ch.isdigit())
+            if digits:
+                level = int(digits)
+            sections.append({"title": text, "level": level, "startChar": offset})
+        blocks.append(text)
+        offset += len(text) + 1
     for table in document.tables:
         for row in table.rows:
             cells = [(cell.text or "").strip().replace("\n", " ") for cell in row.cells]
             if any(cells):
-                blocks.append("\t".join(cells))
+                line = "\t".join(cells)
+                blocks.append(line)
+                offset += len(line) + 1
+    text = "\n".join(blocks)
+    for index, section in enumerate(sections):
+        section["endChar"] = (sections[index + 1]["startChar"]
+                              if index + 1 < len(sections) else len(text))
     meta = {"paragraphs": len(document.paragraphs), "tables": len(document.tables)}
-    return "\n".join(blocks), 0, meta, ""
+    return text, 0, meta, "", sections, []
 
 
 def parse_pdf(path):
@@ -74,8 +92,10 @@ def parse_pdf(path):
     import pdfplumber
 
     blocks = []
+    page_list = []
     empty_pages = 0
     pages = 0
+    offset = 0
     with pdfplumber.open(path) as pdf:
         pages = len(pdf.pages)
         for index, page in enumerate(pdf.pages, start=1):
@@ -87,8 +107,15 @@ def parse_pdf(path):
             if not text:
                 empty_pages += 1
                 continue
-            blocks.append("----- 第 %d 页 -----\n%s" % (index, text))
+            block = "----- 第 %d 页 -----\n%s" % (index, text)
+            page_list.append({"number": index, "startChar": offset})
+            blocks.append(block)
+            offset += len(block) + 2  # "\n\n".join 的分隔符
 
+    text = "\n\n".join(blocks)
+    for index, page in enumerate(page_list):
+        page["endChar"] = (page_list[index + 1]["startChar"]
+                           if index + 1 < len(page_list) else len(text))
     meta = {"emptyPages": empty_pages}
     if not blocks:
         notice = "未能从 PDF 中提取到文本，可能是扫描件或纯图片型 PDF（可改为上传页面截图，由视觉模型识别）"
@@ -96,7 +123,7 @@ def parse_pdf(path):
         notice = "有 %d 页未提取到文本（可能为图片页）" % empty_pages
     else:
         notice = ""
-    return "\n\n".join(blocks), pages, meta, notice
+    return text, pages, meta, notice, [], page_list
 
 
 def main():
@@ -116,11 +143,13 @@ def main():
     if not path or not os.path.isfile(path):
         return fail("文件不存在或不可读（可能已过期，请重新上传）")
 
+    sections = []
+    page_list = []
     try:
         if kind == "docx":
-            text, pages, meta, notice = parse_docx(path)
+            text, pages, meta, notice, sections, page_list = parse_docx(path)
         elif kind == "pdf":
-            text, pages, meta, notice = parse_pdf(path)
+            text, pages, meta, notice, sections, page_list = parse_pdf(path)
         else:
             return fail("不支持的文件类型：%s" % (kind or "未知"))
     except Exception as exc:  # noqa: BLE001 —— 统一转为结构化错误返回
@@ -130,12 +159,19 @@ def main():
     if max_chars > 0 and total > max_chars:
         text = text[:max_chars]
         notice = (notice + "；" if notice else "") + ("文档过长，仅保留前 %d 字符" % max_chars)
+        sections = [s for s in sections if s.get("startChar", 0) < len(text)]
+        page_list = [p for p in page_list if p.get("startChar", 0) < len(text)]
+        for item in sections + page_list:
+            if item.get("endChar", 0) > len(text):
+                item["endChar"] = len(text)
 
     emit({
         "ok": True,
         "text": text,
         "totalChars": total,
         "pages": pages,
+        "sections": sections,
+        "pageList": page_list,
         "meta": meta,
         "notice": notice,
     })

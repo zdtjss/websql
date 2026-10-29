@@ -343,6 +343,8 @@ function setFileData(file, headers, data) {
   selectedFile.value = file
   excelHeaders.value = headers
   excelData.value = data
+  // 每次导入新文件时重置起始行，避免沿用上一次的设置导致预览为空
+  dataStartRow.value = 1
 }
 
 function setImportMode(mode) {

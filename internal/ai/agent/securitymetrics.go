@@ -31,6 +31,13 @@ const (
 
 var securityCounters sync.Map // string -> *atomic.Int64
 
+func init() {
+	// 预注册零值指标：tool_search 已随 toolsearch 中间件移除；
+	// resume 提示词缺失应为 0，便于看板直接断言。
+	addAgentMetricValue("ai_tool_search_failed", 0, "removed")
+	addAgentMetricValue("ai_resume_without_prompt", 0, "true")
+}
+
 // securityDurations 记录各阶段耗时（仅聚合，不含任何资源标识）。
 type securityDuration struct {
 	sumNanos atomic.Int64
@@ -68,6 +75,30 @@ func incSecurityCounter(key string) {
 // recordSecurityEvent 记录 ai_security_check_total{stage,action,result}。
 func recordSecurityEvent(stage, action, result string) {
 	incSecurityCounter("ai_security_check_total|" + stage + "|" + action + "|" + result)
+}
+
+// recordAgentMetric 记录低基数 Agent 运行指标（name|label...）。
+// label 只能使用代码内常量（tool/result/source 等），禁止放 userId/sessionId。
+func recordAgentMetric(name string, labels ...string) {
+	addAgentMetricValue(name, 1, labels...)
+}
+
+// addAgentMetricValue 以增量方式累加低基数指标（用于 token 等累计值）。
+func addAgentMetricValue(name string, delta int64, labels ...string) {
+	key := name
+	for _, label := range labels {
+		key += "|" + label
+	}
+	if v, ok := securityCounters.Load(key); ok {
+		v.(*atomic.Int64).Add(delta)
+		return
+	}
+	counter := &atomic.Int64{}
+	counter.Add(delta)
+	actual, loaded := securityCounters.LoadOrStore(key, counter)
+	if loaded {
+		actual.(*atomic.Int64).Add(delta)
+	}
 }
 
 // recordMaskEvent 记录 ai_security_mask_total{stage,action}。

@@ -135,6 +135,11 @@ func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, stat
 				log.Printf("%s [ToolInfos] 移除代码/文件写工具 - tool=%s\n", m.logPrefix(), ti.Name)
 				continue
 			}
+			// 高级导出额外要求 AI 数据写能力；不满足时不必向模型展示。
+			if normalizeToolName(ti.Name) == "export_by_code" && !m.Scope.CanAIModifyData() {
+				log.Printf("%s [ToolInfos] 移除高级导出（未开放 AI 数据写）- tool=%s\n", m.logPrefix(), ti.Name)
+				continue
+			}
 		}
 		filtered = append(filtered, ti)
 	}
@@ -432,7 +437,23 @@ func (m *PermissionMiddleware) checkSQLPermissionViaAgent(ctx context.Context, s
 	if m.PermAgent == nil {
 		return nil, errors.New("permission agent not initialized")
 	}
-	return callPermissionAgent(ctx, m.PermAgent, sql, toolName)
+	// 同一用户/连接/权限修订号下，相同 SQL 的结论可复用，避免重试与导出复用重复调用 LLM。
+	cacheKey := ""
+	if sec, err := RunSecurityFrom(ctx); err == nil {
+		cacheKey = permDecisionCacheKey(sec.UserID, m.Scope.ConnID, sec.Revision, toolName, sql)
+		if decision, ok := globalPermDecisionCache.Get(cacheKey); ok {
+			log.Printf("%s [PermAgent] 命中决策缓存 - tool=%s\n", m.logPrefix(), toolName)
+			return decision, nil
+		}
+	}
+	decision, err := callPermissionAgent(ctx, m.PermAgent, sql, toolName)
+	if err != nil {
+		return nil, err
+	}
+	if cacheKey != "" {
+		globalPermDecisionCache.Set(cacheKey, decision)
+	}
+	return decision, nil
 }
 
 func (m *PermissionMiddleware) extractSQLFromArgs(args string) string {
@@ -472,10 +493,7 @@ func contentArg(args string) string {
 //
 // 背景：content 模式此前不校验 SQL 即放行，而新的报告正文允许内嵌 SQL 由服务端取数，
 // 若不校验会形成「content 免检 + 内嵌 SQL 读任意表」的越权通道。
-func (m *PermissionMiddleware) validateContentSQLBindings(toolName, content string) error {
-	if m.Scope.SkipChecks() {
-		return nil
-	}
+func (m *PermissionMiddleware) validateContentSQLBindings(ctx context.Context, toolName, content string) error {
 	refs := export.ExtractDataRefs(content)
 	for _, ref := range refs {
 		if err := m.checkConnAllowed(ref.ConnID); err != nil {
@@ -483,7 +501,19 @@ func (m *PermissionMiddleware) validateContentSQLBindings(toolName, content stri
 			m.auditPermDenied(toolName, "embedded_sql_conn_blocked: "+err.Error(), []string{ref.ConnID})
 			return err
 		}
-		if err := validateExportReadSQL(m.Scope, ref.SQL); err != nil {
+		// 每个内嵌 SQL 使用其目标连接自己的 Scope；默认连接的 Scope 不能代表其他连接。
+		scope := m.Scope
+		if sec, secErr := RunSecurityFrom(ctx); secErr == nil {
+			targetConnID := resolveConnID(m.ConnID, ref.ConnID, buildConnLookup(m.Schemas))
+			s, scopeErr := sec.ScopeFor(targetConnID)
+			if scopeErr != nil {
+				m.logDeny(toolName, "内嵌SQL目标连接不在授权范围", []string{targetConnID})
+				m.auditPermDenied(toolName, "embedded_sql_scope_blocked", []string{targetConnID})
+				return scopeErr
+			}
+			scope = s
+		}
+		if err := validateExportReadSQL(scope, ref.SQL); err != nil {
 			objects := permErrorObjects(err)
 			m.logDeny(toolName, "内嵌SQL权限校验拦截", objects)
 			m.auditPermDenied(toolName, "embedded_sql_blocked: "+err.Error(), objects)
@@ -644,6 +674,21 @@ func (m *PermissionMiddleware) checkQueryAccess(ctx context.Context, args string
 		return m.applyQueryResultFilterMasked(ctx, sql, result, tables)
 	}
 
+	// 默认 fallback 模式：程序化可判定时不再调用 LLM 权限 Agent。
+	switch permAgentMode() {
+	case "off":
+		m.logAllow("query_data", "programmatic(mode=off)")
+		return m.checkQueryAccessFallback(ctx, args, endpoint, opts...)
+	case "fallback":
+		if !needsPermAgentFallback(m.Scope, "query_data", sql, tables) {
+			m.logAllow("query_data", "programmatic(fallback)")
+			return m.checkQueryAccessFallback(ctx, args, endpoint, opts...)
+		}
+	case "shadow":
+		m.shadowPermAgent(ctx, "query_data", sql)
+		return m.checkQueryAccessFallback(ctx, args, endpoint, opts...)
+	}
+
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "query_data")
 	if err != nil {
 		log.Printf("%s [降级] query_data Agent失败→程序化检查 - err=%v\n", m.logPrefix(), err)
@@ -745,7 +790,12 @@ func (m *PermissionMiddleware) checkCrossDBJoinAccess(ctx context.Context, args 
 
 	if leftScope.SkipChecks() && rightScope.SkipChecks() {
 		m.logAllow("cross_db_join", "skip(both_conn_full)")
-		return endpoint(ctx, args, opts...)
+		result, err := endpoint(ctx, args, opts...)
+		if err != nil {
+			return "", err
+		}
+		// 全权只跳过权限过滤，不跳过脱敏：脱敏规则与数据访问权限相互独立。
+		return maskCrossDBJoinResult(sec, result, leftScope, rightScope)
 	}
 
 	// 表级校验（支持 schema.table 形式；严格大小写，不回退 IgnoreCase）
@@ -926,6 +976,17 @@ func (m *PermissionMiddleware) checkQueryAccessFallback(ctx context.Context, arg
 	}
 
 	tables := appperm.ExtractTablesFromSQL(input.SQL)
+	if len(tables) == 0 {
+		// 与 doubleCheckReadAccess 同一 fail-closed 语义：无法提取表名时，
+		// 仅放行已证明不访问任何资源的常量查询，避免 CTE/复杂语法绕过表权限。
+		if !m.Scope.SkipChecks() && !appperm.IsVerifiedNoResourceQuery(input.SQL) {
+			m.logDeny("query_data", "无法确认 SQL 的数据访问范围", nil)
+			return "", &PermissionError{
+				Message: "无法确认 SQL 的数据访问范围，已拒绝执行。请改写为明确的单表查询。",
+				Objects: []string{},
+			}
+		}
+	}
 	for _, table := range tables {
 		if !m.tableAllowedStrict(table) {
 			m.logDeny("query_data", "无权访问表", []string{table})
@@ -978,6 +1039,21 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 	if allTablesFullAccess {
 		m.logAllow("exec_sql", "precheck(all_tables_full)")
 		return endpoint(ctx, args, opts...)
+	}
+
+	// 默认 fallback 模式：程序化可判定时不再调用 LLM 权限 Agent。
+	switch permAgentMode() {
+	case "off":
+		m.logAllow("exec_sql", "programmatic(mode=off)")
+		return m.checkExecAccessFallback(ctx, args, endpoint, opts...)
+	case "fallback":
+		if !needsPermAgentFallback(m.Scope, "exec_sql", sql, tables) {
+			m.logAllow("exec_sql", "programmatic(fallback)")
+			return m.checkExecAccessFallback(ctx, args, endpoint, opts...)
+		}
+	case "shadow":
+		m.shadowPermAgent(ctx, "exec_sql", sql)
+		return m.checkExecAccessFallback(ctx, args, endpoint, opts...)
 	}
 
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "exec_sql")
@@ -1062,7 +1138,7 @@ func (m *PermissionMiddleware) doubleCheckHighRiskExec(sql string, tables []stri
 	}
 
 	if len(deniedTables) > 0 {
-		log.Printf("%s [双重验证] Permission Agent 允许但程序化检查拦截 - sql=%s, deniedTables=%v\n",
+		log.Printf("%s [双重验证] Permission Agent 允许但程序化检查拦截 - sql{%s}, deniedTables=%v\n",
 			m.logPrefix(), safeSQLSummary(sql), deniedTables)
 		return &PermissionError{
 			Message: fmt.Sprintf("双重验证拦截：Permission Agent 判定允许，但程序化检查发现无权访问表 %v", deniedTables),
@@ -1083,7 +1159,7 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 	// 会在工具内取数：必须与顶层 sql 走同一套权限校验，否则形成
 	// 「content 免 SQL 校验 + 内嵌 SQL 取数」的越权通道（两参数同时存在时都要校验）。
 	if strings.TrimSpace(content) != "" {
-		if err := m.validateContentSQLBindings(toolName, content); err != nil {
+		if err := m.validateContentSQLBindings(ctx, toolName, content); err != nil {
 			return "", err
 		}
 	}
@@ -1131,10 +1207,25 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		return endpoint(ctx, checkedArgs, opts...)
 	}
 
+	// 默认 fallback 模式：程序化可判定时不再调用 LLM 权限 Agent。
+	switch permAgentMode() {
+	case "off":
+		m.logAllow(toolName, "programmatic(mode=off)")
+		return m.checkExportAccessFallback(ctx, checkedArgs, endpoint, opts...)
+	case "fallback":
+		if !needsPermAgentFallback(m.Scope, "export", sql, tables) {
+			m.logAllow(toolName, "programmatic(fallback)")
+			return m.checkExportAccessFallback(ctx, checkedArgs, endpoint, opts...)
+		}
+	case "shadow":
+		m.shadowPermAgent(ctx, "export", sql)
+		return m.checkExportAccessFallback(ctx, checkedArgs, endpoint, opts...)
+	}
+
 	decision, err := m.checkSQLPermissionViaAgent(ctx, sql, "export")
 	if err != nil {
 		log.Printf("%s [降级] export Agent失败→程序化检查 - err=%v\n", m.logPrefix(), err)
-		return m.checkExportAccessFallback(ctx, args, endpoint, opts...)
+		return m.checkExportAccessFallback(ctx, checkedArgs, endpoint, opts...)
 	}
 
 	if !decision.Allowed {
@@ -1170,7 +1261,7 @@ func (m *PermissionMiddleware) checkExportAccessFallback(ctx context.Context, ar
 
 	tables := appperm.ExtractTablesFromSQL(input.SQL)
 	for _, table := range tables {
-		if !m.Scope.IsTableAllowed(table) {
+		if !m.Scope.IsTableRefAllowed(table) {
 			m.logDeny("export", "无权访问表", []string{table})
 			return "", &PermissionError{Message: fmt.Sprintf("无权访问表 %s", table), Objects: []string{table}}
 		}
@@ -1408,7 +1499,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 
 	// content 模式内嵌 SQL（```chart sql / ```table sql）与顶层 sql 使用同一套校验
 	if strings.TrimSpace(content) != "" {
-		if err := m.validateContentSQLBindings(toolName+"(stream)", content); err != nil {
+		if err := m.validateContentSQLBindings(ctx, toolName+"(stream)", content); err != nil {
 			return streamFromStr(err.Error()), nil
 		}
 	}

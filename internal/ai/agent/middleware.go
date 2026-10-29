@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"websql/internal/pkg/strutil"
-
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
@@ -61,21 +59,15 @@ func buildPatchToolCallsMiddleware() adk.ChatModelAgentMiddleware {
 // 历史实现硬编码 160_000，而默认窗口只有 128_000，导致 clear 永不触发，
 // 小窗口模型（32k/64k）更是一直靠 summarization 兜底。
 func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddleware {
-	dir := os.Getenv("REDUCTION_OFFLOAD_DIR")
-	if dir == "" {
-		dir = filepath.Join("data", "reduction")
+	dir := reductionOffloadRoot()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		// 目录不可用时直接关闭 reduction：宁可让上下文治理缺失并记录告警，
+		// 也不能写到 read_offload 无法访问的路径，制造“看似可恢复、实际取不回”的假象。
+		log.Printf("[Reduction] 创建 offload 目录失败，已禁用 reduction - dir=%s, err=%v\n", dir, err)
+		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Printf("[Reduction] 创建 offload 目录失败，使用 tmp - err=%v\n", err)
-		dir = os.TempDir()
-	}
-	// RootDir 必须是绝对路径，且与文件系统沙箱的只读根一致：
-	// reduction 会告诉模型「内容已保存到 <RootDir>/trunc/<id>，请用 read_file 读取」。
-	// 旧实现未设置 RootDir（默认 /tmp），而 backend 实际写到 data/reduction/tmp/...，
-	// 模型按提示路径读取时文件不存在，被裁剪的大结果永远取不回来。
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
+	// 已有目录可能是旧版本创建的 0755；收紧到仅当前进程用户可访问。
+	_ = os.Chmod(dir, 0o700)
 
 	ctxTokens := maxContextTokens
 	if ctxTokens <= 0 {
@@ -87,14 +79,38 @@ func buildEinoReductionMiddleware(maxContextTokens int) adk.ChatModelAgentMiddle
 	}
 
 	backend := &osfsReductionBackend{rootDir: dir}
+	// AGENT_OFFLOAD_V2=0 可回退到默认首尾截断格式；路径 ACL 不回退。
+	toolConfig := buildReductionToolConfig(backend)
+	if os.Getenv("AGENT_OFFLOAD_V2") == "0" {
+		toolConfig = nil
+	}
 
 	mw, err := reduction.New(context.Background(), &reduction.Config{
-		Backend:                   backend,
-		RootDir:                   dir,
-		MaxLengthForTrunc:         30_000, // 单条 tool result 超过 30k 字符触发 truncate + offload 到文件
-		TokenCounter:              reductionTokenCounter,
-		MaxTokensForClear:         clearTokens, // 总 token 超过窗口 70% 触发 clear
-		ClearRetentionSuffixLimit: 4,           // 保留最近 4 条不 clear
+		Backend:           backend,
+		RootDir:           dir,
+		MaxLengthForTrunc: 30_000, // 单条 tool result 超过 30k 字节触发 truncate + offload 到文件
+		TokenCounter:      reductionTokenCounter,
+		MaxTokensForClear: clearTokens, // 总 token 超过窗口 70% 触发 clear
+		// 保留最近 4 条不 clear。
+		ClearRetentionSuffixLimit: 4,
+		// offload 文件按用户/会话隔离，模型必须用 read_offload 回读。
+		ReadFileToolName:  "read_offload",
+		TruncExcludeTools: []string{"read_offload"},
+		GenTruncOffloadFilePath: func(ctx context.Context, detail *reduction.ToolDetail) (string, error) {
+			callID := ""
+			if detail != nil && detail.ToolContext != nil {
+				callID = detail.ToolContext.CallID
+			}
+			return reductionOffloadPath(ctx, "trunc", callID)
+		},
+		GenClearOffloadFilePath: func(ctx context.Context, detail *reduction.ToolDetail) (string, error) {
+			callID := ""
+			if detail != nil && detail.ToolContext != nil {
+				callID = detail.ToolContext.CallID
+			}
+			return reductionOffloadPath(ctx, "clear", callID)
+		},
+		ToolConfig: toolConfig,
 		// 说明：危险 SQL 确认走 eino interrupt 状态而非工具结果，
 		// 不在 reduction 的处理范围内，因此无需（也无法）通过工具名排除。
 	})
@@ -159,10 +175,17 @@ func (b *osfsReductionBackend) Write(ctx context.Context, req *filesystem.WriteR
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(full, []byte(req.Content), 0o644)
+	// 拒绝通过符号链接把 offload 写到 root 之外。
+	if fi, err := os.Lstat(full); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("offload 目标 %q 是符号链接，拒绝写入", req.FilePath)
+	}
+	if hasSymlinkComponent(filepath.Dir(full), b.rootDir) {
+		return fmt.Errorf("offload 父目录 %q 包含符号链接，拒绝写入", req.FilePath)
+	}
+	return os.WriteFile(full, []byte(req.Content), 0o600)
 }
 
 // reductionTokenCounter 适配 reduction 中间件期望的签名。
@@ -436,6 +459,47 @@ func recoveryHint(toolName, args string, err error) string {
 type contextKeyStartTime struct{}
 type contextKeyIteration struct{}
 
+// InjectedContextFilterMiddleware 在每次模型调用前移除中间件注入的瞬态消息
+// （AGENTS.md、toolsearch 提醒），避免它们被 summarization 计入/摘要，
+// 也避免进入 transcript 与持久化历史。
+//
+// 注册位置在 summarization 之前、agentsmd 之前：
+//   - 本中间件先删除上一轮注入的消息；
+//   - summarization 只看到真实对话；
+//   - agentsmd 随后按需重新注入最新内容。
+//
+// 该中间件无状态，可被共享 Agent 并发复用。
+type InjectedContextFilterMiddleware struct {
+	*adk.BaseChatModelAgentMiddleware
+}
+
+func (m *InjectedContextFilterMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, _ *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	if state == nil || len(state.Messages) == 0 {
+		return ctx, state, nil
+	}
+	filtered := make([]*schema.Message, 0, len(state.Messages))
+	removed := 0
+	for _, msg := range state.Messages {
+		if msg != nil && msg.Extra != nil {
+			if _, ok := msg.Extra[agentsMDExtraKey]; ok {
+				removed++
+				continue
+			}
+			if _, ok := msg.Extra[toolSearchReminderExtraKey]; ok {
+				removed++
+				continue
+			}
+		}
+		filtered = append(filtered, msg)
+	}
+	if removed == 0 {
+		return ctx, state, nil
+	}
+	nState := *state
+	nState.Messages = filtered
+	return ctx, &nState, nil
+}
+
 type ToolCallLoggingMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 }
@@ -498,8 +562,8 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
 			iterNum = *ic
 		}
-		argsPreview := truncateArgsForLog(argumentsInJSON)
-		log.Printf("[ToolCall] 开始调用 - iter=%d, name=%s, callID=%s, args=%s\n",
+		argsPreview := safeTextSummary(argumentsInJSON)
+		log.Printf("[ToolCall] 开始调用 - iter=%d, name=%s, callID=%s, args{%s}\n",
 			iterNum, tCtx.Name, tCtx.CallID, argsPreview)
 
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
@@ -509,9 +573,8 @@ func (m *ToolCallLoggingMiddleware) WrapInvokableToolCall(
 			log.Printf("[ToolCall] 调用失败 - iter=%d, name=%s, callID=%s, duration=%v, err=%v\n",
 				iterNum, tCtx.Name, tCtx.CallID, elapsed, err)
 		} else {
-			resultPreview := truncateResultForLog(result)
-			log.Printf("[ToolCall] 调用完成 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d, result=%s\n",
-				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(result), resultPreview)
+			log.Printf("[ToolCall] 调用完成 - iter=%d, name=%s, callID=%s, duration=%v, resultLen=%d\n",
+				iterNum, tCtx.Name, tCtx.CallID, elapsed, len(result))
 		}
 
 		return result, err
@@ -529,8 +592,8 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 		if ic, ok := ctx.Value(contextKeyIteration{}).(*int); ok && ic != nil {
 			iterNum = *ic
 		}
-		argsPreview := truncateArgsForLog(argumentsInJSON)
-		log.Printf("[ToolCall:Stream] 开始调用 - iter=%d, name=%s, callID=%s, args=%s\n",
+		argsPreview := safeTextSummary(argumentsInJSON)
+		log.Printf("[ToolCall:Stream] 开始调用 - iter=%d, name=%s, callID=%s, args{%s}\n",
 			iterNum, tCtx.Name, tCtx.CallID, argsPreview)
 
 		reader, err := endpoint(ctx, argumentsInJSON, opts...)
@@ -545,20 +608,4 @@ func (m *ToolCallLoggingMiddleware) WrapStreamableToolCall(
 		// 流式工具调用的日志仅记录开始/失败，结束日志由调用方在消费 reader 后按需打印。
 		return reader, nil
 	}, nil
-}
-
-// truncateArgsForLog 截断工具调用参数，用于日志输出。
-func truncateArgsForLog(args string) string {
-	if len(args) > 300 {
-		return strutil.TruncateBytes(args, 300) + "...(truncated)"
-	}
-	return strings.ReplaceAll(args, "\n", " ")
-}
-
-// truncateResultForLog 截断工具调用结果，用于日志输出。
-func truncateResultForLog(result string) string {
-	if len(result) > 500 {
-		return strutil.TruncateBytes(result, 500) + "...(truncated)"
-	}
-	return strings.ReplaceAll(result, "\n", " ")
 }

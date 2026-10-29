@@ -2,18 +2,25 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"websql/internal/ai/agent/dataset"
 	"websql/internal/ai/agent/fileparse"
 	"websql/internal/ai/agent/sqlutil"
 	admin "websql/internal/app/admin"
 	connpkg "websql/internal/app/conn"
+	appperm "websql/internal/app/permission"
 	"websql/internal/audit"
 	"websql/internal/database"
 	"websql/internal/logger"
@@ -27,14 +34,23 @@ var validTableNameRegex = regexp.MustCompile("^[a-zA-Z0-9_`\".]+$")
 
 // 工具返回量的服务端上限（此前完全依赖 reduction/summarization 事后兜底）
 const (
-	// maxListTables 单次 list_tables 返回的表数量上限
+	// maxListTables 单次 list_tables 默认返回的表数量上限
 	maxListTables = 500
+	// maxListTablesHard list_tables 单次可请求的硬上限（服务端安全边界）
+	maxListTablesHard = 20_000
 	// maxSchemaOutputChars 单次 get_table_schema 返回的 DDL 字符上限
 	maxSchemaOutputChars = 60_000
 	// maxMarkdownFileChars 上传文档（md/txt/docx/pdf）单次读取的默认字符窗口
 	maxMarkdownFileChars = 30_000
 	// maxTextWindowChars 文本/文档类单次读取的字符窗口硬上限
 	maxTextWindowChars = 60_000
+	// querySafetyRowLimit query_data 默认读取上限（防止把超大结果集读进内存）
+	querySafetyRowLimit = 500
+	// querySafetyRowLimitHard query_data 可通过 maxRows 请求的硬上限（服务端安全边界）。
+	// 10k 行是在“可分析”与“内存/序列化成本”之间的折中；更大分析应先聚合或物化数据集。
+	querySafetyRowLimitHard = 10_000
+	// fileDatasetMinRows 上传表格物化为数据集的最小行数（代码层成本阈值）
+	fileDatasetMinRows = 1_000
 )
 
 // dangerousTableTokens 表名中禁止出现的 SQL 关键字。
@@ -87,11 +103,34 @@ func safeQuoteTableName(name string) string {
 type QueryInput struct {
 	SQL    string `json:"sql" jsonschema:"required"`
 	ConnID string `json:"connId,omitempty"`
+	// MaxRows 模型根据分析场景主动请求的读取行数；服务端仍有硬上限。
+	MaxRows int `json:"maxRows,omitempty"`
 }
 type QueryOutput struct {
 	Columns []string         `json:"columns"`
-	Data    []map[string]any `json:"data"`
+	Data    []map[string]any `json:"data,omitempty"`
 	Count   int              `json:"count"`
+	// ReturnedRows 本次返回给模型的行数
+	ReturnedRows int `json:"returnedRows,omitempty"`
+	// RowCount 本次结果行数；truncated=true 时为 0（总数未知，需另行 COUNT）；
+	// 物化为数据集后为数据集总行数。
+	RowCount int `json:"rowCount,omitempty"`
+	// TotalKnown 为 true 时 RowCount/TotalRows 才是可用的总行数。
+	TotalKnown bool `json:"totalKnown,omitempty"`
+	// TotalRows 仅数据集物化时填充，表示数据集总行数。
+	TotalRows int `json:"totalRows,omitempty"`
+	// EstimatedBytes 结果集序列化后的估算字节数
+	EstimatedBytes int `json:"estimatedBytes,omitempty"`
+	// Truncated 是否因服务端安全上限而截断
+	Truncated bool `json:"truncated,omitempty"`
+	// HasMore 是否还有未返回的数据
+	HasMore bool `json:"hasMore,omitempty"`
+	// DatasetID 大结果物化后的数据集句柄（P2）
+	DatasetID string `json:"datasetId,omitempty"`
+	// Sample 数据集物化时返回的少量样本
+	Sample []map[string]any `json:"sample,omitempty"`
+	// Notice 截断/降级/继续取数提示
+	Notice string `json:"notice,omitempty"`
 }
 type ExecInput struct {
 	SQL    string `json:"sql" jsonschema:"required"`
@@ -103,11 +142,17 @@ type ExecOutput struct {
 }
 type ListTablesInput struct {
 	ConnID string `json:"connId,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 type ListTablesOutput struct {
 	Tables     []TableInfo `json:"tables"`
 	Count      int         `json:"count"`
 	TotalCount int         `json:"totalCount,omitempty"`
+	Offset     int         `json:"offset,omitempty"`
+	Limit      int         `json:"limit,omitempty"`
+	NextOffset int         `json:"nextOffset,omitempty"`
+	HasMore    bool        `json:"hasMore,omitempty"`
 	Truncated  bool        `json:"truncated,omitempty"`
 }
 type TableInfo struct {
@@ -144,12 +189,10 @@ func GetConn(connId, userId string) (*sqlx.DB, string) {
 	if !admin.CheckConnAccessByUserId(userId, connId) {
 		return nil, ""
 	}
-	cfgList := []connpkg.ConnCfg{}
-	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connId)
-	if err != nil || len(cfgList) == 0 {
+	cfg, err := loadConnCfgCached(connId)
+	if err != nil || cfg == nil {
 		return nil, ""
 	}
-	cfg := &cfgList[0]
 	deref := func(p *string) string {
 		if p != nil {
 			return *p
@@ -183,6 +226,33 @@ func GetCurrentDateInfo() func(ctx context.Context, input *CurrentDateInfoInput)
 			DateTime: now.Format("2006-01-02 15:04:05"),
 		}, nil
 	}
+}
+
+// connCfgCacheTTL 连接配置短缓存：工具调用频繁，避免每次查询 t_conn + AES 解密。
+// 30 秒的窗口足以覆盖单轮工具调用，又不会让后台修改长时间不生效。
+const connCfgCacheTTL = 30 * time.Second
+
+type connCfgCacheEntry struct {
+	cfg      connpkg.ConnCfg
+	loadedAt time.Time
+}
+
+var connCfgCache sync.Map // connID -> *connCfgCacheEntry
+
+func loadConnCfgCached(connID string) (*connpkg.ConnCfg, error) {
+	if v, ok := connCfgCache.Load(connID); ok {
+		if e, ok := v.(*connCfgCacheEntry); ok && time.Since(e.loadedAt) < connCfgCacheTTL {
+			cp := e.cfg
+			return &cp, nil
+		}
+	}
+	var cfg connpkg.ConnCfg
+	if err := getDB().Get(&cfg, "select * from t_conn where id = ?", connID); err != nil {
+		return nil, err
+	}
+	connCfgCache.Store(connID, &connCfgCacheEntry{cfg: cfg, loadedAt: time.Now()})
+	cp := cfg
+	return &cp, nil
 }
 
 func buildConnLookup(schemas []SchemaRef) map[string]string {
@@ -284,15 +354,22 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 				return nil, err
 			}
 		}
+		readLimit := input.MaxRows
+		if readLimit <= 0 {
+			readLimit = querySafetyRowLimit
+		}
+		if readLimit > querySafetyRowLimitHard {
+			readLimit = querySafetyRowLimitHard
+		}
 		if sqlutil.FirstKeyword(sql) == "SELECT" || sqlutil.FirstKeyword(sql) == "WITH" {
-			sql = applyRowLimit(sql, conn.DriverName(), 500)
+			sql = applyRowLimit(sql, conn.DriverName(), readLimit)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 		rows, err := conn.QueryxContext(queryCtx, sql)
 		if err != nil {
 			if input.ConnID == "" && targetConnID == connId {
-				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId, userId); altConn != nil {
+				if altConnID, altConn, altSchema := tryAlternativeConn(input.SQL, connLookup, connId, userId, mustRunSecurity(ctx)); altConn != nil {
 					log.Printf("[Tool:query_data] 默认连接查询失败，自动路由到连接 %s（schema=%s）\n", altConnID, altSchema)
 					// 安全审计：自动路由事件必须可追溯（EINO_DEEP_ANALYSIS §13）
 					if auditCtx != nil {
@@ -318,19 +395,37 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
 					if kw := sqlutil.FirstKeyword(sql); kw == "SELECT" || kw == "WITH" {
-						altSQL = applyRowLimit(altSQL, altConn.DriverName(), 500)
+						altSQL = applyRowLimit(altSQL, altConn.DriverName(), readLimit)
 					}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, altSQL)
 					if altErr == nil {
 						defer altRows.Close()
 						cols, _ := altRows.Columns()
-						data, err := database.GetResultRows(altConn.DriverName(), altRows)
+						data, truncated, err := database.GetResultRowsLimited(altConn.DriverName(), altRows, readLimit)
 						if err != nil {
 							logger.PrintErrf("查询数据失败", err)
 							return nil, fmt.Errorf("query failed: %w", err)
 						}
 						recordQueryAudit(auditCtx, input.SQL, altConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
-						return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
+						out := buildQueryOutput(cols, data, truncated)
+						// 自动路由后必须用目标连接的 Scope 做列过滤/脱敏，
+						// 不能沿用默认连接的 Scope（否则 A 全权 + B 受限时越权）。
+						if sec := mustRunSecurity(ctx); sec != nil {
+							if altScope, scopeErr := sec.ScopeFor(altConnID); scopeErr == nil {
+								if encoded, marshalErr := json.Marshal(out); marshalErr == nil {
+									mw := &PermissionMiddleware{Scope: altScope}
+									if filtered, filterErr := mw.applyQueryResultFilterMasked(ctx, input.SQL, string(encoded), appperm.ExtractTablesFromSQL(input.SQL)); filterErr == nil {
+										var filteredOut QueryOutput
+										if json.Unmarshal([]byte(filtered), &filteredOut) == nil {
+											out = &filteredOut
+										}
+									} else {
+										return nil, filterErr
+									}
+								}
+							}
+						}
+						return out, nil
 					}
 					log.Printf("[Tool:query_data] 自动路由查询也失败: %v，返回原始错误\n", altErr)
 				}
@@ -340,13 +435,13 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		}
 		defer rows.Close()
 		cols, _ := rows.Columns()
-		data, err := database.GetResultRows(conn.DriverName(), rows)
+		data, truncated, err := database.GetResultRowsLimited(conn.DriverName(), rows, readLimit)
 		if err != nil {
 			logger.PrintErrf("查询数据失败", err)
 			return nil, fmt.Errorf("query failed: %w", err)
 		}
 		recordQueryAudit(auditCtx, input.SQL, targetConnID, "success", len(data), int(time.Since(startTime).Milliseconds()), "")
-		return &QueryOutput{Columns: cols, Data: data, Count: len(data)}, nil
+		return buildQueryOutput(cols, data, truncated), nil
 	}
 }
 
@@ -360,7 +455,7 @@ func recordToolAudit(auditCtx *ExecAuditCtx, toolName, sqlType, sql, connID, sta
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "agent",
 		ToolName:     toolName,
-		SQLText:      sql,
+		SQLText:      audit.MaskSQL(sql),
 		SQLType:      sqlType,
 		RiskLevel:    "low",
 		Status:       status,
@@ -393,7 +488,7 @@ func recordQueryAudit(auditCtx *ExecAuditCtx, sql, connID, status string, affect
 //  3. 任何一次自动路由都会**强制**记一条 audit，便于事后追溯。
 //
 // 返回：目标 connID、连接的 *sqlx.DB、匹配的 schema；都不满足时返回 "", nil, ""。
-func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string, userId string) (string, *sqlx.DB, string) {
+func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID string, userId string, sec *RunSecurityContext) (string, *sqlx.DB, string) {
 	// 安全：只承认"显式 schema.表名"形式。模糊 FROM users 不会触发跨连接路由。
 	schema := extractExplicitSchemaFromSQL(sql)
 	if schema == "" {
@@ -419,10 +514,49 @@ func tryAlternativeConn(sql string, connLookup map[string]string, defaultConnID 
 	}
 	altConn, _ := GetConn(altConnID, userId)
 	if altConn != nil {
+		// 自动路由到另一连接前，必须用目标连接的 Scope 重新校验表/列权限。
+		// 不能沿用默认连接的 Scope（默认连接全权 + 目标连接受限时会越权）。
+		if err := authorizeAltConnQuery(sec, altConnID, sql); err != nil {
+			log.Printf("[Tool:query_data] 拒绝自动路由：目标连接权限校验失败 - conn=%s, err=%v\n", altConnID, err)
+			return "", nil, ""
+		}
 		log.Printf("[Tool:query_data] 命中显式 schema=%s 跨连接路由 - from=%s to=%s\n", schema, defaultConnID, altConnID)
 		return altConnID, altConn, schema
 	}
 	return "", nil, ""
+}
+
+// mustRunSecurity 返回运行安全上下文；缺失时返回 nil（调用方按无上下文处理）。
+func mustRunSecurity(ctx context.Context) *RunSecurityContext {
+	sec, err := RunSecurityFrom(ctx)
+	if err != nil {
+		return nil
+	}
+	return sec
+}
+
+// authorizeAltConnQuery 用目标连接的 Scope 校验自动路由 SQL 的表/列权限。
+func authorizeAltConnQuery(sec *RunSecurityContext, connID, sql string) error {
+	if sec == nil {
+		return &PermissionError{Message: "缺少运行安全上下文，已拒绝跨连接自动路由"}
+	}
+	scope, err := sec.ScopeFor(connID)
+	if err != nil {
+		return err
+	}
+	tables := appperm.ExtractTablesFromSQL(sql)
+	for _, table := range tables {
+		if !scope.IsTableRefAllowed(table) {
+			return &PermissionError{Message: "自动路由目标连接无表权限", Objects: []string{table}}
+		}
+	}
+	if len(tables) == 0 && !scope.SkipChecks() && !appperm.IsVerifiedNoResourceQuery(sql) {
+		return &PermissionError{Message: "无法确认 SQL 的数据访问范围，已拒绝自动路由", Objects: []string{connID}}
+	}
+	if err := authorizeColumnsInSQL(scope, sql, tables, columnCheckOptions{RequireKnownOrigin: true}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // extractExplicitSchemaFromSQL 只识别"schema 显式出现"的情况：
@@ -707,7 +841,7 @@ func recordExecAudit(auditCtx *ExecAuditCtx, sql, connID, sqlType, riskLevel, st
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:       "agent",
 		ToolName:     "exec_sql",
-		SQLText:      sql,
+		SQLText:      audit.MaskSQL(sql),
 		SQLType:      sqlType,
 		RiskLevel:    riskLevel,
 		Status:       status,
@@ -944,14 +1078,49 @@ func NewListTablesFunc(connId, dbType, dbSchema string, schemas []SchemaRef, use
 			tables = append(tables, ti)
 		}
 
-		totalTables := len(tables)
-		truncated := totalTables > maxListTables
-		if truncated {
-			log.Printf("[Tool:list_tables] 表数量超过上限 %d，已截断 - total=%d\n", maxListTables, totalTables)
-			tables = tables[:maxListTables]
+		page, totalTables, offset, limit, nextOffset, hasMore := paginateTables(tables, input.Offset, input.Limit)
+		if hasMore {
+			log.Printf("[Tool:list_tables] 分页返回 - total=%d, offset=%d, limit=%d, next=%d\n",
+				totalTables, offset, limit, nextOffset)
 		}
-		return &ListTablesOutput{Tables: tables, Count: len(tables), TotalCount: totalTables, Truncated: truncated}, nil
+		return &ListTablesOutput{
+			Tables:     page,
+			Count:      len(page),
+			TotalCount: totalTables,
+			Offset:     offset,
+			Limit:      limit,
+			NextOffset: nextOffset,
+			HasMore:    hasMore,
+			Truncated:  hasMore,
+		}, nil
 	}
+}
+
+// paginateTables 对表名列表分页；limit<=0 使用默认值，超过硬上限时收敛。
+func paginateTables(tables []TableInfo, offset, limit int) (page []TableInfo, total, normalizedOffset, normalizedLimit, nextOffset int, hasMore bool) {
+	total = len(tables)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	if limit <= 0 {
+		limit = maxListTables
+	}
+	if limit > maxListTablesHard {
+		limit = maxListTablesHard
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page = tables[offset:end]
+	hasMore = end < total
+	if hasMore {
+		nextOffset = end
+	}
+	return page, total, offset, limit, nextOffset, hasMore
 }
 
 func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
@@ -1006,9 +1175,75 @@ func fallbackColumnInfo(conn *sqlx.DB, dbType, dbSchema, table string) string {
 
 // ReadFileDataInput 读取已上传文件数据（只读，用于数据分析，不会导入数据库）
 type ReadFileDataInput struct {
-	FileID string `json:"fileId" jsonschema:"required"`
-	Limit  int    `json:"limit"`  // 表格：返回行数（默认 100，最大 500）；文本/文档：返回字符数（默认 30000，最大 60000）
-	Offset int    `json:"offset"` // 表格：起始行偏移；文本/文档：起始字符偏移（rune 计）
+	FileID string `json:"fileId" jsonschema:"required" jsonschema_description:"上传文件 ID（fileId）"`
+	// Mode read | outline | search | profile；默认 read
+	Mode string `json:"mode,omitempty" jsonschema_description:"读取模式：read|outline|search|profile，默认 read"`
+	// Unit rows | chars | lines | page | section；默认按文件类别推断
+	Unit string `json:"unit,omitempty" jsonschema_description:"分页单位：rows|chars|lines|page|section，默认按文件类别推断"`
+	// Sheet 表格类：指定工作表名称；默认第一个工作表
+	Sheet string `json:"sheet,omitempty" jsonschema_description:"表格类文件的工作表名称，默认第一个工作表"`
+	// Query search 模式：关键词或正则
+	Query string `json:"query,omitempty" jsonschema_description:"search 模式的关键词或正则"`
+	// Regex search 模式：是否按正则解释 Query
+	Regex bool `json:"regex,omitempty" jsonschema_description:"search 模式：是否按正则解释 query"`
+	// CaseSensitive search 模式：是否区分大小写
+	CaseSensitive bool `json:"caseSensitive,omitempty" jsonschema_description:"search 模式：是否区分大小写"`
+	// MaxMatches search 模式：最多返回的命中数
+	MaxMatches int `json:"maxMatches,omitempty" jsonschema_description:"search 模式：最多返回的命中数"`
+	Limit      int `json:"limit,omitempty" jsonschema_description:"返回数量上限：表格=行数；文本=字符数/行数（取决于 unit）"`
+	Offset     int `json:"offset,omitempty" jsonschema_description:"起始位置：表格=行号；文本=字符/行/页/章节"`
+}
+
+// FileSectionInfo 文档章节。
+type FileSectionInfo struct {
+	Title     string `json:"title"`
+	Level     int    `json:"level,omitempty"`
+	StartChar int    `json:"startChar"`
+	EndChar   int    `json:"endChar,omitempty"`
+}
+
+// FilePageInfo 文档页码区间。
+type FilePageInfo struct {
+	Number    int `json:"number"`
+	StartChar int `json:"startChar"`
+	EndChar   int `json:"endChar,omitempty"`
+}
+
+// SheetInfo 工作表摘要。
+type SheetInfo struct {
+	Name      string   `json:"name"`
+	Columns   []string `json:"columns,omitempty"`
+	TotalRows int      `json:"totalRows,omitempty"`
+	Notice    string   `json:"notice,omitempty"`
+}
+
+// FileMatch 搜索命中。
+type FileMatch struct {
+	Location string `json:"location,omitempty"` // page/section/line 描述
+	Sheet    string `json:"sheet,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Row      int    `json:"row,omitempty"`
+	Column   string `json:"column,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+	Snippet  string `json:"snippet"`
+}
+
+// ColumnProfile 单列统计。
+type ColumnProfile struct {
+	Name     string   `json:"name"`
+	Type     string   `json:"type,omitempty"`
+	Nulls    int      `json:"nulls,omitempty"`
+	Distinct int      `json:"distinct,omitempty"`
+	Min      string   `json:"min,omitempty"`
+	Max      string   `json:"max,omitempty"`
+	Top      []string `json:"top,omitempty"`
+}
+
+// FileProfile 文件/表格画像。
+type FileProfile struct {
+	Columns []ColumnProfile `json:"columns,omitempty"`
+	Sampled bool            `json:"sampled,omitempty"`
+	Notice  string          `json:"notice,omitempty"`
 }
 
 // ReadFileDataOutput 文件内容读取结果。
@@ -1021,6 +1256,7 @@ type ReadFileDataOutput struct {
 	Type         string         `json:"type"` // "table"（xlsx/xls/csv）| "text"（txt/md/docx/pdf）| "image" | "video"
 	Columns      []string       `json:"columns,omitempty"`
 	Rows         [][]string     `json:"rows,omitempty"`
+	Sample       [][]string     `json:"sample,omitempty"`
 	TotalRows    int            `json:"totalRows,omitempty"`
 	ReturnedRows int            `json:"returnedRows,omitempty"`
 	Text         string         `json:"text,omitempty"`
@@ -1028,6 +1264,23 @@ type ReadFileDataOutput struct {
 	Meta         map[string]any `json:"meta,omitempty"`
 	Notice       string         `json:"notice,omitempty"`
 	Degraded     bool           `json:"degraded,omitempty"`
+
+	// 结构化读取结果（P1）
+	Sections []FileSectionInfo `json:"sections,omitempty"`
+	Pages    []FilePageInfo    `json:"pages,omitempty"`
+	Sheets   []SheetInfo       `json:"sheets,omitempty"`
+	Matches  []FileMatch       `json:"matches,omitempty"`
+	Profile  *FileProfile      `json:"profile,omitempty"`
+	// DatasetID 表格类物化后的数据集句柄（P2）
+	DatasetID string `json:"datasetId,omitempty"`
+	// LineStart/LineEnd 文本/文档按行读取时的行号范围
+	LineStart int `json:"lineStart,omitempty"`
+	LineEnd   int `json:"lineEnd,omitempty"`
+	// PageStart/PageEnd 文档按页读取时的页码范围
+	PageStart int `json:"pageStart,omitempty"`
+	PageEnd   int `json:"pageEnd,omitempty"`
+	// SectionTitle 按章节读取时的章节标题
+	SectionTitle string `json:"sectionTitle,omitempty"`
 }
 
 // NewReadFileDataFunc 返回读取已上传文件数据的工具函数（只读，供 LLM 分析文件内容）。
@@ -1051,11 +1304,40 @@ func NewReadFileDataFunc(userID string) func(ctx context.Context, input *ReadFil
 			return nil, err
 		}
 
+		mode := strings.ToLower(strings.TrimSpace(input.Mode))
+		if mode == "" {
+			mode = "read"
+		}
+
 		switch res.Kind {
 		case fileparse.KindTable:
-			return readTableWindow(res, input), nil
+			switch mode {
+			case "outline":
+				return buildTableOutline(res, input), nil
+			case "search":
+				return searchTableFile(res, input), nil
+			case "profile":
+				return profileTableFile(res, input), nil
+			case "read":
+				out := readTableWindow(res, input)
+				maybeMaterializeReadFile(ctx, res, input, out)
+				return out, nil
+			default:
+				return nil, fmt.Errorf("不支持的 mode：%s（可选 read/outline/search/profile）", input.Mode)
+			}
 		case fileparse.KindText, fileparse.KindDoc:
-			return readTextWindow(res, input), nil
+			switch mode {
+			case "outline":
+				return buildTextOutline(res), nil
+			case "search":
+				return searchTextFile(res, input), nil
+			case "profile":
+				return profileTextFile(res), nil
+			case "read":
+				return readTextWindow(res, input), nil
+			default:
+				return nil, fmt.Errorf("不支持的 mode：%s（可选 read/outline/search/profile）", input.Mode)
+			}
 		case fileparse.KindImage:
 			return &ReadFileDataOutput{
 				Type: "image",
@@ -1076,8 +1358,144 @@ func NewReadFileDataFunc(userID string) func(ctx context.Context, input *ReadFil
 	}
 }
 
-// readTableWindow 表格类分页读取（默认 100 行、最大 500 行，与既有行为一致）。
+// maybeMaterializeReadFile 把大表格（或大分页结果）物化为数据集。
+// 小结果保持原样；失败时保留分页结果并追加 notice。
+func maybeMaterializeReadFile(ctx context.Context, res *fileparse.Result, input *ReadFileDataInput, out *ReadFileDataOutput) {
+	if os.Getenv("AGENT_DATASET") == "0" {
+		return
+	}
+	if out == nil || out.Type != "table" {
+		return
+	}
+	if sheet := strings.TrimSpace(input.Sheet); sheet != "" && len(res.Sheets) > 0 {
+		found := false
+		for _, s := range res.Sheets {
+			if strings.EqualFold(s.Name, sheet) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+	}
+	columns, rows, total, _, _ := selectTableData(res, input.Sheet)
+	if len(rows) == 0 || len(columns) == 0 {
+		return
+	}
+	if len(rows) < fileDatasetMinRows && estimateRowsBytes(rows) < datasetMaterializeMinBytes {
+		return
+	}
+	id, ok := runIdentityFrom(ctx)
+	if !ok || id.UserID == "" || id.SessionID == "" {
+		return
+	}
+
+	mapped := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		m := make(map[string]any, len(columns))
+		for j, col := range columns {
+			if j < len(row) {
+				m[col] = row[j]
+			}
+		}
+		mapped[i] = m
+	}
+	createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	entry, err := dataset.Default().Create(createCtx, id.UserID, id.SessionID, columns, mapped)
+	if err != nil {
+		recordAgentMetric("ai_dataset_created_total", "failed")
+		out.Notice = joinNotice(out.Notice, "表格物化为数据集失败，已保留分页结果；请继续用 offset 分页或 profile 分析")
+		return
+	}
+	recordAgentMetric("ai_dataset_created_total", "ok")
+	sample := out.Rows
+	if len(sample) > datasetSampleRows {
+		sample = sample[:datasetSampleRows]
+	}
+	out.Columns = entry.Columns
+	out.Rows = nil
+	out.Sample = sample
+	out.DatasetID = entry.ID
+	out.TotalRows = total
+	out.ReturnedRows = len(sample)
+	out.Notice = joinNotice(out.Notice, "表格已物化为数据集，可用 dataset_query 在数据集上执行只读 SQL（聚合/过滤/采样）；样本仅用于预览")
+	if total > entry.RowCount {
+		out.Notice = joinNotice(out.Notice, fmt.Sprintf("数据集仅包含可解析的前 %d 行（原始共 %d 行），超出解析上限的部分需另行处理", entry.RowCount, total))
+	}
+}
+
+func estimateRowsBytes(rows [][]string) int {
+	total := 0
+	for _, row := range rows {
+		for _, cell := range row {
+			total += len(cell)
+			if total >= datasetMaterializeMinBytes {
+				return total
+			}
+		}
+	}
+	return total
+}
+
+// readTableWindow 表格类分页读取；支持按 sheet 选择工作表。
 func readTableWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	columns := res.Columns
+	dataRows := res.Rows
+	total := res.TotalRows
+	baseNotice := res.Notice
+
+	sheetsInfo := make([]SheetInfo, 0, len(res.Sheets))
+	for _, s := range res.Sheets {
+		sheetsInfo = append(sheetsInfo, SheetInfo{
+			Name:      s.Name,
+			Columns:   s.Columns,
+			TotalRows: s.TotalRows,
+			Notice:    s.Notice,
+		})
+	}
+
+	if sheetName := strings.TrimSpace(input.Sheet); sheetName != "" {
+		if len(res.Sheets) == 0 {
+			return &ReadFileDataOutput{
+				Type:         "table",
+				Columns:      columns,
+				TotalRows:    total,
+				ReturnedRows: 0,
+				Sheets:       sheetsInfo,
+				Notice:       "当前文件不是多工作表 Excel，sheet 参数不适用",
+				Degraded:     res.Degraded,
+			}
+		}
+		found := false
+		for _, s := range res.Sheets {
+			if strings.EqualFold(s.Name, sheetName) {
+				columns = s.Columns
+				dataRows = s.Rows
+				total = s.TotalRows
+				baseNotice = joinNotice(baseNotice, s.Notice)
+				found = true
+				break
+			}
+		}
+		if !found {
+			names := make([]string, 0, len(res.Sheets))
+			for _, s := range res.Sheets {
+				names = append(names, s.Name)
+			}
+			return &ReadFileDataOutput{
+				Type:         "table",
+				Columns:      res.Columns,
+				TotalRows:    res.TotalRows,
+				ReturnedRows: 0,
+				Sheets:       sheetsInfo,
+				Notice:       fmt.Sprintf("sheet %q 不存在；可用工作表：%s", sheetName, strings.Join(names, ", ")),
+				Degraded:     res.Degraded,
+			}
+		}
+	}
+
 	limit := input.Limit
 	if limit <= 0 {
 		limit = fileparse.DefaultRowLimit
@@ -1090,17 +1508,19 @@ func readTableWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileD
 		offset = 0
 	}
 
-	total := len(res.Rows)
+	if total < len(dataRows) {
+		total = len(dataRows)
+	}
 	start := offset
-	if start > total {
-		start = total
+	if start > len(dataRows) {
+		start = len(dataRows)
 	}
 	end := start + limit
-	if end > total {
-		end = total
+	if end > len(dataRows) {
+		end = len(dataRows)
 	}
 
-	src := res.Rows[start:end]
+	src := dataRows[start:end]
 	rows := make([][]string, len(src))
 	for i, r := range src {
 		cp := make([]string, len(r))
@@ -1108,27 +1528,42 @@ func readTableWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileD
 		rows[i] = cp
 	}
 
-	notice := res.Notice
+	notice := baseNotice
 	if end < total {
-		notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 行（共 %d 行），如需后续数据可再次调用并传入 offset=%d",
-			start+1, end, total, end))
+		if end < len(dataRows) {
+			notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 行（共 %d 行），如需后续数据可再次调用并传入 offset=%d",
+				start+1, end, total, end))
+		} else {
+			notice = joinNotice(notice, "解析结果已在服务端上限处截断，无法继续分页；请基于已有数据聚合/抽样，或改用其他数据源")
+		}
 	}
 	return &ReadFileDataOutput{
 		Type:         "table",
-		Columns:      res.Columns,
+		Columns:      columns,
 		Rows:         rows,
 		TotalRows:    total,
 		ReturnedRows: len(rows),
+		Sheets:       sheetsInfo,
 		Notice:       notice,
 		Degraded:     res.Degraded,
 	}
 }
 
-// readTextWindow 文本/文档类按字符窗口（rune）分页读取。
+// readTextWindow 文本/文档类分页读取。
 //
-// 与既有 Markdown 行为兼容：默认窗口 30000 字符，超出部分通过 Notice 告知模型
-// （旧实现把截断提示拼在文本尾部，新实现放在结构化字段中，模型同样可见）。
+// 默认按字符（rune）窗口，保持既有 Markdown 行为；unit=lines 时按行读取。
+// 单元语义写入返回值与 Notice，避免模型把“行”误当“字符”。
 func readTextWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	unit := strings.ToLower(strings.TrimSpace(input.Unit))
+	switch unit {
+	case "lines":
+		return readTextLines(res, input)
+	case "page":
+		return readTextPages(res, input)
+	case "section":
+		return readTextSections(res, input)
+	}
+
 	runes := []rune(res.Text)
 	total := len(runes)
 
@@ -1153,17 +1588,547 @@ func readTextWindow(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDa
 
 	notice := res.Notice
 	if end < total {
-		notice = joinNotice(notice, fmt.Sprintf("文档较长，本次返回第 %d-%d 字符（共 %d 字符）。如需后续内容可再次调用并传入 offset=%d",
+		notice = joinNotice(notice, fmt.Sprintf("文档较长，本次返回第 %d-%d 字符（共 %d 字符）。如需后续内容可再次调用并传入 offset=%d（unit=chars）",
 			offset+1, end, total, end))
 	}
 
+	lineStart := 1 + strings.Count(string(runes[:offset]), "\n")
+	lineEnd := lineStart + strings.Count(string(runes[offset:end]), "\n")
 	return &ReadFileDataOutput{
 		Type:      "text",
 		Text:      string(runes[offset:end]),
 		CharCount: total,
+		LineStart: lineStart,
+		LineEnd:   lineEnd,
 		Notice:    notice,
 		Degraded:  res.Degraded,
 	}
+}
+
+// readTextPages 按页读取：offset 为起始页号（1-based），limit 为页数。
+func readTextPages(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	pages := res.PageList
+	if len(pages) == 0 {
+		pages = extractPageMarkers(res.Text)
+	}
+	if len(pages) == 0 {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: "未提取到页码结构；可用 unit=chars 或 unit=lines 读取"}
+	}
+	offset := input.Offset
+	if offset <= 0 {
+		offset = 1
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 1
+	}
+	if offset > len(pages) {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: fmt.Sprintf("页号 %d 超出范围（共 %d 页）", offset, len(pages))}
+	}
+	start := offset - 1
+	end := start + limit
+	if end > len(pages) {
+		end = len(pages)
+	}
+	runes := []rune(res.Text)
+	charStart := pages[start].StartChar
+	charEnd := pages[end-1].EndChar
+	if charStart > len(runes) {
+		charStart = len(runes)
+	}
+	if charEnd > len(runes) {
+		charEnd = len(runes)
+	}
+	notice := res.Notice
+	if end < len(pages) {
+		notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 页（共 %d 页），可继续传入 offset=%d（unit=page）", pages[start].Number, pages[end-1].Number, len(pages), end+1))
+	}
+	return &ReadFileDataOutput{
+		Type:      "text",
+		Text:      string(runes[charStart:charEnd]),
+		CharCount: res.TotalChars,
+		PageStart: pages[start].Number,
+		PageEnd:   pages[end-1].Number,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// readTextSections 按章节读取：offset 为章节序号（1-based），limit 为章节数。
+func readTextSections(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	if len(res.Sections) == 0 {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: "未提取到章节结构；可用 unit=chars 或 unit=lines 读取"}
+	}
+	offset := input.Offset
+	if offset <= 0 {
+		offset = 1
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 1
+	}
+	if offset > len(res.Sections) {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: fmt.Sprintf("章节序号 %d 超出范围（共 %d 个章节）", offset, len(res.Sections))}
+	}
+	start := offset - 1
+	end := start + limit
+	if end > len(res.Sections) {
+		end = len(res.Sections)
+	}
+	runes := []rune(res.Text)
+	charStart := res.Sections[start].StartChar
+	charEnd := res.Sections[end-1].EndChar
+	if charStart > len(runes) {
+		charStart = len(runes)
+	}
+	if charEnd > len(runes) {
+		charEnd = len(runes)
+	}
+	notice := res.Notice
+	if end < len(res.Sections) {
+		notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 个章节（共 %d 个），可继续传入 offset=%d（unit=section）", start+1, end, len(res.Sections), end+1))
+	}
+	return &ReadFileDataOutput{
+		Type:         "text",
+		Text:         string(runes[charStart:charEnd]),
+		CharCount:    res.TotalChars,
+		SectionTitle: res.Sections[start].Title,
+		Notice:       notice,
+		Degraded:     res.Degraded,
+	}
+}
+
+// readTextLines 文本/文档类按行分页。
+func readTextLines(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	lines := strings.Split(res.Text, "\n")
+	totalLines := len(lines)
+	offset := input.Offset
+	if offset <= 0 {
+		offset = 1
+	}
+	if offset > totalLines {
+		offset = totalLines
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = maxTextWindowChars
+	}
+	start := offset - 1
+	end := start + limit
+	if end > totalLines {
+		end = totalLines
+	}
+	notice := res.Notice
+	if end < totalLines {
+		notice = joinNotice(notice, fmt.Sprintf("本次返回第 %d-%d 行（共 %d 行）。如需后续内容可再次调用并传入 offset=%d（unit=lines）",
+			start+1, end, totalLines, end+1))
+	}
+	return &ReadFileDataOutput{
+		Type:      "text",
+		Text:      strings.Join(lines[start:end], "\n"),
+		CharCount: utf8.RuneCountInString(res.Text),
+		LineStart: start + 1,
+		LineEnd:   end,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// buildTableOutline 返回工作表/列结构，供模型决定后续读取范围。
+func buildTableOutline(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	sheetsInfo := make([]SheetInfo, 0, len(res.Sheets))
+	for _, s := range res.Sheets {
+		sheetsInfo = append(sheetsInfo, SheetInfo{
+			Name:      s.Name,
+			Columns:   s.Columns,
+			TotalRows: s.TotalRows,
+			Notice:    s.Notice,
+		})
+	}
+	notice := res.Notice
+	if len(sheetsInfo) == 0 {
+		sheetsInfo = append(sheetsInfo, SheetInfo{Columns: res.Columns, TotalRows: res.TotalRows})
+		notice = joinNotice(notice, "单工作表/CSV，无多 sheet 结构")
+	}
+	return &ReadFileDataOutput{
+		Type:      "table",
+		Columns:   res.Columns,
+		TotalRows: res.TotalRows,
+		Sheets:    sheetsInfo,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// buildTextOutline 返回章节/页码结构，供模型定位后再精读。
+func buildTextOutline(res *fileparse.Result) *ReadFileDataOutput {
+	sections := make([]FileSectionInfo, 0, len(res.Sections))
+	for _, s := range res.Sections {
+		sections = append(sections, FileSectionInfo{Title: s.Title, Level: s.Level, StartChar: s.StartChar, EndChar: s.EndChar})
+	}
+	pages := make([]fileparse.Page, len(res.PageList))
+	copy(pages, res.PageList)
+	if len(pages) == 0 {
+		pages = extractPageMarkers(res.Text)
+	}
+	pageInfos := make([]FilePageInfo, 0, len(pages))
+	for _, p := range pages {
+		pageInfos = append(pageInfos, FilePageInfo{Number: p.Number, StartChar: p.StartChar, EndChar: p.EndChar})
+	}
+	notice := res.Notice
+	if len(sections) == 0 && len(pageInfos) == 0 {
+		notice = joinNotice(notice, "未提取到章节/页码结构；可用 search 定位或 read 按字符/行读取")
+	}
+	return &ReadFileDataOutput{
+		Type:      "text",
+		CharCount: res.TotalChars,
+		Sections:  sections,
+		Pages:     pageInfos,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// searchTextFile 在文本/文档中搜索关键词或正则，返回行号、页码/章节与片段。
+func searchTextFile(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	query := strings.TrimSpace(input.Query)
+	if query == "" {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: "search 模式需要提供 query"}
+	}
+	matcher, err := buildSearchMatcher(query, input.Regex, input.CaseSensitive)
+	if err != nil {
+		return &ReadFileDataOutput{Type: "text", CharCount: res.TotalChars, Notice: err.Error()}
+	}
+	maxMatches := input.MaxMatches
+	if maxMatches <= 0 {
+		maxMatches = 20
+	}
+	if maxMatches > 200 {
+		maxMatches = 200
+	}
+
+	pages := res.PageList
+	if len(pages) == 0 {
+		pages = extractPageMarkers(res.Text)
+	}
+	lines := strings.Split(res.Text, "\n")
+	offset := 0
+	matches := make([]FileMatch, 0, maxMatches)
+	truncated := false
+	for i, line := range lines {
+		if matcher(line) {
+			if len(matches) >= maxMatches {
+				truncated = true
+				break
+			}
+			start := i - 1
+			if start < 0 {
+				start = 0
+			}
+			end := i + 2
+			if end > len(lines) {
+				end = len(lines)
+			}
+			snippet := clampUTF8Prefix(strings.Join(lines[start:end], "\n"), 500)
+			matches = append(matches, FileMatch{
+				Location: locationAt(res.Sections, pages, offset),
+				Line:     i + 1,
+				Offset:   offset,
+				Snippet:  snippet,
+			})
+		}
+		offset += utf8.RuneCountInString(line) + 1
+	}
+	notice := res.Notice
+	if truncated {
+		notice = joinNotice(notice, fmt.Sprintf("命中超过 %d 条，仅返回前 %d 条；可缩小 query 或增大 maxMatches", maxMatches, len(matches)))
+	}
+	if len(matches) == 0 {
+		notice = joinNotice(notice, "没有匹配项")
+	}
+	return &ReadFileDataOutput{
+		Type:      "text",
+		CharCount: res.TotalChars,
+		Matches:   matches,
+		Notice:    notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// searchTableFile 在表格中搜索单元格内容，返回 sheet/行/列与片段。
+func searchTableFile(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	query := strings.TrimSpace(input.Query)
+	if query == "" {
+		return &ReadFileDataOutput{Type: "table", Notice: "search 模式需要提供 query"}
+	}
+	matcher, err := buildSearchMatcher(query, input.Regex, input.CaseSensitive)
+	if err != nil {
+		return &ReadFileDataOutput{Type: "table", Notice: err.Error()}
+	}
+	maxMatches := input.MaxMatches
+	if maxMatches <= 0 {
+		maxMatches = 20
+	}
+	if maxMatches > 200 {
+		maxMatches = 200
+	}
+
+	columns, rows, total, baseNotice, sheetsInfo := selectTableData(res, input.Sheet)
+	sheetLabel := strings.TrimSpace(input.Sheet)
+	if sheetLabel == "" && len(res.Sheets) > 0 {
+		sheetLabel = res.Sheets[0].Name
+	}
+	matches := make([]FileMatch, 0, maxMatches)
+	truncated := false
+	for rowIdx, row := range rows {
+		for colIdx, cell := range row {
+			if cell == "" || !matcher(cell) {
+				continue
+			}
+			if len(matches) >= maxMatches {
+				truncated = true
+				break
+			}
+			colName := ""
+			if colIdx < len(columns) {
+				colName = columns[colIdx]
+			}
+			matches = append(matches, FileMatch{
+				Location: fmt.Sprintf("第 %d 行", rowIdx+1),
+				Sheet:    sheetLabel,
+				Row:      rowIdx + 1,
+				Column:   colName,
+				Snippet:  clampUTF8Prefix(cell, 500),
+			})
+		}
+		if truncated {
+			break
+		}
+	}
+	notice := baseNotice
+	if truncated {
+		notice = joinNotice(notice, fmt.Sprintf("命中超过 %d 条，仅返回前 %d 条；可缩小 query 或增大 maxMatches", maxMatches, len(matches)))
+	}
+	if len(matches) == 0 {
+		notice = joinNotice(notice, "没有匹配项")
+	}
+	return &ReadFileDataOutput{
+		Type:         "table",
+		Columns:      columns,
+		TotalRows:    total,
+		ReturnedRows: len(matches),
+		Sheets:       sheetsInfo,
+		Matches:      matches,
+		Notice:       notice,
+		Degraded:     res.Degraded,
+	}
+}
+
+// profileTextFile 返回文本/文档的基本画像。
+func profileTextFile(res *fileparse.Result) *ReadFileDataOutput {
+	pages := res.PageList
+	if len(pages) == 0 {
+		pages = extractPageMarkers(res.Text)
+	}
+	return &ReadFileDataOutput{
+		Type:      "text",
+		CharCount: res.TotalChars,
+		Sections:  fileSections(res.Sections),
+		Pages:     filePages(pages),
+		Profile:   &FileProfile{Notice: fmt.Sprintf("字符数=%d，章节数=%d，页数=%d", res.TotalChars, len(res.Sections), len(pages))},
+		Notice:    res.Notice,
+		Degraded:  res.Degraded,
+	}
+}
+
+// profileTableFile 返回表格列统计；大表基于样本并标注。
+func profileTableFile(res *fileparse.Result, input *ReadFileDataInput) *ReadFileDataOutput {
+	columns, rows, total, baseNotice, sheetsInfo := selectTableData(res, input.Sheet)
+	const profileSampleLimit = 50_000
+	sampled := false
+	if len(rows) > profileSampleLimit {
+		rows = rows[:profileSampleLimit]
+		sampled = true
+	}
+	profiles := make([]ColumnProfile, 0, len(columns))
+	for colIdx, name := range columns {
+		profile := ColumnProfile{Name: name}
+		numeric := true
+		hasValue := false
+		hasNumeric := false
+		var min, max float64
+		distinct := make(map[string]int, 64)
+		for _, row := range rows {
+			if colIdx >= len(row) {
+				profile.Nulls++
+				continue
+			}
+			value := strings.TrimSpace(row[colIdx])
+			if value == "" {
+				profile.Nulls++
+				continue
+			}
+			hasValue = true
+			if f, parseErr := strconv.ParseFloat(value, 64); parseErr == nil {
+				if !hasNumeric {
+					min, max, hasNumeric = f, f, true
+				} else {
+					if f < min {
+						min = f
+					}
+					if f > max {
+						max = f
+					}
+				}
+			} else {
+				numeric = false
+			}
+			if len(distinct) < 100 {
+				distinct[value]++
+			}
+		}
+		if numeric && hasValue && hasNumeric {
+			profile.Type = "number"
+			profile.Min = fmt.Sprintf("%g", min)
+			profile.Max = fmt.Sprintf("%g", max)
+		} else {
+			profile.Type = "string"
+		}
+		profile.Distinct = len(distinct)
+		profile.Top = topValues(distinct, 5)
+		profiles = append(profiles, profile)
+	}
+	notice := baseNotice
+	if sampled {
+		notice = joinNotice(notice, fmt.Sprintf("列统计基于前 %d 行样本（共 %d 行）", profileSampleLimit, total))
+	}
+	return &ReadFileDataOutput{
+		Type:         "table",
+		Columns:      columns,
+		TotalRows:    total,
+		ReturnedRows: len(rows),
+		Sheets:       sheetsInfo,
+		Profile:      &FileProfile{Columns: profiles, Sampled: sampled},
+		Notice:       notice,
+		Degraded:     res.Degraded,
+	}
+}
+
+func topValues(counts map[string]int, limit int) []string {
+	type pair struct {
+		value string
+		count int
+	}
+	pairs := make([]pair, 0, len(counts))
+	for value, count := range counts {
+		pairs = append(pairs, pair{value: value, count: count})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].count == pairs[j].count {
+			return pairs[i].value < pairs[j].value
+		}
+		return pairs[i].count > pairs[j].count
+	})
+	if len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, fmt.Sprintf("%s (%d)", clampUTF8Prefix(p.value, 200), p.count))
+	}
+	return out
+}
+
+// selectTableData 选择工作表并返回列/行/总数/说明。
+func selectTableData(res *fileparse.Result, sheet string) (columns []string, rows [][]string, total int, notice string, sheetsInfo []SheetInfo) {
+	columns, rows, total, notice = res.Columns, res.Rows, res.TotalRows, res.Notice
+	sheetsInfo = make([]SheetInfo, 0, len(res.Sheets))
+	for _, s := range res.Sheets {
+		sheetsInfo = append(sheetsInfo, SheetInfo{Name: s.Name, Columns: s.Columns, TotalRows: s.TotalRows, Notice: s.Notice})
+	}
+	if strings.TrimSpace(sheet) == "" || len(res.Sheets) == 0 {
+		return
+	}
+	for _, s := range res.Sheets {
+		if strings.EqualFold(s.Name, sheet) {
+			return s.Columns, s.Rows, s.TotalRows, joinNotice(notice, s.Notice), sheetsInfo
+		}
+	}
+	return columns, rows, total, joinNotice(notice, fmt.Sprintf("sheet %q 不存在，已回退到默认工作表", sheet)), sheetsInfo
+}
+
+func buildSearchMatcher(query string, regex, caseSensitive bool) (func(string) bool, error) {
+	if regex {
+		expr := query
+		if !caseSensitive {
+			expr = "(?i)" + expr
+		}
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, fmt.Errorf("query 不是合法正则：%w", err)
+		}
+		return re.MatchString, nil
+	}
+	if caseSensitive {
+		return func(s string) bool { return strings.Contains(s, query) }, nil
+	}
+	lower := strings.ToLower(query)
+	return func(s string) bool { return strings.Contains(strings.ToLower(s), lower) }, nil
+}
+
+func extractPageMarkers(text string) []fileparse.Page {
+	re := regexp.MustCompile(`----- 第 (\d+) 页 -----`)
+	locs := re.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	pages := make([]fileparse.Page, 0, len(locs))
+	for i, loc := range locs {
+		number, _ := strconv.Atoi(text[loc[2]:loc[3]])
+		start := utf8.RuneCountInString(text[:loc[0]])
+		end := utf8.RuneCountInString(text)
+		if i+1 < len(locs) {
+			end = utf8.RuneCountInString(text[:locs[i+1][0]])
+		}
+		pages = append(pages, fileparse.Page{Number: number, StartChar: start, EndChar: end})
+	}
+	return pages
+}
+
+func locationAt(sections []fileparse.Section, pages []fileparse.Page, offset int) string {
+	parts := make([]string, 0, 2)
+	for _, p := range pages {
+		if offset >= p.StartChar && offset < p.EndChar {
+			parts = append(parts, fmt.Sprintf("第 %d 页", p.Number))
+			break
+		}
+	}
+	var title string
+	for _, s := range sections {
+		if offset >= s.StartChar {
+			title = s.Title
+		}
+	}
+	if title != "" {
+		parts = append(parts, "章节："+title)
+	}
+	return strings.Join(parts, " / ")
+}
+
+func fileSections(in []fileparse.Section) []FileSectionInfo {
+	out := make([]FileSectionInfo, 0, len(in))
+	for _, s := range in {
+		out = append(out, FileSectionInfo{Title: s.Title, Level: s.Level, StartChar: s.StartChar, EndChar: s.EndChar})
+	}
+	return out
+}
+
+func filePages(in []fileparse.Page) []FilePageInfo {
+	out := make([]FilePageInfo, 0, len(in))
+	for _, p := range in {
+		out = append(out, FilePageInfo{Number: p.Number, StartChar: p.StartChar, EndChar: p.EndChar})
+	}
+	return out
 }
 
 // joinNotice 拼接说明文案（分号分隔）
@@ -1345,41 +2310,59 @@ func quoteTableRef(dbType, dbSchema, tableName string) string {
 	return quoteIdent(dbType, tableName)
 }
 
-// applyRowLimit 给 SELECT 加 LIMIT，未带 LIMIT 时附加。
+// buildQueryOutput 统一构造查询结果，并显式标注截断状态。
+// 不把“服务端安全上限”写成分析建议，只告诉模型实际返回了多少、是否还有更多。
+func buildQueryOutput(columns []string, data []map[string]any, truncated bool) *QueryOutput {
+	out := &QueryOutput{
+		Columns:      columns,
+		Data:         data,
+		Count:        len(data),
+		ReturnedRows: len(data),
+		RowCount:     len(data),
+		TotalKnown:   !truncated,
+		Truncated:    truncated,
+		HasMore:      truncated,
+	}
+	if truncated {
+		// 总数未知：不要把“返回了多少行”伪装成总行数。
+		out.RowCount = 0
+	}
+	if encoded, err := json.Marshal(out); err == nil {
+		out.EstimatedBytes = len(encoded)
+	}
+	if truncated {
+		out.Notice = fmt.Sprintf(
+			"结果超过服务端安全上限，仅返回前 %d 行。请先聚合/过滤，或基于已有结果继续分析；不要把它当作全量数据。",
+			len(data),
+		)
+	}
+	return out
+}
+
+// reOracleRowNum 识别 Oracle 老版本的 ROWNUM 行数限制谓词。
+var reOracleRowNum = regexp.MustCompile(`(?i)\bROWNUM\b`)
+
+// applyRowLimit 给 SELECT 加 LIMIT，未带顶层 LIMIT 时附加。
 //
-// 支持检测：
-//   - LIMIT n
-//   - LIMIT n, m  (MySQL offset, count)
-//   - LIMIT n OFFSET m
-//   - FETCH NEXT/FIRST n ROWS ONLY (Oracle 12c+)
-//   - ROWNUM 谓词 (Oracle 老版本)
-//
-// Oracle 12c+ 优先使用 OFFSET 0 ROWS FETCH NEXT N ROWS ONLY（保留 ORDER BY 语义）；
-// 老版本回退到 SELECT * FROM (...) WHERE ROWNUM <= N（注意：此方法会破坏 ORDER BY）。
+// 支持检测 LIMIT / FETCH FIRST|NEXT / SELECT TOP；子查询内的 LIMIT 不算。
+// Oracle 12c+ 使用 OFFSET 0 ROWS FETCH NEXT N ROWS ONLY（保留 ORDER BY 语义）。
 func applyRowLimit(sql, driverName string, maxRows int) string {
-	// **必须**先剥注释——否则 SELECT * FROM users -- LIMIT 999 中的 LIMIT 999
-	// 会被正则误识别为"已有 LIMIT"，导致永远不追加真实 LIMIT。
-	// （EINO_DEEP_ANALYSIS §5.3 双重 LIMIT 反向 case）
+	// 先剥注释，避免注释中的 LIMIT 干扰判断；再用词法级 HasTopLevelLimit
+	// 只识别最外层 LIMIT/FETCH/TOP，子查询内的 LIMIT 不算。
 	stripped := sqlutil.StripSQLComments(sql)
 	trimmed := strings.TrimRight(stripped, "; \t\r\n")
-	upper := strings.ToUpper(trimmed)
+	if sqlguard.HasTopLevelLimit(trimmed) {
+		return sql
+	}
+	// Oracle 老版本常用 ROWNUM 谓词限制行数；已有该谓词时不再追加 FETCH。
+	if driverName == "oracle" && reOracleRowNum.MatchString(trimmed) {
+		return sql
+	}
 	switch driverName {
 	case "oracle":
-		if reLimitOracle.MatchString(upper) {
-			return sql
-		}
 		// Oracle 12c+ 使用标准 OFFSET/FETCH 语法，避免 ROWNUM 破坏 ORDER BY
 		return fmt.Sprintf("%s OFFSET 0 ROWS FETCH NEXT %d ROWS ONLY", trimmed, maxRows)
 	default:
-		if reLimit.MatchString(upper) {
-			return sql
-		}
 		return fmt.Sprintf("%s LIMIT %d", trimmed, maxRows)
 	}
 }
-
-// reLimit 匹配 MySQL/PostgreSQL/SQLite 的 LIMIT 形式
-var reLimit = regexp.MustCompile(`(?i)\bLIMIT\s+(?:\d+\s+OFFSET\s+\d+|\d+(?:\s*,\s*\d+)?)\b`)
-
-// reLimitOracle 匹配 Oracle 的 LIMIT 等价形式
-var reLimitOracle = regexp.MustCompile(`(?i)\b(?:ROWNUM\b|FETCH\s+(?:NEXT|FIRST)\s+\d+\s+ROWS?\s+ONLY)`)

@@ -27,13 +27,14 @@ import (
 // loggingToolCallingChatModel 包装 model.ToolCallingChatModel，输出调用日志。
 type loggingToolCallingChatModel struct {
 	model.ToolCallingChatModel
+	modelName string
 }
 
-func newLoggingModel(inner model.ToolCallingChatModel) model.ToolCallingChatModel {
+func newLoggingModel(modelName string, inner model.ToolCallingChatModel) model.ToolCallingChatModel {
 	if inner == nil {
 		return nil
 	}
-	return &loggingToolCallingChatModel{ToolCallingChatModel: inner}
+	return &loggingToolCallingChatModel{ToolCallingChatModel: inner, modelName: modelName}
 }
 
 func (m *loggingToolCallingChatModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
@@ -49,13 +50,15 @@ func (m *loggingToolCallingChatModel) WithTools(tools []*schema.ToolInfo) (model
 		}
 	}
 	log.Printf("[Model:WithTools] 绑定工具 - count=%d, tools=%v\n", len(tools), toolNames)
-	return &loggingToolCallingChatModel{ToolCallingChatModel: inner}, nil
+	return &loggingToolCallingChatModel{ToolCallingChatModel: inner, modelName: m.modelName}, nil
 }
 
 func (m *loggingToolCallingChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	start := time.Now()
 	inputSummary := summarizeInputMessages(input)
 	log.Printf("[Model:Generate] 开始 - input=%s\n", inputSummary)
+	// 本地计数兜底：适配器未回填 usage 时仍可观测输入规模。
+	addAgentMetricValue("ai_model_tokens_estimated_total", int64(countMessageTokens(input, nil)), "prompt")
 
 	resp, err := m.ToolCallingChatModel.Generate(ctx, input, opts...)
 	elapsed := time.Since(start)
@@ -63,6 +66,7 @@ func (m *loggingToolCallingChatModel) Generate(ctx context.Context, input []*sch
 		log.Printf("[Model:Generate] 失败 - elapsed=%v, err=%v\n", elapsed, err)
 		return nil, err
 	}
+	recordModelUsage(ctx, "generate", m.modelName, resp)
 	outputSummary := summarizeOutputMessage(resp)
 	log.Printf("[Model:Generate] 完成 - elapsed=%v, output=%s\n", elapsed, outputSummary)
 	return resp, nil
@@ -72,6 +76,7 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 	start := time.Now()
 	inputSummary := summarizeInputMessages(input)
 	log.Printf("[Model:Stream] 开始 - input=%s\n", inputSummary)
+	addAgentMetricValue("ai_model_tokens_estimated_total", int64(countMessageTokens(input, nil)), "prompt")
 
 	sr, err := m.ToolCallingChatModel.Stream(ctx, input, opts...)
 	if err != nil {
@@ -88,6 +93,7 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 	totalReasoningLen := 0
 	totalToolCalls := 0
 	firstChunkLogged := false
+	usageRecorded := false
 	seenToolCallIDs := make(map[string]bool)
 
 	wrapped := schema.StreamReaderWithConvert(sr, func(msg *schema.Message) (*schema.Message, error) {
@@ -98,6 +104,10 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 		}
 		totalContentLen += len(msg.Content)
 		totalReasoningLen += len(msg.ReasoningContent)
+		if !usageRecorded && msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+			usageRecorded = true
+			recordModelUsage(ctx, "stream", m.modelName, msg)
+		}
 		tcCount := len(msg.ToolCalls)
 		if tcCount > 0 {
 			totalToolCalls += tcCount
@@ -121,6 +131,26 @@ func (m *loggingToolCallingChatModel) Stream(ctx context.Context, input []*schem
 	})
 
 	return wrapped, nil
+}
+
+// recordModelUsage 记录模型返回的 token usage（低基数指标 + 单行日志）。
+// 模型适配器未回填 usage 时记录 missing，便于发现计量盲区。
+func recordModelUsage(ctx context.Context, phase, modelName string, msg *schema.Message) {
+	if msg == nil || msg.ResponseMeta == nil || msg.ResponseMeta.Usage == nil {
+		recordAgentMetric("ai_model_usage_total", phase, "missing")
+		return
+	}
+	u := msg.ResponseMeta.Usage
+	recordAgentMetric("ai_model_usage_total", phase, "present")
+	addAgentMetricValue("ai_model_tokens_total", int64(u.PromptTokens), "prompt")
+	addAgentMetricValue("ai_model_tokens_total", int64(u.CompletionTokens), "completion")
+	addAgentMetricValue("ai_model_cached_tokens_total", int64(u.PromptTokenDetails.CachedTokens), "prompt")
+	sessionID, userID := "", ""
+	if id, ok := runIdentityFrom(ctx); ok {
+		sessionID, userID = id.SessionID, id.UserID
+	}
+	log.Printf("[Model:Usage] %s - model=%s, session=%s, user=%s, prompt=%d, completion=%d, total=%d, cached=%d\n",
+		phase, modelName, sessionID, userID, u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.PromptTokenDetails.CachedTokens)
 }
 
 // summarizeInputMessages 生成输入消息的概要字符串，用于日志输出。

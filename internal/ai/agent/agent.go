@@ -145,7 +145,6 @@ var globalCheckPointStore = NewInMemoryCheckPointStore()
 // 造成 Cancel() 错位（参见 EINO_DEEP_ANALYSIS §6.2）。
 type SQLAgent struct {
 	runner           *adk.Runner
-	agent            *adk.ChatModelAgent
 	sessions         *SessionStore
 	dbType           string
 	dbSchema         string
@@ -156,7 +155,6 @@ type SQLAgent struct {
 	cancelMu         sync.Mutex
 	cancelFuncs      map[string]adk.AgentCancelFunc // runID -> cancel
 	sessionSync      *SessionSyncMiddleware         // Eino v0.9 会话同步中间件
-	promptMW         *DynamicPromptMiddleware       // per-run 动态系统提示词中间件
 }
 
 // registerCancel 注册当前 run 的 cancelFunc。
@@ -330,12 +328,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	if defaultConnID == "" && len(req.Schemas) > 0 {
 		defaultConnID = req.Schemas[0].ConnID
 	}
-	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, scope, req.Schemas, export.GetSkillEnv() != nil)
+	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, scope, req.Schemas, export.GetSkillEnv() != nil, sec)
 
 	if detectPreviousExecution(allMsgs) {
-		sysPrompt += "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +
-			"你必须基于对话历史中实际执行的 tool_calls 参数和 tool 返回结果来回答，" +
-			"禁止凭记忆编造。如果历史中没有相关信息，直接告知用户，禁止猜测。\n"
+		sysPrompt += previousExecutionPrompt()
 		log.Printf("[Agent] 检测到历史执行记录，追加历史引导\n")
 	}
 
@@ -344,7 +340,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 			sysPrompt += fmt.Sprintf("\n\n📎 用户上传了 Markdown 文档（fileId=%s）：共 %d 字符。\n",
 				req.ExcelData.FileID, req.ExcelData.CharCount)
 			sysPrompt += "该文件为文本文档，仅支持内容分析/解读/结合数据库分析，不支持导入数据库。" +
-				"需要查看内容时调用 read_file_data 读取全文（不做数据量限制）。\n"
+				"需要查看内容时调用 read_file_data：先 outline/search/profile 定位，再按 unit/offset 精读；" +
+				"注意返回的 notice/charCount，不要假设一次读取就能拿到全文。\n"
 		} else {
 			ftLabel := "数据文件"
 			switch req.ExcelData.FileType {
@@ -390,6 +387,10 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	// 提示词经 context 传入（而非中间件实例字段），保证同一共享 Agent 被并发 Run 时互不干扰。
 	ctx = WithRunPrompt(ctx, sysPrompt)
 	log.Printf("[Agent] 系统提示词已构建并注入 - len=%d\n", len(sysPrompt))
+	recordAgentMetric("ai_prompt_build_total", "main")
+	addAgentMetricValue("ai_prompt_chars_total", int64(len(sysPrompt)), "main")
+	addAgentMetricValue("ai_prompt_tokens", int64(estimateTextTokens(sysPrompt)), "main")
+	addAgentMetricValue("ai_prompt_tokens_estimated_total", int64(estimateTextTokens(sysPrompt)), "main")
 
 	// 多模态媒体注入计划（图片/视频）：仅模型具备对应能力时注入，
 	// 仅覆盖最近 mediaInjectWindow 条含媒体的用户消息，同一 fileId 只注入一次。
@@ -464,6 +465,8 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	// 本次运行的会话/用户经 context 传给工具（审计记录使用真实 SessionID，
 	// 而不是缓存 Agent 构建时烘焙进工具的旧值）
 	ctx = WithRunIdentity(ctx, RunIdentity{SessionID: sessionID, UserID: req.UserID})
+	// 供 ls /uploads、glob 使用：只暴露本次会话引用过的上传文件。
+	ctx = WithUploadFileIDs(ctx, collectRunAttachmentIDs(req, allMsgs))
 
 	// 登记 checkpoint 归属：恢复时校验用户/会话/连接与权限快照一致，并保证一次性消费
 	globalCheckPointStore.Bind(checkPointID, CheckpointBinding{
@@ -472,6 +475,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		ConnID:      defaultConnID,
 		Revision:    sec.Revision,
 		ScopeDigest: sec.ScopeDigest,
+		Prompt:      sysPrompt,
 	})
 
 	iter := a.runner.Run(ctx, messages, adk.WithCheckPointID(checkPointID), cancelOpt)
@@ -482,6 +486,9 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
+		if strings.Contains(err.Error(), "会话大小超过上限") {
+			flush(StreamChunk{Type: "error", Content: "会话历史过大，本次内容未保存；请新建会话或缩小题问范围后重试"})
+		}
 	}
 
 	log.Printf("[Agent] 执行完毕 - sessionID=%s, awaitingConfirm=%v\n", sessionID, interrupted)
@@ -525,6 +532,14 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 		sess.SetLatestSecurity(sec)
 	}
 
+	// Resume 必须复用发起中断时的系统提示词：eino 不随 checkpoint 持久化 Instruction，
+	// 不注入会导致审批后的模型调用没有 system 消息（方言/权限/注入防护规则全部丢失）。
+	// 旧 checkpoint 未保存 Prompt 时按当前上下文重建，保证不会出现空 system。
+	prompt, promptSource := a.resolveResumePrompt(checkPointID, sec, binding, sess)
+	recordAgentMetric("ai_resume_prompt_total", promptSource)
+	ctx = WithRunPrompt(ctx, prompt)
+	log.Printf("[Agent] resume 系统提示词已注入 - source=%s, len=%d\n", promptSource, len(prompt))
+
 	targetsAny := make(map[string]any, len(targets))
 	for id, approved := range targets {
 		targetsAny[id] = SQLApprovalResult{Approved: approved}
@@ -541,6 +556,9 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 		ctx = WithRunSessionState(ctx, newRunSessionState(sess, len(sess.GetMessages())))
 	}
 	ctx = WithRunIdentity(ctx, RunIdentity{SessionID: binding.SessionID, UserID: binding.UserID})
+	if sess != nil {
+		ctx = WithUploadFileIDs(ctx, collectRunAttachmentIDs(ChatRequest{UserID: binding.UserID}, sess.GetMessages()))
+	}
 
 	resumeStart := time.Now()
 	iter, err := a.runner.ResumeWithParams(ctx, checkPointID, &adk.ResumeParams{
@@ -556,6 +574,9 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 
 	if err := sess.SaveToDB(); err != nil {
 		log.Printf("[Agent] 保存会话失败 - err=%v\n", err)
+		if strings.Contains(err.Error(), "会话大小超过上限") {
+			flush(StreamChunk{Type: "error", Content: "会话历史过大，本次内容未保存；请新建会话或缩小题问范围后重试"})
+		}
 	}
 
 	return nil
@@ -569,6 +590,57 @@ func detectPreviousExecution(msgs []SessionMessage) bool {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// previousExecutionPrompt 返回“上一轮有实际执行”时的历史引导段落。
+func previousExecutionPrompt() string {
+	return "\n\n## 📌 上一轮有查询或写入操作。当用户追问、要求重新操作、要求导出时，" +
+		"你必须基于对话历史中实际执行的 tool_calls 参数和 tool 返回结果来回答，" +
+		"禁止凭记忆编造。如果历史中没有相关信息，直接告知用户，禁止猜测。\n"
+}
+
+// resolveResumePrompt 解析 Resume 使用的系统提示词：
+// 优先 checkpoint 保存的原文，其次按当前上下文重建；返回来源用于指标与日志。
+func (a *SQLAgent) resolveResumePrompt(checkPointID string, sec *RunSecurityContext, binding CheckpointBinding, sess *Session) (string, string) {
+	prompt := globalCheckPointStore.Prompt(checkPointID)
+	if prompt != "" {
+		return prompt, "cached"
+	}
+	prompt = a.rebuildPromptForResume(sec, binding, sess)
+	if prompt != "" {
+		return prompt, "rebuilt"
+	}
+	recordAgentMetric("ai_resume_without_prompt", "true")
+	return "", "empty"
+}
+
+// rebuildPromptForResume 在 checkpoint 未保存提示词时（旧版本/异常路径）按当前上下文重建。
+func (a *SQLAgent) rebuildPromptForResume(sec *RunSecurityContext, binding CheckpointBinding, sess *Session) string {
+	scope := a.scope
+	if s, err := sec.DefaultScope(); err == nil {
+		scope = s
+	}
+	prompt := buildSystemPrompt(binding.ConnID, a.dbType, a.dbSchema, a.dbVersion, nil, scope, a.schemas, export.GetSkillEnv() != nil, sec)
+	if binding.ConnID == "" && sessionHasAttachments(sess) {
+		prompt = fileOnlyPromptPrefix() + prompt
+	}
+	if sess != nil && detectPreviousExecution(sess.GetMessages()) {
+		prompt += previousExecutionPrompt()
+	}
+	return prompt
+}
+
+// sessionHasAttachments 判断会话历史中是否已有上传文件（纯文件会话的后续追问）。
+func sessionHasAttachments(sess *Session) bool {
+	if sess == nil {
+		return false
+	}
+	for _, msg := range sess.GetMessages() {
+		if len(msg.Attachments) > 0 {
 			return true
 		}
 	}
@@ -659,29 +731,35 @@ func BuildChatModel(ctx context.Context, cfg *system.AIConfig) (model.ToolCallin
 
 	// 1. toolCallIndexFixerModel：在流输出层面修复 ToolCall Index 冲突
 	// 2. loggingToolCallingChatModel：输出模型调用日志（输入/输出概要、耗时、chunk 统计）
-	return newLoggingModel(&toolCallIndexFixerModel{ToolCallingChatModel: cm}), nil
+	return newLoggingModel(cfg.Model, &toolCallIndexFixerModel{ToolCallingChatModel: cm}), nil
 }
 
-func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
+func buildTools(ctx context.Context, connID, dbType, dbSchema string, schemas []SchemaRef, auditCtx *ExecAuditCtx, scope *PermissionScope) (coreTools []tool.BaseTool, deferredTools []tool.BaseTool, err error) {
 	conn, _ := GetConn(connID, scope.UserID)
 	// 导出工具的最小审计上下文（export 包不能反向依赖 agent 包，故做一次转换）
 	exportAuditCtx := toExportAuditCtx(auditCtx)
-	queryTool, qErr := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
+	queryTool, qErr := utils.InferTool("query_data", "执行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 查询并返回结果。maxRows 可按分析需要请求更大结果集（服务端有硬上限）；返回 returnedRows/rowCount（totalKnown=true 时才是总行数）/truncated/notice；truncated=true 时不要当作全量。", NewQueryFunc(connID, schemas, auditCtx, scope.UserID))
 	schemaTool, sErr := utils.InferTool("get_table_schema", "获取指定表的建表语句和结构信息，支持一次传入多个表名", NewSchemaFunc(connID, dbType, dbSchema, schemas, scope.UserID))
-	listTablesTool, lErr := utils.InferTool("list_tables", "获取当前数据库的所有表名及表注释", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
+	listTablesTool, lErr := utils.InferTool("list_tables", "获取当前数据库的表名及表注释；支持 offset/limit 分页，返回 totalCount/nextOffset/hasMore。", NewListTablesFunc(connID, dbType, dbSchema, schemas, scope.UserID))
 	currentDateInfoTool, dErr := utils.InferTool("get_current_date_info", "获取当前日期、星期几和时间", GetCurrentDateInfo())
-	// read_file_data 为只读工具，用于分析用户上传的数据文件，不依赖写权限，常驻核心工具
-	readFileTool, rfErr := utils.InferTool("read_file_data", "读取已上传的数据文件内容（只读，用于数据分析，不会导入数据库）。可传 limit(默认100,最大500)/offset 分页读取", NewReadFileDataFunc(scope.UserID))
+	// read_file_data 为只读工具，用于分析用户上传的数据文件，不依赖写权限，常驻核心工具。
+	// mode=read|outline|search|profile；read 模式下 unit 明确区分 rows/chars/lines/page/section。
+	readFileTool, rfErr := utils.InferTool("read_file_data", "读取已上传的数据文件（只读，用于分析，不导入数据库）。mode=read|outline|search|profile；表格默认按行、文本默认按字符，可用 unit=rows/chars/lines/page/section 明确分页单位；返回 notice/totalRows/charCount/sections/pages/sheets/matches/profile，按需继续读取。", NewReadFileDataFunc(scope.UserID))
+	// read_offload 读取被截断落盘的结果文件；路径来自 reduction 提示，
+	// 仅允许当前用户/会话的 offload 目录，按行分页并支持 pattern 过滤。
+	readOffloadTool, roErr := utils.InferTool("read_offload", "读取被截断落盘的结果文件（仅当前用户/会话的 offload 文件）。offset 为 1-based 行号，limit 为行数；可传 pattern 过滤。用于在结果被截断后继续查看指定行区间。", NewReadOffloadFunc())
+	// dataset_query 在物化数据集上执行只读 SQL；表名为 result。
+	datasetQueryTool, dqErr := utils.InferTool("dataset_query", "在 datasetId 对应的物化数据集上执行只读 SQL（SELECT/WITH），表名为 result，用于对大结果做聚合、过滤、采样；返回 truncated/returnedRows，被截断时继续聚合。", NewDatasetQueryFunc(auditCtx))
 	// cross_db_join 为跨库关联分析工具：服务端完成两侧表 Hash Join，只返回统计与少量样本，避免大量明细进入上下文
-	crossJoinTool, cjErr := utils.InferTool("cross_db_join", "跨库关联分析：在服务端对两个连接（connId 可传 Schema 名或连接 ID）的表执行 Hash Join，仅返回匹配统计（matched/leftOnly/rightOnly 行数）、可选聚合指标（metrics: count/sum/avg/min/max，column 用 left./right. 前缀）和少量样本行（sampleLimit 默认30）。支持：joinKey/joinKeys 复合 key（多列联合匹配）、leftWhere/rightWhere 过滤（仅支持「列 操作符 字面量」+ AND/OR/NOT/IN/BETWEEN/LIKE/IS NULL，如 status='ACTIVE' AND amount>100）。两侧各取前 limit 行（默认10000），结果属抽样关联。适用于跨库/跨连接的表关联分析，避免海量数据进入上下文", NewCrossDBJoinFunc(connID, schemas, auditCtx, scope.UserID))
+	crossJoinTool, cjErr := utils.InferTool("cross_db_join", "跨库关联分析：在服务端对两个连接（connId 可传 Schema 名或连接 ID）的表执行 Hash Join，仅返回匹配统计（matched/leftOnly/rightOnly 行数）、可选聚合指标（metrics: count/sum/avg/min/max，column 用 left./right. 前缀）和少量样本行（sampleLimit 控制样本量）。支持：joinKey/joinKeys 复合 key（多列联合匹配）、leftWhere/rightWhere 过滤（仅支持「列 操作符 字面量」+ AND/OR/NOT/IN/BETWEEN/LIKE/IS NULL，如 status='ACTIVE' AND amount>100）。两侧各取前 limit 行（受服务端安全上限约束），结果属抽样关联。适用于跨库/跨连接的表关联分析，避免海量数据进入上下文", NewCrossDBJoinFunc(connID, schemas, auditCtx, scope.UserID))
 
-	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool, readFileTool, crossJoinTool} {
+	for _, t := range []tool.BaseTool{queryTool, schemaTool, listTablesTool, currentDateInfoTool, readFileTool, readOffloadTool, datasetQueryTool, crossJoinTool} {
 		if t != nil {
 			coreTools = append(coreTools, t)
 		}
 	}
-	if qErr != nil || sErr != nil || lErr != nil || dErr != nil || rfErr != nil || cjErr != nil {
-		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v crossJoin=%v", qErr, sErr, lErr, dErr, rfErr, cjErr)
+	if qErr != nil || sErr != nil || lErr != nil || dErr != nil || rfErr != nil || roErr != nil || dqErr != nil || cjErr != nil {
+		return nil, nil, fmt.Errorf("创建核心工具失败：query=%v schema=%v list=%v date=%v readFile=%v readOffload=%v dataset=%v crossJoin=%v", qErr, sErr, lErr, dErr, rfErr, roErr, dqErr, cjErr)
 	}
 
 	// 导出工具：全部走 Go 原生 report 渲染引擎（封面/目录/指标卡/原生可编辑图表/
@@ -692,9 +770,9 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	if auditCtx != nil {
 		auditUserID = auditCtx.UserID
 	}
-	dataSource := newReportDataSource(connID, auditUserID, schemas, scope)
+	dataSource := newReportDataSource(connID, auditUserID, schemas)
 	// 原生导出取数统一走安全执行器：只读 + 表/列权限 + 结果脱敏后再落盘。
-	exportRunner := newExportQueryRunner(conn, scope, scope.UserID)
+	exportRunner := newExportQueryRunner(connID, conn, scope, scope.UserID)
 	exportExcelTool, _ := utils.InferTool("export_excel", "导出 Excel 数据表格（Go 原生渲染：表头样式/冻结首行/筛选/数字格式）。须传入 sql 参数", export.NewExportExcelFunc(conn, exportAuditCtx, exportRunner))
 	exportExcelChartTool, _ := utils.InferTool("export_excel_with_chart", "导出含图表的 Excel（Go 原生可编辑图表 + 分析摘要 + 数据明细）。须传入 sql 与 charts（X/Y 字段名须与查询结果列一致）", export.NewExportExcelWithChartFunc(conn, exportAuditCtx, exportRunner))
 	exportPPTTool, _ := utils.InferTool("export_ppt", "生成 PPT 演示文稿（Go 原生渲染：封面/目录/章节页/指标卡/原生可编辑图表/分页表格，theme=tech 为深色科技风）。content 传扩展 Markdown（kpi 指标卡/chart 图表/table 数据表），或仅传 sql 自动生成图文报告。优先使用 content 模式避免重复查询", export.NewExportPPTFunc(conn, exportAuditCtx, dataSource, exportRunner))
@@ -710,9 +788,10 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 	// 高级导出（export_by_code）：由模型编写 Python 连接「用户选中连接」（只读）查询并生成
 	// 任意格式文件。仅在满足以下条件时注册（fail-closed）：
 	//   1. 用户对该连接拥有完整权限（SkipChecks）——直连会绕过应用层表/列权限；
-	//   2. 检测到可用的 Python 运行环境；
-	//   3. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）；
-	//   4. 不存在生效的脱敏规则（直连脚本无法传递脱敏策略）。
+	//   2. 允许代码执行且允许 AI 数据写（allow_modify + ai_allow_modify）；
+	//   3. 检测到可用的 Python 运行环境；
+	//   4. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）；
+	//   5. 不存在生效的脱敏规则（直连脚本无法传递脱敏策略）。
 	if exportByCodeAllowed(scope) {
 		if dbInfo := resolveCodegenDBInfo(connID, dbSchema); dbInfo != nil {
 			exportByCodeTool, _ := utils.InferTool(
@@ -740,7 +819,41 @@ func buildTools(_ context.Context, connID, dbType, dbSchema string, schemas []Sc
 		}
 	}
 
+	// 纯文件分析（无连接）：只保留文件/日期/数据集与 content 模式报告工具。
+	// 数据库工具在无连接时必然失败，保留只会增加 token 并诱导模型误调用。
+	if connID == "" {
+		keep := map[string]bool{
+			"get_current_date_info": true,
+			"read_file_data":        true,
+			"read_offload":          true,
+			"dataset_query":         true,
+			"export_analysis_docx":  true,
+			"export_ppt":            true,
+			"export_html":           true,
+		}
+		coreTools = filterToolsByName(ctx, coreTools, keep)
+		deferredTools = filterToolsByName(ctx, deferredTools, keep)
+	}
+
 	return coreTools, deferredTools, nil
+}
+
+// filterToolsByName 按工具名保留白名单内的工具（Info 调用失败的工具直接丢弃）。
+func filterToolsByName(ctx context.Context, tools []tool.BaseTool, keep map[string]bool) []tool.BaseTool {
+	out := make([]tool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		info, infoErr := t.Info(ctx)
+		if infoErr != nil || info == nil {
+			continue
+		}
+		if keep[normalizeToolName(info.Name)] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // toExportAuditCtx 把 agent 的审计上下文转换为 export 包的最小审计上下文

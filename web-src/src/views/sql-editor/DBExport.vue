@@ -12,18 +12,12 @@
                                     :loading="scope.row.exporting">导出</el-button>
                             </el-col>
                             <el-col :span="9" v-if="canImport">
-                                <el-upload :file-list="fileListInsert" :http-request="handleFileSelect"
-                                    :data="{ row: scope.row, table: scope.row.name, optType: 'insert' }"
-                                    :show-file-list="false" :limit="1" accept=".xlsx,.xls">
-                                    <el-button size="small" :loading="scope.row.inserting">导入/新增</el-button>
-                                </el-upload>
+                                <el-button size="small" :loading="scope.row.inserting"
+                                    @click="pickImportFile(scope.row, 'insert')">导入/新增</el-button>
                             </el-col>
                             <el-col :span="9" v-if="canImport">
-                                <el-upload :file-list="fileListUpdate" :http-request="handleFileSelect"
-                                    :data="{ row: scope.row, table: scope.row.name, optType: 'update' }"
-                                    :show-file-list="false" :limit="1" accept=".xlsx,.xls">
-                                    <el-button size="small" :loading="scope.row.updateing">导入/修改</el-button>
-                                </el-upload>
+                                <el-button size="small" :loading="scope.row.updateing"
+                                    @click="pickImportFile(scope.row, 'update')">导入/修改</el-button>
                             </el-col>
                         </el-row>
                     </template>
@@ -36,6 +30,15 @@
             </el-table>
         </el-main>
     </el-container>
+
+    <!-- 导入文件选择：使用独立原生 input，每次选择后清空 value，保证可重复触发 -->
+    <input
+        ref="importFileInputRef"
+        type="file"
+        style="display: none;"
+        accept=".xlsx,.xls"
+        @change="handleImportFileChange"
+    />
 
     <!-- Import preview dialog -->
     <ImportPreviewDialog
@@ -67,9 +70,6 @@ const { connId, schema, opt, canImport, dbType } = defineProps({
     dbType: String,
 })
 
-const fileListInsert = ref([])
-const fileListUpdate = ref([])
-
 const tableData = ref([])
 
 // Import preview state
@@ -78,6 +78,9 @@ const currentRow = ref(null)
 const currentOptType = ref('insert')
 const dbColumns = ref([])
 const importDialogRef = useTemplateRef('importDialogRef')
+const importFileInputRef = useTemplateRef('importFileInputRef')
+const pendingRow = ref(null)
+const pendingOptType = ref('insert')
 
 onMounted(() => {
     queryData()
@@ -113,11 +116,28 @@ function exportXlsxRow(row) {
     }).finally(() => row.exporting = false)
 }
 
-function handleFileSelect(options) {
-    currentRow.value = options.data.row
-    currentOptType.value = options.data.optType
-    
-    const file = options.file
+function pickImportFile(row, optType) {
+    pendingRow.value = row
+    pendingOptType.value = optType
+    const input = importFileInputRef.value
+    if (!input) return
+    input.value = ''
+    input.click()
+}
+
+function handleImportFileChange(event) {
+    const input = event.target
+    const file = input.files && input.files[0]
+    // 立即清空，保证下次选择同一文件也能触发 change
+    input.value = ''
+    if (!file || !pendingRow.value) return
+    processImportFile(file, pendingRow.value, pendingOptType.value)
+}
+
+function processImportFile(file, row, optType) {
+    currentRow.value = row
+    currentOptType.value = optType
+
     const reader = new FileReader()
     reader.onload = (e) => {
         try {
@@ -136,7 +156,7 @@ function handleFileSelect(options) {
             const dataRows = jsonData.slice(1)
             
             // 获取数据库字段
-            fetchDbColumns(options.data.table).then(() => {
+            fetchDbColumns(row.name).then(() => {
                 // 设置文件数据并打开对话框
                 importDialogRef.value?.setFileData(file, headers, dataRows)
                 importDialogRef.value?.initMapping()
@@ -152,7 +172,7 @@ function handleFileSelect(options) {
             ElMessage({ message: '读取 Excel 文件失败，请检查文件格式', type: 'error' })
         }
     }
-    reader.readAsArrayBuffer(options.file)
+    reader.readAsArrayBuffer(file)
 }
 
 function fetchDbColumns(tableName) {

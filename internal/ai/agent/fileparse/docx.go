@@ -55,8 +55,9 @@ func parseDOCX(_ context.Context, src Source) (*Result, error) {
 	}
 	defer rc.Close()
 
-	text, extractErr := extractDocxText(rc)
+	text, sections, extractErr := extractDocxText(rc)
 	text = normalizeDocxText(text)
+	sections = relocateSections(text, sections)
 	truncated := false
 	total := utf8.RuneCountInString(text)
 	if total > MaxTextChars {
@@ -83,6 +84,7 @@ func parseDOCX(_ context.Context, src Source) (*Result, error) {
 		Impl:       "go-docx",
 		Degraded:   true,
 		Notice:     notice,
+		Sections:   sections,
 	}, nil
 }
 
@@ -92,68 +94,158 @@ func parseDOCX(_ context.Context, src Source) (*Result, error) {
 //   - <w:t> 为正文文本（<w:delText> 为删除痕迹，忽略）；
 //   - <w:p> 段落结束补换行；<w:br>/<w:cr> 强制换行；<w:tab> 制表符；
 //   - 表格：<w:tc> 单元格之间以制表符分隔，<w:tr> 行之间换行。
-func extractDocxText(r io.Reader) (string, error) {
+func extractDocxText(r io.Reader) (string, []Section, error) {
 	dec := xml.NewDecoder(r)
 	dec.Strict = false // 容忍个别不规范节点，尽量提取可读文本
 
 	var (
-		sb       strings.Builder
-		inText   bool
-		cellSeen bool
+		sb         strings.Builder
+		inText     bool
+		cellSeen   bool
+		runes      int
+		sections   []Section
+		inPara     bool
+		paraStart  int
+		paraText   strings.Builder
+		headingLvl int
 		// 提前退出阈值（字节粗估）：CJK 单字符最多 3 字节，4 倍留足余量
 		hardLimit = MaxTextChars * 4
 	)
+	writeByte := func(b byte) {
+		sb.WriteByte(b)
+		runes++
+	}
+	writeText := func(s string) {
+		sb.WriteString(s)
+		runes += utf8.RuneCountInString(s)
+		if inPara {
+			paraText.WriteString(s)
+		}
+	}
 
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
-			return sb.String(), nil
+			return sb.String(), finalizeSections(sections, runes), nil
 		}
 		if err != nil {
-			return sb.String(), err
+			return sb.String(), finalizeSections(sections, runes), err
 		}
 
 		switch t := tok.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
+			case "p":
+				inPara = true
+				paraStart = runes
+				paraText.Reset()
+				headingLvl = 0
+			case "pStyle":
+				for _, attr := range t.Attr {
+					if attr.Name.Local == "val" {
+						headingLvl = docxHeadingLevel(attr.Value)
+					}
+				}
 			case "t":
 				inText = true
 			case "tab":
-				sb.WriteByte('\t')
+				writeByte('\t')
 			case "br", "cr":
-				sb.WriteByte('\n')
+				writeByte('\n')
 			case "tc":
 				if cellSeen {
-					sb.WriteByte('\t')
+					writeByte('\t')
 				}
 				cellSeen = true
 			case "tr":
 				if sb.Len() > 0 {
-					sb.WriteByte('\n')
+					writeByte('\n')
 				}
 				cellSeen = false
 			case "noBreakHyphen":
-				sb.WriteByte('-')
+				writeByte('-')
 			}
 		case xml.EndElement:
 			switch t.Name.Local {
 			case "t":
 				inText = false
 			case "p":
+				if inPara && headingLvl > 0 {
+					if title := strings.TrimSpace(paraText.String()); title != "" {
+						sections = append(sections, Section{Title: title, Level: headingLvl, StartChar: paraStart})
+					}
+				}
+				inPara = false
 				if sb.Len() > 0 {
-					sb.WriteByte('\n')
+					writeByte('\n')
 				}
 			}
 		case xml.CharData:
 			if inText {
-				sb.Write(t)
+				writeText(string(t))
 			}
 		}
 
 		if sb.Len() > hardLimit {
-			return sb.String(), nil
+			return sb.String(), finalizeSections(sections, runes), nil
 		}
 	}
+}
+
+// finalizeSections 补齐章节结束偏移。
+func finalizeSections(sections []Section, total int) []Section {
+	for i := range sections {
+		if i+1 < len(sections) {
+			sections[i].EndChar = sections[i+1].StartChar
+		} else {
+			sections[i].EndChar = total
+		}
+	}
+	return sections
+}
+
+// docxHeadingLevel 从 pStyle 值（Heading 1/标题 1）解析标题级别。
+func docxHeadingLevel(style string) int {
+	lower := strings.ToLower(strings.TrimSpace(style))
+	idx := strings.Index(lower, "heading")
+	if idx < 0 {
+		idx = strings.Index(lower, "标题")
+	}
+	if idx < 0 {
+		return 0
+	}
+	level := 0
+	for i := idx; i < len(lower); i++ {
+		if lower[i] >= '0' && lower[i] <= '9' {
+			level = level*10 + int(lower[i]-'0')
+		} else if level > 0 {
+			break
+		}
+	}
+	if level < 1 || level > 6 {
+		return 0
+	}
+	return level
+}
+
+// relocateSections 在归一化后的文本中重新定位章节，修正空白折叠造成的偏移。
+func relocateSections(text string, sections []Section) []Section {
+	if len(sections) == 0 {
+		return nil
+	}
+	searchFrom := 0
+	out := make([]Section, 0, len(sections))
+	for _, section := range sections {
+		idx := strings.Index(text[searchFrom:], section.Title)
+		if idx < 0 {
+			continue
+		}
+		byteStart := searchFrom + idx
+		section.StartChar = utf8.RuneCountInString(text[:byteStart])
+		out = append(out, section)
+		searchFrom = byteStart + len(section.Title)
+	}
+	return finalizeSections(out, utf8.RuneCountInString(text))
 }
 
 // normalizeDocxText 归一化文本：统一换行、去除行尾空白、折叠连续空行。

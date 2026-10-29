@@ -23,8 +23,10 @@ import (
 const maxReportBindRows = 500
 
 // newReportDataSource 构建报告数据源。
-// 连接范围限定为「默认连接 + 会话选中 schema 所属连接」，与 checkConnScope 同一规则。
-func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef, scope *PermissionScope) export.DataSource {
+//
+// 连接范围限定为「默认连接 + 会话选中 schema 所属连接」；
+// 每个 ref 使用**目标连接自己的 Scope** 校验与脱敏，不能沿用默认连接的 Scope。
+func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef) export.DataSource {
 	connLookup := buildConnLookup(schemas)
 	allowedConns := make(map[string]bool)
 	if defaultConnID != "" {
@@ -41,11 +43,19 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef, scop
 			return nil, fmt.Errorf("SQL 为空")
 		}
 		targetConnID := resolveConnID(defaultConnID, ref.ConnID, connLookup)
-		if !scope.SkipChecks() && len(allowedConns) > 0 && !allowedConns[strings.ToUpper(targetConnID)] {
+		if len(allowedConns) > 0 && !allowedConns[strings.ToUpper(targetConnID)] {
 			return nil, &PermissionError{
 				Message: fmt.Sprintf("连接 %s 不在本次会话授权范围内，无法取数", ref.ConnID),
 				Objects: []string{ref.ConnID},
 			}
+		}
+		sec, secErr := RunSecurityFrom(ctx)
+		if secErr != nil {
+			return nil, secErr
+		}
+		scope, scopeErr := sec.ScopeFor(targetConnID)
+		if scopeErr != nil {
+			return nil, scopeErr
 		}
 		if err := validateExportReadSQL(scope, ref.SQL); err != nil {
 			return nil, err
@@ -117,10 +127,11 @@ func (m *PermissionMiddleware) maskExportArgs(ctx context.Context, args string) 
 
 // exportByCodeAllowed 判断高级导出是否允许注册/执行。
 //
-// 条件：完整连接权限 + Python 可用 + OS 级隔离可用 + 不存在生效脱敏规则。
-// 直连脚本会绕过应用层脱敏，因此只要配置了任何列级规则就不开放。
+// 条件：代码执行能力（allow_modify + AI 数据写）+ 完整连接权限 + Python 可用 +
+// OS 级隔离可用 + 不存在生效脱敏规则。
+// 前两项缺一不可：直连脚本会绕过应用层表/列权限，且会执行任意 Python 代码。
 func exportByCodeAllowed(scope *PermissionScope) bool {
-	if scope == nil || !scope.SkipChecks() {
+	if scope == nil || !scope.AllowModify || !scope.CanAIModifyData() || !scope.SkipChecks() {
 		return false
 	}
 	if !export.IsPythonAvailable() || !export.CodegenIsolationAvailable() {

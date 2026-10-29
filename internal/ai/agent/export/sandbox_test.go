@@ -136,8 +136,12 @@ func TestResolveReadPath(t *testing.T) {
 	if _, err := resolveReadPath(filepath.Join("skills", "export-ppt", "SKILL.md")); err != nil {
 		t.Errorf("skills 目录应可读，实际：%v", err)
 	}
-	if _, err := resolveReadPath(filepath.Join("data", "reduction", "a.txt")); err != nil {
-		t.Errorf("data/reduction 应可读，实际：%v", err)
+	offloadAbs, absErr := filepath.Abs(filepath.Join("data", "reduction", "a.txt"))
+	if absErr != nil {
+		t.Fatalf("abs 失败：%v", absErr)
+	}
+	if _, err := resolveReadPath(offloadAbs); err == nil {
+		t.Error("data/reduction 属于 offload 私有目录，通用 read_file 不应可读")
 	}
 	if runtime.GOOS == "windows" {
 		if _, err := resolveReadPath(`C:\Windows\win.ini`); err == nil {

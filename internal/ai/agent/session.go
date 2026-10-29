@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/jmoiron/sqlx"
 
+	"websql/internal/ai/agent/dataset"
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/safego"
 )
@@ -600,7 +601,13 @@ func (s *Session) sanitizedMessagesLocked(sec *RunSecurityContext) ([]SessionMes
 			return nil, errors.New("会话消息缺少角色")
 		}
 		cp := msg
-		cp.Content = maskTextOrRaw(sec, msg.Content)
+		// 增量脱敏：同一 masker 版本下已净化且内容未变化的消息无需重复跑正则；
+		// 旧消息/规则变更/内容变化仍会重新脱敏。
+		alreadySanitized := cp.Security != nil && cp.Security.Sanitized &&
+			cp.Security.MaskVersion == maskerVersion(sec) && cp.Security.ContentSHA == contentSHA(msg.Content)
+		if !alreadySanitized {
+			cp.Content = maskTextOrRaw(sec, msg.Content)
+		}
 		cp.ReasoningContent = ""
 
 		// 数据消息（tool/assistant）默认视为不可溯源：避免旧消息在落库时被「洗白」成
@@ -904,6 +911,9 @@ func (s *SessionStore) Delete(id, userID string) error {
 		return err
 	}
 	RemoveSessionAttachments(fileIDs, userID)
+	// 数据集/offload 属于会话派生数据，随会话删除一起清理。
+	dataset.Default().RemoveSession(userID, id)
+	RemoveOffloadSession(userID, id)
 	return nil
 }
 

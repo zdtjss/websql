@@ -33,6 +33,30 @@ type Source struct {
 	Size     int64  // 字节数（0 表示未知）
 }
 
+// Section 文档章节（标题 + 字符偏移）。
+type Section struct {
+	Title     string `json:"title"`
+	Level     int    `json:"level,omitempty"`
+	StartChar int    `json:"startChar"`
+	EndChar   int    `json:"endChar,omitempty"`
+}
+
+// Page 文档页码区间（字符偏移）。
+type Page struct {
+	Number    int `json:"number"`
+	StartChar int `json:"startChar"`
+	EndChar   int `json:"endChar,omitempty"`
+}
+
+// Sheet 工作表解析结果。
+type Sheet struct {
+	Name      string
+	Columns   []string
+	Rows      [][]string
+	TotalRows int
+	Notice    string
+}
+
 // Result 解析结果。
 //
 // 表格类填充 Columns/Rows/TotalRows；文本与文档类填充 Text/TotalChars/Pages；
@@ -53,6 +77,14 @@ type Result struct {
 	Degraded bool
 	// Notice 面向模型的说明（降级原因、截断、扫描件等）
 	Notice string
+
+	// Sections 文档标题层级（Markdown/docx 尽力提取）。
+	Sections []Section
+	// PageList PDF 页码区间（Python 解析器带页码标记时填充）。
+	// 与既有 Pages（页数）区分，避免破坏兼容字段。
+	PageList []Page
+	// Sheets 表格类的工作表列表；Columns/Rows 保持第一个工作表以兼容旧调用。
+	Sheets []Sheet
 }
 
 // IsTabular 是否为表格类结果

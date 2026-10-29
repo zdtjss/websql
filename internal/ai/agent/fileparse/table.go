@@ -34,10 +34,11 @@ func parseCSV(_ context.Context, src Source) (*Result, error) {
 	return buildTabularResult(rows)
 }
 
-// parseXLSX 解析 Excel（取第一个工作表）。
+// parseXLSX 解析 Excel 的全部工作表。
 //
 // 说明：excelize 仅支持 OOXML（.xlsx/.xlsm）。旧版二进制 .xls 虽在扩展名白名单内
 // （保持既有兼容），但解析时给出明确指引而不是含混的失败。
+// Columns/Rows 保持第一个有数据的工作表以兼容旧调用；Sheets 保留全部工作表供 read_file_data 选择。
 func parseXLSX(_ context.Context, src Source) (*Result, error) {
 	if NormalizeExt(src.Ext) == ".xls" {
 		return nil, errors.New("暂不支持旧版 .xls 二进制格式，请在 Excel 中另存为 .xlsx 后重新上传")
@@ -49,15 +50,64 @@ func parseXLSX(_ context.Context, src Source) (*Result, error) {
 	}
 	defer f.Close()
 
-	sheetName := f.GetSheetName(0)
-	if sheetName == "" {
+	sheetNames := f.GetSheetList()
+	if len(sheetNames) == 0 {
 		return nil, fmt.Errorf("Excel 文件中没有工作表")
 	}
-	rows, err := f.GetRows(sheetName)
-	if err != nil {
-		return nil, fmt.Errorf("读取工作表失败，请检查文件内容")
+
+	sheets := make([]Sheet, 0, len(sheetNames))
+	var first *Result
+	for _, name := range sheetNames {
+		rows, rowsErr := f.GetRows(name)
+		if rowsErr != nil {
+			sheets = append(sheets, Sheet{Name: name, Notice: "读取工作表失败，已跳过"})
+			continue
+		}
+		switch {
+		case len(rows) == 0:
+			sheets = append(sheets, Sheet{Name: name})
+		case len(rows) == 1:
+			sheets = append(sheets, Sheet{Name: name, Columns: rows[0]})
+		default:
+			parsed, parseErr := buildTabularResult(rows)
+			if parseErr != nil {
+				sheets = append(sheets, Sheet{Name: name, Notice: parseErr.Error()})
+				continue
+			}
+			sheet := Sheet{
+				Name:      name,
+				Columns:   parsed.Columns,
+				Rows:      parsed.Rows,
+				TotalRows: parsed.TotalRows,
+				Notice:    parsed.Notice,
+			}
+			sheets = append(sheets, sheet)
+			if first == nil {
+				first = parsed
+			}
+		}
 	}
-	return buildTabularResult(rows)
+	if first == nil {
+		// 所有工作表都只有表头/空表：仍返回列结构，兼容只读表头场景。
+		for _, s := range sheets {
+			if len(s.Columns) > 0 {
+				first = &Result{Kind: KindTable, Columns: s.Columns}
+				break
+			}
+		}
+	}
+	if first == nil {
+		return nil, fmt.Errorf("Excel 文件中没有可用数据")
+	}
+	if len(sheets) > 1 {
+		names := make([]string, 0, len(sheets))
+		for _, s := range sheets {
+			names = append(names, s.Name)
+		}
+		first.Notice = appendNotice(first.Notice, fmt.Sprintf("文件包含 %d 个工作表：%s；可用 sheet 参数选择", len(sheets), strings.Join(names, ", ")))
+	}
+	first.Sheets = sheets
+	return first, nil
 }
 
 // buildTabularResult 把二维行数据（首行表头）转为解析结果。
@@ -70,14 +120,16 @@ func buildTabularResult(allRows [][]string) (*Result, error) {
 
 	columns := allRows[0]
 	data := make([][]string, 0, len(allRows)-1)
+	totalRows := 0
 	truncated := false
 	for _, row := range allRows[1:] {
 		if !rowHasValue(row) {
 			continue
 		}
+		totalRows++
 		if len(data) >= MaxTableRows {
 			truncated = true
-			break
+			continue
 		}
 		padded := make([]string, len(columns))
 		copy(padded, row)
@@ -86,14 +138,14 @@ func buildTabularResult(allRows [][]string) (*Result, error) {
 
 	var notice string
 	if truncated {
-		notice = fmt.Sprintf("数据行数超过上限，仅保留前 %d 行", MaxTableRows)
+		notice = fmt.Sprintf("数据行数超过上限，仅保留前 %d 行（原文共 %d 行）", MaxTableRows, totalRows)
 	}
 
 	return &Result{
 		Kind:      KindTable,
 		Columns:   columns,
 		Rows:      data,
-		TotalRows: len(data),
+		TotalRows: totalRows,
 		Notice:    notice,
 	}, nil
 }

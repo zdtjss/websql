@@ -1,6 +1,6 @@
 ---
 name: cross-db-analysis
-description: 跨数据库/多 Schema 数据分析与对比。当查询结果可能超过单次 500 行上限，或需要跨库/跨 Schema 关联、对比统计时使用。Agent 用 query_data 取数（聚合下推）、用 cross_db_join 完成跨库服务端关联，仅将紧凑统计结果写入上下文。用户涉及多个 schema 或数据库的分析、对比、统计且数据量较大时必须使用此技能。
+description: 跨数据库/多 Schema 数据分析与对比。当查询结果可能超过单次安全上限，或需要跨库/跨 Schema 关联、对比统计时使用。Agent 用 query_data 取数（聚合下推）、用 cross_db_join 完成跨库服务端关联，仅将紧凑统计结果写入上下文。用户涉及多个 schema 或数据库的分析、对比、统计且数据量较大时必须使用此技能。
 version: "2.6.0"
 min_agent_version: "1.0.0"
 dependencies:
@@ -45,7 +45,7 @@ command_blacklist:
 1. **聚合下推**：在数据库端执行 COUNT/SUM/AVG/GROUP BY，只返回统计结果
 2. **分库查询**：用 `query_data` 的 `connId` 参数分别查多个库
 3. **服务端关联**：跨库 JOIN 由 `cross_db_join` 工具在服务端完成 Hash Join，只返回统计与少量样本
-4. **结果精简**：未带 LIMIT 的查询自动追加 LIMIT 500；显式 LIMIT 可提高取数上限但需控制上下文占用
+4. **按需取数**：取数规模由分析目标与数据分布决定；检查返回的 `rowCount`/`truncated`/`notice`，被截断时继续聚合、过滤或分页，不要把截断结果当作全量
 
 ## 数据契约（query_data 工具）
 
@@ -53,11 +53,11 @@ command_blacklist:
   - `connId` 不填 = 默认连接
   - `connId` 填 **Schema 名** = 自动路由到对应连接
   - `connId` 填 **连接 ID** = 直接使用该连接
-- **返回结构**：`{"columns": [...], "data": [{...}], "count": n}`，data 为对象数组（列名 → 值）
+- **返回结构**：`{"columns": [...], "data": [{...}], "count": n, "returnedRows": n, "rowCount": n, "truncated": bool, "notice": "..."}`；大结果可能返回 `datasetId`，可用 `dataset_query` 继续聚合
 - **行数行为**：
-  - 未带 LIMIT 的 SELECT/WITH 会被自动追加 `LIMIT 500`
-  - **SQL 已自带 LIMIT 时不再追加**，可显式写 `LIMIT 2000` 等提高取数上限（注意上下文大小）
-  - GROUP BY 分组数超过 500 也会被截断，需先用 COUNT 评估分组规模
+  - 服务端有安全上限，返回体会标注 `returnedRows`/`rowCount`/`truncated`
+  - `truncated=true` 表示还有未返回的数据；继续取数时优先聚合、加 WHERE 或分页，不要假设已拿到全量
+  - GROUP BY 分组过多时同样会截断，先用 COUNT 评估规模再决定聚合/过滤策略
 - **只读**：仅支持 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH，多语句会被拒绝
 - **超时**：内置 60s，超时报错
 
@@ -72,9 +72,9 @@ SELECT COUNT(*) AS cnt FROM <schema>.<table>
 ```
 
 判断标准：
-- 预估返回行数 > 500 → **必须聚合下推**，禁止全量拉取
+- 预估返回行数明显超过分析所需或服务端安全边界 → **必须聚合下推**，禁止全量拉取
 - 大表 COUNT 本身可能超时，可先 `SELECT ... LIMIT 1` 探活，或用 `WHERE <时间列> >= <近期时间>` 缩小计数范围做近似评估
-- GROUP BY 场景：先确认分组数规模，超过 500 组需加 WHERE 缩小范围或按维度拆批
+- GROUP BY 场景：先确认分组数规模；分组过多时加 WHERE 缩小范围或按维度拆批
 
 ### 步骤 2：选择任务类型
 
@@ -132,8 +132,8 @@ SELECT a.id, b.name FROM schemaA.orders a JOIN schemaB.users b ON a.user_id = b.
 
 要点：
 - key 类型不一致（int vs str）时工具已自动归一化；NULL 不参与匹配（与 SQL JOIN 语义一致）
-- 每侧取前 `limit` 行（默认 10000，最大 50000），**结果属抽样关联**，统计口径需向用户说明
-- 仅当单侧数据量很小（≤ 500 行）且需要完整明细时，才退化为 query_data 分步拉数 + 内存关联
+- 每侧取数受 `limit` 与服务端安全上限约束，**结果属抽样关联**，统计口径需向用户说明
+- 仅当单侧数据量很小、且能确认明细规模可控时，才退化为 query_data 分步拉数 + 内存关联
 
 #### 异构库关联（Oracle + MySQL 混连）注意事项
 
@@ -155,7 +155,7 @@ cross_db_join 两侧可为任意库类型组合，服务端按各库方言分别
 - **多语句防护**：分号分隔的多条 SQL 会被拒绝
 - **方言预检**：执行前检测不兼容语法（如 MySQL 上的 Oracle 函数），按提示改写
 - **查询超时**：内置 60s
-- **结果截断**：所有 SELECT/WITH 自动追加 LIMIT 500（含聚合查询，GROUP BY 超 500 组被截断）
+- **结果截断**：服务端安全上限可能截断结果；以 `truncated`/`rowCount`/`notice` 为准，必要时继续聚合或分页
 - **权限与审计**：所有查询经 PermissionMiddleware 校验并记录 audit
 
 ## 失败处理
@@ -184,7 +184,7 @@ Agent 执行：
 
 ## 变更记录
 
-- **v2.6**：修正行数上限表述（工具仅对未带 LIMIT 的查询追加 500，显式 LIMIT 不被覆盖）；修正大表 COUNT 建议（唯一索引>0 会漏计 0/负值，改用 LIMIT 1 探活或时间列近似评估）
+- **v2.6**：修正行数上限表述（服务端安全上限以 `truncated/rowCount` 为准）；修正大表 COUNT 建议（唯一索引>0 会漏计 0/负值，改用 LIMIT 1 探活或时间列近似评估）
 - **v2.5**：异构库支持加固——大整数 key 规范化（MySQL s:%f 与 Oracle s:%d 匹配）、FETCH 关键字入 where 黑名单（防行数限制绕过）；补充异构库注意事项
 - **v2.4**：cross_db_join 支持复合 key（leftKeys/rightKeys 多列联合匹配）、两侧 WHERE 过滤（白名单校验防注入）、schema-connId 一致性校验
 - **v2.3**：新增 cross_db_join 服务端跨库关联工具（服务端 Hash Join + 紧凑输出），跨库 join 不再依赖 Agent 内存关联

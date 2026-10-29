@@ -100,6 +100,9 @@ defineExpose({ containerRef })
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  /* 禁止横向滚动：气泡的 hover 位移/宽表格等横向溢出不应生成水平滚动条
+     （只写 overflow-y 时，overflow-x 的 visible 会被计算为 auto） */
+  overflow-x: hidden;
   padding: 16px 0;
 }
 </style>

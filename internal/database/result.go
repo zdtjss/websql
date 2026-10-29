@@ -124,6 +124,59 @@ func GetResultRowsForExport(dbtype string, rows *sqlx.Rows, limit int) ([]map[st
 	return dataMaps, nil
 }
 
+// GetResultRowsLimited 读取最多 limit 行，并返回是否存在更多行。
+// 用于查询工具的服务端安全上限：即使 SQL 自带 LIMIT，也最多读取 limit+1 行，
+// 避免把超大结果集整体读入内存。
+func GetResultRowsLimited(dbtype string, rows *sqlx.Rows, limit int) ([]map[string]any, bool, error) {
+	dataMaps := make([]map[string]any, 0)
+	cts, err := rows.ColumnTypes()
+	if err != nil {
+		logger.PrintErrf("获取字段类型失败", err)
+		return nil, false, fmt.Errorf("获取字段类型失败: %w", err)
+	}
+
+	colTypeMap := map[string]string{}
+	for _, ct := range cts {
+		colTypeMap[ct.Name()] = ct.DatabaseTypeName()
+	}
+
+	columns, _ := rows.Columns()
+	count := len(columns)
+	truncated := false
+
+	for rows.Next() {
+		if limit > 0 && len(dataMaps) >= limit {
+			truncated = true
+			break
+		}
+		values, valuesPoints := make([]any, count), make([]any, count)
+
+		for i := range count {
+			valuesPoints[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuesPoints...); err != nil {
+			logger.PrintErrf("数据行扫描失败", err)
+			return nil, false, fmt.Errorf("数据行扫描失败: %w", err)
+		}
+
+		row := make(map[string]any)
+		for i := range values {
+			key := columns[i]
+			colType := colTypeMap[key]
+			actualVal := dereferenceValue(values[i])
+			converted := dialect.ConvertValue(dbtype, &colType, &actualVal, true)
+			if converted != nil {
+				row[key] = *converted
+			} else {
+				row[key] = nil
+			}
+		}
+		dataMaps = append(dataMaps, row)
+	}
+	return dataMaps, truncated, nil
+}
+
 func KeyIdx(keys, columns []string) []int {
 	keyIdx := make([]int, 0)
 	for i := range columns {

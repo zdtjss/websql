@@ -60,7 +60,7 @@ func approvalGate(
 		if sql == "" || !containsDangerousSQL(sql) {
 			return exec(ctx, argumentsInJSON, opts)
 		}
-		log.Printf("[ApprovalMiddleware] 拦截危险 SQL - tool=%s, sql=%s\n", toolName, sql)
+		log.Printf("[ApprovalMiddleware] 拦截危险 SQL - tool=%s, sql{%s}\n", toolName, safeSQLSummary(sql))
 		return "", tool.StatefulInterrupt(ctx, &DangerousSQLInfo{
 			SQL:       sql,
 			RiskLevel: string(sqlutil.DetectRiskLevel(sql)),

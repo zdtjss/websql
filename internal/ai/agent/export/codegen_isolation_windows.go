@@ -57,8 +57,15 @@ func codegenIsolationAvailable() bool {
 	return isolationUsable
 }
 
-// probeLowIntegrityIsolation 端到端探测：创建低完整性令牌，并在标注为低完整性的
-// 目录中执行一次极简进程；全部成功才算可用（避免「注册了却跑不起来」）。
+// isolateCodegenRunDir 为运行目录施加隔离前置条件：Windows 下即标注低完整性。
+// 目录 ACL 必须授予 WRITE_OWNER（完全控制）；仅有 Modify 权限时 SetNamedSecurityInfo
+// 会返回 Access is denied，由调用方切换到下一个候选根。
+func isolateCodegenRunDir(dir string) error {
+	return labelDirLowIntegrity(dir)
+}
+
+// probeLowIntegrityIsolation 端到端探测：在候选运行根上依次验证「建目录 → 标注低完整性
+// → 以低完整性令牌启动子进程」；任一候选根可用即视为隔离可用（与运行时选择逻辑一致）。
 func probeLowIntegrityIsolation() bool {
 	python := GetPythonPath()
 	if python == "" {
@@ -70,20 +77,30 @@ func probeLowIntegrityIsolation() bool {
 	}
 	defer token.Close()
 
-	dir, err := os.MkdirTemp("", "websql_codegen_probe_")
-	if err != nil {
-		return false
-	}
-	defer os.RemoveAll(dir)
-	if err := labelDirLowIntegrity(dir); err != nil {
-		return false
-	}
+	for _, base := range codegenRunBaseDirs() {
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			continue
+		}
+		dir, err := os.MkdirTemp(base, "websql_codegen_probe_")
+		if err != nil {
+			continue
+		}
+		if err := labelDirLowIntegrity(dir); err != nil {
+			_ = os.RemoveAll(dir)
+			continue
+		}
 
-	cmd := exec.Command(python, "-c", "import sys; sys.exit(0)")
-	hideWindow(cmd)
-	cmd.Dir = dir
-	cmd.SysProcAttr.Token = syscall.Token(uintptr(token))
-	return cmd.Run() == nil
+		cmd := exec.Command(python, "-c", "import sys; sys.exit(0)")
+		hideWindow(cmd)
+		cmd.Dir = dir
+		cmd.SysProcAttr.Token = syscall.Token(uintptr(token))
+		runErr := cmd.Run()
+		_ = os.RemoveAll(dir)
+		if runErr == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // applyCodegenIsolation 对 codegen 子进程应用低完整性隔离。
