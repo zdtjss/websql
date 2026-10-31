@@ -1,5 +1,8 @@
 {
   "isRemote": true,
+  "security": {
+    "aesKey": "ubpU+irdlkRNRSALg0q/yt9bWIsCM+qnSPeIy8mW7RQ="
+  },
   "db": {
     "type": "sqlite",
     "dsn": "./nway.sqlite3.db",

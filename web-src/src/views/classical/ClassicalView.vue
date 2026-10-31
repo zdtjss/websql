@@ -3,6 +3,10 @@
     <el-splitter style="height: 100vh;">
       <el-splitter-panel :collapsible="true" size="300px" :min="300" :max="500">
         <div class="sidebar-panel">
+          <!-- 交互模式切换：常驻展示当前模式，并提供切到 AI 对话的入口 -->
+          <div class="sidebar-mode-bar">
+            <ViewModeSwitch active="classical" />
+          </div>
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
             <div class="sidebar-header-actions">
@@ -17,9 +21,6 @@
               </el-popover>
               <el-button text size="small" class="sidebar-refresh-btn" @click="refreshTree" title="刷新" aria-label="刷新数据库树">
                 <el-icon :size="14"><Refresh /></el-icon>
-              </el-button>
-              <el-button text size="small" class="theme-toggle-btn" title="AI 对话" aria-label="打开 AI 对话" @click="openAiChat">
-                <el-icon :size="14"><MagicStick /></el-icon>
               </el-button>
               <el-button text size="small" class="theme-toggle-btn" @click="toggleTheme" :title="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'" :aria-label="currentTheme === 'light' ? '切换到深色模式' : '切换到浅色模式'">
                 <el-icon :size="14"><component :is="currentTheme === 'light' ? Moon : Sunny" /></el-icon>
@@ -151,6 +152,11 @@
           <div v-else class="empty-workspace">
             <div class="empty-icon">🗄️</div>
             <div class="empty-text">展开左侧数据库，点击图标打开功能</div>
+            <div class="empty-subtext">或切换到 AI 对话，用自然语言完成查数与导出</div>
+            <el-button class="empty-ai-btn" type="primary" @click="openAiChat">
+              <el-icon><MagicStick /></el-icon>
+              打开 AI 对话
+            </el-button>
           </div>
         </div>
       </el-splitter-panel>
@@ -286,6 +292,7 @@ import DataDictDialog from '@/components/db-tools/DataDictDialog.vue'
 import SchemaCompareDialog from '@/components/db-tools/SchemaCompareDialog.vue'
 import GlobalSearchDialog from '@/components/db-tools/GlobalSearchDialog.vue'
 import DbUserSchemaManager from '@/components/db-tools/DbUserSchemaManager.vue'
+import ViewModeSwitch from '@/components/common/ViewModeSwitch.vue'
 import { useTheme } from '@/utils/useTheme.ts'
 
 const router = useRouter()
@@ -1271,6 +1278,24 @@ function onSearchSelect(obj) {
   border-right: 1px solid var(--border-primary);
 }
 
+/* 交互模式切换条：置于侧栏顶部，与「数据库」分区标题共用一块头部区域 */
+.sidebar-mode-bar {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px 0;
+  background: var(--bg-sidebar);
+}
+
+.sidebar-mode-bar :deep(.view-mode-switch) {
+  width: 100%;
+}
+
+.sidebar-mode-bar :deep(.view-mode-switch__item) {
+  flex: 1;
+  justify-content: center;
+  padding: 7px 10px;
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -1473,6 +1498,24 @@ function onSearchSelect(obj) {
 
 .empty-text {
   font-size: 14px;
+}
+
+.empty-subtext {
+  margin-top: -8px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+.empty-ai-btn {
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-weight: 500;
+  box-shadow: 0 4px 14px rgba(64, 158, 255, 0.28);
+}
+
+.empty-ai-btn :deep(.el-icon) {
+  margin-right: 6px;
 }
 
 /* ── Tab Loading ── */

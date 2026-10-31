@@ -119,7 +119,7 @@
               <el-button class="toolbar-btn" size="small" :type="advancedExport ? 'primary' : 'default'"
                 @click="handleAdvancedExportToggle"
                 :title="advancedExport ? '高级导出已开启：本轮按需求输出报告级文件——优先内置 Word/PPT/Excel/HTML（封面/目录/指标卡/图表/结论），四类格式不满足时才用只读 Python 生成自定义格式；已导出文件有问题可在对话中直接说明，AI 会定位原文件局部修复并返回新版本（点击关闭）' : '开启高级导出：生成可直接汇报的报告级文件——优先 Word/PPT/Excel/HTML 内置报告导出，自定义格式（PDF/CSV/XML/ZIP 等）再降级只读 Python 生成；已导出文件有问题可在对话中直接指出，AI 将局部修复并保留原文件'">
-                <el-icon><Download /></el-icon>
+                <el-icon><DataAnalysis /></el-icon>
               </el-button>
               <!-- 提示词 Popover -->
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="promptPopoverVisible"
@@ -291,10 +291,16 @@
               <el-button class="toolbar-btn" size="small" @click="clearSession(true)" title="清空并新建会话">
                 <el-icon><Delete /></el-icon>
               </el-button>
-              <!-- 经典视图 -->
-              <el-button v-if="canUseClassicView" class="toolbar-btn" size="small" @click="$router.push('/classical')" title="经典视图">
-                <el-icon><Switch /></el-icon>
-              </el-button>
+              <!-- 经典视图：胶囊入口 + 分隔线，与仅图标的工具按钮区分 -->
+              <div v-if="canUseClassicView" class="classic-entry">
+                <span class="classic-entry-divider" aria-hidden="true"></span>
+                <el-button class="classic-entry-btn" size="small"
+                  @click="$router.push('/classical')"
+                  title="切换到经典视图：数据库树、SQL 编辑器、表管理与数据浏览">
+                  <el-icon class="classic-entry-icon"><Grid /></el-icon>
+                  <span>经典视图</span>
+                </el-button>
+              </div>
             </div>
           </template>
         </ChatInputArea>
@@ -345,7 +351,7 @@ import { useSqlConfirm } from './composables/useSqlConfirm'
 import { useChatStream, type SkillQueueNotice } from './composables/useChatStream'
 import { useFileUpload } from './composables/useFileUpload'
 import { ACCEPT_ATTR } from './utils/fileTypes'
-import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Download, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { ArrowRight, Bottom, BottomLeft, ChatLineRound, Clock, Coin, DataAnalysis, Delete, Document, Edit, Grid, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -1275,6 +1281,73 @@ onUnmounted(() => {
 /* 覆盖 Element Plus 的默认按钮间距，确保垂直布局不受影响 */
 .login-button-container .el-button + .el-button {
   margin-left: 0 !important;
+}
+
+/* 经典视图入口：胶囊按钮 + 竖向分隔线，与仅图标的工具按钮区分 */
+.classic-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.classic-entry-divider {
+  width: 1px;
+  height: 16px;
+  background: linear-gradient(180deg, transparent, var(--border-inline) 25%, var(--border-inline) 75%, transparent);
+}
+
+.classic-entry-btn {
+  height: 24px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border-inline);
+  background: linear-gradient(135deg, var(--bg-active) 0%, var(--bg-inline-bar) 100%);
+  color: var(--accent-color);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  transition: color 0.25s ease, background 0.25s ease, border-color 0.25s ease,
+    box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.classic-entry-btn:hover {
+  color: #fff;
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  box-shadow: 0 4px 12px -4px rgba(64, 158, 255, 0.65);
+  transform: translateY(-1px);
+}
+
+.classic-entry-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px -3px rgba(64, 158, 255, 0.55);
+}
+
+.classic-entry-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.2);
+}
+
+.classic-entry-btn .classic-entry-icon {
+  margin-right: 4px;
+  transition: transform 0.25s ease;
+}
+
+.classic-entry-btn:hover .classic-entry-icon {
+  transform: scale(1.08);
+}
+
+.classic-entry-btn .classic-entry-arrow {
+  margin-left: 2px;
+  font-size: 11px;
+  opacity: 0.65;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+.classic-entry-btn:hover .classic-entry-arrow {
+  opacity: 1;
+  transform: translateX(2px);
 }
 
 /* ========== 主容器 - 专业蓝灰渐变 ========== */

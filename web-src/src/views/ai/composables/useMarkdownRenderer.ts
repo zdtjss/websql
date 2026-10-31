@@ -1709,7 +1709,7 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
   }
 
   function handleEscKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape' || e.keyCode === 27) {
+    if (e.key === 'Escape') {
       const overlay = document.querySelector('.mermaid-fullscreen-overlay')
       if (overlay) {
         e.preventDefault()
