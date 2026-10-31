@@ -113,9 +113,11 @@ func configFingerprint(cfg *system.AIConfig, scope *PermissionScope) string {
 	}
 	if scope != nil {
 		// fmt 对 map 按 key 排序输出，结果稳定
-		fmt.Fprintf(h, "|%v|%v|%v|%v|%v|%v|%v|%v|%v|%d|%d", scope.IsRemote, scope.HasFullConnAccess, scope.AllSchemasFull,
+		// 不纳入全局 Revision：无关用户的权限变更不应使所有 Agent 缓存失效。
+		// 权限投影字段已足以区分实例；运行中权限变化由 RevisionStillValid 拦截。
+		fmt.Fprintf(h, "|%v|%v|%v|%v|%v|%v|%v|%v|%v|%d", scope.IsRemote, scope.HasFullConnAccess, scope.AllSchemasFull,
 			scope.AllowModify, scope.AIAllowModify, scope.AIPolicyEnforce, scope.FullAccessSchemas,
-			scope.AllowedTables, scope.AllowedColumns, scope.Revision, uint8(scope.Profile))
+			scope.AllowedTables, scope.AllowedColumns, uint8(scope.Profile))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }

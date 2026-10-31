@@ -111,7 +111,7 @@ func ConnBaseTree(c *gin.Context) {
 		if c.Name != nil {
 			name = *c.Name
 		}
-		firstLevel = append(firstLevel, &conn.Tree{Label: name, Parent: c.ParentId, Id: c.Id, Type: conn.TREE_NODE_TYPE_CONN})
+		firstLevel = append(firstLevel, &conn.Tree{Label: name, Parent: c.ParentId.String(), Id: c.Id, Type: conn.TREE_NODE_TYPE_CONN})
 	}
 	response.WriteOK(c, firstLevel)
 }
@@ -125,7 +125,7 @@ func findChild(curNode *conn.Tree, nodes []*conn.Tree, connMap map[string][]*con
 			if c.Name != nil {
 				name = *c.Name
 			}
-			childConn = append(childConn, &conn.Tree{Label: name, Parent: c.ParentId, Id: c.Id, Type: conn.TREE_NODE_TYPE_CONN})
+			childConn = append(childConn, &conn.Tree{Label: name, Parent: c.ParentId.String(), Id: c.Id, Type: conn.TREE_NODE_TYPE_CONN})
 		}
 	}
 	curNode.Children = append(curNode.Children, childConn...)
@@ -199,12 +199,13 @@ func listConnBase() map[string][]*conn.ConnCfgBase {
 	}
 	rolePowerMap := make(map[string][]*conn.ConnCfgBase, len(cfgList))
 	for _, c := range cfgList {
-		v, ok := rolePowerMap[c.ParentId]
+		pid := c.ParentId.String()
+		v, ok := rolePowerMap[pid]
 		if !ok {
 			v = []*conn.ConnCfgBase{}
 		}
 		v = append(v, c)
-		rolePowerMap[c.ParentId] = v
+		rolePowerMap[pid] = v
 	}
 	return rolePowerMap
 }

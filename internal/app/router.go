@@ -373,8 +373,8 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
-	cleanPath := filepath.Clean("exports/" + fileName)
-	if !strings.HasPrefix(cleanPath, "exports") {
+	cleanPath := filepath.Clean(export.Path(fileName))
+	if rel, err := filepath.Rel(export.Root(), cleanPath); err != nil || strings.HasPrefix(rel, "..") {
 		response.WriteErr(c, http.StatusBadRequest, 400, "非法文件路径")
 		return
 	}
@@ -389,13 +389,25 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
+	// 下载白名单必须覆盖所有内置导出与 export_by_code / export_skill 的常见产物：
+	// 此前只放行 Office/HTML 与图片，PDF/CSV/Markdown 等「高级导出」产物会拿到链接却 400。
 	contentTypes := map[string]string{
 		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		".png":  "image/png",
 		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
 		".html": "text/html; charset=utf-8",
+		".htm":  "text/html; charset=utf-8",
+		".pdf":  "application/pdf",
+		".csv":  "text/csv; charset=utf-8",
+		".md":   "text/markdown; charset=utf-8",
+		".txt":  "text/plain; charset=utf-8",
+		".xml":  "application/xml; charset=utf-8",
+		".json": "application/json; charset=utf-8",
+		".zip":  "application/zip",
+		".svg":  "image/svg+xml",
 	}
 
 	ext := ""
@@ -412,7 +424,7 @@ func handleExportDownload(c *gin.Context) {
 		return
 	}
 
-	filePath := "exports/" + fileName
+	filePath := cleanPath
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		response.WriteErr(c, http.StatusNotFound, 404, "文件不存在")
@@ -484,6 +496,8 @@ func cleanExpiredExports() {
 	}
 	// 同步清理孤儿归属记录（对应文件已删除/过期淘汰）
 	export.CleanupOrphanOwners()
+	// 同步清理孤儿产物元数据（对话式修复的源信息）
+	export.CleanupOrphanArtifacts()
 	// 清理旧版全局 offload 目录（新版按用户/会话隔离）并清理过期副本。
 	agent.CleanupLegacyOffload()
 	agent.CleanupReductionOffload(7 * 24 * time.Hour)

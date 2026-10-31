@@ -29,12 +29,21 @@ type runSessionCtxKey struct{}
 type runSessionState struct {
 	mu               sync.Mutex
 	sess             *Session
+	sec              *RunSecurityContext
 	initialMsgCount  int
 	summarizationHit bool
 }
 
-func newRunSessionState(sess *Session, initialMsgCount int) *runSessionState {
-	return &runSessionState{sess: sess, initialMsgCount: initialMsgCount}
+// newRunSessionState 创建本次运行的会话同步状态。
+//
+// sec 用于给 summarization 摘要消息写入安全元数据（权限快照变化后必须可隔离），
+// 为兼容既有测试保留可变参数形式。
+func newRunSessionState(sess *Session, initialMsgCount int, sec ...*RunSecurityContext) *runSessionState {
+	st := &runSessionState{sess: sess, initialMsgCount: initialMsgCount}
+	if len(sec) > 0 {
+		st.sec = sec[0]
+	}
+	return st
 }
 
 // WithRunSessionState 把本次运行的会话同步状态放入 context。
@@ -69,6 +78,7 @@ func (m *SessionSyncMiddleware) AfterAgent(ctx context.Context, state *adk.ChatM
 	st.mu.Lock()
 	sess := st.sess
 	hit := st.summarizationHit
+	sec := st.sec
 	st.mu.Unlock()
 
 	if sess == nil || !hit || len(state.Messages) == 0 {
@@ -92,10 +102,16 @@ func (m *SessionSyncMiddleware) AfterAgent(ctx context.Context, state *adk.ChatM
 		if msg.Extra != nil && msg.Extra[toolSearchReminderExtraKey] != nil {
 			continue
 		}
-		sm := schemaMessageToSession(msg)
+		sm := schemaMessageToSession(msg, sec, isSummarizationMessage(msg))
 		if sm != nil {
 			compressed = append(compressed, *sm)
 		}
+	}
+
+	// 摘要可能包含此前查询到的数据/结论：落库前先按当前权限投影过滤，
+	// 权限变化时摘要正文必须被隔离，不能以 user 角色绕过历史隔离。
+	if sec != nil && len(compressed) > 0 {
+		compressed = filterHistoryForRun(compressed, sec)
 	}
 
 	if len(compressed) > 0 {
@@ -167,8 +183,17 @@ const (
 	summarizationContentTypeSummary = "summary"
 )
 
+// isSummarizationMessage 判断消息是否为 summarization 生成的摘要。
+func isSummarizationMessage(msg *schema.Message) bool {
+	if msg == nil || msg.Extra == nil {
+		return false
+	}
+	ct, ok := msg.Extra[summarizationContentTypeKey].(string)
+	return ok && ct == summarizationContentTypeSummary
+}
+
 // schemaMessageToSession 将 Eino schema.Message 转换为 SessionMessage
-func schemaMessageToSession(msg *schema.Message) *SessionMessage {
+func schemaMessageToSession(msg *schema.Message, sec *RunSecurityContext, isSummary bool) *SessionMessage {
 	if msg == nil {
 		return nil
 	}
@@ -182,6 +207,19 @@ func schemaMessageToSession(msg *schema.Message) *SessionMessage {
 	sm := &SessionMessage{
 		Role:    string(msg.Role),
 		Content: msg.Content,
+	}
+	if isSummary {
+		// 摘要包含历史数据/结论，无法逐列枚举来源：标记为不可溯源，
+		// 权限快照变化后由 filterHistoryForRun 整体隔离。
+		sm.Security = &MessageSecurityMeta{
+			Untraceable: true,
+			Sanitized:   true,
+			ContentSHA:  contentSHA(msg.Content),
+		}
+		if sec != nil {
+			sm.Security.ScopeDigest = sec.ScopeDigest
+			sm.Security.MaskVersion = maskerVersion(sec)
+		}
 	}
 
 	if len(msg.ToolCalls) > 0 {

@@ -71,14 +71,14 @@ func AnalyzeSQL(sqlStr string, defaultSchema string) *SQLAnalysis {
 			}
 		}
 	case "UPDATE":
-		target, cols := extractUpdateTarget(trimmed, defaultSchema)
-		if target != nil {
-			analysis.WriteTables = append(analysis.WriteTables, *target)
+		targets, cols := extractUpdateTargets(trimmed, defaultSchema)
+		if len(targets) > 0 {
+			analysis.WriteTables = append(analysis.WriteTables, targets...)
 			analysis.WriteColumns = cols
 		}
 		for _, t := range allTables {
 			schema, name := resolveTableName(t, defaultSchema)
-			if target == nil || schema != target.Schema || name != target.Name {
+			if !containsTableRef(targets, schema, name) {
 				analysis.ReadTables = append(analysis.ReadTables, TableRef{Schema: schema, Name: name})
 			}
 		}
@@ -169,41 +169,273 @@ func extractInsertTarget(sql string, defaultSchema string) (*TableRef, []ColumnR
 	return target, nil
 }
 
-func extractUpdateTarget(sql string, defaultSchema string) (*TableRef, []ColumnRef) {
-	re := regexp.MustCompile(`(?i)\bUPDATE\s+((?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)(?:\.(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))?)`)
-	match := re.FindStringSubmatch(sql)
-	if len(match) < 2 {
+// extractUpdateTargets 解析 UPDATE 的全部写入表与 SET 列归属。
+//
+// 支持：`UPDATE t`、`UPDATE s.t`、`UPDATE a AS x`、`UPDATE a, b`、
+// `UPDATE a JOIN b ON ...`、`UPDATE a LEFT JOIN b AS y ON ...`。
+// 无法确定列归属（多表且未使用别名/表名限定）时返回 TableName 为空，
+// 由调用方 fail-closed 拒绝。
+func extractUpdateTargets(sql string, defaultSchema string) ([]TableRef, []ColumnRef) {
+	updateRe := regexp.MustCompile(`(?i)\bUPDATE\b`)
+	updateLoc := updateRe.FindStringIndex(sql)
+	if updateLoc == nil {
 		return nil, nil
 	}
-	tableName := strings.TrimSpace(match[1])
-	schema, name := resolveTableName(tableName, defaultSchema)
-	target := &TableRef{Schema: schema, Name: name}
-
-	setRe := regexp.MustCompile(`(?i)\bSET\s+(.+?)(?:\bWHERE\b|\bORDER\b|\bLIMIT\b|\bRETURNING\b|$)`)
-	setMatch := setRe.FindStringSubmatch(sql)
-	if len(setMatch) >= 2 {
-		setStr := setMatch[1]
-		var cols []ColumnRef
-		assignments := strings.Split(setStr, ",")
-		for _, a := range assignments {
-			a = strings.TrimSpace(a)
-			eqIdx := strings.Index(a, "=")
-			if eqIdx > 0 {
-				colName := strings.TrimSpace(a[:eqIdx])
-				colName = strings.Trim(colName, "`")
-				dotIdx := strings.LastIndex(colName, ".")
-				if dotIdx >= 0 {
-					colName = colName[dotIdx+1:]
-				}
-				if colName != "" {
-					cols = append(cols, ColumnRef{TableName: name, ColumnName: colName})
-				}
-			}
-		}
-		return target, cols
+	rest := sql[updateLoc[1]:]
+	setRe := regexp.MustCompile(`(?i)\bSET\b`)
+	setLoc := setRe.FindStringIndex(rest)
+	if setLoc == nil {
+		return nil, nil
+	}
+	targetText := rest[:setLoc[0]]
+	setText := rest[setLoc[1]:]
+	if end := findTopLevelClause(setText, []string{"WHERE", "ORDER", "LIMIT", "RETURNING"}); end >= 0 {
+		setText = setText[:end]
 	}
 
-	return target, nil
+	var tables []TableRef
+	aliases := make(map[string]TableRef)
+	addTarget := func(segment string) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			return
+		}
+		for {
+			trimmed := trimJoinModifier(segment)
+			if trimmed == segment {
+				break
+			}
+			segment = trimmed
+		}
+		if end := findTopLevelClause(segment, []string{"ON", "USING"}); end >= 0 {
+			segment = segment[:end]
+		}
+		fields := strings.Fields(segment)
+		if len(fields) == 0 {
+			return
+		}
+		schema, name := resolveTableName(trimUpdateIdent(fields[0]), defaultSchema)
+		if name == "" {
+			return
+		}
+		ref := TableRef{Schema: schema, Name: name}
+		tables = append(tables, ref)
+		aliases[strings.ToLower(name)] = ref
+		if len(fields) >= 2 {
+			alias := fields[1]
+			if strings.EqualFold(alias, "AS") && len(fields) >= 3 {
+				alias = fields[2]
+			}
+			alias = trimUpdateIdent(alias)
+			if alias != "" && !isJoinModifier(alias) {
+				aliases[strings.ToLower(alias)] = ref
+			}
+		}
+	}
+	for _, part := range splitUpdateTargetSegments(targetText) {
+		addTarget(part)
+	}
+	if len(tables) == 0 {
+		return nil, nil
+	}
+
+	cols := make([]ColumnRef, 0, 4)
+	for _, assignment := range splitTopLevelCommas(setText) {
+		assignment = strings.TrimSpace(assignment)
+		if assignment == "" {
+			continue
+		}
+		lhs, _, ok := strings.Cut(assignment, "=")
+		if !ok {
+			continue
+		}
+		lhs = strings.TrimSpace(lhs)
+		parts := strings.Split(lhs, ".")
+		colName := trimUpdateIdent(parts[len(parts)-1])
+		if colName == "" {
+			continue
+		}
+		tableName := ""
+		if len(parts) >= 2 {
+			qualifier := trimUpdateIdent(parts[len(parts)-2])
+			if ref, ok := aliases[strings.ToLower(qualifier)]; ok {
+				tableName = ref.Name
+			}
+		} else if len(tables) == 1 {
+			tableName = tables[0].Name
+		}
+		cols = append(cols, ColumnRef{TableName: tableName, ColumnName: colName})
+	}
+	return tables, cols
+}
+
+func containsTableRef(refs []TableRef, schema, name string) bool {
+	for _, ref := range refs {
+		if ref.Schema == schema && ref.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func trimUpdateIdent(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "`\"[]")
+}
+
+func isJoinModifier(word string) bool {
+	switch strings.ToUpper(word) {
+	case "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "NATURAL", "STRAIGHT_JOIN", "ON", "USING", "AS", "SET":
+		return true
+	}
+	return false
+}
+
+func trimJoinModifier(segment string) string {
+	fields := strings.Fields(segment)
+	if len(fields) == 0 || !isJoinModifier(fields[0]) || strings.EqualFold(fields[0], "ON") || strings.EqualFold(fields[0], "USING") {
+		return segment
+	}
+	idx := strings.Index(segment, fields[0])
+	return strings.TrimSpace(segment[idx+len(fields[0]):])
+}
+
+// splitUpdateTargetSegments 按顶层逗号与 JOIN 关键字切分目标表段。
+func splitUpdateTargetSegments(s string) []string {
+	var parts []string
+	start, depth := 0, 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			continue
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+			continue
+		}
+		if depth != 0 || i+4 > len(s) {
+			continue
+		}
+		if strings.EqualFold(s[i:i+4], "JOIN") && isIdentBoundary(s, i-1) && isIdentBoundary(s, i+4) {
+			parts = append(parts, s[start:i])
+			start = i + 4
+			i += 3
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	start, depth := 0, 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+func isIdentBoundary(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return true
+	}
+	c := s[i]
+	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '$' || c == '#')
+}
+
+// findTopLevelClause 返回顶层（括号/引号外）第一个关键字的位置，未命中返回 -1。
+func findTopLevelClause(s string, keywords []string) int {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			continue
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || !isIdentStart(c) {
+			continue
+		}
+		if i > 0 && !isIdentBoundary(s, i-1) {
+			continue
+		}
+		j := i
+		for j < len(s) && isIdentChar(s[j]) {
+			j++
+		}
+		word := strings.ToUpper(s[i:j])
+		for _, keyword := range keywords {
+			if word == keyword {
+				return i
+			}
+		}
+		i = j - 1
+	}
+	return -1
+}
+
+func isIdentStart(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_'
+}
+
+func isIdentChar(c byte) bool {
+	return isIdentStart(c) || c >= '0' && c <= '9' || c == '$' || c == '#'
 }
 
 func extractDeleteTarget(sql string, defaultSchema string) *TableRef {
@@ -394,13 +626,22 @@ func StripComments(sql string) string {
 	return sqlguard.StripComments(sql)
 }
 
+// sqlIdentFragment 与 tableRefFragment SQL 标识符/限定表名的正则片段。
+//
+// 必须用 \p{L}/\p{N}而不是 \w：Go 正则的 \w 仅匹配 ASCII，
+// 中文表名（如 FROM 订单）会提取不到表，导致表级权限校验与脱敏判定拿到空集合（误判/绕过）。
+const (
+	sqlIdentFragment = "(?:`[^`]+`|\"[^\"]+\"|[\\p{L}\\p{N}_$#]+)"
+	tableRefFragment = "(?:(?:" + sqlIdentFragment + "\\.)?" + sqlIdentFragment + ")"
+)
+
 func ExtractTablesFromSQL(sql string) []string {
 	sql = StripComments(sql)
 	tables := make(map[string]bool)
 
-	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
-	commaRegex := regexp.MustCompile(`\s*,\s*((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
-	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+((?:(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+)\.)?(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|\w+))`)
+	primaryRegex := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+(` + tableRefFragment + `)`)
+	commaRegex := regexp.MustCompile(`\s*,\s*(` + tableRefFragment + `)`)
+	metadataRegex := regexp.MustCompile(`(?i)\b(?:DESCRIBE|DESC|SHOW\s+CREATE\s+TABLE)\s+(` + tableRefFragment + `)`)
 	// 增强 CTE 识别：支持递归 CTE（WITH RECURSIVE name AS）和多个 CTE（name1 AS (...), name2 AS (...)）
 	cteRegex := regexp.MustCompile(`(?i)\bWITH\s+(?:RECURSIVE\s+)?(\w+)\s+(?:\([^)]*\)\s+)?AS\s*\(`)
 	cteCommaRegex := regexp.MustCompile(`(?i)\)\s*,\s*(\w+)\s+(?:\([^)]*\)\s+)?AS\s*\(`)
@@ -862,10 +1103,6 @@ func findTopLevelKeyword(sql, keyword string) int {
 		}
 	}
 	return -1
-}
-
-func isIdentChar(c byte) bool {
-	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 func splitByCommaRespectParens(s string) []string {

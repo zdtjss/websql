@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { Ref } from 'vue'
 import { sanitizeError } from '@/utils/errorHandler'
+import { resolveBatchExecOutcome, buildExecCardContent, settleExecCards, PENDING_EXEC_LABEL } from '@/views/ai/utils/execOutcome'
 import { analyzeSQL, type SQLAnalysisResult } from '@/utils/sqlRiskAssessment'
 import type { ChatMessage } from './useChatHistory'
 import type { SkillQueueNotice } from './useChatStream'
@@ -138,7 +139,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
     const sqlForDisplay = confirmSQL.value
     chatHistory.value.push({
       role: 'assistant',
-      content: `⏳ 正在执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``,
+      content: buildExecCardContent(PENDING_EXEC_LABEL, sqlForDisplay),
     })
     scrollToBottom()
 
@@ -148,6 +149,18 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
 
     // 在 try 外创建，便于 finally 判断当前 abortController 是否仍属于本次请求
     const controller = new AbortController()
+    // 过渡卡收口：只收敛本次请求推入的那张，异常/401/中止也必须走到终态
+    let settled = false
+    const pendingCardCount = 1
+    const settleWith = (label: string, detail = '') => {
+      if (settleExecCards(chatHistory.value, label, detail, pendingCardCount) === 0) {
+        chatHistory.value.push({
+          role: 'assistant',
+          content: buildExecCardContent(label, sqlForDisplay, detail),
+        })
+      }
+      settled = true
+    }
 
     try {
       abortController.value = controller
@@ -188,7 +201,11 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       const collectedDangerSQLs: { sql: string; interruptId: string; checkPointId: string }[] = []
       let hasError = false
       let errorMsg = ''
-
+      // 多条 exec_sql 会各自上报 tool_status，必须计数：单值覆盖会把 denied 误标为已执行
+      let executedCount = 0
+      let deniedCount = 0
+      let cancelled = false
+      
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -212,6 +229,13 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
                 checkPointId: chunk.checkPointId || '',
               })
             }
+            if (chunk.type === 'tool_status' && typeof chunk.status === 'string') {
+              if (chunk.status === 'executed') executedCount++
+              else if (chunk.status === 'denied') deniedCount++
+              else if (chunk.status === 'cancelled') cancelled = true
+            }
+            if (chunk.type === 'cancelled') cancelled = true
+            // retract 由主聊天流处理；确认流只记录终态，不做内容回撤
             if (chunk.type === 'error') {
               hasError = true
               errorMsg = chunk.content || '执行失败'
@@ -219,22 +243,21 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
           } catch (_) { /* ignore */ }
         }
       }
-
+      
       const execContent = streamingExecContent.value
       streamingExecContent.value = ''
       queueNotice.value = null
-
-      if (hasError) {
-        chatHistory.value.push({
-          role: 'assistant',
-          content: `❌ 执行失败：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\`\n${sanitizeError(errorMsg)}`,
-        })
-      } else {
-        chatHistory.value.push({
-          role: 'assistant',
-          content: `✅ 已执行：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``,
-        })
-      }
+      
+      const outcome = resolveBatchExecOutcome({
+        total: pendingCardCount,
+        executed: executedCount,
+        denied: deniedCount,
+        cancelled,
+        hasError,
+      })
+      const detail = hasError ? sanitizeError(errorMsg) : ''
+      // 终态就地覆盖「⏳ 正在执行」过渡卡，避免会话里留着一张永远“正在执行”的卡片。
+      settleWith(outcome.label, detail)
 
       if (execContent) {
         chatHistory.value.push({ role: 'assistant', content: execContent })
@@ -250,15 +273,16 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       }
     } catch (e) {
       if ((e as Error).name === 'AbortError') {
-        chatHistory.value.push({
-          role: 'assistant',
-          content: `⏹ 已终止：\n\`\`\`sql\n${sqlForDisplay}\n\`\`\``,
-        })
+        settleWith('⏹ 已取消')
       } else {
-        ElMessage({ message: sanitizeError(e) || '执行失败', type: 'error' })
+        const msg = sanitizeError(e) || '执行失败'
+        ElMessage({ message: msg, type: 'error' })
+        settleWith('❌ 执行失败', msg)
       }
       streamingExecContent.value = ''
     } finally {
+      // 401 / 提前返回 / 异常路径：过渡卡必须收敛，不能留在「⏳ 正在执行」
+      if (!settled) settleWith('ℹ️ 未执行：请求已中断')
       loading.value = false
       // 仅当 abortController 仍指向本次请求时才清理，避免覆盖其他并发请求（如主发送已换新 controller）
       if (abortController.value === controller) abortController.value = null
@@ -323,7 +347,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
     for (const item of selectedItems) {
       chatHistory.value.push({
         role: 'assistant',
-        content: `⏳ 正在执行：\n\`\`\`sql\n${item.sql}\n\`\`\``,
+        content: buildExecCardContent(PENDING_EXEC_LABEL, item.sql),
       })
     }
     scrollToBottom()
@@ -343,6 +367,20 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
     const apiBase = import.meta.env.VITE_API_URL || ''
     const url = apiBase + '/ai/agent/chatStream'
     const auth = sessionStorage.getItem('authentication') || ''
+    // 批量终态收口：只收敛本次推入的 N 张过渡卡，异常/401/中止同样要落地终态
+    let settled = false
+    const pendingCardCount = sqlItems.length
+    const settleWith = (label: string, detail = '') => {
+      if (settleExecCards(chatHistory.value, label, detail, pendingCardCount) === 0) {
+        for (const item of sqlItems) {
+          chatHistory.value.push({
+            role: 'assistant',
+            content: buildExecCardContent(label, item.sql, detail),
+          })
+        }
+      }
+      settled = true
+    }
 
     try {
       const schemas = buildRequestSchemas()
@@ -380,7 +418,11 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       const collectedDangerSQLs: { sql: string; interruptId: string; checkPointId: string }[] = []
       let hasError = false
       let errorMsg = ''
-
+      // 多条 exec_sql 会各自上报 tool_status，必须计数：单值覆盖会把 denied 误标为已执行
+      let executedCount = 0
+      let deniedCount = 0
+      let cancelled = false
+      
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -410,23 +452,31 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
                 checkPointId: chunk.checkPointId || '',
               })
             }
+            if (chunk.type === 'tool_status' && typeof chunk.status === 'string') {
+              if (chunk.status === 'executed') executedCount++
+              else if (chunk.status === 'denied') deniedCount++
+              else if (chunk.status === 'cancelled') cancelled = true
+            }
+            if (chunk.type === 'cancelled') cancelled = true
             if (chunk.type === 'error') { hasError = true; errorMsg = chunk.content || 'exec failed' }
           } catch (_) { /* ignore */ }
         }
       }
-
+      
       const execContent = streamingExecContent.value
       streamingExecContent.value = ''
       queueNotice.value = null
-
-      for (const item of sqlItems) {
-        chatHistory.value.push({
-          role: 'assistant',
-          content: hasError
-            ? `❌ 执行失败：\n\`\`\`sql\n${item.sql}\n\`\`\``
-            : `✅ 已执行：\n\`\`\`sql\n${item.sql}\n\`\`\``,
-        })
-      }
+      
+      const outcome = resolveBatchExecOutcome({
+        total: pendingCardCount,
+        executed: executedCount,
+        denied: deniedCount,
+        cancelled,
+        hasError,
+      })
+      const detail = hasError ? sanitizeError(errorMsg) : ''
+      // 批量恢复同样就地覆盖过渡卡；只有全部 executed 才宣称成功。
+      settleWith(outcome.label, detail)
 
       if (execContent) {
         chatHistory.value.push({ role: 'assistant', content: execContent })
@@ -437,7 +487,12 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       }
     } catch (e) {
       streamingExecContent.value = ''
-      ElMessage({ message: sanitizeError(e) || 'exec failed', type: 'error' })
+      const msg = sanitizeError(e) || 'exec failed'
+      ElMessage({ message: msg, type: 'error' })
+      settleWith('❌ 执行失败', msg)
+    } finally {
+      // 401 / 提前返回 / 异常路径：过渡卡必须收敛，不能留在「⏳ 正在执行」
+      if (!settled) settleWith('ℹ️ 未执行：请求已中断')
     }
   }
 

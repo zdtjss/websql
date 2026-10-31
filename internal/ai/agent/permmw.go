@@ -136,7 +136,8 @@ func (m *PermissionMiddleware) BeforeModelRewriteState(ctx context.Context, stat
 				continue
 			}
 			// 高级导出额外要求 AI 数据写能力；不满足时不必向模型展示。
-			if normalizeToolName(ti.Name) == "export_by_code" && !m.Scope.CanAIModifyData() {
+			name := normalizeToolName(ti.Name)
+			if (name == "export_by_code" || name == "repair_export_by_code") && !m.Scope.CanAIModifyData() {
 				log.Printf("%s [ToolInfos] 移除高级导出（未开放 AI 数据写）- tool=%s\n", m.logPrefix(), ti.Name)
 				continue
 			}
@@ -243,6 +244,44 @@ func permErrorObjects(err error) []string {
 	return nil
 }
 
+// isPermissionDenial 判定错误是否属于权限/能力拒绝。
+//
+// 用途：exec_sql 的 tool_status 只能把权限拒绝上报为 denied；SQL 运行错误
+// （如表不存在、语法错误）不是越权，谎报 denied 会与真实执行失败同时展示，
+// 让前端把「执行失败」说成「权限拒绝」。
+func isPermissionDenial(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *PermissionError
+	if errors.As(err, &pe) {
+		return true
+	}
+	return errors.Is(err, ErrSecurityScope)
+}
+
+// execToolStatusForErr 把 exec_sql 的执行结果映射为 tool_status；空串表示不上报。
+//
+// 三态口径（与前端 execOutcome 对齐）：
+//   - 成功 → executed
+//   - 权限/能力/安全上下文拒绝 → denied
+//   - 运行被取消或超时 → cancelled（否则前端只能把中断归入“状态未知”）
+//   - SQL 运行错误（语法/表不存在等）→ 不上报，由错误载荷与前端失败态呈现
+func execToolStatusForErr(ctx context.Context, err error) string {
+	switch {
+	case err == nil:
+		return toolStatusExecuted
+	case isPermissionDenial(err):
+		return toolStatusDenied
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return toolStatusCancelled
+	case ctx != nil && ctx.Err() != nil:
+		return toolStatusCancelled
+	default:
+		return ""
+	}
+}
+
 func (m *PermissionMiddleware) logDeny(toolName, reason string, objects []string) {
 	log.Printf("%s [拒绝] tool=%s reason=%s objects=%v\n", m.logPrefix(), toolName, reason, objects)
 	m.auditPermDenied(toolName, reason, objects)
@@ -289,13 +328,19 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 			return "", unregisteredToolError(tCtx.Name)
 		}
 		// 按目标连接取 Scope + 校验安全依赖可用性；失败即拒绝。
-		scoped, _, err := m.resolveRunScopedMiddleware(ctx, toolName, argumentsInJSON)
+		scoped, sec, err := m.resolveRunScopedMiddleware(ctx, toolName, argumentsInJSON)
 		if err != nil {
+			if toolName == "exec_sql" {
+				reportToolStatus(ctx, "exec_sql", toolStatusDenied)
+			}
 			m.logDeny(tCtx.Name, "运行安全上下文拒绝", permErrorObjects(err))
 			return "", err
 		}
 		// 能力双保险：模型伪造 tool_call 也不能绕过。
 		if err := scoped.denyByCapability(toolName); err != nil {
+			if toolName == "exec_sql" {
+				reportToolStatus(ctx, "exec_sql", toolStatusDenied)
+			}
 			m.logDeny(tCtx.Name, "能力校验拒绝", permErrorObjects(err))
 			return "", err
 		}
@@ -310,11 +355,41 @@ func (m *PermissionMiddleware) WrapInvokableToolCall(
 		case "cross_db_join":
 			return scoped.checkCrossDBJoinAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "exec_sql":
-			return scoped.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
+			result, execErr := scoped.checkExecAccess(ctx, argumentsInJSON, endpoint, opts...)
+			// 只有权限/能力拒绝与中断是确定性终态；SQL 运行错误交给错误载荷与前端失败态呈现。
+			if status := execToolStatusForErr(ctx, execErr); status != "" {
+				reportToolStatus(ctx, "exec_sql", status)
+			}
+			return result, execErr
 		case "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
 			return scoped.checkExportAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
+		case "repair_export":
+			// 删除类编辑必须经服务端确认：把审批门包在 endpoint 上，
+			// 保证 checkExportAccess 的所有放行分支（content/sql/artifact）都经过确认。
+			gated := func(gctx context.Context, args string, gopts ...tool.Option) (string, error) {
+				return editApprovalGate(gctx, tCtx.Name, args, gopts, func(c context.Context, a string, o []tool.Option) (string, error) {
+					return endpoint(c, a, o...)
+				})
+			}
+			return scoped.checkExportAccess(ctx, argumentsInJSON, gated, tCtx.Name, opts...)
+		case "export_skill":
+			// Skill 导出不直连数据库，但 payload 由模型/查询结果组装，产物会对外交付：
+			// 必须与内置导出同规——脱敏规则不可用时禁止出域，payload 正文必须脱敏。
+			if sec != nil && sec.DataEgressBlocked {
+				m.logDeny(tCtx.Name, "脱敏规则不可用", nil)
+				return "", &PermissionError{Message: "脱敏规则不可用，已阻止导出", Objects: []string{}}
+			}
+			maskedArgs, maskErr := scoped.maskExportArgs(ctx, argumentsInJSON)
+			if maskErr != nil {
+				m.logDeny(tCtx.Name, "Skill payload 脱敏失败", nil)
+				return "", maskErr
+			}
+			scoped.logAllow(tCtx.Name, "skill_export")
+			return endpoint(ctx, maskedArgs, opts...)
 		case "export_by_code":
 			return scoped.checkExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "repair_export_by_code":
+			return scoped.checkRepairExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
 			scoped.logAllow(tCtx.Name, "skill_read_only")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -362,10 +437,12 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 			return scoped.checkStreamSchemaAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "list_tables":
 			return scoped.postFilterStream(ctx, argumentsInJSON, endpoint, "list_tables", scoped.filterListTablesResult, opts...)
-		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html":
+		case "query_data", "exec_sql", "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html", "repair_export":
 			return scoped.checkStreamSQLAccess(ctx, argumentsInJSON, endpoint, tCtx.Name, opts...)
 		case "export_by_code":
 			return scoped.checkStreamExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
+		case "repair_export_by_code":
+			return scoped.checkStreamRepairExportByCodeAccess(ctx, argumentsInJSON, endpoint, opts...)
 		case "skill":
 			scoped.logAllow(tCtx.Name+"(stream)", "skill_read_only")
 			return endpoint(ctx, argumentsInJSON, opts...)
@@ -388,9 +465,18 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 // 该工具仅在「用户拥有连接完整权限」时才会注册（直连会绕过应用层表/列权限）；
 // 此处再 fail-closed 兜底，并记录审计（代码执行类操作，RiskLevel=medium）。
 func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	return m.checkCodegenExportAccess(ctx, "export_by_code", args, endpoint, opts...)
+}
+
+// checkRepairExportByCodeAccess 脚本级修复与 export_by_code 使用同一权限门槛与沙箱。
+func (m *PermissionMiddleware) checkRepairExportByCodeAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
+	return m.checkCodegenExportAccess(ctx, "repair_export_by_code", args, endpoint, opts...)
+}
+
+func (m *PermissionMiddleware) checkCodegenExportAccess(ctx context.Context, toolName, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
 	// 防御性重算：Agent 可能来自缓存，构建后新增的脱敏规则不应被旧实例绕过。
 	if !exportByCodeAllowed(m.Scope) {
-		m.logDeny("export_by_code", "高级导出条件不满足（完整权限 / Python / OS 隔离 / 无生效脱敏规则）", nil)
+		m.logDeny(toolName, "高级导出条件不满足（完整权限 / Python / OS 隔离 / 无生效脱敏规则）", nil)
 		return "", &PermissionError{
 			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
 			Objects: []string{},
@@ -405,7 +491,7 @@ func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args
 	connName, schemaName := conn.GetConnInfo(m.Scope.ConnID)
 	audit.GetAuditService().Record(&audit.AuditEntry{
 		Source:     "agent",
-		ToolName:   "export_by_code",
+		ToolName:   toolName,
 		SQLType:    "CODEGEN",
 		RiskLevel:  "medium",
 		Status:     status,
@@ -416,20 +502,29 @@ func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args
 		ErrorMsg:   errMsg,
 		ExecTimeMs: int(time.Since(start).Milliseconds()),
 	})
-	m.logAllow("export_by_code", "codegen_ro_export")
+	m.logAllow(toolName, "codegen_ro_export")
 	return result, err
 }
 
 // checkStreamExportByCodeAccess 高级导出的流式版本。
 func (m *PermissionMiddleware) checkStreamExportByCodeAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	return m.checkStreamCodegenExportAccess(ctx, "export_by_code", args, endpoint, opts...)
+}
+
+// checkStreamRepairExportByCodeAccess 脚本级修复的流式版本。
+func (m *PermissionMiddleware) checkStreamRepairExportByCodeAccess(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
+	return m.checkStreamCodegenExportAccess(ctx, "repair_export_by_code", args, endpoint, opts...)
+}
+
+func (m *PermissionMiddleware) checkStreamCodegenExportAccess(ctx context.Context, toolName, args string, endpoint adk.StreamableToolCallEndpoint, opts ...tool.Option) (*schema.StreamReader[string], error) {
 	if !exportByCodeAllowed(m.Scope) {
-		m.logDeny("export_by_code(stream)", "高级导出条件不满足", nil)
+		m.logDeny(toolName+"(stream)", "高级导出条件不满足", nil)
 		return nil, &PermissionError{
 			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
 			Objects: []string{},
 		}
 	}
-	m.logAllow("export_by_code(stream)", "codegen_ro_export")
+	m.logAllow(toolName+"(stream)", "codegen_ro_export")
 	return endpoint(ctx, args, opts...)
 }
 
@@ -472,7 +567,7 @@ func (m *PermissionMiddleware) extractSQLFromArgs(args string) string {
 // 这些工具允许通过 content 参数直接传入 Markdown 内容（由 Agent 生成），无需 SQL 即可导出
 func isContentModeExportTool(toolName string) bool {
 	switch toolName {
-	case "export_html", "export_ppt", "export_analysis_docx":
+	case "export_html", "export_ppt", "export_analysis_docx", "repair_export":
 		return true
 	}
 	return false
@@ -486,6 +581,32 @@ func contentArg(args string) string {
 	}
 	content, _ := raw["content"].(string)
 	return content
+}
+
+// operationTexts 提取 operations 中可能内嵌 SQL 的写入内容（Markdown 块/patch）。
+// 与 content 走同一套内嵌 SQL 校验，避免结构化编辑成为免检取数通道。
+func operationTexts(args string) []string {
+	var raw struct {
+		Operations []struct {
+			Value string `json:"value"`
+			Patch *struct {
+				Replace string `json:"replace"`
+			} `json:"patch"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(raw.Operations))
+	for _, op := range raw.Operations {
+		if strings.TrimSpace(op.Value) != "" {
+			out = append(out, op.Value)
+		}
+		if op.Patch != nil && strings.TrimSpace(op.Patch.Replace) != "" {
+			out = append(out, op.Patch.Replace)
+		}
+	}
+	return out
 }
 
 // validateContentSQLBindings 扫描 content 正文中的 SQL 数据绑定（```chart sql / ```table sql）
@@ -602,10 +723,9 @@ func (m *PermissionMiddleware) checkSchemaAccess(ctx context.Context, args strin
 		}
 
 		if output.Schema != "" {
-			filteredSchema := filterDDLByScope(output.Schema, filtered, m.Scope)
-			if filteredSchema != "" {
-				output.Schema = filteredSchema
-			}
+			// 始终使用过滤结果：过滤结果至少包含 CREATE TABLE 头，
+			// 旧守卫会让“所有列都被移除”的 DDL 回退为原文。
+			output.Schema = filterDDLByScope(output.Schema, filtered, m.Scope)
 		}
 		outputJSON, _ := json.Marshal(output)
 		schemaResult = string(outputJSON)
@@ -1163,11 +1283,17 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 			return "", err
 		}
 	}
+	// 结构化编辑的写入内容同样可能内嵌 SQL 绑定（新增 chart/table 块）。
+	for _, text := range operationTexts(args) {
+		if err := m.validateContentSQLBindings(ctx, toolName, text); err != nil {
+			return "", err
+		}
+	}
 
 	// 正文在渲染前再经文本脱敏：SSE 审计覆盖不到导出文件内容，
 	// 脱敏失败则拒绝导出（不能以原文落盘）。
 	checkedArgs := args
-	if strings.TrimSpace(content) != "" {
+	if hasExportTextArg(args) {
 		maskedArgs, err := m.maskExportArgs(ctx, args)
 		if err != nil {
 			m.logDeny(toolName, "导出正文脱敏失败", nil)
@@ -1181,6 +1307,12 @@ func (m *PermissionMiddleware) checkExportAccess(ctx context.Context, args strin
 		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
 		if strings.TrimSpace(content) != "" {
 			m.logAllow(toolName, "content_mode(no_sql)")
+			return endpoint(ctx, checkedArgs, opts...)
+		}
+		// repair_export 允许不带 content/sql：工具会从当前会话元数据回填原始源内容，
+		// 实际取数仍由 exportQueryRunner / report DataSource 逐次执行只读与表列权限校验、结果脱敏。
+		if toolName == "repair_export" {
+			m.logAllow(toolName, "repair_from_artifact")
 			return endpoint(ctx, checkedArgs, opts...)
 		}
 		return "", m.denyEmptySQL("export", args)
@@ -1470,14 +1602,27 @@ func (m *PermissionMiddleware) checkWriteColumnAccess(sql string) error {
 	if len(analysis.WriteColumns) == 0 || len(analysis.WriteTables) == 0 {
 		return nil
 	}
-	writeTableName := analysis.WriteTables[0].Name
-	if m.Scope.GetTableAccessLevel(writeTableName) != "column" {
-		return nil
+	writeTables := make(map[string]bool, len(analysis.WriteTables))
+	for _, table := range analysis.WriteTables {
+		writeTables[strings.ToLower(table.Name)] = true
 	}
 	deniedCols := make([]string, 0)
 	for _, col := range analysis.WriteColumns {
-		if !m.Scope.IsColumnAllowed(writeTableName, col.ColumnName) {
-			deniedCols = append(deniedCols, writeTableName+"."+col.ColumnName)
+		// 无法归属目标表时 fail-closed：多表 UPDATE 未用别名/表名限定，
+		// 不能退化为“只校验第一张表”而放行其他表的列。
+		if col.TableName == "" || !writeTables[strings.ToLower(col.TableName)] {
+			deniedCols = append(deniedCols, "<unknown>."+col.ColumnName)
+			continue
+		}
+		switch m.Scope.GetTableAccessLevel(col.TableName) {
+		case "full":
+			continue
+		case "column":
+			if !m.Scope.IsColumnAllowed(col.TableName, col.ColumnName) {
+				deniedCols = append(deniedCols, col.TableName+"."+col.ColumnName)
+			}
+		default:
+			deniedCols = append(deniedCols, col.TableName+"."+col.ColumnName)
 		}
 	}
 	if len(deniedCols) > 0 {
@@ -1504,17 +1649,28 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 		}
 	}
 
+	// 正文（content/summary）在渲染前脱敏；SQL 分支同样必须使用脱敏后的参数。
+	checkedArgs := args
+	if hasExportTextArg(args) {
+		maskedArgs, maskErr := m.maskExportArgs(ctx, args)
+		if maskErr != nil {
+			m.logDeny(toolName+"(stream)", "导出正文脱敏失败", nil)
+			return streamFromStr("导出失败：脱敏规则不可用"), nil
+		}
+		checkedArgs = maskedArgs
+	}
+
 	if sql == "" {
 		// content 模式：export_html/export_ppt/export_analysis_docx 允许通过 content 参数直接传入 Markdown，
 		// 内容由 Agent 生成（基于已通过权限校验的查询结果）；其中内嵌 SQL 已在上方完成校验
 		if strings.TrimSpace(content) != "" {
-			maskedArgs, maskErr := m.maskExportArgs(ctx, args)
-			if maskErr != nil {
-				m.logDeny(toolName+"(stream)", "导出正文脱敏失败", nil)
-				return streamFromStr("导出失败：脱敏规则不可用"), nil
-			}
 			m.logAllow(toolName+"(stream)", "content_mode(no_sql)")
-			return endpoint(ctx, maskedArgs, opts...)
+			return endpoint(ctx, checkedArgs, opts...)
+		}
+		// repair_export 可从元数据回填源内容；实际取数仍由 DataSource/runner 逐次校验。
+		if toolName == "repair_export" {
+			m.logAllow(toolName+"(stream)", "repair_from_artifact")
+			return endpoint(ctx, checkedArgs, opts...)
 		}
 		m.logDeny(toolName+"(stream)", "无法解析SQL参数，拒绝执行", nil)
 		log.Printf("%s [安全] 参数解析失败 - args{%s}\n", m.logPrefix(), safeTextSummary(args))
@@ -1527,7 +1683,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 	result, err := checkFunc(ctx, sql)
 	if err != nil {
 		log.Printf("%s [降级] %s(stream) Agent失败→程序化检查 - err=%v\n", m.logPrefix(), toolName, err)
-		return m.checkStreamSQLAccessFallback(ctx, args, endpoint, toolName, opts...)
+		return m.checkStreamSQLAccessFallback(ctx, checkedArgs, endpoint, toolName, opts...)
 	}
 
 	if !result.allowed {
@@ -1537,7 +1693,7 @@ func (m *PermissionMiddleware) checkStreamSQLAccess(ctx context.Context, args st
 
 	m.logAllow(toolName+"(stream)", "agent")
 
-	reader, err := endpoint(ctx, args, opts...)
+	reader, err := endpoint(ctx, checkedArgs, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1556,6 +1712,20 @@ func streamFromStr(s string) *schema.StreamReader[string] {
 	return sr
 }
 
+// isExportToolName 判断工具是否属于导出集合（导出结果直接落盘，没有结果过滤兜底）。
+func isExportToolName(name string) bool {
+	switch name {
+	case "export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt", "export_html",
+		"repair_export", "export_skill", "export_by_code", "repair_export_by_code":
+		return true
+	}
+	return false
+}
+
+// checkStreamSQLAccessFallback 是权限 Agent 失败后的确定性降级路径。
+//
+// 安全要求：必须使用已脱敏的 checkedArgs（而不是原始 args），导出类工具必须走
+// 严格列校验（column 级表上的 SELECT * 不得落盘）。
 func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context, args string, endpoint adk.StreamableToolCallEndpoint, toolName string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(args), &raw); err != nil {
@@ -1573,12 +1743,19 @@ func (m *PermissionMiddleware) checkStreamSQLAccessFallback(ctx context.Context,
 			}
 		}
 
-		if err := m.checkSelectColumnAccess(sqlStr, tables, toolName+"(stream)"); err != nil {
-			return streamFromStr(err.Error()), nil
+		var colErr error
+		if isExportToolName(toolName) {
+			colErr = m.checkSelectColumnAccessStrict(sqlStr, tables, toolName+"(stream)")
+		} else {
+			colErr = m.checkSelectColumnAccess(sqlStr, tables, toolName+"(stream)")
+		}
+		if colErr != nil {
+			return streamFromStr(colErr.Error()), nil
 		}
 	}
 
 	m.logAllow(toolName+"(stream)", "fallback(programmatic)")
+	// checkedArgs 已包含脱敏结果；fallback 绝不能回退到原始 args。
 	reader, err := endpoint(ctx, args, opts...)
 	if err != nil {
 		return nil, err

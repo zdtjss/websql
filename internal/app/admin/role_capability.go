@@ -1,8 +1,13 @@
 package admin
 
 import (
+	"errors"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"websql/internal/pkg/dberr"
 )
 
 // 角色能力版本与 AI 策略开关，均存放于 t_system_config。
@@ -57,7 +62,10 @@ func RolesAllowAIModify(roles []*Role) bool {
 
 // RoleCapabilityVersion 返回当前角色能力版本，未配置时按 1 处理。
 func RoleCapabilityVersion() int {
-	raw := getSystemConfigValue(RoleCapabilityVersionKey)
+	raw, err := systemConfigReader(RoleCapabilityVersionKey)
+	if err != nil {
+		return 1
+	}
 	if raw == "" {
 		return 1
 	}
@@ -68,24 +76,94 @@ func RoleCapabilityVersion() int {
 	return v
 }
 
-// AIPolicyEnforced 判断 AI 写双门槛是否已生效。
+// errSystemConfigUnavailable 表示管理库未就绪，无法读取系统配置。
+var errSystemConfigUnavailable = errors.New("system config store unavailable")
+
+// aiPolicyCacheTTL AI 策略开关的进程内缓存时间。
 //
-// 读取失败按 false 处理（兼容期语义，不会放宽既有 allow_modify 行为）。
-func AIPolicyEnforced() bool {
-	return strings.EqualFold(strings.TrimSpace(getSystemConfigValue(AIPolicyEnforceKey)), "true")
+// 配置保存后由 app 容器调用 InvalidateAIPolicyCache 立即失效，
+// TTL 只是兜底，避免每个请求都查库。
+const aiPolicyCacheTTL = 30 * time.Second
+
+type aiPolicySnapshot struct {
+	value    bool
+	loadedAt time.Time
+	loaded   bool
 }
 
-// getSystemConfigValue 直接读取系统配置。
+var (
+	aiPolicyMu    sync.RWMutex
+	aiPolicyCache aiPolicySnapshot
+	// systemConfigReader 仅测试可替换；生产始终走 readSystemConfigFromDB。
+	systemConfigReader = readSystemConfigFromDB
+)
+
+// AIPolicyEnforcedState 判断 AI 写双门槛是否已生效，并返回读取错误。
+//
+// 安全语义（fail-closed）：
+//   - 读取成功：按配置值，并更新进程内快照；
+//   - 读取失败且存在上次成功值：沿用上次值，同时回传错误供上层告警；
+//   - 读取失败且从未成功读取：按“已启用”处理，绝不能退化为兼容期语义。
+func AIPolicyEnforcedState() (bool, error) {
+	now := time.Now()
+	aiPolicyMu.RLock()
+	snap := aiPolicyCache
+	aiPolicyMu.RUnlock()
+	if snap.loaded && now.Sub(snap.loadedAt) < aiPolicyCacheTTL {
+		return snap.value, nil
+	}
+
+	raw, err := systemConfigReader(AIPolicyEnforceKey)
+	if err != nil {
+		if snap.loaded {
+			return snap.value, err
+		}
+		// 未配置读不到时按已启用处理：双门槛只会更严，不会放宽。
+		return true, err
+	}
+
+	value := strings.EqualFold(strings.TrimSpace(raw), "true")
+	aiPolicyMu.Lock()
+	aiPolicyCache = aiPolicySnapshot{value: value, loadedAt: now, loaded: true}
+	aiPolicyMu.Unlock()
+	return value, nil
+}
+
+// AIPolicyEnforced 兼容包装：读取失败时按 AIPolicyEnforcedState 的 fail-closed 结果。
+func AIPolicyEnforced() bool {
+	value, _ := AIPolicyEnforcedState()
+	return value
+}
+
+// InvalidateAIPolicyCache 清空 AI 策略开关缓存（系统配置保存后调用）。
+func InvalidateAIPolicyCache() {
+	aiPolicyMu.Lock()
+	aiPolicyCache = aiPolicySnapshot{}
+	aiPolicyMu.Unlock()
+}
+
+// readSystemConfigFromDB 直接读取系统配置。
 //
 // admin 包不能依赖 app/system（后者依赖 admin，会形成循环），故在此直接查库。
-func getSystemConfigValue(key string) string {
+// 未找到记录返回 ("", nil)（表示未配置）；其他错误原样返回，由调用方决定 fail-open/fail-closed。
+func readSystemConfigFromDB(key string) (string, error) {
 	db := getDBOrNil()
 	if db == nil {
-		return ""
+		return "", errSystemConfigUnavailable
 	}
 	var value string
 	if err := db.Get(&value, "select config_value from t_system_config where config_key = ?", key); err != nil {
-		return ""
+		if dberr.IsNoRows(err) {
+			return "", nil
+		}
+		return "", err
 	}
+	return value, nil
+}
+
+// getSystemConfigValue 保留旧接口：读取失败按空值处理。
+// 新增安全相关配置请使用 AIPolicyEnforcedState / systemConfigReader。
+func getSystemConfigValue(key string) string {
+	value, _ := systemConfigReader(key)
 	return value
 }

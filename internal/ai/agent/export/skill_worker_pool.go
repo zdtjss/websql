@@ -359,17 +359,22 @@ func (p *skillWorkerPool) acquire(ctx context.Context) (*skillWorker, error) {
 }
 
 // release 归还健康 worker；达到回收条件时淘汰。
+//
+// jobs/lastUsed 与 reapLoop 的读取共用 p.mu 保护，避免 data race。
 func (p *skillWorkerPool) release(w *skillWorker) {
+	p.mu.Lock()
 	w.jobs++
 	w.lastUsed = time.Now()
-	if !w.alive() || w.jobs >= p.maxJobs {
-		p.discard(w)
+	jobs := w.jobs
+	alive := w.alive()
+	if alive && jobs < p.maxJobs {
+		p.idle = append(p.idle, w)
+		p.broadcastLocked()
+		p.mu.Unlock()
 		return
 	}
-	p.mu.Lock()
-	p.idle = append(p.idle, w)
-	p.broadcastLocked()
 	p.mu.Unlock()
+	p.discard(w)
 }
 
 // discard 淘汰 worker（杀掉进程并从计数中移除）。

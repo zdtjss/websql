@@ -14,8 +14,10 @@ import (
 func filterDDLByScope(ddl string, tables []string, scope *PermissionScope) string {
 	lines := strings.Split(ddl, "\n")
 	var filtered []string
-	columnDefRegex := regexp.MustCompile("(?i)^\\s+[`\"']?(\\w+)[`\"']?\\s+")
-	createTableRegex := regexp.MustCompile("(?i)CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[`\"']?(\\w+)[`\"']?")
+	columnDefRegex := regexp.MustCompile("(?i)^\\s+[`\"\\[]?(\\w+)[`\"\\]]?\\s+")
+	// 支持 schema 限定名与引号/方括号：Oracle 的 DBMS_METADATA.GET_DDL 返回
+	// `CREATE TABLE "HR"."EMPLOYEES" (...)`，旧正则会把 HR 当成表名。
+	createTableRegex := regexp.MustCompile("(?i)CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?((?:[`\"\\[\\]\\w]+\\.)*[`\"\\[\\]\\w]+)")
 
 	currentTable := ""
 	removedColCount := 0
@@ -26,7 +28,11 @@ func filterDDLByScope(ddl string, tables []string, scope *PermissionScope) strin
 
 		if strings.HasPrefix(upperTrimmed, "CREATE ") {
 			if match := createTableRegex.FindStringSubmatch(line); len(match) >= 2 {
-				currentTable = match[1]
+				// 只取限定名的最后一段（表名），schema 不能当表名参与权限判定。
+				parts := strings.Split(match[1], ".")
+				currentTable = trimIdent(parts[len(parts)-1])
+			} else {
+				currentTable = ""
 			}
 			filtered = append(filtered, line)
 			continue
@@ -64,7 +70,12 @@ func filterDDLByScope(ddl string, tables []string, scope *PermissionScope) strin
 					removedColCount++
 				}
 			} else {
-				filtered = append(filtered, line)
+				// 无法确定当前表：非 full 权限下一律删除列定义（fail-closed）。
+				if scope.SkipChecks() || scope.AllSchemasFull {
+					filtered = append(filtered, line)
+				} else {
+					removedColCount++
+				}
 			}
 		} else {
 			filtered = append(filtered, line)

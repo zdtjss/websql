@@ -1,7 +1,10 @@
 package export
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +33,16 @@ func newTestConn(t *testing.T) *sqlx.DB {
 	}
 	return db
 }
+
+// testDirectRunner 仅用于测试：导出包不再允许无 runner 直查，
+// 测试用该 runner 保留原有端到端行为。
+type testDirectRunner struct{ conn *sqlx.DB }
+
+func (r testDirectRunner) QueryForExport(_ context.Context, sql string, _ int) (*QueryResult, error) {
+	return QueryForExport(r.conn, sql)
+}
+
+func newTestRunner(conn *sqlx.DB) QueryRunner { return testDirectRunner{conn: conn} }
 
 func newFakeDataSource() DataSource {
 	return func(_ context.Context, _ *report.DataRef) (*report.Table, error) {
@@ -75,7 +88,7 @@ func TestExportTools_ContentMode(t *testing.T) {
 	in := &ExportReportInput{Title: "销售分析", Subtitle: "2026 上半年", Content: richContent()}
 
 	// Word
-	docxOut, err := NewExportAnalysisDocxFunc(conn, auditCtx, newFakeDataSource())(ctx, in)
+	docxOut, err := NewExportAnalysisDocxFunc(conn, auditCtx, newFakeDataSource(), newTestRunner(conn))(ctx, in)
 	if err != nil {
 		t.Fatalf("Word 导出失败：%v", err)
 	}
@@ -88,7 +101,7 @@ func TestExportTools_ContentMode(t *testing.T) {
 	}
 
 	// PPT
-	pptOut, err := NewExportPPTFunc(conn, auditCtx, newFakeDataSource())(ctx, &ExportReportInput{
+	pptOut, err := NewExportPPTFunc(conn, auditCtx, newFakeDataSource(), newTestRunner(conn))(ctx, &ExportReportInput{
 		Title: "销售分析", Content: richContent(), Theme: "tech",
 	})
 	if err != nil {
@@ -100,7 +113,7 @@ func TestExportTools_ContentMode(t *testing.T) {
 	}
 
 	// HTML：内联 SVG 图表、无 CDN 依赖（无 mermaid/公式时）
-	htmlOut, err := NewExportHTMLFunc(conn, auditCtx, newFakeDataSource())(ctx, in)
+	htmlOut, err := NewExportHTMLFunc(conn, auditCtx, newFakeDataSource(), newTestRunner(conn))(ctx, in)
 	if err != nil {
 		t.Fatalf("HTML 导出失败：%v", err)
 	}
@@ -128,7 +141,7 @@ func TestExportTools_SQLMode(t *testing.T) {
 	auditCtx := &AuditCtx{UserID: "u1"}
 
 	// export_excel：纯数据导出
-	excelOut, err := NewExportExcelFunc(conn, auditCtx)(ctx, &ExportExcelInput{
+	excelOut, err := NewExportExcelFunc(conn, auditCtx, newTestRunner(conn))(ctx, &ExportExcelInput{
 		SQL: "SELECT 月份, 金额, 成本 FROM sales ORDER BY 月份", FileName: "销售数据",
 	})
 	if err != nil {
@@ -140,7 +153,7 @@ func TestExportTools_SQLMode(t *testing.T) {
 	assertExportFile(t, excelOut.DownloadURL, 3000)
 
 	// export_excel_with_chart：原生图表 + 分析摘要
-	chartOut, err := NewExportExcelWithChartFunc(conn, auditCtx)(ctx, &ExportExcelWithChartInput{
+	chartOut, err := NewExportExcelWithChartFunc(conn, auditCtx, newTestRunner(conn))(ctx, &ExportExcelWithChartInput{
 		SQL:      "SELECT 月份, 金额, 成本 FROM sales ORDER BY 月份",
 		FileName: "销售图表",
 		Charts: []ExcelChart{{
@@ -157,7 +170,7 @@ func TestExportTools_SQLMode(t *testing.T) {
 	assertExportFile(t, chartOut.DownloadURL, 5000)
 
 	// sql 模式报告：自动生成 指标卡 + 图表 + 明细
-	docxOut, err := NewExportAnalysisDocxFunc(conn, auditCtx, nil)(ctx, &ExportReportInput{
+	docxOut, err := NewExportAnalysisDocxFunc(conn, auditCtx, nil, newTestRunner(conn))(ctx, &ExportReportInput{
 		Title: "自动报告", SQL: "SELECT 月份, 金额, 成本 FROM sales ORDER BY 月份",
 	})
 	if err != nil {
@@ -166,12 +179,94 @@ func TestExportTools_SQLMode(t *testing.T) {
 	assertExportFile(t, docxOut.DownloadURL, 5000)
 }
 
+// TestExportTools_ReportReceipt 导出回执需说明文件类型与结构要素；
+// 结构不达标（缺指标卡/图表/表格）时给出修复提示，但不阻断导出。
+func TestExportTools_ReportReceipt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	conn := newTestConn(t)
+	auditCtx := &AuditCtx{UserID: "u1"}
+	ctx := context.Background()
+
+	docxOut, err := NewExportAnalysisDocxFunc(conn, auditCtx, newFakeDataSource(), newTestRunner(conn))(ctx, &ExportReportInput{
+		Title: "销售分析", Content: richContent(),
+	})
+	if err != nil {
+		t.Fatalf("Word 导出失败：%v", err)
+	}
+	if docxOut.SectionCount == 0 || docxOut.ChartCount == 0 || docxOut.TableCount == 0 {
+		t.Errorf("回执结构统计异常：sections=%d charts=%d tables=%d",
+			docxOut.SectionCount, docxOut.ChartCount, docxOut.TableCount)
+	}
+	if !strings.Contains(docxOut.Message, ".docx") || !strings.Contains(docxOut.Message, "章节") {
+		t.Errorf("回执应包含文件类型与结构信息：%s", docxOut.Message)
+	}
+	if strings.Contains(docxOut.Message, "未达到可直接汇报的标准") {
+		t.Error("结构完整的报告不应出现质量提示")
+	}
+
+	htmlOut, err := NewExportHTMLFunc(conn, auditCtx, nil, newTestRunner(conn))(ctx, &ExportReportInput{
+		Title: "纯文字", Content: "## 摘要\n\n只有一段文字。",
+	})
+	if err != nil {
+		t.Fatalf("HTML 导出失败：%v", err)
+	}
+	if !strings.Contains(htmlOut.Message, "未达到可直接汇报的标准") {
+		t.Errorf("缺少指标卡/图表/表格时应给出修复提示：%s", htmlOut.Message)
+	}
+}
+
+// TestExportTools_ExcelSummaryMarkdown Excel 报告可通过 summary 传入结论与建议，
+// 渲染到「分析摘要」工作表，使数据明细类交付也具备可汇报结构。
+func TestExportTools_ExcelSummaryMarkdown(t *testing.T) {
+	t.Chdir(t.TempDir())
+	conn := newTestConn(t)
+	auditCtx := &AuditCtx{UserID: "u1"}
+
+	out, err := NewExportExcelWithChartFunc(conn, auditCtx, newTestRunner(conn))(context.Background(), &ExportExcelWithChartInput{
+		SQL:      "SELECT 月份, 金额, 成本 FROM sales ORDER BY 月份",
+		FileName: "销售分析",
+		Charts: []ExcelChart{{
+			ChartType: "line", XAxisField: "月份", ChartTitle: "月度金额",
+			Series: []ExcelChartSeriesDef{{YAxisField: "金额"}},
+		}},
+		Summary: "## 结论与建议\n\n1. 保持增长势头。",
+	})
+	if err != nil {
+		t.Fatalf("Excel 导出失败：%v", err)
+	}
+	fileName := strings.TrimPrefix(out.DownloadURL, "/exports/")
+	data, err := os.ReadFile(filepath.Join("exports", fileName))
+	if err != nil {
+		t.Fatalf("读取 Excel 失败：%v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("解析 Excel 失败：%v", err)
+	}
+	found := false
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		content, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if strings.Contains(string(content), "保持增长势头") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Excel 分析摘要工作表应包含 summary 文本")
+	}
+}
+
 func TestExportTools_RequiresContentOrSQL(t *testing.T) {
 	t.Chdir(t.TempDir())
 	conn := newTestConn(t)
 	auditCtx := &AuditCtx{UserID: "u1"}
 
-	if _, err := NewExportHTMLFunc(conn, auditCtx, nil)(context.Background(), &ExportReportInput{Title: "空报告"}); err == nil {
+	if _, err := NewExportHTMLFunc(conn, auditCtx, nil, newTestRunner(conn))(context.Background(), &ExportReportInput{Title: "空报告"}); err == nil {
 		t.Error("content 与 sql 均为空时应报错")
 	}
 }
@@ -186,7 +281,7 @@ func TestExportTools_BindFailureRendersWarning(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	out, err := NewExportHTMLFunc(conn, auditCtx, ds)(context.Background(), &ExportReportInput{
+	out, err := NewExportHTMLFunc(conn, auditCtx, ds, newTestRunner(conn))(context.Background(), &ExportReportInput{
 		Title:   "部分失败",
 		Content: "## 摘要\n\n" + fence("chart", `{"type":"bar","sql":"SELECT 1 AS x","x":"x","y":["x"]}`),
 	})

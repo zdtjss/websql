@@ -45,6 +45,23 @@ func (e *PermissionError) Error() string {
 }
 
 func BuildPermissionScope(userId, connId string, schemaNames []string) *PermissionScope {
+	// 提前判断：非远程模式无需加载角色/权限明细。
+	if !CurrentRuntimeProfile().Remote() {
+		return buildPermissionScopeWithData(userId, connId, schemaNames, nil, nil)
+	}
+	return BuildPermissionScopeWithData(userId, connId, schemaNames,
+		admin.FindUserRoles(userId), admin.FindUserPowerDetails(userId))
+}
+
+// BuildPermissionScopeWithData 使用已加载的角色/权限明细构建 Scope。
+//
+// 多连接会话中避免“每连接重复查同一用户的角色与权限明细”：
+// BuildRunSecurityContext 每用户只加载一次，再按连接传入。
+func BuildPermissionScopeWithData(userId, connId string, schemaNames []string, roles []*admin.Role, powerList []*admin.PowerDetail) *PermissionScope {
+	return buildPermissionScopeWithData(userId, connId, schemaNames, roles, powerList)
+}
+
+func buildPermissionScopeWithData(userId, connId string, schemaNames []string, roles []*admin.Role, powerList []*admin.PowerDetail) *PermissionScope {
 	profile := CurrentRuntimeProfile()
 	scope := &PermissionScope{
 		UserID:            userId,
@@ -68,12 +85,18 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 
 	// AI 双门槛：兼容期（AIPolicyEnforce=false）CanAIModifyData 直接取 AllowModify，
 	// 保证升级前后行为一致；开关打开后同一角色必须双允许。
-	scope.AIPolicyEnforce = admin.AIPolicyEnforced()
+	// 读取失败必须 fail-closed：保持双门槛，绝不退化为兼容期语义（否则
+	// allow_modify=1 && ai_allow_modify=0 的角色会重新获得 AI 写能力）。
+	enforced, enforceErr := admin.AIPolicyEnforcedState()
+	if enforceErr != nil {
+		recordDegraded("ai_policy", "read_failed")
+		log.Printf("[PermScope] AI 写策略开关读取失败，按已启用处理 - user=%s, err=%v\n", userId, enforceErr)
+	}
+	scope.AIPolicyEnforce = enforced
 	scope.AllowModify = false
 	scope.AIAllowModify = false
-	applyRoleCapabilities(scope, admin.FindUserRoles(userId))
+	applyRoleCapabilities(scope, roles)
 
-	powerList := admin.FindUserPowerDetails(userId)
 	log.Printf("[PermScope] 用户权限记录数=%d - user=%s, conn=%s\n", len(powerList), userId, connId)
 
 	byRole := admin.GroupPowerDetailsByRole(powerList, connId)
@@ -226,9 +249,12 @@ func (s *PermissionScope) ScopeDigest() string {
 		return ""
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "u=%s\nc=%s\ns=%s\nr=%t\nfull=%t\nall=%t\nam=%t\nai=%t\nenf=%t\nrev=%d\nprofile=%d\n",
+	// 注意：不纳入全局 Revision。否则任何用户/角色的权限变更都会改变所有用户的
+	// ScopeDigest，导致无关会话的历史被批量隔离、Agent 缓存全量失效。
+	// Revision 只用于运行中复核与 checkpoint 一致性校验。
+	fmt.Fprintf(h, "u=%s\nc=%s\ns=%s\nr=%t\nfull=%t\nall=%t\nam=%t\nai=%t\nenf=%t\nprofile=%d\n",
 		s.UserID, s.ConnID, s.SchemaName, s.IsRemote, s.HasFullConnAccess, s.AllSchemasFull,
-		s.AllowModify, s.AIAllowModify, s.AIPolicyEnforce, s.Revision, uint8(s.Profile))
+		s.AllowModify, s.AIAllowModify, s.AIPolicyEnforce, uint8(s.Profile))
 
 	schemaNames := make([]string, 0, len(s.FullAccessSchemas))
 	for name := range s.FullAccessSchemas {
@@ -261,7 +287,8 @@ func (s *PermissionScope) ScopeDigest() string {
 		sort.Strings(cols)
 		fmt.Fprintf(h, "ct=%s:%s\n", t, strings.Join(cols, ","))
 	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	// 保留 32 hex（128bit）：16 hex 在长期运行/大规模用户下碰撞风险偏高。
+	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 // IsWriteRestrictedByInput 判断本轮是否因输入风险被收缩了写能力。

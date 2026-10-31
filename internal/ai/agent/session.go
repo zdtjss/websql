@@ -16,6 +16,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"websql/internal/ai/agent/dataset"
+	"websql/internal/audit"
 	"websql/internal/pkg/dberr"
 	"websql/internal/pkg/safego"
 )
@@ -63,6 +64,9 @@ type SessionMessage struct {
 	// Security 消息安全元数据（权限快照、脱敏版本、资源溯源）。
 	// 旧版本 JSON 无该字段时按「无元数据」处理，远程受限用户会被隔离。
 	Security *MessageSecurityMeta `json:"security,omitempty"`
+	// dirty 表示消息自上次落库后新增/变更，需要重新脱敏与计算摘要。
+	// 不落库：从 DB 加载的消息恒为 false，保存成功后统一清零。
+	dirty bool
 }
 
 // ──────────────────────────────────────────────
@@ -91,6 +95,8 @@ type Session struct {
 
 	debounceTimer *time.Timer
 	pendingSave   bool
+	// genAtSchedule 安排本次 debounce 保存时的管理库句柄代号，用于丢弃跨句柄的过期写入。
+	genAtSchedule uint64
 	lastAccess    time.Time
 }
 
@@ -156,6 +162,7 @@ func (s *Session) Append(role, content string) error {
 // AppendMessage 追加完整的 SessionMessage（包含工具调用信息）并持久化到数据库
 func (s *Session) AppendMessage(msg SessionMessage) error {
 	s.mu.Lock()
+	msg.dirty = true
 	s.messages = append(s.messages, msg)
 	s.scheduleSave()
 	s.mu.Unlock()
@@ -167,6 +174,7 @@ func (s *Session) AppendMessageNoSave(msg SessionMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	msg.dirty = true
 	s.messages = append(s.messages, msg)
 }
 
@@ -174,6 +182,9 @@ func (s *Session) AppendMessageNoSave(msg SessionMessage) {
 func (s *Session) ReplaceMessages(msgs []SessionMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for i := range msgs {
+		msgs[i].dirty = true
+	}
 	s.messages = msgs
 	s.scheduleSave()
 }
@@ -312,9 +323,12 @@ func mergeStringSlices(existing, incoming []string) []string {
 func (s *Session) scheduleSave() {
 	if s.pendingSave {
 		s.debounceTimer.Reset(sessionDebounceInterval)
+		// 延长等待后重新对齐句柄代号，避免用早先的代号判定而丢弃本次保存。
+		s.genAtSchedule = currentDBGeneration()
 		return
 	}
 	s.pendingSave = true
+	s.genAtSchedule = currentDBGeneration()
 	s.debounceTimer = time.AfterFunc(sessionDebounceInterval, func() {
 		// 定时器回调运行在独立 goroutine 中，panic 会直接终止进程，
 		// 因此这里必须自兜底（DB 未初始化/连接被替换等异常场景）。
@@ -324,9 +338,16 @@ func (s *Session) scheduleSave() {
 			}
 		}()
 		s.mu.Lock()
+		defer s.mu.Unlock()
+		if currentDBGeneration() != s.genAtSchedule {
+			// 句柄已在调度之后被替换（跨测试库重建或运行期重新注入），
+			// 本次延迟保存的目标库已不存在，丢弃而不是写进新库。
+			s.pendingSave = false
+			log.Printf("[SessionStore] 管理库句柄已变更，跳过 debounce 保存 - session=%s\n", s.ID)
+			return
+		}
 		s.pendingSave = false
 		_ = s.doSave()
-		s.mu.Unlock()
 	})
 }
 
@@ -375,27 +396,85 @@ func (s *Session) RemoveTrailingIncompleteToolCalls() {
 	s.removeTrailingIncompleteToolCallsLocked()
 }
 
-// removeTrailingIncompleteToolCallsLocked 调用方必须持有 s.mu
+// removeTrailingIncompleteToolCallsLocked 调用方必须持有 s.mu。
+//
+// 语义修正：只删除「没有对应 tool 结果」的 assistant tool_calls；
+// 已配对的 tool 消息必须保留（exec_sql 可能已成功执行，删掉会导致下一轮重复执行写操作）。
 func (s *Session) removeTrailingIncompleteToolCallsLocked() {
-	for len(s.messages) > 0 {
-		last := s.messages[len(s.messages)-1]
-		switch last.Role {
-		case "tool":
-			s.messages = s.messages[:len(s.messages)-1]
-		case "assistant":
-			if len(last.ToolCalls) > 0 {
-				if last.Content == "" {
-					s.messages = s.messages[:len(s.messages)-1]
-				} else {
-					last.ToolCalls = nil
-					s.messages[len(s.messages)-1] = last
-				}
-			}
-			return
-		default:
-			return
+	end := len(s.messages)
+	start := end
+	for start > 0 {
+		role := s.messages[start-1].Role
+		if role != "tool" && role != "assistant" {
+			break
+		}
+		start--
+	}
+	if start == end {
+		return
+	}
+
+	// 可用结果集合：块内 + 块前（块前结果属于更早的轮次，保持不动）。
+	results := make(map[string]bool)
+	for i := 0; i < start; i++ {
+		if s.messages[i].Role == "tool" && s.messages[i].ToolCallID != "" {
+			results[s.messages[i].ToolCallID] = true
 		}
 	}
+	block := s.messages[start:end]
+	for _, msg := range block {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			results[msg.ToolCallID] = true
+		}
+	}
+
+	// 块内 assistant 声明过的 call ID：孤儿 tool 消息（无任何 assistant 声明）应删除。
+	declared := make(map[string]bool)
+	for _, msg := range block {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				declared[tc.ID] = true
+			}
+		}
+	}
+
+	kept := make([]SessionMessage, 0, len(block))
+	droppedResults := 0
+	for _, msg := range block {
+		switch msg.Role {
+		case "assistant":
+			if len(msg.ToolCalls) == 0 {
+				kept = append(kept, msg)
+				continue
+			}
+			valid := make([]SessionToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				if results[tc.ID] {
+					valid = append(valid, tc)
+				}
+			}
+			msg.ToolCalls = valid
+			if len(msg.ToolCalls) == 0 && strings.TrimSpace(msg.Content) == "" {
+				continue
+			}
+			kept = append(kept, msg)
+		case "tool":
+			retained := declared[msg.ToolCallID]
+			if msg.ToolName == "exec_sql" {
+				// 写操作结果的去留必须可追溯：否则无法解释“已执行但历史里看不到”。
+				recordToolResultCleanup(s.ID, s.UserID, msg.ToolCallID, retained)
+			}
+			if retained {
+				kept = append(kept, msg)
+			} else {
+				droppedResults++
+			}
+		}
+	}
+	if droppedResults > 0 {
+		log.Printf("[Session] 清理孤立 tool 结果 - session=%s, dropped=%d\n", s.ID, droppedResults)
+	}
+	s.messages = append(s.messages[:start], kept...)
 }
 
 // patchDanglingToolCallsOnLoad 在会话从 DB 加载时修复合并/重复的 tool_calls。
@@ -467,7 +546,9 @@ func (s *Session) doSave() error {
 	defer func() { recordSecurityDuration(StagePersist, time.Since(start)) }()
 	db := getDBOrNil()
 	if db == nil {
-		return nil // 管理库不可用（启动期/测试环境）：跳过持久化，不阻断对话
+		// 管理库不可用（启动期/测试环境）：跳过持久化，不阻断对话。
+		// 不清 dirty，待管理库就绪后仍会重新净化。
+		return nil
 	}
 
 	sec := s.latestSecurity
@@ -512,6 +593,7 @@ func (s *Session) doSave() error {
 	}
 	if err != nil {
 		if dberr.IsTableNotExist(err) {
+			s.clearDirtyLocked()
 			return nil
 		}
 		return err
@@ -522,6 +604,7 @@ func (s *Session) doSave() error {
 		return err
 	}
 	if affected == 1 {
+		s.clearDirtyLocked()
 		return nil
 	}
 
@@ -531,12 +614,38 @@ func (s *Session) doSave() error {
 		return matchErr
 	}
 	if same {
+		s.clearDirtyLocked()
 		return nil
 	}
 	log.Printf("[Session] 拒绝写入非归属会话 - session=%s, user=%s\n", s.ID, s.UserID)
 	recordSecurityEvent(StagePersist, "owner", "deny")
 	auditSecurityDenied(StagePersist, "owner", "session_write_forbidden", s.UserID)
 	return ErrSessionForbidden
+}
+
+// recordToolResultCleanup 记录清理阶段对写操作结果的处理决策（只含元信息，不含 SQL 正文）。
+func recordToolResultCleanup(sessionID, userID, toolCallID string, retained bool) {
+	sqlType := "TOOL_RESULT_DROPPED"
+	if retained {
+		sqlType = "TOOL_RESULT_RETAINED"
+	}
+	audit.GetAuditService().Record(&audit.AuditEntry{
+		Source:    "agent",
+		ToolName:  "exec_sql",
+		SQLType:   sqlType,
+		RiskLevel: "high",
+		Status:    "info",
+		UserID:    userID,
+		SessionID: sessionID,
+		ErrorMsg:  "trailing tool_call cleanup: " + toolCallID,
+	})
+}
+
+// clearDirtyLocked 在保存成功后清除脏标记（调用方持锁）。
+func (s *Session) clearDirtyLocked() {
+	for i := range s.messages {
+		s.messages[i].dirty = false
+	}
 }
 
 func execSessionUpdate(db *sqlx.DB, enforcing bool, id, userID, data, title, ctx string) (sql.Result, error) {
@@ -601,14 +710,21 @@ func (s *Session) sanitizedMessagesLocked(sec *RunSecurityContext) ([]SessionMes
 			return nil, errors.New("会话消息缺少角色")
 		}
 		cp := msg
-		// 增量脱敏：同一 masker 版本下已净化且内容未变化的消息无需重复跑正则；
-		// 旧消息/规则变更/内容变化仍会重新脱敏。
+		cp.ReasoningContent = ""
+
+		// 增量保存：自上次落库后未变更且已有安全元数据的消息直接复用，
+		// 不再重复计算 contentSHA / 执行脱敏正则（会话可达 8MiB，全量重算代价高）。
+		if !cp.dirty && cp.Security != nil && cp.Security.Sanitized && cp.Security.ContentSHA != "" {
+			out = append(out, cp)
+			continue
+		}
+
+		// 同一 masker 版本下已净化且内容未变化的消息无需重复跑正则。
 		alreadySanitized := cp.Security != nil && cp.Security.Sanitized &&
-			cp.Security.MaskVersion == maskerVersion(sec) && cp.Security.ContentSHA == contentSHA(msg.Content)
+			cp.Security.MaskVersion == maskerVersion(sec)
 		if !alreadySanitized {
 			cp.Content = maskTextOrRaw(sec, msg.Content)
 		}
-		cp.ReasoningContent = ""
 
 		// 数据消息（tool/assistant）默认视为不可溯源：避免旧消息在落库时被「洗白」成
 		// 当前快照下的可信历史（否则一次保存就能绕过权限变更后的历史隔离）。
@@ -625,9 +741,14 @@ func (s *Session) sanitizedMessagesLocked(sec *RunSecurityContext) ([]SessionMes
 				}
 			}
 		default:
+			// Security 是指针：cp := msg 只复制指针。这里必须深拷贝后再写，
+			// 否则会写穿内存态并与 RunStream 的历史过滤构成数据竞争。
+			meta := *cp.Security
+			cp.Security = &meta
 			cp.Security.ContentSHA = contentSHA(cp.Content)
 			cp.Security.Sanitized = true
-			if sec != nil && cp.Security.ScopeDigest == "" {
+			// 不可溯源消息（摘要/工具结果）不能被“盖章”成当前快照下的可信历史。
+			if sec != nil && cp.Security.ScopeDigest == "" && !cp.Security.Untraceable {
 				cp.Security.ScopeDigest = sec.ScopeDigest
 				if isDataMessage && len(cp.Security.Resources) == 0 {
 					cp.Security.Untraceable = true
@@ -964,8 +1085,42 @@ func collectAttachmentIDs(messages []SessionMessage) []string {
 	return ids
 }
 
-// GetDetail 获取会话详情（含完整消息和上下文），仅允许读取归属 userID 的会话
+// GetContext 读取会话记录中的 Context（schemas/tables），用于详情页按当前权限过滤。
+func (s *SessionStore) GetContext(id, userID string) (*SessionContext, error) {
+	if err := s.checkOwnership(id, userID); err != nil {
+		return nil, err
+	}
+	sessDB, err := getSessionByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if sessDB == nil {
+		return nil, fmt.Errorf("会话不存在：%s", id)
+	}
+	if strings.TrimSpace(sessDB.Context) == "" || sessDB.Context == "{}" {
+		return &SessionContext{}, nil
+	}
+	var ctx SessionContext
+	if err := json.Unmarshal([]byte(sessDB.Context), &ctx); err != nil {
+		return nil, fmt.Errorf("会话上下文数据损坏（session=%s）: %w", id, err)
+	}
+	return &ctx, nil
+}
+
+// GetDetail 获取会话详情（含完整消息和上下文），仅允许读取归属 userID 的会话。
+// 不做权限过滤的旧接口，供内部/测试使用；对外展示请用 GetDetailFiltered。
 func (s *SessionStore) GetDetail(id, userID string) (*SessionDetail, error) {
+	return s.getDetail(id, userID, nil)
+}
+
+// GetDetailFiltered 按当前权限投影过滤历史后返回详情。
+//
+// 权限被回收后，assistant/tool 中的旧数据必须隐藏，只保留用户提问与标题。
+func (s *SessionStore) GetDetailFiltered(id, userID string, sec *RunSecurityContext) (*SessionDetail, error) {
+	return s.getDetail(id, userID, sec)
+}
+
+func (s *SessionStore) getDetail(id, userID string, sec *RunSecurityContext) (*SessionDetail, error) {
 	if err := s.checkOwnership(id, userID); err != nil {
 		return nil, err
 	}
@@ -979,14 +1134,21 @@ func (s *SessionStore) GetDetail(id, userID string) (*SessionDetail, error) {
 
 	var messages []SessionMessage
 	if sessDB.Messages != "" {
-		_ = json.Unmarshal([]byte(sessDB.Messages), &messages)
+		if err := json.Unmarshal([]byte(sessDB.Messages), &messages); err != nil {
+			return nil, fmt.Errorf("会话消息数据损坏（session=%s）: %w", id, err)
+		}
 	}
 
 	var sessionCtx *SessionContext
 	if sessDB.Context != "" && sessDB.Context != "{}" {
-		_ = json.Unmarshal([]byte(sessDB.Context), &sessionCtx)
+		if err := json.Unmarshal([]byte(sessDB.Context), &sessionCtx); err != nil {
+			return nil, fmt.Errorf("会话上下文数据损坏（session=%s）: %w", id, err)
+		}
 	}
 
+	if sec != nil {
+		messages = filterHistoryForRun(messages, sec)
+	}
 	displayMsgs := buildDisplayMessages(messages)
 
 	detail := &SessionDetail{
@@ -1126,7 +1288,10 @@ func loadSessionFromDB(id string) (*Session, error) {
 
 	var rawMessages []SessionMessage
 	if sessDB.Messages != "" {
-		_ = json.Unmarshal([]byte(sessDB.Messages), &rawMessages)
+		if err := json.Unmarshal([]byte(sessDB.Messages), &rawMessages); err != nil {
+			// 不能静默退化为空会话：后续任何保存都会用 [] 覆盖原历史且不可恢复。
+			return nil, fmt.Errorf("会话消息数据损坏（session=%s）: %w", id, err)
+		}
 	}
 
 	rawMessages = patchDanglingToolCallsOnLoad(rawMessages)

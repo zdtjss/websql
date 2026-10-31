@@ -182,16 +182,31 @@ type CurrentDateInfoOutput struct {
 	DateTime string `json:"dateTime"`
 }
 
-func GetConn(connId, userId string) (*sqlx.DB, string) {
+// openManagedConn 仅测试可替换：数据库不可达时 database.GetConn 会 panic。
+var openManagedConn = func(param *database.DBParam) *sqlx.DB { return database.GetConn(param) }
+
+// safeGetConn 返回连接与驱动类型，并把连接 panic 转为错误。
+//
+// 背景：database.GetConn 在 sqlx.Open/PingContext 失败时直接 panic；而提示词构建与
+// 工具执行发生在 SSE 响应头已写出之后，gin recovery 无法再返回正常响应，
+// 用户看到的是断流而不是“连接不可用”。
+func safeGetConn(connId, userId string) (conn *sqlx.DB, dbType string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			conn, dbType = nil, ""
+			err = fmt.Errorf("数据库连接不可用：%v", r)
+			log.Printf("[Tool] 获取连接 panic 已恢复 - connId=%s, err=%v\n", connId, r)
+		}
+	}()
 	if connId == "" {
-		return nil, ""
+		return nil, "", nil
 	}
 	if !admin.CheckConnAccessByUserId(userId, connId) {
-		return nil, ""
+		return nil, "", connAccessDenied(connId)
 	}
-	cfg, err := loadConnCfgCached(connId)
-	if err != nil || cfg == nil {
-		return nil, ""
+	cfg, cfgErr := loadConnCfgCached(connId)
+	if cfgErr != nil || cfg == nil {
+		return nil, "", fmt.Errorf("连接配置不可用：%s", connId)
 	}
 	deref := func(p *string) string {
 		if p != nil {
@@ -208,11 +223,22 @@ func GetConn(connId, userId string) (*sqlx.DB, string) {
 			pwd = decoded
 		}
 	}
-	conn := database.GetConn(&database.DBParam{
+	conn = openManagedConn(&database.DBParam{
 		Id: cfg.Id, Name: deref(cfg.Name), DbType: cfg.DbType,
 		User: deref(cfg.User), Pwd: pwd, Url: deref(cfg.Url),
 	})
-	return conn, cfg.DbType
+	return conn, cfg.DbType, nil
+}
+
+func connAccessDenied(connId string) error {
+	return &PermissionError{Message: "无权访问所选连接", Objects: []string{connId}}
+}
+
+// GetConn 保留旧签名：内部经 safeGetConn 将 panic 转为 nil 返回，
+// 调用方已有“conn 为 nil 则报错”的处理路径。
+func GetConn(connId, userId string) (*sqlx.DB, string) {
+	conn, dbType, _ := safeGetConn(connId, userId)
+	return conn, dbType
 }
 
 func GetCurrentDateInfo() func(ctx context.Context, input *CurrentDateInfoInput) (*CurrentDateInfoOutput, error) {

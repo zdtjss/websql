@@ -14,6 +14,7 @@ import (
 	"websql/internal/logger"
 	"websql/internal/pkg/appctx"
 	"websql/internal/pkg/crypto"
+	"websql/internal/pkg/dbtype"
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +24,7 @@ import (
 type connCfgLocal struct {
 	Id         string  `json:"id"`
 	DbType     string  `json:"dbType" db:"db_type"`
-	ParentId   string  `json:"parentId" db:"parent_id"`
+	ParentId   dbtype.NullStr `json:"parentId" db:"parent_id"`
 	ParentName *string `json:"parentName" db:"parent_name"`
 	Name       *string `json:"name"`
 	Pwd        *string `json:"pwd"`
@@ -282,7 +283,7 @@ func getConnTree(roleId string) []*PermissionNode {
 			Label:    name,
 			Type:     "conn",
 			Level:    "conn",
-			ParentId: c.ParentId,
+			ParentId: c.ParentId.String(),
 			Checked:  checked,
 			Data: map[string]any{
 				"connId":     c.Id,

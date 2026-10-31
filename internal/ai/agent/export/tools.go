@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,12 +24,59 @@ type AuditCtx struct {
 	UserID    string
 	UserName  string
 	SessionID string
+	// SessionIDFn 可选：按运行上下文解析当前会话。
+	// Agent 实例按连接/用户/权限缓存，构建期 SessionID 可能来自首个会话；
+	// 导出元数据必须落在当前会话下，因此每次工具调用需重新解析。
+	SessionIDFn func(ctx context.Context) string
+	// Guard 可选：按运行上下文校验数据出域安全（脱敏/修订号）。
+	// 对话式修复会读取已导出源内容，必须与数据库数据访问使用同一安全门槛。
+	Guard func(ctx context.Context) error
+	// Mask 可选：按当前运行策略对导出源文本应用脱敏（元数据回填时必须重新应用）。
+	Mask func(ctx context.Context, text string) string
+}
+
+// forRun 返回当前运行下的审计上下文副本（仅解析会话 ID，不修改共享实例）。
+func (a *AuditCtx) forRun(ctx context.Context) *AuditCtx {
+	if a == nil || a.SessionIDFn == nil {
+		return a
+	}
+	cp := *a
+	// 以运行上下文为准：解析不到会话时置空（宁可本次产物不可修复，也不写入错误的会话归属）。
+	cp.SessionID = strings.TrimSpace(a.SessionIDFn(ctx))
+	cp.SessionIDFn = nil
+	return &cp
+}
+
+// sessionOfCtx 返回当前运行下的会话 ID。
+func sessionOfCtx(ctx context.Context, a *AuditCtx) string {
+	a = a.forRun(ctx)
+	if a == nil {
+		return ""
+	}
+	return a.SessionID
+}
+
+// guardExportSource 校验本次运行是否允许读取/重渲染导出源内容。
+func guardExportSource(ctx context.Context, a *AuditCtx) error {
+	if a == nil || a.Guard == nil {
+		return nil
+	}
+	return a.Guard(ctx)
+}
+
+// maskArtifactText 按当前运行策略脱敏源文本；未注入脱敏钩子时原样返回。
+func maskArtifactText(ctx context.Context, a *AuditCtx, text string) string {
+	if a == nil || a.Mask == nil || text == "" {
+		return text
+	}
+	return a.Mask(ctx, text)
 }
 
 // recordExportAudit 记录一次导出工具调用（成功/失败各一条），
 // SQLType 固定为 EXPORT、RiskLevel 固定为 low。
 // auditCtx 为 nil 时仍记录（不含用户上下文），保证导出行为始终可追溯。
-func recordExportAudit(auditCtx *AuditCtx, toolName string, start time.Time, err error) {
+func recordExportAudit(ctx context.Context, auditCtx *AuditCtx, toolName string, start time.Time, err error) {
+	auditCtx = auditCtx.forRun(ctx)
 	status := "success"
 	errorMsg := ""
 	if err != nil {
@@ -64,14 +110,47 @@ func ownerOf(auditCtx *AuditCtx) string {
 }
 
 // writeExportFile 把渲染产物写入 exports 目录并登记归属，返回下载 URL。
-func writeExportFile(fileName, ext string, data []byte, auditCtx *AuditCtx) (string, error) {
+// 可选传入 ArtifactMeta：记录原导出参数/源内容，供后续对话式修复做增量重渲染。
+func writeExportFile(ctx context.Context, fileName, ext string, data []byte, auditCtx *AuditCtx, metas ...*ArtifactMeta) (string, error) {
+	auditCtx = auditCtx.forRun(ctx)
 	EnsureExportsDir()
-	filePath := filepath.Join("exports", fileName+"."+ext)
+	filePath := Path(fileName + "." + ext)
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		return "", fmt.Errorf("保存导出文件失败：%w", err)
 	}
 	url := "/exports/" + fileName + "." + ext
 	RecordExportOwnerByURL(url, ownerOf(auditCtx))
+
+	if len(metas) > 0 && metas[0] != nil {
+		meta := metas[0]
+		meta.URL = url
+		meta.FileName = fileName + "." + ext
+		if meta.BaseName == "" {
+			meta.BaseName = artifactBaseNameOf(meta.FileName)
+		}
+		meta.FileType = ext
+		if meta.Tool == "" {
+			meta.Tool = "unknown"
+		}
+		if meta.SourceKind == "" {
+			meta.SourceKind = artifactSourceKindOf(meta)
+		}
+		if meta.CreatedAt.IsZero() {
+			meta.CreatedAt = time.Now()
+		}
+		if meta.Version <= 0 {
+			meta.Version = 1
+		}
+		if auditCtx != nil {
+			meta.UserID = auditCtx.UserID
+			meta.SessionID = auditCtx.SessionID
+			meta.ConnID = auditCtx.ConnID
+		}
+		if err := saveArtifactMeta(meta); err != nil {
+			// 元数据只影响“后续修复”，不影响文件本身可用性。
+			log.Printf("[ExportArtifact] 写入元数据失败 - file=%s, err=%v\n", meta.FileName, err)
+		}
+	}
 	return url, nil
 }
 
@@ -86,6 +165,127 @@ func queryRowsAny(qr *QueryResult) [][]any {
 		rows = append(rows, cells)
 	}
 	return rows
+}
+
+// documentStats 统计报告结构要素：一级标题数（无一级标题时统计全部标题）、
+// 有数据的图表数、有数据的表格数、指标卡数量。用于导出回执说明关键信息。
+func documentStats(doc *report.Document) (sections, charts, tables, kpis int) {
+	if doc == nil {
+		return
+	}
+	headings := 0
+	for _, b := range doc.Blocks {
+		switch b.Kind {
+		case report.KindHeading:
+			headings++
+			if b.Level == 1 {
+				sections++
+			}
+		case report.KindChart:
+			if b.Chart != nil && b.Chart.HasData() {
+				charts++
+			}
+		case report.KindTable:
+			if b.Table != nil && len(b.Table.Rows) > 0 {
+				tables++
+			}
+		case report.KindKPI:
+			kpis += len(b.KPIs)
+		}
+	}
+	if sections == 0 {
+		sections = headings
+	}
+	return
+}
+
+// reportQualityHint 对不符合「可直接对外汇报」结构的产出给出修复提示（不阻断导出）。
+func reportQualityHint(sections, charts, tables, kpis int) string {
+	var missing []string
+	if sections == 0 {
+		missing = append(missing, "章节标题")
+	}
+	if kpis == 0 {
+		missing = append(missing, "关键指标卡（kpi）")
+	}
+	if charts == 0 {
+		missing = append(missing, "原生图表（chart）")
+	}
+	if tables == 0 {
+		missing = append(missing, "数据表（table）")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("。提示：报告缺少 %s，未达到可直接汇报的标准，建议补充后重新导出", strings.Join(missing, "、"))
+}
+
+// firstNonEmptyStr 返回第一个非空白字符串。
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// renderReportExport 内置报告渲染核心（导出工具与对话式修复共用）。
+func renderReportExport(ctx context.Context, conn *sqlx.DB, ds DataSource, runner QueryRunner, tool string, in *ExportReportInput) ([]byte, *report.Document, error) {
+	doc, err := buildExportDocument(ctx, conn, ds, runner, in.Title, in.Subtitle, in.Content, in.SQL)
+	if err != nil {
+		return nil, nil, err
+	}
+	theme := report.ResolveTheme(in.Theme, "business")
+	switch tool {
+	case "export_analysis_docx":
+		data, err := report.RenderDOCX(doc, theme)
+		if err != nil {
+			return nil, nil, fmt.Errorf("生成 Word 文档失败：%w", err)
+		}
+		return data, doc, nil
+	case "export_ppt":
+		data, err := report.RenderPPTX(doc, theme)
+		if err != nil {
+			return nil, nil, fmt.Errorf("生成 PPT 失败：%w", err)
+		}
+		return data, doc, nil
+	case "export_html":
+		return report.RenderHTML(doc, theme), doc, nil
+	default:
+		return nil, nil, fmt.Errorf("不支持的报告导出工具：%s", tool)
+	}
+}
+
+// renderExcelData 纯数据表渲染（export_excel 与修复共用）。
+func renderExcelData(title, sql string, qr *QueryResult) ([]byte, error) {
+	return report.RenderXLSX(report.XLSXOptions{
+		Title: title,
+		Theme: report.ResolveTheme("", "business"),
+		Data:  &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
+		SQL:   sql,
+	})
+}
+
+// renderExcelAnalysis 图文 Excel 渲染（export_excel_with_chart 与修复共用）。
+func renderExcelAnalysis(title, sql string, qr *QueryResult, dataCharts []report.DataChart, summary *report.Document) ([]byte, error) {
+	return report.RenderXLSX(report.XLSXOptions{
+		Title:      title,
+		Theme:      report.ResolveTheme("", "business"),
+		Summary:    summary,
+		Data:       &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
+		DataCharts: dataCharts,
+		SQL:        sql,
+	})
+}
+
+// buildExcelSummary 合并自动统计指标与模型提供的结论/建议（扩展 Markdown）。
+func buildExcelSummary(title string, qr *QueryResult, extraMarkdown string) *report.Document {
+	summary := BuildExcelSummary(title, qr)
+	if extra := strings.TrimSpace(extraMarkdown); extra != "" {
+		summary.Blocks = append(summary.Blocks, report.ParseMarkdown(extra)...)
+	}
+	return summary
 }
 
 // buildExportDocument 构建报告文档：
@@ -115,7 +315,7 @@ func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...QueryRunne
 	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportExcelInput) (out *ExportExcelOutput, err error) {
 		start := time.Now()
-		defer func() { recordExportAudit(auditCtx, "export_excel", start, err) }()
+		defer func() { recordExportAudit(ctx, auditCtx, "export_excel", start, err) }()
 
 		qr, err := runExportQuery(ctx, conn, runner, input.SQL)
 		if err != nil {
@@ -126,28 +326,29 @@ func NewExportExcelFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...QueryRunne
 			title = "数据导出"
 		}
 
-		buf, err := report.RenderXLSX(report.XLSXOptions{
-			Title: title,
-			Theme: report.ResolveTheme("", "business"),
-			Data:  &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
-			SQL:   input.SQL,
-		})
+		buf, err := renderExcelData(title, maskArtifactText(ctx, auditCtx, input.SQL), qr)
 		if err != nil {
 			return nil, fmt.Errorf("生成 Excel 失败：%w", err)
 		}
+		if err := validateExportArtifact("xlsx", buf, 0); err != nil {
+			return nil, fmt.Errorf("导出产物校验未通过：%w", err)
+		}
 
 		fileName := SanitizeFileName(input.FileName, "export")
-		url, err := writeExportFile(fileName, "xlsx", buf, auditCtx)
+		url, err := writeExportFile(ctx, fileName, "xlsx", buf, auditCtx, &ArtifactMeta{
+			Tool: "export_excel", Title: title, SQL: input.SQL,
+		})
 		if err != nil {
 			return nil, err
 		}
 		log.Printf("[Tool:export_excel] 成功 - rows=%d, url=%s\n", len(qr.Data), url)
 
 		return &ExportExcelOutput{
-			Message:     fmt.Sprintf("已导出 %d 条数据，[点击下载](%s)", len(qr.Data), url),
+			Message:     fmt.Sprintf("已生成 Excel 数据表（.xlsx，%d 行 × %d 列），[点击下载](%s)", len(qr.Data), len(qr.Columns), url),
 			RowCount:    len(qr.Data),
 			DownloadURL: url,
 			FileType:    "excel",
+			Version:     1,
 		}, nil
 	}
 }
@@ -158,7 +359,7 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...Q
 	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportExcelWithChartInput) (out *ExportExcelWithChartOutput, err error) {
 		start := time.Now()
-		defer func() { recordExportAudit(auditCtx, "export_excel_with_chart", start, err) }()
+		defer func() { recordExportAudit(ctx, auditCtx, "export_excel_with_chart", start, err) }()
 
 		qr, err := runExportQuery(ctx, conn, runner, input.SQL)
 		if err != nil {
@@ -172,29 +373,33 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...Q
 			title = "数据分析报告"
 		}
 
-		buf, err := report.RenderXLSX(report.XLSXOptions{
-			Title:      title,
-			Theme:      report.ResolveTheme("", "business"),
-			Summary:    BuildExcelSummary(title, qr),
-			Data:       &report.SheetData{Name: "数据明细", Headers: qr.Columns, Rows: queryRowsAny(qr)},
-			DataCharts: dataCharts,
-			SQL:        input.SQL,
-		})
+		// 分析摘要工作表：自动统计指标 + 模型提供的结论与建议（扩展 Markdown），
+		// 使 Excel 也能具备「可对外汇报」的结构（指标卡/图表/结论）。
+		summary := buildExcelSummary(title, qr, input.Summary)
+
+		buf, err := renderExcelAnalysis(title, maskArtifactText(ctx, auditCtx, input.SQL), qr, dataCharts, summary)
 		if err != nil {
 			return nil, fmt.Errorf("生成 Excel 失败：%w", err)
 		}
+		if err := validateExportArtifact("xlsx", buf, len(dataCharts)); err != nil {
+			return nil, fmt.Errorf("导出产物校验未通过：%w", err)
+		}
 
 		fileName := SanitizeFileName(input.FileName, "chart")
-		url, err := writeExportFile(fileName, "xlsx", buf, auditCtx)
+		url, err := writeExportFile(ctx, fileName, "xlsx", buf, auditCtx, &ArtifactMeta{
+			Tool: "export_excel_with_chart", Title: title, SQL: input.SQL,
+			Charts: charts, Summary: input.Summary,
+		})
 		if err != nil {
 			return nil, err
 		}
 		log.Printf("[Tool:export_excel_chart] 成功 - rows=%d, charts=%d, url=%s\n", len(qr.Data), len(dataCharts), url)
 
-		msg := fmt.Sprintf("已生成含 %d 个图表的 Excel（%d 条数据），[点击下载](%s)", len(dataCharts), len(qr.Data), url)
+		msg := fmt.Sprintf("已生成 Excel 分析表（.xlsx，%d 个图表、%d 行 × %d 列数据），[点击下载](%s)",
+			len(dataCharts), len(qr.Data), len(qr.Columns), url)
 		if len(dataCharts) == 0 && len(charts) > 0 {
-			msg = fmt.Sprintf("已生成 Excel（%d 条数据）。注意：图表字段名未匹配查询结果列，未生成图表；可用列为 %v，[点击下载](%s)",
-				len(qr.Data), qr.Columns, url)
+			msg = fmt.Sprintf("已生成 Excel 分析表（.xlsx，%d 行 × %d 列数据）。注意：图表字段名未匹配查询结果列，未生成图表；可用列为 %v，[点击下载](%s)",
+				len(qr.Data), len(qr.Columns), qr.Columns, url)
 		}
 
 		return &ExportExcelWithChartOutput{
@@ -203,6 +408,7 @@ func NewExportExcelWithChartFunc(conn *sqlx.DB, auditCtx *AuditCtx, runners ...Q
 			ChartCount:  len(dataCharts),
 			DownloadURL: url,
 			FileType:    "excel_with_chart",
+			Version:     1,
 		}, nil
 	}
 }
@@ -216,28 +422,36 @@ func NewExportAnalysisDocxFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource,
 	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
-		defer func() { recordExportAudit(auditCtx, "export_analysis_docx", start, err) }()
+		defer func() { recordExportAudit(ctx, auditCtx, "export_analysis_docx", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
+		data, doc, err := renderReportExport(ctx, conn, ds, runner, "export_analysis_docx", input)
 		if err != nil {
 			return nil, err
 		}
-		data, err := report.RenderDOCX(doc, report.ResolveTheme(input.Theme, "business"))
-		if err != nil {
-			return nil, fmt.Errorf("生成 Word 文档失败：%w", err)
+		sections, charts, tables, kpis := documentStats(doc)
+		if err := validateExportArtifact("docx", data, charts); err != nil {
+			return nil, fmt.Errorf("导出产物校验未通过：%w", err)
 		}
 
 		fileName := SanitizeFileName(input.FileName, "report")
-		url, err := writeExportFile(fileName, "docx", data, auditCtx)
+		url, err := writeExportFile(ctx, fileName, "docx", data, auditCtx, &ArtifactMeta{
+			Tool: "export_analysis_docx", Title: input.Title, Subtitle: input.Subtitle,
+			Theme: input.Theme, Content: input.Content, SQL: input.SQL,
+		})
 		if err != nil {
 			return nil, err
 		}
 		log.Printf("[Tool:export_docx] 成功 - blocks=%d, url=%s\n", len(doc.Blocks), url)
 
 		return &ExportReportOutput{
-			Message:     fmt.Sprintf("已生成 Word 分析报告（%s），[点击下载](%s)", doc.Title, url),
-			DownloadURL: url,
-			FileType:    "docx",
+			Message: fmt.Sprintf("已生成 Word 报告《%s》（.docx，%d 个章节、%d 个图表、%d 张表格），[点击下载](%s)%s",
+				doc.Title, sections, charts, tables, url, reportQualityHint(sections, charts, tables, kpis)),
+			SectionCount: sections,
+			ChartCount:   charts,
+			TableCount:   tables,
+			DownloadURL:  url,
+			FileType:     "docx",
+			Version:      1,
 		}, nil
 	}
 }
@@ -248,19 +462,22 @@ func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners 
 	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
-		defer func() { recordExportAudit(auditCtx, "export_ppt", start, err) }()
+		defer func() { recordExportAudit(ctx, auditCtx, "export_ppt", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
+		data, doc, err := renderReportExport(ctx, conn, ds, runner, "export_ppt", input)
 		if err != nil {
 			return nil, err
 		}
-		data, err := report.RenderPPTX(doc, report.ResolveTheme(input.Theme, "business"))
-		if err != nil {
-			return nil, fmt.Errorf("生成 PPT 失败：%w", err)
+		sections, charts, tables, kpis := documentStats(doc)
+		if err := validateExportArtifact("pptx", data, charts); err != nil {
+			return nil, fmt.Errorf("导出产物校验未通过：%w", err)
 		}
 
 		fileName := SanitizeFileName(input.FileName, "slides")
-		url, err := writeExportFile(fileName, "pptx", data, auditCtx)
+		url, err := writeExportFile(ctx, fileName, "pptx", data, auditCtx, &ArtifactMeta{
+			Tool: "export_ppt", Title: input.Title, Subtitle: input.Subtitle,
+			Theme: input.Theme, Content: input.Content, SQL: input.SQL,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -268,10 +485,15 @@ func NewExportPPTFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners 
 		log.Printf("[Tool:export_ppt] 成功 - slides=%d, url=%s\n", slideCount, url)
 
 		return &ExportReportOutput{
-			Message:     fmt.Sprintf("已生成 PPT（%d 页），[点击下载](%s)", slideCount, url),
-			SlideCount:  slideCount,
-			DownloadURL: url,
-			FileType:    "ppt",
+			Message: fmt.Sprintf("已生成 PPT 演示文稿（.pptx，%d 页、%d 个章节、%d 个图表），[点击下载](%s)%s",
+				slideCount, sections, charts, url, reportQualityHint(sections, charts, tables, kpis)),
+			SlideCount:   slideCount,
+			SectionCount: sections,
+			ChartCount:   charts,
+			TableCount:   tables,
+			DownloadURL:  url,
+			FileType:     "ppt",
+			Version:      1,
 		}, nil
 	}
 }
@@ -282,25 +504,36 @@ func NewExportHTMLFunc(conn *sqlx.DB, auditCtx *AuditCtx, ds DataSource, runners
 	runner := firstQueryRunner(runners)
 	return func(ctx context.Context, input *ExportReportInput) (out *ExportReportOutput, err error) {
 		start := time.Now()
-		defer func() { recordExportAudit(auditCtx, "export_html", start, err) }()
+		defer func() { recordExportAudit(ctx, auditCtx, "export_html", start, err) }()
 
-		doc, err := buildExportDocument(ctx, conn, ds, runner, input.Title, input.Subtitle, input.Content, input.SQL)
+		data, doc, err := renderReportExport(ctx, conn, ds, runner, "export_html", input)
 		if err != nil {
 			return nil, err
 		}
-		data := report.RenderHTML(doc, report.ResolveTheme(input.Theme, "business"))
+		sections, charts, tables, kpis := documentStats(doc)
+		if err := validateExportArtifact("html", data, charts); err != nil {
+			return nil, fmt.Errorf("导出产物校验未通过：%w", err)
+		}
 
 		fileName := SanitizeFileName(input.FileName, "report")
-		url, err := writeExportFile(fileName, "html", data, auditCtx)
+		url, err := writeExportFile(ctx, fileName, "html", data, auditCtx, &ArtifactMeta{
+			Tool: "export_html", Title: input.Title, Subtitle: input.Subtitle,
+			Theme: input.Theme, Content: input.Content, SQL: input.SQL,
+		})
 		if err != nil {
 			return nil, err
 		}
 		log.Printf("[Tool:export_html] 成功 - url=%s\n", url)
 
 		return &ExportReportOutput{
-			Message:     fmt.Sprintf("已生成 HTML 报告（%s），[点击下载](%s)", doc.Title, url),
-			DownloadURL: url,
-			FileType:    "html",
+			Message: fmt.Sprintf("已生成 HTML 报告《%s》（.html，单文件离线可读，%d 个章节、%d 个图表、%d 张表格），[点击下载](%s)%s",
+				doc.Title, sections, charts, tables, url, reportQualityHint(sections, charts, tables, kpis)),
+			SectionCount: sections,
+			ChartCount:   charts,
+			TableCount:   tables,
+			DownloadURL:  url,
+			FileType:     "html",
+			Version:      1,
 		}, nil
 	}
 }

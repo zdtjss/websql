@@ -34,10 +34,13 @@ var (
 	mdPieRowRe  = regexp.MustCompile(`^\s*"([^"]+)"\s*:\s*([-+0-9.eE]+)\s*$`)
 )
 
-// ParseMarkdown 把扩展 Markdown 解析为块序列
+// ParseMarkdown 把扩展 Markdown 解析为块序列。
+// 每个块记录 1-based 源行区间（StartLine/EndLine），并派生稳定 ID（按位置命名），
+// 供对话式编辑按块定位、按源行区间做最小改动。
 func ParseMarkdown(src string) []Block {
 	p := &mdParser{lines: strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")}
 	p.parse()
+	AssignBlockIDs(p.blocks)
 	return p.blocks
 }
 
@@ -46,6 +49,19 @@ type mdParser struct {
 	pos    int
 	blocks []Block
 	para   []string
+	// start 当前块起始行下标（0-based）；paraStart 段落起始行下标。
+	start     int
+	paraStart int
+}
+
+// add 追加块并写入源行区间（EndLine 为已消费到的行号，1-based）。
+func (p *mdParser) add(b Block) {
+	b.StartLine = p.start + 1
+	b.EndLine = p.pos
+	if b.EndLine < b.StartLine {
+		b.EndLine = b.StartLine
+	}
+	p.blocks = append(p.blocks, b)
 }
 
 func (p *mdParser) flushPara() {
@@ -53,14 +69,22 @@ func (p *mdParser) flushPara() {
 		return
 	}
 	text := joinLines(p.para)
+	start := p.paraStart
 	p.para = nil
 	if strings.TrimSpace(text) != "" {
-		p.blocks = append(p.blocks, Block{Kind: KindParagraph, Text: text})
+		b := Block{Kind: KindParagraph, Text: text}
+		b.StartLine = start + 1
+		b.EndLine = p.pos
+		if b.EndLine < b.StartLine {
+			b.EndLine = b.StartLine
+		}
+		p.blocks = append(p.blocks, b)
 	}
 }
 
 func (p *mdParser) parse() {
 	for p.pos < len(p.lines) {
+		p.start = p.pos
 		line := p.lines[p.pos]
 		trimmed := strings.TrimSpace(line)
 
@@ -76,7 +100,7 @@ func (p *mdParser) parse() {
 			p.parseMathBlock(trimmed)
 		case pageBreakRe.MatchString(trimmed):
 			p.flushPara()
-			p.blocks = append(p.blocks, Block{Kind: KindPageBreak})
+			p.add(Block{Kind: KindPageBreak})
 			p.pos++
 		case strings.HasPrefix(trimmed, "<!--"):
 			p.flushPara()
@@ -89,12 +113,14 @@ func (p *mdParser) parse() {
 				level = 4
 			}
 			if strings.TrimSpace(m[2]) != "" {
-				p.blocks = append(p.blocks, Block{Kind: KindHeading, Level: level, Text: strings.TrimSpace(m[2])})
+				p.pos++
+				p.add(Block{Kind: KindHeading, Level: level, Text: strings.TrimSpace(m[2])})
+				continue
 			}
 			p.pos++
 		case hrRe.MatchString(line):
 			p.flushPara()
-			p.blocks = append(p.blocks, Block{Kind: KindDivider})
+			p.add(Block{Kind: KindDivider})
 			p.pos++
 		case strings.HasPrefix(trimmed, ">"):
 			p.flushPara()
@@ -106,6 +132,9 @@ func (p *mdParser) parse() {
 			p.flushPara()
 			p.parseList()
 		default:
+			if len(p.para) == 0 {
+				p.paraStart = p.pos
+			}
 			p.para = append(p.para, strings.TrimRight(line, " \t"))
 			p.pos++
 		}
@@ -146,32 +175,32 @@ func (p *mdParser) parseFence(open string) {
 	case "chart", "echarts", "chart-json":
 		spec, err := ParseChartJSON(code)
 		if err != nil {
-			p.blocks = append(p.blocks, Block{Kind: KindCallout, Style: "warning", Title: "图表未能生成", Text: err.Error()})
+			p.add(Block{Kind: KindCallout, Style: "warning", Title: "图表未能生成", Text: err.Error()})
 			return
 		}
-		p.blocks = append(p.blocks, Block{Kind: KindChart, Chart: spec})
+		p.add(Block{Kind: KindChart, Chart: spec})
 	case "kpi", "kpis", "metrics", "metric":
 		kpis, err := ParseKPIs(code)
 		if err != nil {
-			p.blocks = append(p.blocks, Block{Kind: KindCallout, Style: "warning", Title: "指标卡未能生成", Text: err.Error()})
+			p.add(Block{Kind: KindCallout, Style: "warning", Title: "指标卡未能生成", Text: err.Error()})
 			return
 		}
-		p.blocks = append(p.blocks, Block{Kind: KindKPI, KPIs: kpis})
+		p.add(Block{Kind: KindKPI, KPIs: kpis})
 	case "table", "datatable", "data-table":
 		b, err := ParseDataTableJSON(code)
 		if err != nil {
-			p.blocks = append(p.blocks, Block{Kind: KindCallout, Style: "warning", Title: "数据表未能生成", Text: err.Error()})
+			p.add(Block{Kind: KindCallout, Style: "warning", Title: "数据表未能生成", Text: err.Error()})
 			return
 		}
-		p.blocks = append(p.blocks, *b)
+		p.add(*b)
 	case "mermaid":
 		if spec := MermaidToChart(code); spec != nil {
-			p.blocks = append(p.blocks, Block{Kind: KindChart, Chart: spec})
+			p.add(Block{Kind: KindChart, Chart: spec})
 			return
 		}
-		p.blocks = append(p.blocks, Block{Kind: KindMermaid, Code: code, Lang: "mermaid"})
+		p.add(Block{Kind: KindMermaid, Code: code, Lang: "mermaid"})
 	default:
-		p.blocks = append(p.blocks, Block{Kind: KindCode, Code: code, Lang: lang})
+		p.add(Block{Kind: KindCode, Code: code, Lang: lang})
 	}
 }
 
@@ -193,7 +222,7 @@ func (p *mdParser) parseMathBlock(open string) {
 		}
 		body = append(body, p.lines[p.pos-1])
 	}
-	p.blocks = append(p.blocks, Block{Kind: KindCode, Lang: "math", Code: strings.Join(body, "\n")})
+	p.add(Block{Kind: KindCode, Lang: "math", Code: strings.Join(body, "\n")})
 }
 
 func (p *mdParser) parseQuote() {
@@ -214,10 +243,10 @@ func (p *mdParser) parseQuote() {
 	if m := calloutRe.FindStringSubmatch(strings.TrimSpace(lines[0])); m != nil {
 		style := calloutStyle(m[1])
 		body := strings.TrimSpace(strings.Join(lines[1:], "\n"))
-		p.blocks = append(p.blocks, Block{Kind: KindCallout, Style: style, Title: strings.TrimSpace(m[2]), Text: body})
+		p.add(Block{Kind: KindCallout, Style: style, Title: strings.TrimSpace(m[2]), Text: body})
 		return
 	}
-	p.blocks = append(p.blocks, Block{Kind: KindQuote, Text: strings.TrimSpace(strings.Join(lines, "\n"))})
+	p.add(Block{Kind: KindQuote, Text: strings.TrimSpace(strings.Join(lines, "\n"))})
 }
 
 func calloutStyle(tag string) string {
@@ -299,7 +328,7 @@ func (p *mdParser) parseTable() {
 		rows = append(rows, splitTableRow(t))
 		p.pos++
 	}
-	p.blocks = append(p.blocks, Block{Kind: KindTable, Table: &Table{Headers: headers, Rows: AlignRows(rows, len(headers)), Align: align}})
+	p.add(Block{Kind: KindTable, Table: &Table{Headers: headers, Rows: AlignRows(rows, len(headers)), Align: align}})
 }
 
 func indentWidth(s string) int {
@@ -361,7 +390,7 @@ func (p *mdParser) parseList() {
 		p.pos++
 	}
 	if len(items) > 0 {
-		p.blocks = append(p.blocks, Block{Kind: KindList, Ordered: ordered, Items: items})
+		p.add(Block{Kind: KindList, Ordered: ordered, Items: items})
 	}
 }
 

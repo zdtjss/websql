@@ -274,6 +274,15 @@ func buildShouldRetryFunc() func(ctx context.Context, retryCtx *adk.RetryContext
 	return func(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
 		// 有错误时：根据错误类型决定是否重试
 		if retryCtx.Err != nil {
+			// 运行已被取消或超时：绝不重试。
+			// 浏览器点「停止生成」会断开 SSE 并使本次 ctx cancel；若当成可重试错误，
+			// 流会走「撤回本次输出」的重试分支而不落库已推送正文（用户看到的回复在重开历史时消失），
+			// 同时白费额度、并可能重复执行已调用的工具。
+			if errors.Is(retryCtx.Err, context.Canceled) || errors.Is(retryCtx.Err, context.DeadlineExceeded) ||
+				(ctx != nil && ctx.Err() != nil) {
+				log.Printf("[ShouldRetry] 运行已取消或超时，不重试 - err=%v\n", retryCtx.Err)
+				return &adk.RetryDecision{Retry: false}
+			}
 			// 优先按 provider 结构化错误判定（OpenAI 兼容 APIError 携带 HTTP 状态码），
 			// 避免子串匹配（"500"/"connection"）把非状态码场景误判为可重试
 			var apiErr *openai.APIError

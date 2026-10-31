@@ -104,11 +104,27 @@ func appendPmsnStrict(sql *bytes.Buffer, col string, param *[]any, userPower *ad
 func FilterSchemasWithPermission(connId, authorization string) []*conn.Tree {
 	schemaName := ""
 	dc := conn.GetConn(connId, authorization)
-	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listSchema"])
+	if dc == nil {
+		// 连接配置缺失/不可用时返回空列表。以前直接解引用 nil 会 panic，
+		// 被上层 recover 后只记为 available:false，界面表现为“该连接没有 Schema”，掩盖了真实原因。
+		log.Printf("[FilterSchemasWithPermission] 连接不可用，跳过 schema 列举 - connId=%s\n", connId)
+		return []*conn.Tree{}
+	}
+	dialectCfg := dialect.SQL_DIALECT[dc.DriverName()]
+	listSchemaSQL := ""
+	if dialectCfg != nil {
+		listSchemaSQL = dialectCfg["listSchema"]
+	}
+	if listSchemaSQL == "" {
+		log.Printf("[FilterSchemasWithPermission] 驱动 %s 缺少 listSchema 语句，跳过列举 - connId=%s\n", dc.DriverName(), connId)
+		return []*conn.Tree{}
+	}
+	row, err := dc.Query(listSchemaSQL)
 	if err != nil {
 		log.Printf("[FilterSchemasWithPermission] 查询schema列表失败: %v", err)
 		return nil
 	}
+	defer row.Close()
 	allSchemas := make([]*conn.Tree, 0)
 	for row.Next() {
 		if err := row.Scan(&schemaName); err != nil {
@@ -284,8 +300,8 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 	appendPmsnStrict(&connSQL, "id", &connParam, userPower)
 
 	type connParent struct {
-		Id       string `db:"id"`
-		ParentId string `db:"parent_id"`
+		Id       string       `db:"id"`
+		ParentId conn.NullStr `db:"parent_id"`
 	}
 	connList := []connParent{}
 	err := getDB().Select(&connList, connSQL.String(), connParam...)
@@ -297,7 +313,7 @@ func FilterDirTreeWithPermission(parentId string, userPower *admin.UserPower) []
 	dirsWithConn := make(map[string]bool)
 	for _, c := range connList {
 		if c.ParentId != "" {
-			dirsWithConn[c.ParentId] = true
+			dirsWithConn[c.ParentId.String()] = true
 		}
 	}
 

@@ -1,9 +1,20 @@
 package conn
 
+import (
+	"websql/internal/pkg/dbtype"
+)
+
+// NullStr 可读 NULL 的字符串列（实现见 internal/pkg/dbtype，conn 包保留别名兼容既有用法）。
+//
+// 用于 t_conn.parent_id 这类历史上可能为 NULL 的列：直接扫进 string 会整行报错
+// （`converting NULL to string is unsupported`），一条脏数据就能拖垮
+// 连接列表（ListConn2）、连接基础树（ConnBaseTree）与角色权限树。
+type NullStr = dbtype.NullStr
+
 type ConnCfg struct {
 	Id         string  `json:"id"`
 	DbType     string  `json:"dbType" db:"db_type"`
-	ParentId   string  `json:"parentId" db:"parent_id"`
+	ParentId   NullStr `json:"parentId" db:"parent_id"`
 	ParentName *string `json:"parentName" db:"parent_name"`
 	Name       *string `json:"name"`
 	User       *string `json:"user"`
@@ -22,7 +33,7 @@ type ConnCfg struct {
 type ConnCfgBase struct {
 	Id       string  `json:"id"`
 	Name     *string `json:"name"`
-	ParentId string  `json:"parentId" db:"parent_id"`
+	ParentId NullStr `json:"parentId" db:"parent_id"`
 }
 
 type Tree struct {

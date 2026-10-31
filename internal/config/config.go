@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	logutils "websql/internal/logger"
 )
 
@@ -137,13 +138,23 @@ func FindFile(fileName string) string {
 // ResolveDSN 将 DSN 中的相对路径解析为基于 config.json 所在目录的绝对路径。
 // 仅对 SQLite 类驱动生效（其 DSN 为文件路径），其他驱动直接返回原值。
 func ResolveDSN(dsn string) string {
+	return ResolvePath(dsn)
+}
+
+// ResolvePath 将相对路径解析为基于 config.json 目录的绝对路径。
+// 空值原样返回；已绝对路径保持不变。
+func ResolvePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
 	if configDir == "" || !filepath.IsAbs(configDir) {
-		return dsn
+		return path
 	}
-	if !filepath.IsAbs(dsn) {
-		return filepath.Join(configDir, dsn)
+	if !filepath.IsAbs(path) {
+		return filepath.Join(configDir, path)
 	}
-	return dsn
+	return path
 }
 
 type Config struct {
@@ -190,6 +201,10 @@ type Config struct {
 	// Skill 技能脚本（Python 子进程）的执行资源约束。
 	// 留 0 时使用默认值：maxConcurrent=min(2×CPU,16)、maxConcurrentPerUser=2、
 	// queueMaxWaitSec=60；executor=auto（常驻 worker 池可用则用之，否则回退 one-shot）。
+	// Export 导出文件根目录（默认 ./exports，相对路径按 config.json 目录解析）。
+	Export struct {
+		Dir string `json:"dir"`
+	} `json:"export"`
 	Skill struct {
 		MaxConcurrent        int    `json:"maxConcurrent"`
 		MaxConcurrentPerUser int    `json:"maxConcurrentPerUser"`

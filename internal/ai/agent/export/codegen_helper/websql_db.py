@@ -27,6 +27,9 @@ _STATE_KEY = "__websql_import_state__"
 
 _DB_TYPE = os.environ.get("WEBSQL_DB_TYPE", "").strip().lower()
 _DB_URL = os.environ.get("WEBSQL_DB_URL", "").strip()
+_DB_HOST = os.environ.get("WEBSQL_DB_HOST", "").strip()
+_DB_PORT = os.environ.get("WEBSQL_DB_PORT", "").strip()
+_DB_NAME = os.environ.get("WEBSQL_DB_NAME", "").strip()
 _DB_USER = os.environ.get("WEBSQL_DB_USER", "")
 _DB_PASSWORD = os.environ.get("WEBSQL_DB_PASSWORD", "")
 _DB_SCHEMA = os.environ.get("WEBSQL_DB_SCHEMA", "").strip()
@@ -82,11 +85,21 @@ def assert_read_only(sql):
 
 
 def _parse_mysql_url(url):
-    """解析 Go 侧连接串 ``tcp(host:port)/dbname`` 或 ``host:port/dbname``。"""
+    """解析连接信息：优先使用分项环境变量，其次兼容 Go 侧连接串。
+
+    支持 ``tcp(host:port)/dbname``、``host:port/dbname`` 与
+    ``mysql://user:pass@host:port/dbname``（凭据由 user/password 分项提供）。
+    """
+    if _DB_HOST:
+        try:
+            port = int(_DB_PORT) if _DB_PORT else 3306
+        except ValueError:
+            port = 3306
+        return _DB_HOST, port, (_DB_NAME or _DB_SCHEMA)
     match = re.match(r"^(?:tcp\()?([^)/:]+):(\d+)\)?/(.*)$", url)
     if match:
         return match.group(1), int(match.group(2)), (match.group(3) or _DB_SCHEMA)
-    return "", 3306, _DB_SCHEMA
+    return "", 3306, (_DB_NAME or _DB_SCHEMA)
 
 
 class Result:
@@ -168,7 +181,7 @@ def connect():
             import sqlite3
         finally:
             _restore_import(state)
-        path = _DB_URL.split("?", 1)[0]
+        path = (_DB_URL or _DB_NAME).split("?", 1)[0]
         uri = "file:%s?mode=ro" % path.replace("\\", "/")
         raw = sqlite3.connect(uri, uri=True)
         raw.execute("PRAGMA query_only=ON")
@@ -199,7 +212,13 @@ def connect():
             import oracledb
         finally:
             _restore_import(state)
-        raw = oracledb.connect(user=_DB_USER, password=_DB_PASSWORD, dsn=_DB_URL)
+        dsn = _DB_URL
+        if not dsn and _DB_HOST:
+            if _DB_PORT:
+                dsn = "%s:%s/%s" % (_DB_HOST, _DB_PORT, _DB_NAME or _DB_SCHEMA)
+            else:
+                dsn = "%s/%s" % (_DB_HOST, _DB_NAME or _DB_SCHEMA)
+        raw = oracledb.connect(user=_DB_USER, password=_DB_PASSWORD, dsn=dsn)
         return ReadOnlyConnection(raw, "oracle")
 
     raise ReadOnlyViolation("不支持或缺少数据库类型信息（WEBSQL_DB_TYPE=%r）" % _DB_TYPE)

@@ -154,13 +154,13 @@ func normalizeMaskText(text string) string {
 
 func containsFormatChar(text string) bool {
 	for _, r := range text {
-		if r >= 0xE0000 { // 标签字符等 Cf 主要分布在高位平面
-			if unicode.Is(unicode.Cf, r) {
-				return true
-			}
+		// 廉价范围剪枝：U+00AD（软连字符）以下的字符不可能是格式字符。
+		// 不能只扫描特定区间：U+FEFF（BOM/零宽不换行空格）、U+00AD、U+061C
+		// 同样属于 Cf，一旦遗漏即可用于拆断手机号/身份证绕过脱敏。
+		if r < 0x00AD {
 			continue
 		}
-		if r >= 0x200B && r <= 0x206F && unicode.Is(unicode.Cf, r) {
+		if unicode.Is(unicode.Cf, r) {
 			return true
 		}
 	}
@@ -437,8 +437,8 @@ func (m *DataMasker) MaskQueryOutput(
 		if knownOrigin {
 			// origins 的 Column 才是规则匹配键，不能使用 SELECT 别名 col。
 			action = m.ActionFor(origin.ConnID, origin.Schema, origin.Table, origin.Column)
-		} else if m.HasRules() {
-			action = MaskRedact // 有生效规则但来源不明，默认最严格处理
+		} else if m.ruleCoversColumn(tables, col) {
+			action = MaskRedact // 来源不明但列名命中参查表的规则列 → 最严格处理
 		}
 
 		for _, row := range out.Data {
@@ -457,9 +457,9 @@ func (m *DataMasker) MaskQueryOutput(
 
 // MaskTable 对二维字符串表格按列脱敏（导出链路使用）。
 //
-// 与 MaskQueryResult 使用同一规则与「来源不明按 redact」策略：
+// 与 MaskQueryOutput 使用同一规则与“来源不明按 redact”策略：
 // 导出结果会直接落盘，没有结果过滤兜底，必须与查询结果同等对待。
-func (m *DataMasker) MaskTable(columns []string, rows [][]string, origins map[string]ResourceRef) [][]string {
+func (m *DataMasker) MaskTable(columns []string, rows [][]string, origins map[string]ResourceRef, tables []string) [][]string {
 	if m == nil || len(columns) == 0 || len(rows) == 0 {
 		return rows
 	}
@@ -467,7 +467,9 @@ func (m *DataMasker) MaskTable(columns []string, rows [][]string, origins map[st
 	for i, col := range columns {
 		if origin, ok := origins[col]; ok {
 			actions[i] = m.ActionFor(origin.ConnID, origin.Schema, origin.Table, origin.Column)
-		} else if m.HasRules() && !m.columnNameMatchesAnyRule(col) {
+		} else if m.ruleCoversColumn(tables, col) {
+			// 来源不明且列名命中本次参查表的规则列 → 整列 redact。
+			// 不能按任意连接的列名撞规则来“放行”：同一参查表上的同名列极可能是改写绕过。
 			actions[i] = MaskRedact
 		}
 	}
@@ -487,22 +489,64 @@ func (m *DataMasker) MaskTable(columns []string, rows [][]string, origins map[st
 	return out
 }
 
-// columnNameMatchesAnyRule 判断列名是否命中任一条规则的列名部分。
+// ──────────────────────────────────────────────
+// 脱敏规则提供者：最后一份已验证规则 + 周期刷新
+// ──────────────────────────────────────────────
+
+// ruleCoversColumn 判断「本次查询涉及的表」上是否存在针对该输出列名的生效规则。
 //
-// 仅在来源无法解析时用于避免误将「已配置规则的列」当作普通文本（仍按规则脱敏）。
-func (m *DataMasker) columnNameMatchesAnyRule(column string) bool {
-	col := strings.ToLower(trimIdent(column))
-	for key := range m.rules {
-		if strings.HasSuffix(key, "|"+col) {
+// 用于来源不可解析的输出列（表达式/聚合/SELECT * 展开失败/别名）：
+//   - 列名命中参查表的规则列 → 整列 redact（封住 CONCAT(a,b) AS 手机号 这类改写绕过）；
+//   - 列名与规则列无关（如 cid/姓名）→ 不抹除，仅依赖内置文本保护；
+//     否则只要表上配过一条规则，SELECT * 的全部列都会被错误抹掉。
+//
+// 调用方未提供表名（tables 为空）时退回全局列名匹配，不因信息缺失而放宽。
+func (m *DataMasker) ruleCoversColumn(tables []string, column string) bool {
+	if m == nil || len(m.rules) == 0 {
+		return false
+	}
+	wanted := tableMatchSet(tables)
+	name := strings.ToLower(strings.TrimSpace(trimIdent(column)))
+	if name == "" {
+		return false
+	}
+	for ruleKey := range m.rules {
+		// 规则键格式：conn|schema.table|column
+		segments := strings.Split(ruleKey, "|")
+		if len(segments) != 3 || segments[2] != name {
+			continue
+		}
+		if len(wanted) == 0 {
+			return true
+		}
+		resource := strings.ToLower(strings.TrimSpace(segments[1]))
+		if wanted[resource] {
+			return true
+		}
+		if parts := splitScopeKey(resource); parts.table != "" && wanted[parts.table] {
 			return true
 		}
 	}
 	return false
 }
 
-// ──────────────────────────────────────────────
-// 脱敏规则提供者：最后一份已验证规则 + 周期刷新
-// ──────────────────────────────────────────────
+// tableMatchSet 归一化查询涉及的表名（同时收录限定名与裸表名）。
+func tableMatchSet(tables []string) map[string]bool {
+	wanted := make(map[string]bool, len(tables)*2)
+	for _, table := range tables {
+		key := strings.ToLower(strings.TrimSpace(trimIdent(table)))
+		if key == "" {
+			continue
+		}
+		wanted[key] = true
+		if parts := splitScopeKey(key); parts.table != "" {
+			wanted[parts.table] = true
+		}
+	}
+	return wanted
+}
+
+// MaskQueryOutput 使用规则列名限定到参查表的判定，见 ruleCoversColumn。
 
 const maskerRefreshInterval = 5 * time.Second
 

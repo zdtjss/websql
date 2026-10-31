@@ -60,7 +60,7 @@ func sanitizeTableContext(raw []string, sec *RunSecurityContext) []string {
 			dropped++
 			continue
 		}
-		scope, scopeErr := sec.DefaultScope()
+		scope, scopeErr := resolveTableContextScope(sec, entry)
 		if scopeErr != nil {
 			dropped++
 			continue
@@ -88,6 +88,49 @@ func sanitizeTableContext(raw []string, sec *RunSecurityContext) []string {
 	return out
 }
 
+// resolveTableContextScope 按表引用中的 Schema 前缀选择目标连接 Scope。
+//
+// 多连接会话中 tableContext 可能指向非默认连接的表：必须用该连接自己的 Scope 校验，
+// 不能一律套用默认连接（否则有权限的表会被静默丢弃）。
+func resolveTableContextScope(sec *RunSecurityContext, entry string) (*PermissionScope, error) {
+	if sec == nil {
+		return nil, ErrSecurityScope
+	}
+	entry = trimIdent(entry)
+	if !strings.Contains(entry, ".") {
+		return sec.DefaultScope()
+	}
+	parts := splitScopeKey(entry)
+	if parts.schema == "" {
+		return nil, &PermissionError{Message: "表范围缺少 Schema", Objects: []string{entry}}
+	}
+	for _, scope := range sec.Scopes {
+		if scope == nil {
+			continue
+		}
+		if strings.EqualFold(scope.SchemaName, parts.schema) {
+			return scope, nil
+		}
+		for schema := range scope.FullAccessSchemas {
+			if strings.EqualFold(schema, parts.schema) {
+				return scope, nil
+			}
+		}
+		for key := range scope.AllowedTables {
+			if strings.EqualFold(splitScopeKey(key).schema, parts.schema) {
+				return scope, nil
+			}
+		}
+		for key := range scope.AllowedColumns {
+			if strings.EqualFold(splitScopeKey(key).schema, parts.schema) {
+				return scope, nil
+			}
+		}
+	}
+	// 无法定位到具体连接时回到默认 Scope：后续 IsTableRefAllowed 仍会按 fail-closed 判定。
+	return sec.DefaultScope()
+}
+
 func defaultSchemaOf(sec *RunSecurityContext) string {
 	if sec == nil {
 		return ""
@@ -113,6 +156,21 @@ func filterHistoryForRun(msgs []SessionMessage, sec *RunSecurityContext) []Sessi
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "user":
+			// summarization 摘要以 user 角色落库且内容包含历史数据：
+			// 权限快照变化后必须整体隔离，不能当作普通用户指令送入模型。
+			if msg.Security != nil && msg.Security.Untraceable && msg.Security.ScopeDigest != sec.ScopeDigest {
+				quarantined++
+				msg.Content = HistoryQuarantinePlaceholder
+				msg.ReasoningContent = ""
+				msg.Security = &MessageSecurityMeta{
+					ScopeDigest: sec.ScopeDigest,
+					MaskVersion: maskerVersion(sec),
+					Sanitized:   true,
+					ContentSHA:  contentSHA(HistoryQuarantinePlaceholder),
+				}
+				out = append(out, msg)
+				continue
+			}
 			// 用户输入已在入口做规范化与风险处理；这里只补齐缺失的元数据
 			if msg.Security == nil {
 				msg.Security = newMessageSecurity(sec, msg.Content, nil)
@@ -167,7 +225,9 @@ func historyMessageTrusted(msg SessionMessage, sec *RunSecurityContext) bool {
 		// 纯文件会话：没有数据库范围，文件数据由上传归属单独约束
 		return true
 	}
-	if scope.SkipChecks() {
+	// 仅桌面本地模式跳过：远程模式下即使默认连接是 full，也不能用
+	// “默认连接全权”放行其他连接的受限历史。
+	if !scope.IsRemote {
 		return true
 	}
 	if msg.Security == nil {
@@ -184,7 +244,9 @@ func historyMessageTrusted(msg SessionMessage, sec *RunSecurityContext) bool {
 	// 否则只有重新证明全部资源仍被授权才保留
 	for _, ref := range msg.Security.Resources {
 		if ref.Table == "" {
-			continue
+			// 连接级来源（如 list_tables）：无法逐表再授权，权限快照变化后整体隔离。
+			// digest 相同的情况已在上面提前返回。
+			return false
 		}
 		if err := sec.Authorize(AccessRequest{
 			Action: ActionRead,

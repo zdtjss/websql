@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,37 @@ import (
 type RunIdentity struct {
 	SessionID string
 	UserID    string
+}
+
+type toolStatusReporterKey struct{}
+
+// tool_status 终态字面量。前端 web-src/src/views/ai/utils/execOutcome.ts
+// 按这些值映射结束文案，两侧不得各自重写字面量。
+const (
+	// toolStatusExecuted 工具已成功执行。
+	toolStatusExecuted = "executed"
+	// toolStatusDenied 被权限或能力门拒绕，未执行。
+	toolStatusDenied = "denied"
+	// toolStatusCancelled 用户取消（确认弹窗取消/停止生成）。
+	toolStatusCancelled = "cancelled"
+)
+
+// WithToolStatusReporter 注入工具状态上报回调（exec_sql 执行/拒绝/取消）。
+func WithToolStatusReporter(ctx context.Context, fn func(StreamChunk)) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolStatusReporterKey{}, fn)
+}
+
+// reportToolStatus 上报工具执行状态；无 flush 回调（测试/旁路）时静默跳过。
+func reportToolStatus(ctx context.Context, toolName, status string) {
+	if ctx == nil {
+		return
+	}
+	if fn, ok := ctx.Value(toolStatusReporterKey{}).(func(StreamChunk)); ok && fn != nil {
+		fn(StreamChunk{Type: "tool_status", Content: toolName, Status: status})
+	}
 }
 
 type runIdentityKey struct{}
@@ -70,6 +102,13 @@ const (
 	ProfileWebRemote RuntimeProfile = iota
 	// ProfileDesktopLocal 桌面/本地模式：完整数据权限，但其余安全边界不降级
 	ProfileDesktopLocal
+)
+
+// 用户级权限数据的读取入口。声明为包级变量仅供测试注入计数，
+// 以回归验证 F-22「每用户只加载一次，缓存命中时不加载」；生产使用 admin 实现。
+var (
+	findUserRolesFunc        = admin.FindUserRoles
+	findUserPowerDetailsFunc = admin.FindUserPowerDetails
 )
 
 // Remote 判断是否为远程严格模式（未知枚举值同样按远程处理）。
@@ -194,6 +233,22 @@ func (s *RunSecurityContext) ScopeFor(connID string) (*PermissionScope, error) {
 		}
 	}
 	return scope, nil
+}
+
+// HasAnyAccess 判断本次运行的任一连接是否具备数据访问权限。
+//
+// 多连接会话中默认连接可能无权限而另一个连接有权限：不能只看 DefaultScope。
+func (s *RunSecurityContext) HasAnyAccess() bool {
+	if s == nil {
+		return false
+	}
+	for _, scope := range s.Scopes {
+		if scope != nil && scope.HasAnyAccess() {
+			return true
+		}
+	}
+	// 桌面本地模式没有连接时也应允许（完整数据权限）。
+	return len(s.Scopes) == 0 && !s.Profile.Remote()
 }
 
 // ConnIDs 返回本次运行已授权的连接集合（稳定顺序不重要，用于诊断与审计）。
@@ -364,13 +419,51 @@ func BuildRunSecurityContext(
 		return sec, nil
 	}
 
-	for connID, schemas := range schemasByConn {
-		// 远程 Profile 先验证连接归属；桌面 Profile 使用本地完整权限。
-		if profile.RequiresRoleScope() && !admin.CheckConnAccessByUserId(userID, connID) {
-			return nil, &PermissionError{Message: "无权访问所选连接", Objects: []string{connID}}
+	// 角色与权限明细是用户级数据：多连接会话只加载一次，避免每连接重复查库。
+	var roles []*admin.Role
+	var powerList []*admin.PowerDetail
+	if profile.RequiresRoleScope() {
+		roles = findUserRolesFunc(userID)
+		powerList = findUserPowerDetailsFunc(userID)
+	}
+
+	// 权限收缩后的优雅降级：先剔除非法的连接，再判断“是否还剩可用连接”。
+	// 旧实现遇到第一个失权连接就整轮 403，导致“会话中途回收某个连接权限”的下一句提问
+	// 直接撞墙（前端仍会带着历史选择），而正确行为是：丢弃失权连接、保留其余、
+	// 让 filterHistoryForRun 将失权连接的历史隔离为占位。全部失效时仍 fail-closed。
+	if profile.RequiresRoleScope() {
+		var dropped []string
+		for connID := range schemasByConn {
+			if !admin.CheckConnAccessByUserId(userID, connID) {
+				dropped = append(dropped, connID)
+			}
 		}
-		evaluationSchemas := permissionEvaluationSchemas(userID, connID, schemas)
-		scope := BuildPermissionScope(userID, connID, evaluationSchemas)
+		if len(dropped) > 0 {
+			sort.Strings(dropped)
+			for _, connID := range dropped {
+				delete(schemasByConn, connID)
+			}
+			recordDegraded("conn", "access_revoked")
+			log.Printf("[RunCtx] 已剔除无权限的连接 - user=%s, dropped=%v, remain=%d\n", userID, dropped, len(schemasByConn))
+			if len(schemasByConn) == 0 {
+				return nil, &PermissionError{Message: "无权访问所选连接", Objects: dropped}
+			}
+			// 默认连接被回收：降级到按字典序最小的可用连接，保证本轮仍能进行
+			if _, ok := schemasByConn[defaultConnID]; !ok {
+				remaining := make([]string, 0, len(schemasByConn))
+				for connID := range schemasByConn {
+					remaining = append(remaining, connID)
+				}
+				sort.Strings(remaining)
+				sec.DefaultConnID = remaining[0]
+				log.Printf("[RunCtx] 默认连接已失权，降级为 %s - user=%s\n", sec.DefaultConnID, userID)
+			}
+		}
+	}
+
+	for connID, schemas := range schemasByConn {
+		evaluationSchemas := permissionEvaluationSchemasWithData(schemas, powerList, connID)
+		scope := BuildPermissionScopeWithData(userID, connID, evaluationSchemas, roles, powerList)
 		if scope.UserID != userID || scope.ConnID != connID {
 			return nil, fmt.Errorf("%w: scope identity mismatch", ErrSecurityScope)
 		}
@@ -414,6 +507,11 @@ func (s *RunSecurityContext) computeScopeDigest() string {
 //   - 只选无限制的 A 时误判连接级完整权限，从而放行有限制的 B；
 //   - 漏掉未选中但确有 schema 级授权的对象。
 func permissionEvaluationSchemas(userID, connID string, selected []string) []string {
+	return permissionEvaluationSchemasWithData(selected, admin.FindUserPowerDetails(userID), connID)
+}
+
+// permissionEvaluationSchemasWithData 使用已加载的权限明细计算评估范围。
+func permissionEvaluationSchemasWithData(selected []string, powerList []*admin.PowerDetail, connID string) []string {
 	seen := make(map[string]bool)
 	out := make([]string, 0, len(selected)+4)
 	add := func(s string) {
@@ -427,7 +525,7 @@ func permissionEvaluationSchemas(userID, connID string, selected []string) []str
 	for _, s := range selected {
 		add(s)
 	}
-	for _, p := range admin.FindUserPowerDetails(userID) {
+	for _, p := range powerList {
 		if p.ConnId != connID || p.SchemaName == nil {
 			continue
 		}

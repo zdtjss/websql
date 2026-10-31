@@ -46,7 +46,7 @@ func (r *connRepo) InsertConn(cfg *ConnCfg, dbSchema, dbVersion string) (string,
 		}
 		pwdEncoded = encoded
 	}
-	_, err := stmt.Exec(savedId, cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
+	_, err := stmt.Exec(savedId, cfg.Name, cfg.DbType, cfg.ParentId.String(), cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion)
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +55,7 @@ func (r *connRepo) InsertConn(cfg *ConnCfg, dbSchema, dbVersion string) (string,
 
 func (r *connRepo) UpdateConn(cfg *ConnCfg, dbSchema, dbVersion string) error {
 	stmt, _ := r.db.Prepare("update t_conn set name = ?, db_type = ?,parent_id = ?, user = ?, url = ?, db_schema = ?, db_version = ? where id = ?")
-	_, err := stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, cfg.Url, dbSchema, dbVersion, cfg.Id)
+	_, err := stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId.String(), cfg.User, cfg.Url, dbSchema, dbVersion, cfg.Id)
 	return err
 }
 
@@ -65,7 +65,7 @@ func (r *connRepo) UpdateConnWithPwd(cfg *ConnCfg, dbSchema, dbVersion string) e
 	if err != nil {
 		return err
 	}
-	_, err = stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId, cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
+	_, err = stmt.Exec(cfg.Name, cfg.DbType, cfg.ParentId.String(), cfg.User, pwdEncoded, cfg.Url, dbSchema, dbVersion, cfg.Id)
 	return err
 }
 

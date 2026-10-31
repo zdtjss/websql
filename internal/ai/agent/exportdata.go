@@ -60,7 +60,10 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef) expo
 		if err := validateExportReadSQL(scope, ref.SQL); err != nil {
 			return nil, err
 		}
-		conn, _ := GetConn(targetConnID, userID)
+		conn, _, connErr := safeGetConn(targetConnID, userID)
+		if connErr != nil {
+			return nil, connErr
+		}
 		if conn == nil {
 			return nil, fmt.Errorf("连接不可用：%s", targetConnID)
 		}
@@ -84,7 +87,7 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef) expo
 			return nil, &PermissionError{Message: "脱敏规则不可用，已阻止导出数据"}
 		}
 		origins := resolveColumnOriginsForNames(ref.SQL, table.Headers, scope)
-		table.Rows = masker.MaskTable(table.Headers, table.Rows, origins)
+		table.Rows = masker.MaskTable(table.Headers, table.Rows, origins, appperm.ExtractTablesFromSQL(ref.SQL))
 		if masker.HasRules() {
 			recordMaskEvent(StageExport, "report_table")
 		}
@@ -92,8 +95,10 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef) expo
 	}
 }
 
-// maskExportArgs 对导出工具参数中的 content 正文做文本脱敏。
+// maskExportArgs 对导出工具参数中的正文与结构化编辑内容做文本脱敏。
 //
+// 覆盖：content / summary / issue / changes、export_skill 的 payload（嵌套 JSON）、
+// operations[].content、operations[].patch.replace、patches[].replace。
 // 导出文件内容不经 SSE 审计，必须在渲染前单独处理；脱敏器不可用时返回错误
 // （fail-closed，不以原文落盘）。
 func (m *PermissionMiddleware) maskExportArgs(ctx context.Context, args string) (string, error) {
@@ -108,21 +113,83 @@ func (m *PermissionMiddleware) maskExportArgs(ctx context.Context, args string) 
 	if err := json.Unmarshal([]byte(args), &raw); err != nil {
 		return args, nil
 	}
-	content, ok := raw["content"].(string)
-	if !ok || content == "" {
+	changed := false
+	mask := func(text string) string {
+		masked := sec.Masker.MaskText(text)
+		if masked != text {
+			changed = true
+		}
+		return masked
+	}
+
+	for _, key := range []string{"content", "summary", "issue", "changes"} {
+		if text, ok := raw[key].(string); ok && text != "" {
+			raw[key] = mask(text)
+		}
+	}
+
+	// export_skill：payload 是 JSON 字符串，必须递归处理所有字符串叶子。
+	if payload, ok := raw["payload"].(string); ok && strings.TrimSpace(payload) != "" {
+		masked, maskErr := export.MaskJSONStrings(payload, mask)
+		if maskErr != nil {
+			return "", &PermissionError{Message: "Skill payload 脱敏失败，已阻止导出", Objects: []string{maskErr.Error()}}
+		}
+		raw["payload"] = masked
+	}
+
+	// repair_export 的结构化编辑：operations[].content / operations[].patch.replace / patches[].replace。
+	for _, key := range []string{"operations", "patches"} {
+		items, ok := raw[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := obj["content"].(string); ok && text != "" {
+				obj["content"] = mask(text)
+			}
+			if patch, ok := obj["patch"].(map[string]any); ok {
+				if text, ok := patch["replace"].(string); ok && text != "" {
+					patch["replace"] = mask(text)
+				}
+			}
+			if text, ok := obj["replace"].(string); ok && text != "" {
+				obj["replace"] = mask(text)
+			}
+		}
+	}
+
+	if !changed {
 		return args, nil
 	}
-	masked := sec.Masker.MaskText(content)
-	if masked == content {
-		return args, nil
-	}
-	raw["content"] = masked
+	recordMaskEvent(StageExport, "export_args")
 	out, marshalErr := json.Marshal(raw)
 	if marshalErr != nil {
 		return "", marshalErr
 	}
-	recordMaskEvent(StageExport, "content")
 	return string(out), nil
+}
+
+// hasExportTextArg 判断导出参数是否包含需要脱敏的正文或结构化编辑内容。
+func hasExportTextArg(args string) bool {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return false
+	}
+	for _, key := range []string{"content", "summary", "issue", "changes", "payload"} {
+		if text, ok := raw[key].(string); ok && strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	for _, key := range []string{"operations", "patches"} {
+		if items, ok := raw[key].([]any); ok && len(items) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // exportByCodeAllowed 判断高级导出是否允许注册/执行。

@@ -104,9 +104,10 @@ func TestMaskQueryResult_UnknownOriginRedactedWhenRulesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构建脱敏器失败：%v", err)
 	}
+	// 列名命中规则列（users.password）但来源不可解析 → 整列 redact
 	payload, _ := json.Marshal(QueryOutput{
-		Columns: []string{"unknown_col"},
-		Data:    []map[string]any{{"unknown_col": "secret-value"}},
+		Columns: []string{"password"},
+		Data:    []map[string]any{{"password": "secret-value"}},
 		Count:   1,
 	})
 	got, err := m.MaskQueryResult(string(payload), nil, map[string]ResourceRef{}, nil)
@@ -114,7 +115,20 @@ func TestMaskQueryResult_UnknownOriginRedactedWhenRulesExist(t *testing.T) {
 		t.Fatalf("脱敏失败：%v", err)
 	}
 	if strings.Contains(got, "secret-value") {
-		t.Fatalf("来源不明的列在存在规则时应 redact：%q", got)
+		t.Fatalf("列名命中参查表规则时应 redact：%q", got)
+	}
+	// 列名与规则无关时不得被错误抹除（否则 SELECT * 全列变 ***）
+	unrelated, _ := json.Marshal(QueryOutput{
+		Columns: []string{"unknown_col"},
+		Data:    []map[string]any{{"unknown_col": "ordinary-value"}},
+		Count:   1,
+	})
+	got2, err := m.MaskQueryResult(string(unrelated), []string{"s1.users"}, map[string]ResourceRef{}, nil)
+	if err != nil {
+		t.Fatalf("脱敏失败：%v", err)
+	}
+	if !strings.Contains(got2, "ordinary-value") {
+		t.Fatalf("与规则列无关的输出列不应被抹除：%q", got2)
 	}
 }
 

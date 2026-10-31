@@ -18,13 +18,11 @@ import (
 	"strings"
 )
 
-const ownersDirName = "exports/.owners"
-
 const exportsURLPrefix = "/exports/"
 
 // ownerFilePath 返回文件名对应的归属记录路径（含目录）。
 func ownerFilePath(fileName string) string {
-	return filepath.Join(ownersDirName, fileName+".owner")
+	return filepath.Join(ownersDir(), fileName+".owner")
 }
 
 // safeExportBaseName 校验文件名是「纯文件名」（无目录成分），防止归属记录写入逃逸。
@@ -46,7 +44,7 @@ func RecordExportOwnerByURL(url, userID string) {
 	if userID == "" || !safeExportBaseName(fileName) {
 		return
 	}
-	if err := os.MkdirAll(ownersDirName, 0755); err != nil {
+	if err := os.MkdirAll(ownersDir(), 0755); err != nil {
 		log.Printf("[ExportOwner] 创建归属目录失败 - err=%v\n", err)
 		return
 	}
@@ -76,7 +74,7 @@ func CheckExportAccess(fileName, userID string) (allowed bool, known bool) {
 // CleanupOrphanOwners 清理孤儿归属记录（对应导出文件已被删除/清理）。
 // 由导出目录清理任务调用。
 func CleanupOrphanOwners() {
-	entries, err := os.ReadDir(ownersDirName)
+	entries, err := os.ReadDir(ownersDir())
 	if err != nil {
 		return
 	}
@@ -86,11 +84,11 @@ func CleanupOrphanOwners() {
 		}
 		fileName := strings.TrimSuffix(entry.Name(), ".owner")
 		if !safeExportBaseName(fileName) {
-			_ = os.Remove(filepath.Join(ownersDirName, entry.Name()))
+			_ = os.Remove(filepath.Join(ownersDir(), entry.Name()))
 			continue
 		}
-		if _, err := os.Stat(filepath.Join("exports", fileName)); os.IsNotExist(err) {
-			_ = os.Remove(filepath.Join(ownersDirName, entry.Name()))
+		if _, err := os.Stat(Path(fileName)); os.IsNotExist(err) {
+			_ = os.Remove(filepath.Join(ownersDir(), entry.Name()))
 		}
 	}
 }

@@ -24,10 +24,20 @@ func guardWholeText(sec *RunSecurityContext, text string) (string, error) {
 		masker = sec.Masker
 	}
 	guard := NewOutputGuard(masker, 0)
-	if _, err := guard.Push(text); err != nil {
+	// Push 只能释放「非 holdback」前缀，holdback 尾部由 Close 释放；
+	// 两段必须拼接，否则长文本会只剩末尾 holdback 个字符（工具结果被截断）。
+	safe, err := guard.Push(text)
+	if err != nil {
 		return "", err
 	}
-	return guard.Close()
+	tail, err := guard.Close()
+	if err != nil {
+		return "", err
+	}
+	if tail == "" {
+		return safe, nil
+	}
+	return safe + tail, nil
 }
 
 // sanitizeToolCallsForPersist 净化工具调用参数的会话持久化副本。
@@ -95,7 +105,7 @@ func resourcesFromToolCall(name, args string, sec *RunSecurityContext) (refs []R
 			return nil, false
 		}
 		if strings.TrimSpace(in.ConnID) != "" {
-			connID = strings.TrimSpace(in.ConnID)
+			connID = normalizeResourceConnID(sec, in.ConnID)
 		}
 		if strings.TrimSpace(in.SQL) == "" {
 			return nil, false
@@ -144,6 +154,47 @@ func resourcesFromToolCall(name, args string, sec *RunSecurityContext) (refs []R
 		// 非数据工具（文件/命令/时间等）：不依赖数据库 Scope
 		return nil, true
 	}
+}
+
+// normalizeResourceConnID 把工具参数里的连接标识归一化为真实 ConnID。
+//
+// 系统提示允许模型把 Schema 名当 connId 传入（自动路由）；若直接写入
+// ResourceRef.ConnID，后续 sec.Authorize 会因找不到连接而误隔离历史。
+func normalizeResourceConnID(sec *RunSecurityContext, raw string) string {
+	if sec == nil {
+		return strings.TrimSpace(raw)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return sec.DefaultConnID
+	}
+	if scope, err := sec.ScopeFor(raw); err == nil {
+		return scope.ConnID
+	}
+	for _, scope := range sec.Scopes {
+		if scope == nil {
+			continue
+		}
+		if strings.EqualFold(scope.SchemaName, raw) {
+			return scope.ConnID
+		}
+		for schema := range scope.FullAccessSchemas {
+			if strings.EqualFold(schema, raw) {
+				return scope.ConnID
+			}
+		}
+		for key := range scope.AllowedTables {
+			if strings.EqualFold(splitScopeKey(key).schema, raw) {
+				return scope.ConnID
+			}
+		}
+		for key := range scope.AllowedColumns {
+			if strings.EqualFold(splitScopeKey(key).schema, raw) {
+				return scope.ConnID
+			}
+		}
+	}
+	return raw
 }
 
 // auditSecurityDenied 记录一条安全拒绝事件（只含阶段/动作与代码内原因，不含数据内容）。

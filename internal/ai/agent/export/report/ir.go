@@ -56,20 +56,26 @@ type Document struct {
 
 // Block 文档块
 type Block struct {
-	Kind    BlockKind  `json:"kind"`
-	Level   int        `json:"level,omitempty"`   // heading: 1-4
-	Text    string     `json:"text,omitempty"`    // heading/paragraph/quote/callout 正文（行内 Markdown）
-	Title   string     `json:"title,omitempty"`   // callout/table 标题
-	Style   string     `json:"style,omitempty"`   // callout: note|tip|important|warning|caution
-	Ordered bool       `json:"ordered,omitempty"` // list
-	Items   []ListItem `json:"items,omitempty"`   // list
-	Table   *Table     `json:"table,omitempty"`
-	Chart   *ChartSpec `json:"chart,omitempty"`
-	KPIs    []KPI      `json:"kpis,omitempty"`
-	Code    string     `json:"code,omitempty"` // code/mermaid 源码
-	Lang    string     `json:"lang,omitempty"`
-	DataRef *DataRef   `json:"dataRef,omitempty"` // 表格 SQL 绑定（待解析）
-	Error   string     `json:"error,omitempty"`   // 数据绑定失败说明（渲染为提示框）
+	// ID 按位置派生的稳定标识（blk_0007_heading），用于对话式块级编辑；
+	// 不参与序列化，每次解析重新生成。
+	ID string `json:"id,omitempty"`
+	// StartLine/EndLine 源 Markdown 行区间（1-based，含首含尾），仅解析时填充。
+	StartLine int        `json:"-"`
+	EndLine   int        `json:"-"`
+	Kind      BlockKind  `json:"kind"`
+	Level     int        `json:"level,omitempty"`   // heading: 1-4
+	Text      string     `json:"text,omitempty"`    // heading/paragraph/quote/callout 正文（行内 Markdown）
+	Title     string     `json:"title,omitempty"`   // callout/table 标题
+	Style     string     `json:"style,omitempty"`   // callout: note|tip|important|warning|caution
+	Ordered   bool       `json:"ordered,omitempty"` // list
+	Items     []ListItem `json:"items,omitempty"`   // list
+	Table     *Table     `json:"table,omitempty"`
+	Chart     *ChartSpec `json:"chart,omitempty"`
+	KPIs      []KPI      `json:"kpis,omitempty"`
+	Code      string     `json:"code,omitempty"` // code/mermaid 源码
+	Lang      string     `json:"lang,omitempty"`
+	DataRef   *DataRef   `json:"dataRef,omitempty"` // 表格 SQL 绑定（待解析）
+	Error     string     `json:"error,omitempty"`   // 数据绑定失败说明（渲染为提示框）
 }
 
 // ListItem 列表项（支持一层嵌套）

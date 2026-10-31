@@ -5,14 +5,20 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"websql/internal/audit"
+	"websql/internal/pkg/mask"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
+
+// streamRevisionCheckInterval 流式输出期间的权限复核节流间隔。
+const streamRevisionCheckInterval = 500 * time.Millisecond
 
 // extractRootErrorMessage 从错误链中提取根错误消息
 func extractRootErrorMessage(err error) string {
@@ -28,12 +34,42 @@ func extractRootErrorMessage(err error) string {
 	}
 }
 
+// revisionCheckDue 判断流式输出当前是否需要做一次权限修订号复核（时间节流）。
+//
+// 一次模型流式响应只对应一个事件，事件级检查覆盖不到 chunk 推送；
+// 但每 chunk 都读一次也不必要，因此按固定间隔节流。
+func revisionCheckDue(last time.Time, now time.Time) bool {
+	return !last.IsZero() && now.Sub(last) >= streamRevisionCheckInterval
+}
+
+// safeErrorForLog 返回可安全写入日志的错误摘要。
+//
+// *url.Error 的 Error() 本身就是 `Op "URL": Err`，即使不用 %#v 也会带出完整 URL；
+// 这里只保留 scheme://host，并掩码 query 与 userinfo。
+func safeErrorForLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		host := ue.URL
+		if parsed, parseErr := url.Parse(ue.URL); parseErr == nil && parsed.Host != "" {
+			parsed.User = nil
+			parsed.RawQuery = ""
+			parsed.Fragment = ""
+			host = parsed.String()
+		}
+		return mask.MaskSecret(ue.Op + " " + host + ": " + ue.Err.Error())
+	}
+	return mask.MaskSecret(err.Error())
+}
+
 // logUnwrappedError 逐层解包错误并记录日志（不使用 %#v：*url.Error 等结构会带出完整 URL/凭据）
 func logUnwrappedError(err error) {
 	if err == nil {
 		return
 	}
-	log.Printf("[Agent] 错误详情 - err=%v, type=%T\n", err, err)
+	log.Printf("[Agent] 错误详情 - err=%s, type=%T\n", safeErrorForLog(err), err)
 	for {
 		unwrapped := errors.Unwrap(err)
 		if unwrapped == nil {
@@ -41,7 +77,7 @@ func logUnwrappedError(err error) {
 		}
 		err = unwrapped
 	}
-	log.Printf("[Agent] 根错误 - err=%q, type=%T\n", err, err)
+	log.Printf("[Agent] 根错误 - err=%q, type=%T\n", safeErrorForLog(err), err)
 
 	type apiError interface {
 		GetCode() any
@@ -184,7 +220,7 @@ func (a *SQLAgent) processEvents(ctx context.Context, runID string, iter *adk.As
 			a.consumeToolStream(eventIdx, mo, sess, sec, pendingResources)
 		case mo.IsStreaming && mo.MessageStream != nil:
 			assistantCnt++
-			if a.consumeAssistantStream(runID, eventIdx, mo.MessageStream, flush, sess, sec) {
+			if a.consumeAssistantStream(runID, eventIdx, mo.MessageStream, flush, sess, sec, pendingResources) {
 				// 检测到模型输出退化（重复内容）或审计异常，已请求取消本次运行
 				return false
 			}
@@ -297,6 +333,19 @@ func (a *SQLAgent) handleInterrupt(eventIdx int, info *adk.InterruptInfo, flush 
 		}
 		sqlInfo, ok := ictx.Info.(*DangerousSQLInfo)
 		if !ok {
+			// 文件删除类编辑：复用 danger_confirm 交互（展示摘要 + resume 批准）。
+			if editInfo, editOK := ictx.Info.(*EditApprovalInfo); editOK {
+				hasDangerConfirm = true
+				log.Printf("[Agent] 文件删除中断 - eventIdx=%d, id=%s, ops=%d", eventIdx, ictx.ID, len(editInfo.Summary))
+				flush(StreamChunk{
+					Type:         "danger_confirm",
+					Content:      "检测到需要确认的文件删除操作",
+					SQL:          editInfo.Summary,
+					InterruptID:  ictx.ID,
+					CheckPointID: checkPointID,
+				})
+				continue
+			}
 			log.Printf("[Agent] 未知类型中断 - eventIdx=%d, id=%s, info=%T\n", eventIdx, ictx.ID, ictx.Info)
 			continue
 		}
@@ -372,7 +421,7 @@ func (a *SQLAgent) consumeToolStream(eventIdx int, mo *adk.MessageVariant, sess 
 //   - 只有通过审计的前缀才会推送与落库；holdback 在 EOF 时审计后释放；
 //   - 重试只撤回「已推送的净化文本」，绝不引用原始 attempt 内容；
 //   - 审计异常时丢弃未推送缓冲并终止运行，不回退为推送原文。
-func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *schema.StreamReader[*schema.Message], flush func(StreamChunk), sess *Session, sec *RunSecurityContext) bool {
+func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *schema.StreamReader[*schema.Message], flush func(StreamChunk), sess *Session, sec *RunSecurityContext, pendingResources map[string]pendingResourceInfo) bool {
 	defer stream.Close()
 	var att streamAttempt
 	start := time.Now()
@@ -386,8 +435,31 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 	contentGuard := NewOutputGuard(masker, 0)
 	thinkingGuard := NewOutputGuard(masker, 0)
 
+	// 长流式响应期间按时间节流复核权限修订号：
+	// 一次模型响应是一个事件，外层事件循环的检查覆盖不到 chunk 级推送。
+	lastRevCheck := time.Now()
+	var errRevisionStopped = errors.New("permission revision changed during stream")
+	failRevision := func() bool {
+		log.Printf("[Agent] 流式输出期间权限变更，终止输出 - eventIdx=%d\n", eventIdx)
+		recordSecurityEvent(StageRevision, "stream", "stop")
+		auditSecurityDenied("revision", "stream", "permission_revision_changed", sec.UserID)
+		flush(StreamChunk{Type: "error", Content: "权限已发生变化，本次回复已停止，请重新发起"})
+		a.Cancel(runID)
+		return true
+	}
+	checkRevision := func() bool {
+		if !revisionCheckDue(lastRevCheck, time.Now()) {
+			return false
+		}
+		lastRevCheck = time.Now()
+		return !sec.RevisionStillValid()
+	}
+
 	// push 把审计后的安全前缀写入累加器并推送。
 	push := func(guard *OutputGuard, text string, safeBuilder, emitted *strings.Builder, typ string) error {
+		if checkRevision() {
+			return errRevisionStopped
+		}
 		safe, err := guard.Push(text)
 		if err != nil {
 			return err
@@ -402,6 +474,9 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 	}
 	// closeGuard 在 EOF / 流异常时释放 holdback 并推送尾部。
 	closeGuard := func(guard *OutputGuard, safeBuilder, emitted *strings.Builder, typ string) error {
+		if checkRevision() {
+			return errRevisionStopped
+		}
 		safe, err := guard.Close()
 		if err != nil {
 			return err
@@ -431,12 +506,18 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 			switch {
 			case errors.Is(err, io.EOF):
 				if err := closeGuard(contentGuard, &att.safeContent, &att.emittedContent, "content"); err != nil {
+					if errors.Is(err, errRevisionStopped) {
+						return failRevision()
+					}
 					return failClosed(err)
 				}
 				if err := closeGuard(thinkingGuard, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+					if errors.Is(err, errRevisionStopped) {
+						return failRevision()
+					}
 					return failClosed(err)
 				}
-				a.persistAttempt(&att, sess, sec)
+				a.persistAttempt(&att, sess, sec, pendingResources)
 			case errors.As(err, &retryErr):
 				// 该次尝试作废：只撤回已推送的净化文本，不落库；guard 直接丢弃（不 Close，不释放缓冲）。
 				log.Printf("[Agent] 模型流式输出将重试，撤回本次输出 - eventIdx=%d, attempt=%d, emittedLen=%d\n",
@@ -449,12 +530,18 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 				log.Printf("[Agent] 模型流异常结束 - eventIdx=%d, chunks=%d, err=%v\n", eventIdx, att.chunks, err)
 				att.toolCalls = nil
 				if err := closeGuard(contentGuard, &att.safeContent, &att.emittedContent, "content"); err != nil {
+					if errors.Is(err, errRevisionStopped) {
+						return failRevision()
+					}
 					return failClosed(err)
 				}
 				if err := closeGuard(thinkingGuard, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+					if errors.Is(err, errRevisionStopped) {
+						return failRevision()
+					}
 					return failClosed(err)
 				}
-				a.persistAttempt(&att, sess, sec)
+				a.persistAttempt(&att, sess, sec, pendingResources)
 			}
 			log.Printf("[Agent] 模型流结束 - eventIdx=%d, chunks=%d, contentLen=%d, toolCalls=%d, elapsed=%v\n",
 				eventIdx, att.chunks, att.safeContent.Len(), len(att.toolCalls), time.Since(start))
@@ -467,6 +554,9 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 		if chunk.ReasoningContent != "" {
 			att.thinking.WriteString(chunk.ReasoningContent)
 			if err := push(thinkingGuard, chunk.ReasoningContent, &att.safeThinking, &att.emittedThinking, "thinking"); err != nil {
+				if errors.Is(err, errRevisionStopped) {
+					return failRevision()
+				}
 				return failClosed(err)
 			}
 		}
@@ -477,7 +567,7 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 					log.Printf("[Agent] 检测到模型重复输出，取消本次运行 - eventIdx=%d, chunkLen=%d\n",
 						eventIdx, len(chunk.Content))
 					att.toolCalls = nil
-					a.persistAttempt(&att, sess, sec)
+					a.persistAttempt(&att, sess, sec, pendingResources)
 					flush(StreamChunk{Type: "error", Content: "模型输出异常（重复内容），已自动停止本次生成"})
 					a.Cancel(runID)
 					return true
@@ -488,6 +578,9 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 			lastChunk = chunk.Content
 			att.content.WriteString(chunk.Content)
 			if err := push(contentGuard, chunk.Content, &att.safeContent, &att.emittedContent, "content"); err != nil {
+				if errors.Is(err, errRevisionStopped) {
+					return failRevision()
+				}
 				return failClosed(err)
 			}
 		}
@@ -500,7 +593,7 @@ func (a *SQLAgent) consumeAssistantStream(runID string, eventIdx int, stream *sc
 // persistAttempt 把一次完整的模型输出写入会话（不立即落库，由 debounce/运行结束统一保存）。
 //
 // 落库副本必须使用审计后的净化内容；原始 att.content 永不写库。
-func (a *SQLAgent) persistAttempt(att *streamAttempt, sess *Session, sec *RunSecurityContext) {
+func (a *SQLAgent) persistAttempt(att *streamAttempt, sess *Session, sec *RunSecurityContext, pendingResources map[string]pendingResourceInfo) {
 	safe := att.safeContent.String()
 	if safe == "" && len(att.toolCalls) == 0 {
 		return
@@ -511,9 +604,71 @@ func (a *SQLAgent) persistAttempt(att *streamAttempt, sess *Session, sec *RunSec
 		Security: newMessageSecurity(sec, safe, nil),
 	}
 	if len(att.toolCalls) > 0 {
-		sm.ToolCalls = sanitizeToolCallsForPersist(sec, mergeToolCalls(att.toolCalls))
+		calls := mergeToolCalls(att.toolCalls)
+		// 与非流式路径一致：先登记每个 tool_call 的资源溯源，后续 tool 结果
+		// 到达时才能附带 Resources；无法逐列枚举，因此 assistant 标记为不可溯源。
+		var refs []ResourceRef
+		for _, tc := range calls {
+			callRefs, complete := resourcesFromToolCall(tc.Function.Name, tc.Function.Arguments, sec)
+			if pendingResources != nil {
+				pendingResources[tc.ID] = pendingResourceInfo{refs: callRefs, complete: complete}
+			}
+			refs = append(refs, callRefs...)
+		}
+		sm.ToolCalls = sanitizeToolCallsForPersist(sec, calls)
+		sm.Security = newMessageSecurityWithTrace(sec, safe, refs, true)
+	} else if len(pendingResources) > 0 {
+		// 纯正文 assistant（无 tool_calls）往往是本轮工具结果的汇总：
+		// 若不给它挂资源溯源，权限收缩后工具结果会被占位，但模型仍能从这段正文
+		// 引用已失权的数据（实测：回收 bizb 后模型仍能报出 notes=8 行）。
+		// 因此把本轮已登记的资源聚合到正文上，让 filterHistoryForRun 能逐条再授权。
+		refs := runResourceRefs(pendingResources)
+		if len(refs) > 0 {
+			// 任一工具结果无法完整枚举来源（复杂 SQL）时，正文仍按不可溯源处理。
+			complete := true
+			for _, info := range pendingResources {
+				if !info.complete {
+					complete = false
+					break
+				}
+			}
+			sm.Security = newMessageSecurityWithTrace(sec, safe, refs, !complete)
+		}
 	}
 	sess.AppendMessageNoSave(sm)
+}
+
+// runResourceRefs 汇总本轮已登记工具结果命中的资源并去重（保持稳定顺序）。
+//
+// 任何一条工具结果的来源无法完整枚举（complete=false）时，调用方应保守处理：
+// 这里只负责合并，不负责决定是否可溯源；目前正文汇总只在所有来源完整时挂 refs。
+func runResourceRefs(pending map[string]pendingResourceInfo) []ResourceRef {
+	seen := make(map[string]bool)
+	refs := make([]ResourceRef, 0, len(pending))
+	for _, info := range pending {
+		for _, ref := range info.refs {
+			key := ref.ConnID + "\x00" + ref.Schema + "\x00" + ref.Table
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			refs = append(refs, ref)
+		}
+	}
+	// 同一批资源的落库顺序必须稳定（map 遍历无序），否则审计比对与 diff 会出现噪声。
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].ConnID != refs[j].ConnID {
+			return refs[i].ConnID < refs[j].ConnID
+		}
+		if refs[i].Schema != refs[j].Schema {
+			return refs[i].Schema < refs[j].Schema
+		}
+		if refs[i].Table != refs[j].Table {
+			return refs[i].Table < refs[j].Table
+		}
+		return refs[i].Column < refs[j].Column
+	})
+	return refs
 }
 
 func firstNonEmptyStr(values ...string) string {

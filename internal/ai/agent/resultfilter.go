@@ -9,6 +9,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"strings"
 	"time"
@@ -40,13 +42,10 @@ func (m *PermissionMiddleware) postFilterStream(ctx context.Context, args string
 	if err != nil {
 		return nil, err
 	}
+	defer reader.Close()
 	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
-		}
-		sb.WriteString(chunk)
+	if recvErr := drainStream(reader, &sb); recvErr != nil {
+		return streamFilterError(toolName, recvErr), nil
 	}
 	m.logAllow(toolName+"(stream)", "post_filter")
 	return schema.StreamReaderFromArray([]string{filter(sb.String())}), nil
@@ -76,6 +75,27 @@ func (m *PermissionMiddleware) filterListTablesResult(result string) string {
 	output.Count = len(filtered)
 	outputJSON, _ := json.Marshal(output)
 	return string(outputJSON)
+}
+
+// drainStream 聚合流式工具结果，区分正常 EOF 与真实读取错误。
+func drainStream(reader *schema.StreamReader[string], sb *strings.Builder) error {
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == nil {
+			sb.WriteString(chunk)
+			continue
+		}
+		if errors.Is(recvErr, io.EOF) {
+			return nil
+		}
+		return recvErr
+	}
+}
+
+func streamFilterError(toolName string, err error) *schema.StreamReader[string] {
+	log.Printf("%s [过滤] 流式结果读取失败，按 fail-closed 拒绝返回 - err=%v\n", toolName, err)
+	recordDegraded("stream", "recv_failed")
+	return schema.StreamReaderFromArray([]string{`{"error":true,"message":"工具结果读取失败，已阻止返回不完整数据"}`})
 }
 
 func (m *PermissionMiddleware) applyQueryResultFilter(result string, tables []string) (string, error) {
@@ -186,13 +206,10 @@ func refreshQueryOutputStats(out *QueryOutput) {
 // 流式工具结果最终也是一次性交给模型的，聚合不会改变语义，但能保证
 // 「先权限过滤、后脱敏」的固定顺序。
 func (m *PermissionMiddleware) applyStreamQueryResultFilterMasked(ctx context.Context, sql string, reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {
+	defer reader.Close()
 	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
-		}
-		sb.WriteString(chunk)
+	if recvErr := drainStream(reader, &sb); recvErr != nil {
+		return streamFilterError("query_data", recvErr)
 	}
 	masked, err := m.applyQueryResultFilterMasked(ctx, sql, sb.String(), tables)
 	if err != nil {
@@ -203,13 +220,10 @@ func (m *PermissionMiddleware) applyStreamQueryResultFilterMasked(ctx context.Co
 }
 
 func (m *PermissionMiddleware) applyStreamQueryResultFilter(reader *schema.StreamReader[string], tables []string) *schema.StreamReader[string] {
+	defer reader.Close()
 	var sb strings.Builder
-	for {
-		chunk, recvErr := reader.Recv()
-		if recvErr != nil {
-			break
-		}
-		sb.WriteString(chunk)
+	if recvErr := drainStream(reader, &sb); recvErr != nil {
+		return streamFilterError("query_data", recvErr)
 	}
 	rawResult := sb.String()
 

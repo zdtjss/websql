@@ -11,6 +11,9 @@
     "organization": "Nway",
     "commonName": "websql.nway.com"
   },
+  "export": {
+    "dir": "./exports"
+  },
   "skill": {
     "maxConcurrent": 16,
     "maxConcurrentPerUser": 2,

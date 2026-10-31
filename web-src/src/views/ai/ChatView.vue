@@ -115,10 +115,10 @@
                   <el-icon v-if="!fileUpload.uploading.value"><Upload /></el-icon>
                 </el-button>
               </el-upload>
-              <!-- 高级导出开关：开启后本次对话强制用 export_by_code（仅 Python、只读临时代码）生成文件 -->
+              <!-- 高级导出开关：报告级交付（Word/PPT/Excel/HTML 优先，自定义格式降级只读 Python），并支持对本次会话已导出文件做对话式局部修复 -->
               <el-button class="toolbar-btn" size="small" :type="advancedExport ? 'primary' : 'default'"
                 @click="handleAdvancedExportToggle"
-                :title="advancedExport ? '高级导出已开启：本次对话将由大模型编写只读 Python 代码生成自定义格式文件（点击关闭）' : '开启高级导出：自定义格式（PDF/CSV/XML/ZIP 等），由大模型编写只读 Python 代码生成'">
+                :title="advancedExport ? '高级导出已开启：本轮按需求输出报告级文件——优先内置 Word/PPT/Excel/HTML（封面/目录/指标卡/图表/结论），四类格式不满足时才用只读 Python 生成自定义格式；已导出文件有问题可在对话中直接说明，AI 会定位原文件局部修复并返回新版本（点击关闭）' : '开启高级导出：生成可直接汇报的报告级文件——优先 Word/PPT/Excel/HTML 内置报告导出，自定义格式（PDF/CSV/XML/ZIP 等）再降级只读 Python 生成；已导出文件有问题可在对话中直接指出，AI 将局部修复并保留原文件'">
                 <el-icon><Download /></el-icon>
               </el-button>
               <!-- 提示词 Popover -->
@@ -333,6 +333,7 @@ import { preloadVditor } from '@/utils/vditorLoader'
 import { usePromptEditDialog } from '@/components/ai/usePromptEditDialog'
 import { getPromptList, delPrompt, getAIModels, requestSkillDegrade } from '@/api/ai'
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
+import { resolveSoleSchemaSelection } from './utils/schemaSelection'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
 import { getSystemConfig } from '@/api/system'
 import { unwrapResponse } from '@/utils/dbMetadata'
@@ -357,7 +358,7 @@ const router = useRouter()
 
 // ── ChatView 专属状态 ──
 const question = ref('')
-// 高级导出模式开关：开启后本次发送的对话强制走 export_by_code（仅 Python、只读临时代码）
+// 高级导出模式开关：开启后本轮以报告级交付为目标（内置报告导出优先，自定义格式才降级 export_by_code）
 const advancedExport = ref(false)
 const selectedTables = ref<string[]>([])
 const selectedSchemas = ref<string[]>([])
@@ -710,6 +711,23 @@ function buildSchemaTree(rawList: any[]): any[] {
 }
 
 // ── 连接列表加载 ──
+/**
+ * 只有一个可选连接且只有一个 Schema 时自动选中。
+ *
+ * 修复 D-01：这种场景下选择器按 shouldShowSchemaSelector 隐藏，
+ * 而发送前又要求 selectedSchemas 非空，导致整条 AI 对话被「请选择至少一个数据库 Schema」拦死。
+ */
+function autoSelectSoleSchema(): void {
+  const auto = resolveSoleSchemaSelection(
+    connSchemaList.value as { connId?: string; dbSchema?: string; schemas?: { name?: string }[] }[],
+    selectedSchemas.value,
+  )
+  if (auto.length === 0) return
+  selectedSchemas.value = auto
+  // 选中后补齐表列表，与用户手动选择的行为一致
+  void loadTableListForSchemas()
+}
+
 async function loadConnList(): Promise<void> {
   schemasLoading.value = true
   const auth = sessionStorage.getItem('authentication') || ''
@@ -746,6 +764,7 @@ async function loadConnList(): Promise<void> {
     console.error('[ChatView] 加载连接列表失败:', e)
   } finally {
     schemasLoading.value = false
+    autoSelectSoleSchema()
   }
 }
 
@@ -882,15 +901,17 @@ function handlePromptFillInput(content: string, connInfo: any): void {
   applyPromptToInput(content, connInfo, false)
 }
 
-// 高级导出开关：切换后本次（后续）对话强制走 export_by_code。
-const ADVANCED_EXPORT_PROMPT = '请执行高级导出：依据本轮对话内容或我描述的目标文件类型，' +
-  '用 export_by_code 编写只读 Python 代码（仅允许查询，禁止任何写操作）生成对应文件并返回下载链接。'
+// 高级导出开关：切换后本轮（后续）对话以报告级交付为目标——
+// 优先内置报告导出（Word/PPT/Excel/HTML），四类格式不满足时才降级 export_by_code。
+const ADVANCED_EXPORT_PROMPT = '请执行高级导出：优先使用内置报告导出（Word/PPT/Excel/HTML）生成排版专业、可直接汇报的文件；' +
+  '如需 PDF/CSV/XML/ZIP 等自定义格式，再用 export_by_code 编写只读 Python 代码（仅查询、禁止写操作）生成，' +
+  '并返回下载链接与文件说明（类型、页数/行数等）。'
 
 function handleAdvancedExportToggle(): void {
   advancedExport.value = !advancedExport.value
   ElMessage({
     message: advancedExport.value
-      ? '已开启高级导出：本次对话将由大模型编写只读 Python 代码生成自定义格式文件（仅查询、禁止写操作）'
+      ? '已开启高级导出：优先用内置 Word/PPT/Excel/HTML 生成可汇报的报告级文件；已导出文件有问题可在对话中直接说明，AI 会定位原文件做局部修复并返回新版本（仅查询、禁止写操作）'
       : '已关闭高级导出',
     type: advancedExport.value ? 'success' : 'info',
   })

@@ -44,6 +44,8 @@ type CheckpointBinding struct {
 	ConnID    string
 	// Revision 创建 checkpoint 时的权限修订号
 	Revision uint64
+	// RevisionLoaded 表示 Revision 已被显式设置（区分“未知”与真实的 0）
+	RevisionLoaded bool
 	// ScopeDigest 创建 checkpoint 时的权限快照摘要
 	ScopeDigest string
 	// Prompt 创建 checkpoint 时实际注入的系统提示词。
@@ -179,7 +181,9 @@ func (s *InMemoryCheckPointStore) BeginResume(id string, b CheckpointBinding) (u
 			return 0, ErrCheckpointStale
 		}
 	}
-	if b.Revision != 0 && e.binding.Revision != 0 && b.Revision != e.binding.Revision {
+	// 双方都显式加载过 Revision 时必须严格相等（包括 0）。
+	// 仅当历史/测试路径未标记 Loaded 时跳过，避免把“未知”误判为不一致。
+	if (b.RevisionLoaded || e.binding.RevisionLoaded) && b.Revision != e.binding.Revision {
 		log.Printf("[CheckPoint] 拒绝修订号不一致的恢复 - id=%s, old=%d, new=%d\n", id, e.binding.Revision, b.Revision)
 		return 0, ErrCheckpointStale
 	}
@@ -231,11 +235,16 @@ func (s *InMemoryCheckPointStore) evictOverflowLocked() {
 		var oldestID string
 		var oldest time.Time
 		for id, e := range s.items {
+			// 正在恢复的 checkpoint 不能被淘汰，否则用户确认后会拿到 not found。
+			if e.inflight {
+				continue
+			}
 			if oldestID == "" || e.updatedAt.Before(oldest) {
 				oldestID, oldest = id, e.updatedAt
 			}
 		}
 		if oldestID == "" {
+			// 全部在途：允许暂时超限，等待恢复结束后再淘汰。
 			return
 		}
 		delete(s.items, oldestID)

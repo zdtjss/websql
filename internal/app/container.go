@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"websql/internal/ai/agent"
+	"websql/internal/ai/agent/export"
 	admin "websql/internal/app/admin"
 	"websql/internal/app/backup"
 	"websql/internal/app/configexport"
@@ -63,6 +64,10 @@ func NewContainerWithDB(db *sqlx.DB) *Container {
 		config.SetActive(cfg)
 	}
 
+	// 导出根目录：集中从配置读取绝对路径，避免依赖进程 CWD。
+	// 默认空值保持 ./exports（相对当前工作目录），存量部署无需迁移。
+	export.SetRoot(config.ResolvePath(cfg.Export.Dir))
+
 	// 同步设置 Mngtdb（过渡期兼容：部分代码仍通过 Holder fallback 依赖它）
 	if database.Mngtdb == nil {
 		database.Mngtdb = db
@@ -112,6 +117,7 @@ func registerAIConfigChangeHooks() {
 			switch key {
 			case agent.PolicyRolloutConfigKey, admin.AIPolicyEnforceKey, admin.RoleCapabilityVersionKey, "ai.deploymentSalt":
 				agent.InvalidateRolloutCache()
+				admin.InvalidateAIPolicyCache()
 			case "ai.maskKey", "ai.maskKeyVersion":
 				if err := agent.GetMaskerProvider().Refresh(); err != nil {
 					log.Printf("[AIConfigHook] 脱敏密钥/规则刷新失败（保留上一已验证快照） - err=%v", err)

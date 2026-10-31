@@ -20,12 +20,37 @@ import (
 var ErrOutputSecurity = errors.New("output security check failed")
 
 const (
-	maxOutputTokenRunes = 256
+	// maxOutputTokenRunes 超长 token 的硬上限。
+	// 仅对带敏感前缀的 token 整段替换，避免误伤长 URL/长标识符。
+	maxOutputTokenRunes = 1024
 	// maxOutputPendingRunes 待审窗口硬上限：超过仍无法闭合的敏感赋值按 fail-closed 处理
 	maxOutputPendingRunes = 4096
-	// minOutputHoldback 覆盖最长邮箱/密钥 token 及 `key=` 前缀的默认回退窗口
-	minOutputHoldback = 320
+	// minOutputHoldback 常规回退窗口：只需覆盖跨 chunk 的短敏感串（手机号/邮箱/密钥前缀）。
+	// 敏感键赋值（password=...）由 secretPrefixRE/secretOpen* 扩展到匹配起点，
+	// 因此不需要固定保留 320 rune，否则会显著抬高首 token 延迟。
+	minOutputHoldback = 64
 )
+
+// sensitiveTokenPrefixes 需要整段丢弃的超长 token 前缀（JWT/云厂商密钥等）。
+var sensitiveTokenPrefixes = []string{"eyJ", "AKIA", "ASIA", "sk-", "sk_", "ghp_", "gho_", "xoxb-", "xoxp-", "AIza"}
+
+func hasSensitiveTokenPrefix(token string) bool {
+	for _, prefix := range sensitiveTokenPrefixes {
+		if strings.HasPrefix(token, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldRedactOverlongToken 判断超长 token 是否需要整段替换。
+//
+// 只对「疑似凭据前缀」（JWT/AKIA/sk-/ghp_/ Slack token/Google key）整段丢弃；
+// 不能把所有无空白长串（JSON 结果、长 URL、无空格标识符列表）一律抹除，
+// 否则 query_data 等工具结果会被整体替成 ***，模型永远看不到数据。
+func shouldRedactOverlongToken(token string) bool {
+	return hasSensitiveTokenPrefix(token) || hasSensitiveTokenPrefix(strings.ToLower(token))
+}
 
 // 匹配位于窗口末尾的敏感键，以及「键 + 引号/分隔符/空白」的未完成赋值。
 // 键与 = 分属不同 chunk 时也不能提前出窗；窗口溢出则 fail-closed。
@@ -62,7 +87,9 @@ func redactOverlongTokens(text string, maxRunes int) string {
 	out := make([]rune, 0, len([]rune(text)))
 	token := make([]rune, 0, 64)
 	flush := func() {
-		if len(token) > maxRunes {
+		// 普通长 token（长 URL、长标识符、中文长句）保留；
+		// 只有疑似凭据或不可拆分载荷的超长 token 才整段替换，避免把正文误删成 ***。
+		if len(token) > maxRunes && shouldRedactOverlongToken(string(token)) {
 			out = append(out, '*', '*', '*')
 		} else {
 			out = append(out, token...)

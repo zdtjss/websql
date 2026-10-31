@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -157,5 +160,46 @@ func TestExtractUserMessagesFromSummary_NoCollision(t *testing.T) {
 	marker := "<all_user_messages>"
 	if strings.TrimSpace(marker) == "" {
 		t.Fatal("marker must be non-empty")
+	}
+}
+
+// TestBeginSessionRun_ConcurrentRejectedRequestsDoNotOverwriteLatestSecurity 是 F-38
+// 在并发下的回归护栏（串行用例见 integration_runstream_test.go）：
+// 会话已被一次运行占用后，其余并发请求必须全部被拒，并且任何一个都不得改写
+// latestSecurity、不得释放运行权 —— 否则运行中的落库守卫会按别人的 Scope 处理历史。
+func TestBeginSessionRun_ConcurrentRejectedRequestsDoNotOverwriteLatestSecurity(t *testing.T) {
+	const rivals = 15
+	sess := &Session{ID: "s-f38-conc", UserID: "u1"}
+	secWinner := &RunSecurityContext{UserID: "u1", ScopeDigest: "digest-winner"}
+
+	if !beginSessionRun(sess, secWinner) {
+		t.Fatal("首请求应拿到会话运行权")
+	}
+	defer sess.EndRun()
+
+	start := make(chan struct{})
+	var accepted int32
+	var wg sync.WaitGroup
+	for i := 0; i < rivals; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			if beginSessionRun(sess, &RunSecurityContext{UserID: "u1", ScopeDigest: fmt.Sprintf("digest-rival-%d", n)}) {
+				atomic.AddInt32(&accepted, 1)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if accepted != 0 {
+		t.Fatalf("运行中的会话应拒掉全部 %d 个并发请求，实际接受 %d 个", rivals, accepted)
+	}
+	if got := sess.LatestSecurity(); got != secWinner {
+		t.Fatalf("被拒请求不得覆盖 latestSecurity，实际 %+v", got)
+	}
+	if !sess.IsRunning() {
+		t.Fatal("被拒请求不得释放运行中会话的运行权")
 	}
 }

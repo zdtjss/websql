@@ -57,12 +57,21 @@ var toolPolicies = map[string]ToolPolicy{
 	"export_ppt":              {Capability: CapabilityRead, DataTool: true},
 	"export_html":             {Capability: CapabilityRead, DataTool: true},
 	"export_by_code":          {Capability: CapabilityCodeExecute, DataTool: true},
-	"execute":                 {Capability: CapabilityCodeExecute},
-	"write_file":              {Capability: CapabilityCodeExecute},
-	"edit_file":               {Capability: CapabilityCodeExecute},
-	"read_file_data":          {Capability: CapabilityFileRead},
-	"read_offload":            {Capability: CapabilityFileRead},
-	"dataset_query":           {Capability: CapabilityRead},
+	// export_skill 执行受信 Python 技能脚本（payload 由模型组装、不自带数据库连接），
+	// 需要允许代码/文件写入能力；产物登记后可由 repair_export 编辑。
+	"export_skill": {Capability: CapabilityCodeExecute},
+	// 对话式文件修复：内置报告修复为只读重渲染；脚本级修复复用代码执行能力。
+	// repair_export 不声明 DataTool：文件模式（无连接）也能修复报告，
+	// 具体取数权限由 checkExportAccess + exportQueryRunner/DataSource 逐次校验。
+	"get_export_artifact":   {Capability: CapabilityFileRead},
+	"repair_export":         {Capability: CapabilityRead},
+	"repair_export_by_code": {Capability: CapabilityCodeExecute, DataTool: true},
+	"execute":               {Capability: CapabilityCodeExecute},
+	"write_file":            {Capability: CapabilityCodeExecute},
+	"edit_file":             {Capability: CapabilityCodeExecute},
+	"read_file_data":        {Capability: CapabilityFileRead},
+	"read_offload":          {Capability: CapabilityFileRead},
+	"dataset_query":         {Capability: CapabilityRead},
 	// analyze_data 的实际数据权限由子 agent 内部的 PermissionMiddleware 逐工具校验，
 	// 父层只做能力/注册表层面的放行。
 	"analyze_data":          {Capability: CapabilityRead},
@@ -118,7 +127,7 @@ func (m *PermissionMiddleware) denyByCapability(toolName string) error {
 				Objects: []string{},
 			}
 		}
-	case "export_by_code":
+	case "export_by_code", "repair_export_by_code":
 		// 高级导出会执行模型编写的 Python 代码，本质是代码执行能力；
 		// 与 execute/write_file 同一 allow_modify 门槛，并额外要求 AI 数据写能力
 		//（避免只读/仅经典写角色通过代码绕过 AI 写策略）。

@@ -69,3 +69,10 @@ release-desktop/
 internal/ai/agent/_embedded_agents.md
 
 node_modules/
+
+# 导出包测试可能因用例级 CWD 产生本地产物目录
+internal/ai/agent/export/exports/
+internal/ai/agent/exports/
+.verify/
+.trae/
+canvases/

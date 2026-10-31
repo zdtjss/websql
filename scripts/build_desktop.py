@@ -10,15 +10,18 @@
   - Windows: WebView2 Runtime(Win11 自带)
   - macOS: Xcode Command Line Tools
   - Linux: libgtk-3-dev libwebkit2gtk-4.1-dev
-  - Python 3.8+（打包脚本自身；可选捆绑运行时默认取自本机 Python）
+  - Python 3.8+（打包脚本自身；捆绑运行时来自 scripts/python-3.15.2-embed-amd64.zip，版本固定 3.15.2）
 
 用法:
   python scripts/build_desktop.py                          # 当前平台完整构建
   python scripts/build_desktop.py --skip-frontend          # 跳过前端构建
   python scripts/build_desktop.py --package                # 调用 wails3 build 完成构建与打包
   python scripts/build_desktop.py --check                  # 仅检查环境
+  python scripts/build_desktop.py --allow-local-python     # embeddable 失败时允许回退本机 Python（版本随开发机）
 
   构建过程中会交互式询问是否捆绑 Python 运行时（默认否,直接回车即跳过）。
+  选择捆绑时默认只接受 3.15.2（embeddable 包构建失败即中止捆绑并给出排查提示），
+  仅当显式传 --allow-local-python 才回退复制本机 Python（版本随开发机，可能是 3.13 等）。
 
 产物:
   dist-pack/websql-desktop-{platform}.zip  — 可独立发行、运行的 zip 包
@@ -54,9 +57,12 @@ SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 BUNDLE_PYTHON_DIR = os.path.join(DIST_PACK_DIR, "python")
 
 # 本地官方 embeddable Python 包（scripts/ 下，随仓库分发，无需联网下载）
-EMBEDDABLE_ZIP = os.path.join(PROJECT_ROOT, "scripts", "python-3.15.2-embed-amd64.zip")
-EMBEDDABLE_PY_VERSION = "3.15"
-EMBEDDABLE_ABI = "cp315"
+# 版本号只在此处定义：包名、pip 交叉安装参数、产物校验都从它派生，避免多处不一致
+EMBEDDABLE_PY_FULL_VERSION = "3.15.2"
+EMBEDDABLE_ZIP = os.path.join(
+    PROJECT_ROOT, "scripts", f"python-{EMBEDDABLE_PY_FULL_VERSION}-embed-amd64.zip")
+EMBEDDABLE_PY_VERSION = ".".join(EMBEDDABLE_PY_FULL_VERSION.split(".")[:2])  # pip --python-version 3.15
+EMBEDDABLE_ABI = "cp" + "".join(EMBEDDABLE_PY_FULL_VERSION.split(".")[:2])    # --abi cp315
 EMBEDDABLE_PLATFORM = "win_amd64"
 
 # 复制本机 Python 时排除的大而无用的目录（保留标准库与 site-packages）
@@ -305,27 +311,59 @@ def find_user_site_packages():
     return None
 
 
-def collect_python_runtime():
+def _probe_python_version(exe=None):
+    """读取捆绑运行时 python.exe 的版本号，不可用时返回 None。"""
+    exe = exe or os.path.join(BUNDLE_PYTHON_DIR, "python.exe")
+    if not os.path.isfile(exe):
+        return None
+    try:
+        out = subprocess.run([exe, "-c", "import sys; print(sys.version.split()[0])"],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            return None
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def collect_python_runtime(allow_local_fallback=False):
     """收集捆绑 Python 运行时到 dist-pack/python/。
 
-    主路径：本地官方 embeddable 包（scripts/python-3.15.0-embed-amd64.zip）
+    主路径：本地官方 embeddable 包（scripts/python-3.15.2-embed-amd64.zip）
       - 解压 + 启用 site（修改 ._pth）+ pip 交叉安装 cp315 依赖闭包
-      - 版本固定 3.15.0，产物可复现；embeddable zip 随仓库分发，离线可用
-    回退路径：本机 Python 精简复制（pip 交叉安装失败/无 embeddable 包时）
-    已存在时直接复用缓存。
+      - 版本固定 3.15.2，产物可复现；embeddable zip 随仓库分发，离线可用
+    回退路径：本机 Python 精简复制——仅在 allow_local_fallback=True 时启用，
+      版本跟随开发机，与 EMBEDDABLE_PY_FULL_VERSION 不一致，默认禁止。
+    缓存：已存在且版本匹配才复用；旧版本残留（如历史回退产物）删除后重建。
     """
     if os.path.isdir(BUNDLE_PYTHON_DIR):
-        print(f"[Python] 复用已有捆绑运行时: {BUNDLE_PYTHON_DIR}")
-        return True
+        cached = _probe_python_version()
+        if cached == EMBEDDABLE_PY_FULL_VERSION:
+            print(f"[Python] 复用已有捆绑运行时: {BUNDLE_PYTHON_DIR} (Python {cached})")
+            return True
+        print(f"[WARN] 已有捆绑运行时版本不符（期望 {EMBEDDABLE_PY_FULL_VERSION}，"
+              f"实际 {cached or '不可执行'}），删除后重新构建")
+        shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
 
     # 主路径：本地 embeddable 包
     if os.path.isfile(EMBEDDABLE_ZIP):
         if _build_from_embeddable():
             return True
-        print("[WARN] embeddable 构建失败，回退本机 Python 复制（版本跟随开发机）")
-        if os.path.isdir(BUNDLE_PYTHON_DIR):
-            shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
+        shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
+        if not allow_local_fallback:
+            print("[FAIL] embeddable 运行时构建失败，已中止捆绑"
+                  f"（避免静默产出非 {EMBEDDABLE_PY_FULL_VERSION} 的运行时）")
+            print("  排查: 确认 pip 镜像/网络可用后重试；若接受本机 Python 版本，"
+                  "加 --allow-local-python 显式启用回退")
+            return False
+        print(f"[WARN] embeddable 构建失败，回退本机 Python 复制"
+              f"（实际 {sys.version.split()[0]}，与预期 {EMBEDDABLE_PY_FULL_VERSION} 不一致）")
     else:
+        if not allow_local_fallback:
+            print(f"[FAIL] 未找到 embeddable 包: {EMBEDDABLE_ZIP}")
+            print("  修复: 将官方 python-3.15.2-embed-amd64.zip 放入 scripts/；"
+                  "若接受本机 Python 版本，加 --allow-local-python 显式启用回退")
+            return False
         print(f"[WARN] 未找到 embeddable 包: {EMBEDDABLE_ZIP}，回退本机 Python 复制")
 
     # 回退路径：本机 Python 精简复制
@@ -371,7 +409,7 @@ def _build_from_embeddable():
 
 
 def _build_from_local():
-    """回退路径：本机 Python 精简复制 + 合并本机 site-packages。"""
+    """回退路径：本机 Python 精简复制 + 合并本机 site-packages（仅 --allow-local-python 可达）。"""
     src = find_local_python_root()
     if not src:
         print("[FAIL] 未找到本机 Python 安装目录，无法捆绑运行时")
@@ -391,20 +429,28 @@ def _build_from_local():
         user_sp = find_user_site_packages()
         if user_sp:
             _copy_tree_filtered(user_sp, dst_sp, USER_SITE_EXCLUDE)
-    return _verify_bundled_python()
+    return _verify_bundled_python(expected_version=None)
 
 
-def _verify_bundled_python():
-    """验证捆绑运行时可用性（python.exe + 全部导出依赖 import）。"""
+def _verify_bundled_python(expected_version=EMBEDDABLE_PY_FULL_VERSION):
+    """验证捆绑运行时可用性（版本 + 全部导出依赖 import）。
+
+    expected_version: 期望的 Python 版本；None 表示不校验（回退路径版本随开发机）。
+    """
     exe = os.path.join(BUNDLE_PYTHON_DIR, "python.exe")
     if not os.path.isfile(exe):
         print(f"[FAIL] 捆绑运行时缺少 python.exe: {exe}")
         return False
     try:
-        out = subprocess.run(
-            [exe, "-c", "import sys; print(sys.version.split()[0])"],
-            capture_output=True, text=True, timeout=120)
-        version = out.stdout.strip()
+        version = _probe_python_version(exe)
+        if not version:
+            print("[FAIL] 捆绑运行时 python.exe 无法执行")
+            shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
+            return False
+        if expected_version and version != expected_version:
+            print(f"[FAIL] 捆绑运行时版本不符（期望 {expected_version}，实际 {version}）")
+            shutil.rmtree(BUNDLE_PYTHON_DIR, ignore_errors=True)
+            return False
         missing = []
         for mod in BUNDLE_REQUIRED_MODULES:
             r = subprocess.run([exe, "-c", f"import {mod}"],
@@ -443,7 +489,10 @@ def _install_deps_via_pip(dst_sp, cross=None):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
-            print(f"  pip 输出尾部: {r.stderr[-800:]}")
+            print(f"  pip 安装失败 (exit={r.returncode})")
+            tail = (r.stderr or r.stdout or "").strip()[-1500:]
+            if tail:
+                print(f"  pip 输出尾部: {tail}")
             return False
         return True
     except Exception as e:
@@ -535,7 +584,8 @@ def ask_bundle_python():
     return answer.strip().lower() in ("y", "yes")
 
 
-def build_platform(platform_key, skip_frontend, package, include_python=False):
+def build_platform(platform_key, skip_frontend, package, include_python=False,
+                   allow_local_python=False):
     cfg = DESKTOP_PLATFORMS[platform_key]
 
     if not skip_frontend:
@@ -559,7 +609,7 @@ def build_platform(platform_key, skip_frontend, package, include_python=False):
 
     # 按需收集捆绑 Python 运行时（失败不阻塞打包：Go 基础版兜底保证导出不失败）
     if include_python:
-        if not collect_python_runtime():
+        if not collect_python_runtime(allow_local_fallback=allow_local_python):
             print("[WARN] 捆绑 Python 不可用，zip 将不含 python/（导出自动降级 Go 基础版）")
             include_python = False
     else:
@@ -592,6 +642,8 @@ def main():
                         help="调用 wails3 build 完成完整构建(含打包)")
     parser.add_argument("--check", action="store_true",
                         help="仅检查环境,不构建")
+    parser.add_argument("--allow-local-python", action="store_true",
+                        help="embeddable 构建失败时允许回退复制本机 Python（版本随开发机，默认禁止）")
     args = parser.parse_args()
 
     if args.check:
@@ -616,7 +668,8 @@ def main():
     include_python = ask_bundle_python()
 
     build_platform(platform, args.skip_frontend, args.package,
-                   include_python=include_python)
+                   include_python=include_python,
+                   allow_local_python=args.allow_local_python)
 
     print(f"\n{'=' * 55}")
     print("  桌面版构建完成!")

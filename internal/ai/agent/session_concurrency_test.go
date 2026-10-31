@@ -81,12 +81,12 @@ func TestHasSummarizationMarker(t *testing.T) {
 
 func TestSchemaMessageToSession_SkipsAgentsMD(t *testing.T) {
 	msg := &schema.Message{Role: schema.User, Content: "AGENTS.md 内容"}
-	if sm := schemaMessageToSession(msg); sm == nil {
+	if sm := schemaMessageToSession(msg, nil, false); sm == nil {
 		t.Fatal("普通 user 消息应可转换")
 	}
 
 	msg.Extra = map[string]any{agentsMDExtraKey: true}
-	if sm := schemaMessageToSession(msg); sm != nil {
+	if sm := schemaMessageToSession(msg, nil, false); sm != nil {
 		t.Error("agentsmd 注入消息不应持久化（否则重复注入并污染标题）")
 	}
 }

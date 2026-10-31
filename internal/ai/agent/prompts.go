@@ -10,11 +10,14 @@ package agent
 import (
 	_ "embed"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"websql/internal/ai/agent/export"
 )
@@ -30,21 +33,116 @@ func buildSystemPrompt(connID, dbType, dbSchema, dbVersion string, tableContext 
 	var sb strings.Builder
 	sb.WriteString(buildStaticPromptPart(dbType, skillAvailable))
 	sb.WriteString(buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion, tableContext, scope, schemas, skillAvailable, sec))
-	sb.WriteString(buildAgentsMDSection())
+	sb.WriteString(buildAgentsMDSection(connID != "", skillAvailable))
 	return sb.String()
+}
+
+// AGENTS.md 加载与裁剪。
+//
+// 性能与安全：文件最大 256KB；每 60s 检查一次 mtime，未变化不重读；
+// 支持 <!-- @if conn --> / <!-- @if skill --> 段标记，按本次可用工具裁剪，
+// 避免纯文件模式或 Skill 不可用时注入无关的大段工具说明。
+const (
+	agentsMDMaxBytes      = 256 << 10
+	agentsMDCheckInterval = 60 * time.Second
+)
+
+var agentsMDLoader struct {
+	mu        sync.RWMutex
+	content   string
+	mtime     time.Time
+	lastCheck time.Time
+	loaded    bool
+}
+
+func loadAgentsMD() string {
+	now := time.Now()
+	agentsMDLoader.mu.RLock()
+	content, lastCheck, loaded := agentsMDLoader.content, agentsMDLoader.lastCheck, agentsMDLoader.loaded
+	agentsMDLoader.mu.RUnlock()
+	if loaded && now.Sub(lastCheck) < agentsMDCheckInterval {
+		return content
+	}
+
+	info, err := os.Stat("AGENTS.md")
+	if err != nil {
+		return strings.TrimSpace(embeddedAgentsMD)
+	}
+
+	agentsMDLoader.mu.Lock()
+	defer agentsMDLoader.mu.Unlock()
+	if agentsMDLoader.loaded && info.ModTime().Equal(agentsMDLoader.mtime) {
+		agentsMDLoader.lastCheck = now
+		return agentsMDLoader.content
+	}
+	data, readErr := os.ReadFile("AGENTS.md")
+	if readErr != nil {
+		log.Printf("[Prompt] 读取 AGENTS.md 失败，回退编译期内容 - err=%v\n", readErr)
+		return strings.TrimSpace(embeddedAgentsMD)
+	}
+	text := string(data)
+	if len(text) > agentsMDMaxBytes {
+		text = truncateUTF8(text, agentsMDMaxBytes)
+		recordDegraded("agents_md", "oversize")
+		log.Printf("[Prompt] AGENTS.md 超过 %d 字节，已截断\n", agentsMDMaxBytes)
+	}
+	agentsMDLoader.content = strings.TrimSpace(text)
+	agentsMDLoader.mtime = info.ModTime()
+	agentsMDLoader.lastCheck = now
+	agentsMDLoader.loaded = true
+	return agentsMDLoader.content
+}
+
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// applyAgentsMDConditions 处理段标记；未知标记原样保留（HTML 注释不影响模型理解）。
+func applyAgentsMDConditions(raw string, hasConn, hasSkill bool) string {
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	stack := make([]bool, 0, 4)
+	active := true
+	for _, line := range lines {
+		switch strings.TrimSpace(line) {
+		case "<!-- @if conn -->":
+			stack = append(stack, active)
+			active = active && hasConn
+			continue
+		case "<!-- @if skill -->":
+			stack = append(stack, active)
+			active = active && hasSkill
+			continue
+		case "<!-- @endif -->":
+			if len(stack) > 0 {
+				active = stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		if active {
+			out = append(out, line)
+		}
+	}
+	if len(stack) > 0 {
+		log.Printf("[Prompt] AGENTS.md 存在未闭合的条件段，剩余 %d 层按当前状态处理\n", len(stack))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 // buildAgentsMDSection 把 AGENTS.md 并入系统提示词（而不是作为 User 消息注入）。
 //
 // 优先级：磁盘文件（支持运行时热更新）→ 编译期嵌入内容（打包后仍可用）。
 // 并入 system 后：规范不会被后续用户消息覆盖，也不会进入 summarization/transcript/会话历史。
-func buildAgentsMDSection() string {
-	content := ""
-	if data, err := os.ReadFile("AGENTS.md"); err == nil {
-		content = string(data)
-	} else {
-		content = embeddedAgentsMD
-	}
+func buildAgentsMDSection(hasConn, hasSkill bool) string {
+	content := applyAgentsMDConditions(loadAgentsMD(), hasConn, hasSkill)
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
@@ -75,10 +173,10 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 8. **结果验证**：检查结果合理性（行数、数值范围、NULL），异常时先排查 SQL 再输出
 `)
 	if skillAvailable {
-		sb.WriteString(`9. **导出工具**：报告导出用 export_analysis_docx / export_ppt / export_html（优先 content 模式，产出图文并茂报告，见下方「报告导出」）；Excel 用 export_excel / export_excel_with_chart；需更细粒度自定义时先调 skill 工具加载对应技能。完整决策路径见 Agents.md
+		sb.WriteString(`9. **导出工具**：按目标格式选工具——汇报演示→export_ppt，正式文档→export_analysis_docx，数据明细/多表→export_excel(_with_chart)，网页分享→export_html（均优先 content 模式，产出可直接交付的图文报告）；四类内置格式不满足时才用 export_by_code，需更细粒度自定义时可先调 skill 工具加载对应技能。完整决策路径见 Agents.md
 `)
 	} else {
-		sb.WriteString(`9. **导出工具**：报告导出用 export_analysis_docx / export_ppt / export_html（优先 content 模式）；Excel 用 export_excel / export_excel_with_chart。完整决策路径见 Agents.md
+		sb.WriteString(`9. **导出工具**：按目标格式选工具——汇报演示→export_ppt，正式文档→export_analysis_docx，数据明细/多表→export_excel(_with_chart)，网页分享→export_html（均优先 content 模式，产出可直接交付的图文报告）；四类内置格式不满足时才用 export_by_code。完整决策路径见 Agents.md
 `)
 	}
 	sb.WriteString(`10. **禁止猜测表名**：用户未指定时必须先调 list_tables 通过注释判断目标表
@@ -137,11 +235,21 @@ func buildStaticPromptPart(dbType string, skillAvailable bool) string {
 
 	sb.WriteString(`
 ## 报告与导出
-- 报告类导出（export_analysis_docx / export_ppt / export_html）优先用 content 模式，
-  扩展 Markdown 语法（kpi/chart/table/提示框/分页）与示例见 Agents.md「报告扩展语法」。
-- Excel 用 export_excel / export_excel_with_chart；不支持的自定义格式用 export_by_code
-  （仅当工具存在且系统提示已开启高级导出时）。
-- 禁止只导出原始数据：至少包含指标卡 + 一个图表 + 结论。
+- **格式由需求决定**：用户明确指定格式则严格遵循；未指定时按场景选择——汇报演示→export_ppt，
+  正式文档→export_analysis_docx，数据明细/多表→export_excel(_with_chart)，网页分享/离线阅读→export_html，
+  并在回复中说明所选格式及理由。
+- 报告类导出优先 content 模式（产出图文并茂报告），扩展 Markdown 语法
+  （kpi/chart/table/提示框/分页）与示例见 Agents.md「报告扩展语法」。
+- **可交付标准**：封面/标题区 + 章节结构 + 关键指标卡 + 至少一个原生可编辑图表 +
+  规范表格（表头重复、数字右对齐、行数受控）+ 结论与建议；禁止只导出原始数据、整页纯文本或把明细整表铺开。
+- 自定义格式（PDF/CSV/XML/ZIP/Markdown 等）用 export_by_code，仅当工具存在且系统提示已开启高级导出；
+  生成结果同样须满足上述结构要求。
+- **对话式文件编辑/修复**：用户指出本次会话已导出文件有问题或要求局部修改时，先 get_export_artifact(includeOutline=true)
+  读取原参数/源内容/版本/结构视图，再用 repair_export 做最小编辑：优先 operations（块/章节/表格行/页/单元格，
+  需块 ID 或 Sheet/页序号）；长文也可用 patches；不要默认整份重新生成。删除类操作会触发用户确认；
+  无法确定文件先让用户确认；编辑以 _v2 等新版本返回并保留原文件；完成后说明变更摘要、文件类型、页数或行数并返回新链接。
+- **Skill 产物**：需要内置 Word/PPT 模板时用 export_skill（payload 按 SKILL.md 契约），产物同样可 repair_export。
+- 生成后返回下载链接并说明文件类型、页数/行数等关键信息；失败时说明原因并建议替代格式。
 `)
 
 	// ─── 高级导出仅由开关指令注入（见 advancedExportDirectivePrompt），
@@ -222,8 +330,13 @@ func buildFileOnlyStaticPrompt() string {
 
 	sb.WriteString(`
 ## 导出
-- 报告用 export_analysis_docx / export_ppt / export_html（content 模式，语法见 Agents.md）
-- 需要 Excel 时，先引导用户选择数据库连接（文件模式没有 Excel 导出工具）
+- 格式由需求决定：正式文档→export_analysis_docx，汇报演示→export_ppt，网页分享/离线阅读→export_html
+  （均用 content 模式，语法见 Agents.md）；未指定时自动选择并说明理由。
+- 报告必须达到可交付标准：标题区 + 章节结构 + kpi 指标卡 + 至少一个 chart 图表 + 结论与建议；
+  禁止只导出原始数据或整页纯文本。
+- 已导出文件异常时，先 get_export_artifact 获取原参数/源内容，再用 repair_export 做最小修复；
+  仅限当前会话产物，修复以 _v2 等新版本返回并保留原文件。
+- 需要 Excel 时，先引导用户选择数据库连接（文件模式没有 Excel 导出工具）。
 `)
 	return sb.String()
 }
@@ -270,11 +383,8 @@ func buildDynamicPromptPart(connID, dbType, dbSchema, dbVersion string, tableCon
 		sb.WriteString("**多 Schema 上下文**（同连接内可直接 JOIN）：\n")
 		for _, cID := range connOrder {
 			g := connMap[cID]
-			dbConn, _ := GetConn(cID, scope.UserID)
-			typeStr := ""
-			if dbConn != nil {
-				typeStr = dbConn.DriverName()
-			}
+			// 只为打印驱动名：使用 t_conn 元数据，避免为此建立/探测连接池。
+			typeStr, _, _ := GetDBInfo(cID)
 			fmt.Fprintf(&sb, "  🔗 连接 %s (%s)：%s\n", cID, typeStr, strings.Join(g.schemas, ", "))
 		}
 		if connID != "" {
@@ -429,18 +539,77 @@ func buildOSEnvironmentInfo() string {
 // advancedExportDirectivePrompt 返回「高级导出模式」下追加的系统指令。
 //
 // 触发方式：前端 AI 对话工具栏的「高级导出」开关（ChatRequest.AdvancedExport=true）。
-// 语义：本次回复必须用 export_by_code 生成文件，而不是交给其他固定格式导出工具。
-// 交互设计：首次进入该模式（本轮尚无 export_by_code 执行记录）时先确认「导出什么/什么格式」；
-// 用户对已生成结果表达不满/要求调整时，直接改代码重新导出，不再重复确认。
-func advancedExportDirectivePrompt() string {
-	return "\n\n## 🔧 本次为「高级导出」模式（用户已通过工具栏开启）\n" +
-		"本次回复必须使用 export_by_code 工具生成文件（仅 Python、只读临时代码），**不要**改用其他导出工具（export_excel/export_ppt/…）：\n" +
-		"- 若本轮对话尚无法确定「要导出什么内容」或「目标文件格式」（且此前未执行过 export_by_code），" +
-		"先用一句话向用户确认导出范围与目标格式，不要臆测。\n" +
-		"- 确定后，编写 Python 代码经 websql_db 只读查询数据并生成文件，返回下载链接。\n" +
-		"- 若已生成过文件、用户只是表示不满意或要求调整（如换格式/改样式/补字段），" +
-		"直接修改代码重新导出，不要再次确认。\n" +
-		"- 若当前环境未提供 export_by_code 工具，告知用户：高级导出需同时满足「连接完整权限 + 允许代码执行与 AI 数据写 + 可用 Python + OS 级隔离 + 无生效脱敏规则」。\n"
+// 语义：本轮以「可直接对外汇报/交付的报告级文件」为目标——优先使用内置报告级导出
+// （export_ppt / export_analysis_docx / export_excel(_with_chart) / export_html），
+// 仅当这四类格式无法满足用户诉求时才降级到 export_by_code 生成自定义格式。
+// hasDB 为 false（纯文件分析）时 export_by_code 与 Excel 导出不可用，指令只指向内置报告工具。
+func advancedExportDirectivePrompt(hasDB bool) string {
+	var sb strings.Builder
+	sb.WriteString("\n\n## 🎯 本次为「高级导出」模式（用户已通过工具栏开启）\n")
+	sb.WriteString("目标：产出可直接对外汇报或交付的报告级文件（美观、排版专业、信息层次清晰），而不是原始数据或纯文本堆砌。\n")
+	sb.WriteString(`
+### 1. 先定格式（用户需求优先）
+- 用户已明确格式（Word/docx、PPT/pptx、Excel/xlsx、HTML、PDF、CSV、XML、ZIP、Markdown…）→ 严格按该格式输出，不得替换。
+- 用户未明确 → 按场景自动选择，并在回复开头用一句话说明「所选格式 + 理由」：
+  - 汇报/演示/路演 → PPT（export_ppt）
+  - 正式文档/分析报告/存档 → Word（export_analysis_docx）
+  - 数据明细/多表/需二次计算 → Excel（export_excel_with_chart：charts 传原生图表、summary 写结论；纯明细用 export_excel）
+  - 网页分享/离线阅读 → HTML（export_html）
+- 若本轮尚无法判断「导出什么内容」或「目标格式」，且此前未执行过导出，先用一句话确认，不要臆测；
+  用户对已生成结果不满意或要求调整（换格式/改样式/补字段）时，直接重新导出，不再重复确认。
+
+### 2. 工具选择顺序（不得颠倒）
+1) 内置报告级导出优先：export_ppt / export_analysis_docx / export_excel(_with_chart) / export_html，
+   一律用 content 模式传扩展 Markdown（kpi/chart/table/提示框/分页，语法见 Agents.md）。
+2) 仅当目标格式不属于上述四类，或内置能力确实无法满足（如指定版式、合并工作簿、自定义 XML/ZIP 包）时，
+   才用 export_by_code 编写只读 Python 代码生成。
+3) export_by_code 不可用（未注册/权限不足/无 Python/无隔离/排队降级）时不要重试，
+   改用最接近的内置格式，并在回复中说明替代方案。
+`)
+	if !hasDB {
+		sb.WriteString("> 本次未选择数据库连接：export_by_code 与 Excel 导出不可用，请用 export_analysis_docx / export_ppt / export_html（content 模式）输出报告。\n")
+	}
+	sb.WriteString(`
+### 3. 报告结构（所有格式统一标准）
+- 封面/标题区：报告标题 + 副标题（统计口径、时间范围、数据来源）+ 报告日期
+- 章节结构：一级标题作为章节，至少包含「摘要 / 数据概览 / 分项分析 / 结论与建议」
+- 关键指标卡（kpi）：3~6 个核心指标，含数值、变化与趋势
+- 图表：至少 1 个原生可编辑图表（chart 块）；趋势用 line、对比用 bar、占比用 pie/donut（≤6 类）
+- 表格：只放支撑结论的关键明细，行数受控（建议 ≤30 行），表头重复、数字右对齐、口径写进表题
+- Excel 报告：export_excel_with_chart 同时给 charts（原生图表）与 summary（3~5 条结论/建议）
+- 结论与建议：3~5 条可执行建议 + 数据范围与局限说明
+- 禁止：整页纯文本、把原始查询结果整表铺开、只有表格没有图表和结论
+
+### 4. 视觉与表达一致性
+- 全篇统一一个 theme（默认 business；发布会/技术主题用 tech），配色、字号、留白风格一致
+- 数字用千分位，单位统一写在标题或指标备注中；一页/一屏只讲一个结论
+- 长内容用 <!-- pagebreak --> 分页，避免单页/单屏堆满
+
+### 5. export_by_code 同等质量要求（安全约束不得放宽）
+- 仅 Python；数据库只经 websql_db 只读查询；禁止写库/改结构、禁止联网、禁止读写工作目录之外的文件、禁止 pip 安装
+- 权限校验、脱敏规则、OS 隔离与产物回收策略保持不变，不得因追求效果而绕过或放宽
+- 输出同样是报告级文件（封面/章节/指标/图表/结论）；优先使用沙箱可用的生成库（如 python-docx/openpyxl/python-pptx，导入失败则降级）
+- 无法生成原生文档时改用自包含 HTML + CSS（可打印为 PDF）并如实说明；图表用原生图表或矢量 SVG，禁止截图或字符画充数
+- 失败时说明具体原因并给出替代格式，不得编造下载链接
+
+### 6. 交付反馈（每次生成后）
+- 必须返回可下载链接，并在同一条消息说明：文件类型、页数/幻灯片数/行数、章节与图表数量、数据口径与时间范围
+- 多文件逐个列出；部分内容失败时说明缺失部分与替代方案
+
+### 7. 对话式文件修复（已导出文件出问题时）
+- 用户在同一会话指出「刚才的 HTML JS 报错 / PPT 排版错乱 / Excel 打不开」等，**不要重新生成整份文件**：
+  1) 先调 get_export_artifact（file=下载链接或文件名；诊断渲染问题时 includeFile=true 获取文本预览）获取原 tool/参数/源内容/SQL/图表定义/原始 Python 脚本；
+  2) 结合异常现象定位根因；信息不足时只追问文件名/链接/报错文本/截图，不得猜测；
+  3) 内置报告调用 repair_export，只传修改项：patches（长文局部替换，推荐）/ content / sql / charts / summary；未传 content/sql 时沿用原导出源值，服务端仍按原取数链路复校权限；
+     自定义格式调用 repair_export_by_code，传修改后的完整脚本或 patches；
+  4) 只改出错部分，保留未受影响的正文、图表、样式与数据；
+  5) 修复产物自动生成 _v2 等新版本，原文件保留；返回新链接并说明原因、修改点、文件类型、页数/行数；
+  6) 无法增量修复或校验失败时明确说明，建议改用其他格式或回退内置导出；未经用户确认不得整份重新生成。
+- 仅修复当前用户、当前会话内由导出工具生成的产物；跨会话/跨用户/工作区文件一律拒绝。
+- 修复须在原导出连接下进行；连接已切换时先提示用户切回，不得用新连接重新取数。
+- 修复链路安全约束与首次导出一致：只读、脱敏、沙箱隔离、工作目录内产出均不得放宽。
+`)
+	return sb.String()
 }
 
 // ──────────────────────────────────────────────

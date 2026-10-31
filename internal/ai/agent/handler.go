@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,6 +172,7 @@ var allowedSSETypes = map[string]bool{
 	"cancelled":      true,
 	"danger_confirm": true,
 	"queue_notice":   true,
+	"tool_status":    true,
 }
 
 // flush 推送一个事件（JSON）
@@ -233,6 +235,83 @@ func (h *Handler) HandleSkillDegrade(c *gin.Context) {
 	degraded := RequestSkillDegrade(req.SessionID)
 	log.Printf("[SkillQueue] 用户请求降级 - session=%s, user=%s, active=%v\n", req.SessionID, user.Id, degraded)
 	response.WriteOK(c, gin.H{"degraded": degraded})
+}
+
+// runSecurityCache 缓存权限投影构建结果（30s），避免每个请求重复加载角色/权限明细。
+//
+// 只缓存“权限投影”；Masker/Mode/请求级标志在命中后重新注入，
+// 避免脱敏规则更新后最长 30s 仍用旧快照。
+type runSecurityCacheEntry struct {
+	sec *RunSecurityContext
+	at  time.Time
+}
+
+var runSecurityCache struct {
+	mu    sync.Mutex
+	items map[string]runSecurityCacheEntry
+}
+
+const runSecurityCacheTTL = 30 * time.Second
+
+func runSecurityCacheKey(profile RuntimeProfile, userID, connID string, refs []SchemaRef, revision uint64) string {
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		parts = append(parts, ref.ConnID+"/"+ref.Schema)
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("%d|%s|%s|%d|%s", profile, userID, connID, revision, strings.Join(parts, ","))
+}
+
+func getCachedRunSecurity(key string) *RunSecurityContext {
+	runSecurityCache.mu.Lock()
+	defer runSecurityCache.mu.Unlock()
+	entry, ok := runSecurityCache.items[key]
+	if !ok || time.Since(entry.at) > runSecurityCacheTTL {
+		if ok {
+			delete(runSecurityCache.items, key)
+		}
+		return nil
+	}
+	return entry.sec
+}
+
+func putCachedRunSecurity(key string, sec *RunSecurityContext) {
+	if sec == nil {
+		return
+	}
+	runSecurityCache.mu.Lock()
+	defer runSecurityCache.mu.Unlock()
+	if runSecurityCache.items == nil {
+		runSecurityCache.items = make(map[string]runSecurityCacheEntry)
+	}
+	// 简单容量保护：超过 512 条时丢弃过期项；仍超限则整体清空（缓存非正确性依赖）。
+	if len(runSecurityCache.items) > 512 {
+		for k, entry := range runSecurityCache.items {
+			if time.Since(entry.at) > runSecurityCacheTTL {
+				delete(runSecurityCache.items, k)
+			}
+		}
+		if len(runSecurityCache.items) > 512 {
+			runSecurityCache.items = make(map[string]runSecurityCacheEntry)
+		}
+	}
+	runSecurityCache.items[key] = runSecurityCacheEntry{sec: sec, at: time.Now()}
+}
+
+// resolveCachedRunSecurity 优先取缓存；未命中时用 build 构造并回填。
+//
+// 抽成独立函数是为了能注入 build 计数，回归验证 F-22：
+// 同一用户/连接/权限修订的持续对话不应反复加载角色与权限明细。
+func resolveCachedRunSecurity(key string, build func() (*RunSecurityContext, error)) (*RunSecurityContext, error) {
+	if base := getCachedRunSecurity(key); base != nil {
+		return base, nil
+	}
+	built, err := build()
+	if err != nil {
+		return nil, err
+	}
+	putCachedRunSecurity(key, built)
+	return built, nil
 }
 
 type requestParams struct {
@@ -308,10 +387,19 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest, isResume bool) (*req
 		}
 	}
 
-	sec, err := BuildRunSecurityContext(profile, user.Id, connID, req.Schemas, revision, masker)
-	if err != nil {
-		return nil, err
+	cacheKey := runSecurityCacheKey(profile, user.Id, connID, req.Schemas, revision)
+	base, cacheErr := resolveCachedRunSecurity(cacheKey, func() (*RunSecurityContext, error) {
+		return BuildRunSecurityContext(profile, user.Id, connID, req.Schemas, revision, masker)
+	})
+	if cacheErr != nil {
+		return nil, cacheErr
 	}
+	// 每次请求使用独立副本：Masker/Mode 与请求级安全标志按当前时刻注入，
+	// Scopes 只读可安全共享。
+	secCopy := *base
+	secCopy.Masker = masker
+	secCopy.Mode = ResolveRolloutMode(user.Id)
+	sec := &secCopy
 	sec.DataEgressBlocked = egressBlocked
 	sec.RevisionUnavailable = revisionUnavailable
 
@@ -454,7 +542,7 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		return
 	}
 	// 未选择数据库时，允许以用户上传的文件作为唯一数据来源
-	if params.scope.IsRemote && !params.scope.HasAnyAccess() &&
+	if params.sec.Profile.Remote() && !params.sec.HasAnyAccess() &&
 		!hasFileDataSource(&req) && !h.sessionHasFileDataSource(req.SessionID, req.UserID) {
 		response.WriteErr(c, http.StatusForbidden, 403, "你没有此数据库连接的访问权限，请选择有权限的数据库或上传文件")
 		return
@@ -507,11 +595,12 @@ func (h *Handler) ChatStream(c *gin.Context) {
 		}
 		// checkpoint 绑定权限快照：恢复前比较当前权限，收缩或摘要不一致时要求重新发起。
 		binding := CheckpointBinding{
-			UserID:      req.UserID,
-			SessionID:   req.SessionID,
-			ConnID:      params.connID,
-			Revision:    params.sec.Revision,
-			ScopeDigest: params.sec.ScopeDigest,
+			UserID:         req.UserID,
+			SessionID:      req.SessionID,
+			ConnID:         params.connID,
+			Revision:       params.sec.Revision,
+			RevisionLoaded: true,
+			ScopeDigest:    params.sec.ScopeDigest,
 		}
 		if err := agent.ResumeStream(runCtx, runID, req.CheckPointID, binding, targets, sse.flush, sess); err != nil {
 			log.Printf("[Handler] 恢复执行失败 - sessionId=%s, err=%v\n", req.SessionID, err)
@@ -599,7 +688,7 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		response.WriteAuthErr(c, "未认证或认证已过期")
 		return
 	}
-	detail, err := h.sessions.GetDetail(sessionID, user.Id)
+	detail, err := h.sessionDetailForDisplay(sessionID, user.Id)
 	if err != nil {
 		if errors.Is(err, ErrSessionForbidden) {
 			log.Printf("[Handler] 会话越权访问被拒绝 - sessionId=%s, userId=%s\n", sessionID, user.Id)
@@ -611,6 +700,40 @@ func (h *Handler) HandleGetSession(c *gin.Context) {
 		return
 	}
 	response.WriteOK(c, gin.H{"session": detail})
+}
+
+// sessionDetailForDisplay 按当前权限投影过滤历史详情。
+//
+// 权限被回收后，assistant/tool 中的旧数据必须隐藏；无法构建安全上下文
+// （连接已删除/完全无权限）时只保留用户提问与标题。
+func (h *Handler) sessionDetailForDisplay(sessionID, userID string) (*SessionDetail, error) {
+	sessCtx, err := h.sessions.GetContext(sessionID, userID)
+	if err != nil || sessCtx == nil || len(sessCtx.Schemas) == 0 {
+		return h.sessions.GetDetail(sessionID, userID)
+	}
+	masker := GetMaskerProvider().Get()
+	egressBlocked := false
+	if masker == nil {
+		masker = NewNoopMasker()
+		egressBlocked = true
+	}
+	profile := CurrentRuntimeProfile()
+	defaultConn := sessCtx.Schemas[0].ConnID
+	sec, buildErr := BuildRunSecurityContext(profile, userID, defaultConn, sessCtx.Schemas, admin.CurrentPermissionRevision(), masker)
+	if buildErr != nil {
+		detail, detailErr := h.sessions.GetDetail(sessionID, userID)
+		if detailErr != nil {
+			return nil, detailErr
+		}
+		for i := range detail.Messages {
+			if detail.Messages[i].Role == "assistant" {
+				detail.Messages[i].Content = HistoryQuarantinePlaceholder
+			}
+		}
+		return detail, nil
+	}
+	sec.DataEgressBlocked = egressBlocked
+	return h.sessions.GetDetailFiltered(sessionID, userID, sec)
 }
 
 func (h *Handler) HandleDeleteSession(c *gin.Context) {
@@ -641,8 +764,13 @@ func GetDBInfo(connID string) (string, string, string) {
 	if connID == "" {
 		return "", "", ""
 	}
+	db := getDBOrNil()
+	if db == nil {
+		// 启动期/测试环境：提示词与权限判定不应因管理库未就绪而 panic。
+		return "", "", ""
+	}
 	cfgList := []conn.ConnCfg{}
-	err := getDB().Select(&cfgList, "select * from t_conn where id = ?", connID)
+	err := db.Select(&cfgList, "select * from t_conn where id = ?", connID)
 	if err != nil || len(cfgList) == 0 {
 		return "", "", ""
 	}

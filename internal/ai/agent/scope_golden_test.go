@@ -97,6 +97,8 @@ func TestBuildPermissionScope_GoldenContract(t *testing.T) {
 	if _, err := db.Exec(`delete from t_system_config where config_key = 'ai.aiPolicyEnforce'`); err != nil {
 		t.Fatalf("清理策略开关失败：%v", err)
 	}
+	// 测试直接写库，不会触发应用的配置变更钩子：手动失效进程内缓存。
+	admin.InvalidateAIPolicyCache()
 
 	// 角色 r_conn：conn 级授权 + s1.restricted 表级限制
 	seedRole(t, db, "r_conn", 1, 0)
@@ -163,6 +165,7 @@ func TestBuildPermissionScope_GoldenContract(t *testing.T) {
 		values ('cfg1', 'ai.aiPolicyEnforce', 'true', 'ai')`); err != nil {
 		t.Fatalf("写入策略开关失败：%v", err)
 	}
+	admin.InvalidateAIPolicyCache()
 	enforced := BuildPermissionScope("u_ainomod", "c1", []string{"s1"})
 	if !enforced.AIPolicyEnforce {
 		t.Fatal("应读取到 AIPolicyEnforce=true")

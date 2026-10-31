@@ -275,6 +275,7 @@ func TestPromptToolReferencesRegistered(t *testing.T) {
 		"dataset_query", "cross_db_join", "analyze_data", "get_current_date_info",
 		"export_excel", "export_excel_with_chart", "export_analysis_docx", "export_ppt",
 		"export_html", "export_by_code", "exec_sql", "skill", "execute",
+		"get_export_artifact", "repair_export", "repair_export_by_code",
 	}
 	for _, name := range names {
 		if !strings.Contains(prompt, name) {
@@ -324,7 +325,7 @@ func TestSystemPromptBudget(t *testing.T) {
 	t.Logf("prompt budget (runes): static=%d dynamic=%d agents=%d total=%d",
 		utf8.RuneCountInString(buildStaticPromptPart("mysql", false)),
 		utf8.RuneCountInString(buildDynamicPromptPart("c1", "mysql", "s1", "8.0", nil, dbScope, nil, false, nil)),
-		utf8.RuneCountInString(buildAgentsMDSection()), utf8.RuneCountInString(prompt))
+		utf8.RuneCountInString(buildAgentsMDSection(true, true)), utf8.RuneCountInString(prompt))
 	if n := utf8.RuneCountInString(prompt); n > 12000 {
 		t.Fatalf("system prompt too large: %d runes", n)
 	}

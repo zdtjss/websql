@@ -114,8 +114,9 @@ func loadSandboxRoots() sandboxRoots {
 	}
 
 	cwd := cwdDir()
-	read := []string{workspace, filepath.Join(cwd, "exports"), filepath.Join(cwd, "skills"), os.TempDir()}
-	write := []string{workspace, filepath.Join(cwd, "exports"), os.TempDir()}
+	exportsRoot := Root()
+	read := []string{workspace, exportsRoot, filepath.Join(cwd, "skills"), os.TempDir()}
+	write := []string{workspace, exportsRoot, os.TempDir()}
 
 	// 过滤空项
 	filterEmpty := func(in []string) []string {
@@ -160,7 +161,7 @@ func userSandboxRoots(userID string, forSkill bool) sandboxRoots {
 	}
 
 	workspace := filepath.Join(agentWorkspaceDir(), "users", seg)
-	exports := filepath.Join(cwdDir(), "exports", "users", seg)
+	exports := Path("users", seg)
 	temp := userTempDir(userID)
 	for _, dir := range []string{workspace, exports} {
 		_ = os.MkdirAll(dir, 0o700)
@@ -172,7 +173,7 @@ func userSandboxRoots(userID string, forSkill bool) sandboxRoots {
 		write:     []string{workspace, exports, temp},
 	}
 	if forSkill {
-		roots.write = append(roots.write, filepath.Join(cwdDir(), "exports"))
+		roots.write = append(roots.write, Root())
 	}
 	userRootsCache.Store(cacheKey, roots)
 	return roots
@@ -298,12 +299,34 @@ func resolveSkillWritePath(userID, p string) (string, error) {
 		if !withinAnyRoot(cand, roots.write) {
 			continue
 		}
+		if isReservedExportPath(cand) {
+			return "", fmt.Errorf("不允许写入导出保留目录（.meta/.owners/.codegen）")
+		}
 		if fi, err := os.Lstat(cand); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("目标路径 %q 是符号链接，出于安全考虑拒绝写入", p)
 		}
 		return cand, nil
 	}
 	return "", fmt.Errorf("路径 %q 不在允许写入的范围内", p)
+}
+
+// isReservedExportPath 判断路径是否落在共享 exports 下的保留目录。
+// 技能脚本可以把产物发布到共享 exports，但不得写入归属记录、修复元数据或高级导出运行目录。
+func isReservedExportPath(absPath string) bool {
+	shared := filepath.Join(cwdDir(), "exports")
+	if !pathWithinRoot(absPath, shared) {
+		return false
+	}
+	rel, err := filepath.Rel(shared, absPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	first := strings.ToLower(strings.SplitN(rel, string(filepath.Separator), 2)[0])
+	switch first {
+	case ".meta", ".owners", ".codegen":
+		return true
+	}
+	return false
 }
 
 // isSharedExportPath 判断路径是否落在共享 exports 根（但不属于当前用户的隔离子目录）。
@@ -327,7 +350,7 @@ func sharedExportOwner(absPath string) string {
 	if name == "" || name == "." || name == ".." {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(cwdDir(), ownersDirName, name+".owner"))
+	data, err := os.ReadFile(filepath.Join(ownersDir(), name+".owner"))
 	if err != nil {
 		return ""
 	}
@@ -338,7 +361,7 @@ func sharedExportOwner(absPath string) string {
 // 归属记录由 writeExportFile / 技能输出预登记写入 .owners/<file>.owner。
 func sharedExportOwnedBy(absPath, userID string) bool {
 	userID = strings.TrimSpace(userID)
-	if userID == "" || !pathWithinRoot(absPath, filepath.Join(cwdDir(), "exports")) {
+	if userID == "" || !pathWithinRoot(absPath, Root()) {
 		return false
 	}
 	return sharedExportOwner(absPath) == userID
@@ -355,7 +378,7 @@ func recordSharedExportOwner(absPath, userID string) {
 	if name == "" || name == "." || name == ".." {
 		return
 	}
-	dir := filepath.Join(cwdDir(), ownersDirName)
+	dir := ownersDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}

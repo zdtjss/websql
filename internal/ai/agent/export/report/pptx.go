@@ -15,6 +15,18 @@ func RenderPPTX(doc *Document, theme Theme) ([]byte, error) {
 	return b.build()
 }
 
+// PlanSlides 返回演示稿页与源块的映射，供对话式页级编辑定位。
+// 页由 plan() 程序化生成（封面/目录/章节页/KPI/图表/表格/要点页/致谢），
+// 因此映射必须在同一排版算法下现算，不能持久化。
+func PlanSlides(doc *Document) []SlideRef {
+	if doc == nil {
+		return nil
+	}
+	b := &pptxBuilder{doc: doc, t: businessTheme, pkg: newZipPackage()}
+	b.plan()
+	return b.slideRefs
+}
+
 const (
 	slideW   = 12192000
 	slideH   = 6858000
@@ -48,6 +60,18 @@ type pptxBuilder struct {
 	pending   []Block
 	sectionNo int
 	multiH1   bool
+	// 页与源块映射：curIdx/curEnd 为当前正在排版的块下标，pendingIdx 与 pending 一一对应。
+	curIdx     int
+	curEnd     int
+	pendingIdx []int
+	slideRefs  []SlideRef
+}
+
+// markSlide 记录最近创建的一页与源块的对应关系（块下标为 0-based，-1 表示无源块）。
+func (b *pptxBuilder) markSlide(kind, title string, start, end int) {
+	b.slideRefs = append(b.slideRefs, SlideRef{
+		Index: len(b.slides), Title: title, Kind: kind, StartBlock: start, EndBlock: end,
+	})
 }
 
 func (b *pptxBuilder) newSlide(bg string) *pptxSlide {
@@ -248,6 +272,7 @@ func (b *pptxBuilder) plan() {
 
 	blocks := b.doc.Blocks
 	for i := 0; i < len(blocks); i++ {
+		b.curIdx, b.curEnd = i, i
 		bl := blocks[i]
 		switch bl.Kind {
 		case KindHeading:
@@ -270,6 +295,7 @@ func (b *pptxBuilder) plan() {
 			var lead []Block
 			if len(b.pending) > 0 && b.pendingLines() <= 4 {
 				lead, b.pending = b.pending, nil
+				b.pendingIdx = nil
 			} else {
 				b.flush()
 			}
@@ -292,6 +318,7 @@ func (b *pptxBuilder) plan() {
 				insights = append(insights, nb)
 				i = j
 			}
+			b.curEnd = i
 			b.chartSlide(bl, insights)
 		case KindTable:
 			b.flush()
@@ -301,11 +328,15 @@ func (b *pptxBuilder) plan() {
 		case KindDivider:
 		default:
 			b.pending = append(b.pending, bl)
+			b.pendingIdx = append(b.pendingIdx, i)
 			if b.pendingLines() > b.capacityLines() {
 				last := b.pending[len(b.pending)-1]
+				lastIdx := b.pendingIdx[len(b.pendingIdx)-1]
 				b.pending = b.pending[:len(b.pending)-1]
+				b.pendingIdx = b.pendingIdx[:len(b.pendingIdx)-1]
 				b.flush()
 				b.pending = []Block{last}
+				b.pendingIdx = []int{lastIdx}
 			}
 		}
 	}
@@ -367,9 +398,15 @@ func (b *pptxBuilder) flush() {
 		return
 	}
 	blocks := b.pending
+	start, end := b.curIdx, b.curIdx
+	if len(b.pendingIdx) > 0 {
+		start, end = b.pendingIdx[0], b.pendingIdx[len(b.pendingIdx)-1]
+	}
 	b.pending = nil
+	b.pendingIdx = nil
+	title := b.pageTitle("概述")
 	s := b.newSlide(b.t.Background)
-	b.titleBar(s, b.pageTitle("概述"), b.curKicker)
+	b.titleBar(s, title, b.curKicker)
 	y := bodyTop
 	for _, bl := range blocks {
 		h := b.renderFlowBlock(s, bl, marginX, y, bodyW, bodyFont)
@@ -377,6 +414,7 @@ func (b *pptxBuilder) flush() {
 	}
 	b.footer(s, len(b.slides))
 	b.curKicker = ""
+	b.markSlide("flow", title, start, end)
 }
 
 // renderFlowBlock 在 (x,y) 处绘制文本类块，返回占用高度
@@ -489,6 +527,7 @@ func (b *pptxBuilder) coverSlide() {
 	}
 	b.textBox(s, marginX+300000, 5400000, 9000000, 400000, []textPara{{runs: []textRun{{text: meta, size: 14, color: t.Muted}}}}, "ctr")
 	b.shape(s, "rect", 0, slideH-91440, slideW, 91440, t.Accent, "", 0, nil, "")
+	b.markSlide("cover", b.doc.Title, -1, -1)
 }
 
 func (b *pptxBuilder) agendaSlide() {
@@ -527,6 +566,7 @@ func (b *pptxBuilder) agendaSlide() {
 		b.textBox(s, x+760000, y, colW-900000, rowH, []textPara{{runs: []textRun{{text: TruncateRunes(it, 28), size: 20, color: t.Text}}}}, "ctr")
 	}
 	b.footer(s, len(b.slides))
+	b.markSlide("agenda", "目录", -1, -1)
 }
 
 func (b *pptxBuilder) sectionSlide(no int, title string) {
@@ -537,6 +577,7 @@ func (b *pptxBuilder) sectionSlide(no int, title string) {
 	b.shape(s, "rect", 1800000, 3450000, 1200000, 60960, t.Accent, "", 0, nil, "")
 	b.textBox(s, 1800000, 3650000, 9000000, 1000000, []textPara{{runs: []textRun{{text: title, size: 36, color: t.Text, bold: true}}}}, "t")
 	b.footer(s, len(b.slides))
+	b.markSlide("section", title, b.curIdx, b.curIdx)
 }
 
 func (b *pptxBuilder) kpiSlides(kpis []KPI, lead []Block) {
@@ -547,8 +588,9 @@ func (b *pptxBuilder) kpiSlides(kpis []KPI, lead []Block) {
 			end = len(kpis)
 		}
 		page := kpis[start:end]
+		title := b.pageTitle("核心指标概览")
 		s := b.newSlide(t.Background)
-		b.titleBar(s, b.pageTitle("核心指标概览"), b.curKicker)
+		b.titleBar(s, title, b.curKicker)
 		areaTop, areaH := bodyTop, bodyH
 		if start == 0 && len(lead) > 0 {
 			y := bodyTop
@@ -601,6 +643,7 @@ func (b *pptxBuilder) kpiSlides(kpis []KPI, lead []Block) {
 			}
 		}
 		b.footer(s, len(b.slides))
+		b.markSlide("kpi", title, b.curIdx, b.curIdx)
 	}
 	b.curKicker = ""
 }
@@ -614,6 +657,7 @@ func (b *pptxBuilder) chartSlide(bl Block, insights []Block) {
 	if bl.Error != "" || !bl.Chart.HasData() {
 		b.renderFlowBlock(s, Block{Kind: KindCallout, Style: "warning", Title: "图表未能生成", Text: firstNonEmpty(bl.Error, "无数据")}, marginX, bodyTop, bodyW, bodyFont)
 		b.footer(s, len(b.slides))
+		b.markSlide("chart", title, b.curIdx, b.curEnd)
 		return
 	}
 	chartW := bodyW
@@ -645,6 +689,7 @@ func (b *pptxBuilder) chartSlide(bl Block, insights []Block) {
 		}
 	}
 	b.footer(s, len(b.slides))
+	b.markSlide("chart", title, b.curIdx, b.curEnd)
 }
 
 func (b *pptxBuilder) chartFrame(s *pptxSlide, c *ChartSpec, x, y, w, h int, innerTitle string) {
@@ -677,6 +722,7 @@ func (b *pptxBuilder) tableSlides(bl Block) {
 		b.renderFlowBlock(s, Block{Kind: KindCallout, Style: "warning", Title: "数据表未能生成", Text: firstNonEmpty(bl.Error, "无数据")}, marginX, bodyTop, bodyW, bodyFont)
 		b.footer(s, len(b.slides))
 		b.curKicker = ""
+		b.markSlide("table", title, b.curIdx, b.curIdx)
 		return
 	}
 	tb := bl.Table
@@ -802,6 +848,7 @@ func (b *pptxBuilder) tableSlides(bl Block) {
 			b.textBox(s, marginX, bodyTop+tblH+120000, bodyW, 300000, []textPara{{runs: []textRun{{text: "※ " + strings.Join(notes, "；") + "，完整数据请导出 Excel", size: 11, color: t.Muted, italic: true}}}}, "t")
 		}
 		b.footer(s, len(b.slides))
+		b.markSlide("table", pt, b.curIdx, b.curIdx)
 	}
 	b.curKicker = ""
 }
@@ -813,6 +860,7 @@ func (b *pptxBuilder) closingSlide() {
 	b.textBox(s, 0, 2500000, slideW, 1000000, []textPara{{align: "ctr", runs: []textRun{{text: "谢谢观看", size: 44, color: t.Text, bold: true}}}}, "ctr")
 	b.textBox(s, 0, 3500000, slideW, 400000, []textPara{{align: "ctr", runs: []textRun{{text: "THANK YOU", size: 16, color: t.Accent, bold: true}}}}, "ctr")
 	b.textBox(s, 0, 5600000, slideW, 400000, []textPara{{align: "ctr", runs: []textRun{{text: "本报告由 WebSQL 智能分析生成 · " + time.Now().Format("2006-01-02"), size: 12, color: t.Muted}}}}, "ctr")
+	b.markSlide("closing", "致谢页", -1, -1)
 }
 
 // pickOn 返回在给定底色上可读的文字颜色

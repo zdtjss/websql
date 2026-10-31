@@ -1719,6 +1719,49 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     }
   }
 
+  /** 从导出链接解析下载文件名（/exports/<文件名> 末段，含中文时还原编码） */
+  function resolveExportFileName(href: string): string {
+    try {
+      const path = new URL(href, window.location.href).pathname
+      const baseName = path.slice(path.lastIndexOf('/') + 1)
+      if (!baseName) return 'download'
+      try {
+        return decodeURIComponent(baseName)
+      } catch (_) {
+        // 文件名含未编码的 % 时 decode 会抛错，按原串返回
+        return baseName
+      }
+    } catch (_) {
+      return 'download'
+    }
+  }
+
+  /**
+   * 桌面端应用内下载导出文件：fetch 成 blob 后触发 <a download>。
+   * 桌面版基于 WebView2，window.open 会先创建新窗口、attachment 触发下载后再销毁，
+   * 表现为窗口闪一下；改为应用内下载可完全不产生新窗口。
+   */
+  async function downloadExportInApp(href: string): Promise<void> {
+    try {
+      const resp = await fetch(href)
+      if (!resp.ok) {
+        ElMessage.error('下载失败（HTTP ' + resp.status + '）')
+        return
+      }
+      const objectUrl = URL.createObjectURL(await resp.blob())
+      const a = document.createElement('a')
+      a.href = objectUrl
+      a.download = resolveExportFileName(href)
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      // 延迟回收：WebView 读取 blob 需要时间，立即 revoke 可能导致下载中断
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000)
+    } catch (err) {
+      ElMessage.error('下载失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
   /** 全局点击：处理导出链接鉴权 */
   function handleExportLinkClick(e: MouseEvent): void {
     const link = (e.target as HTMLElement).closest('a[data-export-link]') as HTMLAnchorElement | null
@@ -1732,6 +1775,12 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     }
     const separator = href.includes('?') ? '&' : '?'
     href = href + separator + 'token=' + encodeURIComponent(authToken)
+    // HTML 报告为 inline 预览，保留新窗口；其余产物（office/PDF/CSV 等）下载走应用内
+    const isHtmlPreview = /\.html?$/i.test(new URL(href, window.location.href).pathname)
+    if (sessionStorage.getItem('isDesktop') === 'true' && !isHtmlPreview) {
+      void downloadExportInApp(href)
+      return
+    }
     window.open(href, '_blank')
   }
 

@@ -199,34 +199,42 @@ func newAsyncWriter() *asyncWriter {
 }
 
 func (w *asyncWriter) enqueue(record *AuditLog) bool {
+	// 持锁完成「closed 检查 + 非阻塞发送」：
+	// 若先解锁再发送，shutdown 可能在两步之间 close(w.ch)，导致 send-on-closed panic。
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
 		return false
 	}
-	w.mu.Unlock()
-
+	sent := false
 	select {
 	case w.ch <- record:
-		return true
+		sent = true
 	default:
-		// 队列满：累加丢弃条数（原子计数，可观测）；
-		// 首次丢弃与之后每累计 100 条告警一次，避免刷日志。
-		// 告警只带元信息（toolName/userId/source），不带 SQL 正文。
-		n := w.dropped.Add(1)
-		if n == 1 || n%100 == 0 {
-			log.Printf("[Audit] 审计日志队列已满，丢弃记录（累计 %d 条）- toolName=%s userId=%s source=%s\n",
-				n, record.ToolName, record.UserID, record.Source)
-		}
-		return false
 	}
+	w.mu.Unlock()
+
+	if sent {
+		return true
+	}
+	// 队列满：累加丢弃条数（原子计数，可观测）；
+	// 首次丢弃与之后每累计 100 条告警一次，避免刷日志。
+	// 告警只带元信息（toolName/userId/source），不带 SQL 正文。
+	n := w.dropped.Add(1)
+	if n == 1 || n%100 == 0 {
+		log.Printf("[Audit] 审计日志队列已满，丢弃记录（累计 %d 条）- toolName=%s userId=%s source=%s\n",
+			n, record.ToolName, record.UserID, record.Source)
+	}
+	return false
 }
 
 func (w *asyncWriter) shutdown() {
-	w.mu.Lock()
-	w.closed = true
-	w.mu.Unlock()
-	close(w.ch)
+	w.once.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		close(w.ch)
+		w.mu.Unlock()
+	})
 }
 
 func (w *asyncWriter) consume() {

@@ -67,18 +67,30 @@ func TestOutputGuard_SingleCharChunks(t *testing.T) {
 	}
 }
 
-func TestOutputGuard_RedactsOverlongToken(t *testing.T) {
-	guard := NewOutputGuard(NewNoopMasker(), 0)
-	long := strings.Repeat("a", maxOutputTokenRunes+50)
-	got, err := collectGuard(t, guard, []string{"前缀 ", long, " 后缀"})
+// F-24 变更后的策略：只对「疑似凭据前缀」的超长 token 整段替换，
+// 普通无空白长串（长 URL、无分隔标识符、工具 JSON 结果）必须保留，
+// 否则 query_data 等工具结果会被抹成 ***，模型永远看不到数据。
+func TestOutputGuard_RedactsOnlyCredentialLikeOverlongTokens(t *testing.T) {
+	plain := strings.Repeat("a", maxOutputTokenRunes+50)
+	got, err := collectGuard(t, NewOutputGuard(NewNoopMasker(), 0), []string{"前缀 " + plain + " 后缀"})
 	if err != nil {
-		t.Fatalf("guard 返回错误：%v", err)
+		t.Fatalf("guard 错误：%v", err)
 	}
-	if strings.Contains(got, long) {
-		t.Fatal("超长 token 应整段替换")
+	if !strings.Contains(got, plain) {
+		t.Fatalf("无凭据特征的超长 token 应保留：%q", got[:40])
 	}
-	if !strings.Contains(got, "***") {
-		t.Fatalf("应包含替换标记，实际：%q", got)
+
+	for _, secret := range []string{"eyJ" + strings.Repeat("b", maxOutputTokenRunes+50), "sk-" + strings.Repeat("c", maxOutputTokenRunes+50)} {
+		masked, err := collectGuard(t, NewOutputGuard(NewNoopMasker(), 0), []string{"令牌 " + secret})
+		if err != nil {
+			t.Fatalf("guard 错误：%v", err)
+		}
+		if strings.Contains(masked, secret) {
+			t.Fatalf("超长凭据 token 应整段替换：%q", masked[:40])
+		}
+		if !strings.Contains(masked, "***") {
+			t.Fatalf("应包含替换标记：%q", masked[:40])
+		}
 	}
 }
 

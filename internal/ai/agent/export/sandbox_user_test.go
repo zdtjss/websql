@@ -33,6 +33,20 @@ func TestResolveReadPathForUserIsolation(t *testing.T) {
 	}
 }
 
+// TestResolveSkillWritePathRejectsReservedDirs 技能产物可写共享 exports，
+// 但不得写 .meta/.owners/.codegen 等保留目录。
+func TestResolveSkillWritePathRejectsReservedDirs(t *testing.T) {
+	user := "phase2-skill"
+	if _, err := resolveSkillWritePath(user, filepath.Join(cwdDir(), "exports", "skill-output.html")); err != nil {
+		t.Fatalf("正常产物路径应允许：%v", err)
+	}
+	for _, rel := range []string{".meta/x.json", ".owners/x.owner", ".codegen/run/x.txt"} {
+		if _, err := resolveSkillWritePath(user, filepath.Join(cwdDir(), "exports", filepath.FromSlash(rel))); err == nil {
+			t.Fatalf("保留目录不应允许技能写入：%s", rel)
+		}
+	}
+}
+
 // TestResolveWritePathForUserIsolation 验证写路径按用户隔离，不能改写其他用户文件或 .owners。
 func TestResolveWritePathForUserIsolation(t *testing.T) {
 	owner := "phase2-owner-w"

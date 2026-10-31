@@ -86,6 +86,12 @@ func AppendPmsn(sql *bytes.Buffer, col string, param *[]any, userPower *UserPowe
 	if config.IsLocalMode() {
 		return
 	}
+	// 缺少权限上下文时按“无任何授权”处理（fail-closed）。
+	// 以前直接解引用 nil 会 panic，使整条连接列表查询在后台 goroutine 中崩溃。
+	if userPower == nil {
+		sql.WriteString(" and 1 = 2 ")
+		return
+	}
 	powerCount := len(userPower.Power)
 	sql.WriteString(" and ")
 	if powerCount == 0 {

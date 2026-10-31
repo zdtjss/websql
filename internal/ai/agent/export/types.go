@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/ai/agent/sqlutil"
@@ -25,8 +26,8 @@ type QueryResult struct {
 
 // QueryRunner 由调用方（agent 层）注入，用于在导出取数前完成权限校验与结果脱敏。
 //
-// 导出包不依赖权限模型：未注入 Runner 时退化为直接查询（仅限独立测试/脚本）；
-// Agent 链路必须注入，否则 Excel 等原生导出会绕过列级脱敏。
+// 导出包不依赖权限模型：Agent 链路必须注入 Runner；未注入时直接 fail-closed，
+// 不能退化为直查（否则 Excel 等原生导出会绕过列级权限与脱敏）。
 type QueryRunner interface {
 	QueryForExport(ctx context.Context, sql string, maxRows int) (*QueryResult, error)
 }
@@ -41,12 +42,12 @@ func firstQueryRunner(runners []QueryRunner) QueryRunner {
 	return nil
 }
 
-// runExportQuery 统一取数入口：有 Runner 时走权限校验执行器，否则直接查询。
+// runExportQuery 统一取数入口：必须经权限校验执行器，缺少 Runner 一律拒绝。
 func runExportQuery(ctx context.Context, conn *sqlx.DB, runner QueryRunner, sql string) (*QueryResult, error) {
-	if runner != nil {
-		return runner.QueryForExport(ctx, sql, maxExportRows)
+	if runner == nil {
+		return nil, fmt.Errorf("导出取数缺少权限执行器，已拒绝：请通过 Agent 导出链路执行")
 	}
-	return QueryForExport(conn, sql)
+	return runner.QueryForExport(ctx, sql, maxExportRows)
 }
 
 // maxExportRows 导出工具的行数硬上限（读取上限 + 1 行用于判定是否超限）。
@@ -161,17 +162,79 @@ func randomToken4() string {
 	return hex.EncodeToString(b)
 }
 
-func EnsureExportsDir() {
-	os.MkdirAll("exports", 0755)
+// 导出根目录：默认 ./exports，可由配置 export.dir 覆盖。
+// 所有落盘、元数据、归属记录、沙箱运行目录都必须经 Root/Path，
+// 避免依赖进程 CWD 导致“导出成功但下载 404 / 修复找不到文件”。
+var exportRootState struct {
+	mu  sync.RWMutex
+	dir string
 }
 
-// exportsDirAbs 返回导出目录的绝对路径（供子进程环境变量 WEBSQL_EXPORT_DIR 使用）。
-func exportsDirAbs() string {
+// SetRoot 设置导出根目录（绝对路径）并初始化目录。
+//
+// 导出根变更必须同时失效 .meta 索引，否则旧快照会被当作当前目录的索引使用。
+func SetRoot(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = "exports"
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	exportRootState.mu.Lock()
+	exportRootState.dir = abs
+	exportRootState.mu.Unlock()
+	invalidateArtifactMetaIndex()
+	EnsureExportsDir()
+}
+
+// rootLocked 返回导出根（调用方持 RLock）。
+func rootLocked() string {
+	if exportRootState.dir != "" {
+		return exportRootState.dir
+	}
 	if abs, err := filepath.Abs("exports"); err == nil {
 		return abs
 	}
 	return "exports"
 }
+
+// Root 返回导出根目录绝对路径。
+func Root() string {
+	exportRootState.mu.RLock()
+	defer exportRootState.mu.RUnlock()
+	return rootLocked()
+}
+
+// artifactsDir 返回导出元数据目录（随导出根变化）。
+func artifactsDir() string {
+	exportRootState.mu.RLock()
+	defer exportRootState.mu.RUnlock()
+	return filepath.Join(rootLocked(), ".meta")
+}
+
+// ownersDir 返回导出归属登记目录（随导出根变化）。
+func ownersDir() string {
+	exportRootState.mu.RLock()
+	defer exportRootState.mu.RUnlock()
+	return filepath.Join(rootLocked(), ".owners")
+}
+
+// Path 在导出根目录下拼接路径。
+func Path(elem ...string) string {
+	parts := make([]string, 0, len(elem)+1)
+	parts = append(parts, Root())
+	parts = append(parts, elem...)
+	return filepath.Join(parts...)
+}
+
+func EnsureExportsDir() {
+	_ = os.MkdirAll(Root(), 0755)
+}
+
+// exportsDirAbs 返回导出目录的绝对路径（供子进程环境变量 WEBSQL_EXPORT_DIR 使用）。
+func exportsDirAbs() string { return Root() }
 
 func ColIndex(cols []string, name string) int {
 	for i, c := range cols {
@@ -276,6 +339,7 @@ type ExportExcelOutput struct {
 	RowCount    int    `json:"rowCount"`
 	DownloadURL string `json:"downloadUrl"`
 	FileType    string `json:"fileType"`
+	Version     int    `json:"version,omitempty"`
 }
 
 type ExportExcelWithChartInput struct {
@@ -286,6 +350,7 @@ type ExportExcelWithChartInput struct {
 	XAxisField string       `json:"xAxisField" jsonschema_description:"单图兼容字段（建议改用 charts）：X 轴字段名"`
 	YAxisField string       `json:"yAxisField" jsonschema_description:"单图兼容字段（建议改用 charts）：Y 轴字段名"`
 	ChartTitle string       `json:"chartTitle" jsonschema_description:"图表标题（可选）"`
+	Summary    string       `json:"summary" jsonschema_description:"分析摘要/结论与建议（扩展 Markdown，可选）：渲染到「分析摘要」工作表，支持标题/段落/列表/kpi/table；建议写 3~5 条结论与建议，使 Excel 也能直接汇报。图表请用 charts 参数"`
 }
 
 type ExportExcelWithChartOutput struct {
@@ -294,6 +359,7 @@ type ExportExcelWithChartOutput struct {
 	ChartCount  int    `json:"chartCount"`
 	DownloadURL string `json:"downloadUrl"`
 	FileType    string `json:"fileType"`
+	Version     int    `json:"version,omitempty"`
 }
 
 // ExportReportInput 报告类导出统一入参（export_analysis_docx / export_ppt / export_html 共用）。
@@ -302,19 +368,24 @@ type ExportExcelWithChartOutput struct {
 //   - content 模式（推荐）：直接传扩展 Markdown 正文，支持 ```kpi 指标卡、
 //     ```chart 图表（可给 categories/series，也可给 sql 由服务端经权限校验取数）、
 //     ```table 数据表、> [!NOTE] 提示框、$$公式$$、<!-- pagebreak --> 分页；
+//     正文应达到「可直接对外汇报」的结构：章节标题 + 指标卡 + 图表 + 关键明细 + 结论与建议；
 //   - sql 模式：仅给 SQL 时服务端自动生成「指标卡 + 图表 + 明细表」图文报告。
 type ExportReportInput struct {
-	Title    string `json:"title" jsonschema_description:"报告标题（显示在封面）"`
-	Subtitle string `json:"subtitle" jsonschema_description:"副标题（可选）"`
-	Theme    string `json:"theme" jsonschema_description:"主题：business(默认，商务蓝) | tech(深色科技风)"`
-	Content  string `json:"content" jsonschema_description:"报告正文（扩展 Markdown，与 sql 二选一，推荐）。支持标题/段落/列表/表格/引用/kpi 指标卡/chart 图表/table 数据表/mermaid 图示/公式/分页"`
+	Title    string `json:"title" jsonschema_description:"报告标题（显示在封面，报告级导出必填）"`
+	Subtitle string `json:"subtitle" jsonschema_description:"副标题（建议写统计口径、时间范围、数据来源）"`
+	Theme    string `json:"theme" jsonschema_description:"视觉主题：business(默认，商务蓝) | tech(深色科技风)；全篇统一一个主题"`
+	Content  string `json:"content" jsonschema_description:"报告正文（扩展 Markdown，与 sql 二选一，推荐）。须含章节标题、kpi 指标卡、至少一个 chart 图表、必要 table 明细、结论与建议；支持标题/段落/列表/表格/引用/kpi/chart/table/mermaid/公式/分页"`
 	FileName string `json:"fileName" jsonschema_description:"文件名（不含扩展名）"`
-	SQL      string `json:"sql" jsonschema_description:"SELECT SQL（与 content 二选一，仅提供 SQL 时自动生成含指标卡/图表/明细的报告）"`
+	SQL      string `json:"sql" jsonschema_description:"SELECT SQL（与 content 二选一；仅提供 SQL 时自动生成指标卡/图表/明细表，仍建议用 content 补充结论）"`
 }
 
 type ExportReportOutput struct {
-	Message     string `json:"message"`
-	SlideCount  int    `json:"slideCount,omitempty"`
-	DownloadURL string `json:"downloadUrl"`
-	FileType    string `json:"fileType"`
+	Message      string `json:"message"`
+	SlideCount   int    `json:"slideCount,omitempty"`
+	SectionCount int    `json:"sectionCount,omitempty"`
+	ChartCount   int    `json:"chartCount,omitempty"`
+	TableCount   int    `json:"tableCount,omitempty"`
+	DownloadURL  string `json:"downloadUrl"`
+	FileType     string `json:"fileType"`
+	Version      int    `json:"version,omitempty"`
 }
