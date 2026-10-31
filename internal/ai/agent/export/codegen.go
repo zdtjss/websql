@@ -65,6 +65,30 @@ const (
 // codegenBaseDir 高级导出的运行根目录（位于 exports 下，随后续导出清理任务一并淘汰）。
 func codegenBaseDir() string { return filepath.Join("exports", ".codegen") }
 
+// codegenQueueFallbackMessage 排队被拒时引导模型改用 Go 原生导出（不重试 export_by_code）。
+func codegenQueueFallbackMessage(ctx context.Context, err error) string {
+	if ctx != nil && ctx.Err() != nil {
+		return "高级导出已取消（排队等待被中断）。"
+	}
+	reason := err
+	var waited time.Duration
+	var waitErr *QueueWaitError
+	if errors.As(err, &waitErr) {
+		reason = waitErr.Reason
+		waited = waitErr.Wait
+	}
+	var msg string
+	switch {
+	case errors.Is(reason, ErrQueueDegraded):
+		msg = fmt.Sprintf("用户已选择降级为 Go 原生渲染，本次高级导出未执行（排队等待 %s）。", waited.Round(time.Second))
+	case errors.Is(reason, ErrQueueTimeout):
+		msg = fmt.Sprintf("高级导出排队超过 %s 仍未获得执行资源，已自动降级为 Go 原生渲染。", waited.Round(time.Second))
+	default:
+		msg = "高级导出未能获得执行资源，本次已跳过。"
+	}
+	return msg + "\n请改用 export_analysis_docx / export_ppt / export_html（content 模式）或 export_excel / export_excel_with_chart 生成文件，不要再次调用 export_by_code。"
+}
+
 // codegenRunBaseDirs 返回运行目录的候选根（按优先级）。
 // 首选 exports/.codegen；Windows 低完整性标注需要目录 ACL 授予 WRITE_OWNER
 // （仅有 Modify 的目录会返回 Access is denied），此时退回系统临时目录。
@@ -105,6 +129,16 @@ func NewExportByCodeFunc(conn *sqlx.DB, dbInfo *CodegenDBInfo, auditCtx *AuditCt
 		if !CodegenIsolationAvailable() {
 			return nil, fmt.Errorf("高级导出不可用：当前环境无可用 OS 级隔离（fail-closed）")
 		}
+
+		// 与技能脚本共用同一并发闸门：高级导出同样会拉起 Python 子进程，
+		// 不设上限时突发请求会在单机上先撞到内存。排队不占本次执行超时。
+		release, waitErr := DefaultSkillQueue().Acquire(ctx, ownerOf(auditCtx), QueueNotifierFrom(ctx), DegradeSignalFrom(ctx))
+		if waitErr != nil {
+			log.Printf("[SkillQueue] 高级导出未获得执行槽位 - user=%s, err=%v, %s",
+				ownerOf(auditCtx), waitErr, skillQueueStats())
+			return &ExportByCodeOutput{Message: codegenQueueFallbackMessage(ctx, waitErr), ExitCode: -1}, nil
+		}
+		defer release()
 
 		runDir, err := createCodegenRunDir()
 		if err != nil {

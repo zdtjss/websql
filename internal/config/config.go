@@ -187,4 +187,16 @@ type Config struct {
 		Temperature    float32 `json:"temperature"`
 		EnableThinking bool    `json:"enableThinking"`
 	} `json:"ai"`
+	// Skill 技能脚本（Python 子进程）的执行资源约束。
+	// 留 0 时使用默认值：maxConcurrent=min(2×CPU,16)、maxConcurrentPerUser=2、
+	// queueMaxWaitSec=60；executor=auto（常驻 worker 池可用则用之，否则回退 one-shot）。
+	Skill struct {
+		MaxConcurrent        int    `json:"maxConcurrent"`
+		MaxConcurrentPerUser int    `json:"maxConcurrentPerUser"`
+		QueueMaxWaitSec      int    `json:"queueMaxWaitSec"`
+		Executor             string `json:"executor"`
+		WorkerMinWarm        int    `json:"workerMinWarm"`
+		WorkerIdleTTLSec     int    `json:"workerIdleTTLSec"`
+		WorkerMaxJobs        int    `json:"workerMaxJobs"`
+	} `json:"skill"`
 }

@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"websql/internal/config"
-
 	skill "github.com/cloudwego/eino/adk/middlewares/skill"
 )
 
@@ -162,23 +160,22 @@ func getPythonVersion() string {
 
 // detectPython 检测系统中可用的 Python 解释器。
 //
-// 检测顺序（桌面/本地模式下）：
+// 检测顺序：
 //  1. 运行目录下的捆绑 Python 分发文件（python/python.exe 等）
-//     —— 保证桌面版在用户未安装 Python 时仍可使用 Skill
+//     —— 桌面版与 Web 发行包均可显式随包分发 python/，优先使用，
+//     避免目标机另装 Python 与 skills 依赖
 //  2. 系统 PATH 查找（exec.LookPath，操作系统提供的搜索方案）
 //
 // Wails3 不提供 Python 搜索能力；操作系统 PATH 查找由 exec.LookPath 完成，
 // 这就是"按操作系统办法执行"的实现。
 func detectPython() {
-	// 1. 本地/桌面模式：优先在运行目录查找捆绑的 Python 分发文件
-	if config.IsLocalMode() {
-		for _, dir := range candidateSearchDirs() {
-			if path, version := findBundledPython(dir); path != "" {
-				log.Printf("[SkillDetector] 发现运行目录 Python: %s (%s)", path, version)
-				pythonAvailable = true
-				pythonPath = path
-				return
-			}
+	// 1. 优先使用随包分发的捆绑 Python（zip 内 python/ 与可执行文件同级）
+	for _, dir := range candidateSearchDirs() {
+		if path, version := findBundledPython(dir); path != "" {
+			log.Printf("[SkillDetector] 发现运行目录 Python: %s (%s)", path, version)
+			pythonAvailable = true
+			pythonPath = path
+			return
 		}
 	}
 
@@ -201,7 +198,7 @@ func detectPython() {
 }
 
 // candidateSearchDirs 返回需要检查捆绑 Python 分发文件的候选目录列表（去重）。
-// 桌面模式下，可执行文件所在目录是首要候选（用户可能将便携 Python 放在 exe 同级）；
+// 可执行文件所在目录是首要候选（zip 内 python/ 与二进制同级，桌面版/Web 版一致）；
 // 当前工作目录作为补充（dev 模式下 exe 在 build 子目录，而 Python 在项目根）。
 func candidateSearchDirs() []string {
 	var dirs []string

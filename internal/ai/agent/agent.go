@@ -40,6 +40,12 @@ type StreamChunk struct {
 	// Thinking 仅用于 type=retract：需要从思考区末尾撤回的文本
 	// （模型流式重试时，失败尝试已推送的内容需要撤回，content 字段承载正文部分）
 	Thinking string `json:"thinking,omitempty"`
+	// 以下字段仅用于 type=queue_notice：技能脚本执行的排队状态
+	Phase        string `json:"phase,omitempty"`        // waiting | acquired | degraded | timeout
+	Position     int    `json:"position,omitempty"`     // 前面还在等待的任务数
+	WaitMs       int64  `json:"waitMs,omitempty"`       // 已等待毫秒数
+	Limit        int    `json:"limit,omitempty"`        // 全局槽位上限
+	PerUserLimit int    `json:"perUserLimit,omitempty"` // 单用户槽位上限
 }
 
 // ChatRequest 聊天请求
@@ -291,6 +297,11 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	}
 	defer sess.EndRun()
 
+	// 技能执行排队：注入排队通知与「用户降级」信号（仅影响本次运行）。
+	queueCtl, unregisterQueueCtl := registerRunQueueControl(sessionID)
+	defer unregisterQueueCtl()
+	ctx = withRunQueueControl(ctx, queueCtl, flush)
+
 	if err := sess.AppendMessage(SessionMessage{
 		Role:        "user",
 		Content:     req.Question,
@@ -515,6 +526,11 @@ func (a *SQLAgent) ResumeStream(ctx context.Context, runID, checkPointID string,
 		}
 		defer sess.EndRun()
 	}
+
+	// 恢复链路同样需要排队通知与降级信号（审批后的 execute 可能仍在排队）。
+	queueCtl, unregisterQueueCtl := registerRunQueueControl(binding.SessionID)
+	defer unregisterQueueCtl()
+	ctx = withRunQueueControl(ctx, queueCtl, flush)
 
 	version, err := globalCheckPointStore.BeginResume(checkPointID, binding)
 	if err != nil {

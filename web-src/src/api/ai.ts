@@ -187,6 +187,13 @@ export function deleteChatSession(sessionId: string): Promise<AxiosResponse<ApiR
   return http.post('/ai/agent/session/delete', null, { params: { sessionId } })
 }
 
+/** 请求把当前排队中的技能导出降级为 Go 原生渲染，对应 POST /ai/agent/queue/degrade */
+export function requestSkillDegrade(
+  sessionId: string,
+): Promise<AxiosResponse<ApiResponse<{ degraded: boolean }>>> {
+  return http.post('/ai/agent/queue/degrade', { sessionId })
+}
+
 /** 加载历史会话详情，对应 GET /ai/agent/session */
 export function getChatSession(sessionId: string): Promise<AxiosResponse<ApiResponse<unknown>>> {
   return http.get('/ai/agent/session', { params: { sessionId } })

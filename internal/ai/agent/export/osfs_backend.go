@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,8 +16,6 @@ import (
 
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/schema"
-
-	"websql/internal/pkg/safego"
 )
 
 type OSFilesystemBackend struct {
@@ -422,33 +421,84 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 		return nil, fmt.Errorf("command validation failed: %w", err)
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, executeDefaultTimeout)
-	argv := append(append(append([]string{}, inv.pyFlags...), inv.script), inv.args...)
-	cmd := exec.CommandContext(execCtx, b.pythonExecutable(), argv...)
-	hideWindow(cmd)
-	if ws := rootsForSkillExecution(b.userID).workspace; ws != "" {
-		cmd.Dir = ws
+	// 并发闸门：全局 + 单用户槽位，排队期间通过 SSE 通知前端，可被「改用 Go 导出」打断。
+	// 排队失败不返回工具错误，而是返回普通输出，引导模型在同一次运行内改用 Go 原生导出。
+	release, waitErr := DefaultSkillQueue().Acquire(ctx, b.userID, QueueNotifierFrom(ctx), DegradeSignalFrom(ctx))
+	if waitErr != nil {
+		log.Printf("[SkillQueue] 未获得执行槽位 - user=%s, err=%v, running/waiting=%v",
+			b.userID, waitErr, skillQueueStats())
+		return singleExecuteStream(queueFallbackResponse(ctx, waitErr)), nil
 	}
-	env := sandboxProcessEnv(map[string]string{
-		"WEBSQL_EXPORT_DIR": exportsDirAbs(),
-		// 保留部署可能设置的 PYTHONPATH（用于定位预装依赖）；不继承其他环境变量。
-		"PYTHONPATH": os.Getenv("PYTHONPATH"),
-		// 临时目录按用户隔离，避免跨用户读写系统临时目录。
-		"TEMP": userTempDir(b.userID), "TMP": userTempDir(b.userID), "TMPDIR": userTempDir(b.userID),
+	// 槽位持有到脚本执行结束（worker 与 one-shot 均为同步返回），失败路径也不会泄露。
+	defer release()
+
+	// 执行器：优先常驻 worker 池（省 import 开销），不可用时回退 one-shot 进程。
+	result, err := runSkillScript(ctx, skillExecSpec{
+		Script:       inv.script,
+		Args:         inv.args,
+		Python:       b.pythonExecutable(),
+		PythonEnvDir: b.pythonEnvDir(),
+		Cwd:          rootsForSkillExecution(b.userID).workspace,
+		Env: map[string]string{
+			"WEBSQL_EXPORT_DIR": exportsDirAbs(),
+			// 保留部署可能设置的 PYTHONPATH（用于定位预装依赖）；不继承其他环境变量。
+			"PYTHONPATH": os.Getenv("PYTHONPATH"),
+			// 临时目录按用户隔离，避免跨用户读写系统临时目录。
+			"TEMP": userTempDir(b.userID), "TMP": userTempDir(b.userID), "TMPDIR": userTempDir(b.userID),
+		},
+		StdinFile: inv.stdinFile,
+		Timeout:   executeDefaultTimeout,
 	})
-	if dir := b.pythonEnvDir(); dir != "" {
+	if err != nil {
+		return nil, err
+	}
+	return singleExecuteStream(&filesystem.ExecuteResponse{Output: result.Output, ExitCode: &result.ExitCode}), nil
+}
+
+// runSkillScript 按配置选择执行器；仅「worker 不可用」时回退 one-shot，
+// 请求已发出后的失败不重放脚本（避免产物重复或半成品）。
+func runSkillScript(ctx context.Context, spec skillExecSpec) (*skillExecResult, error) {
+	if pool := defaultWorkerPool(spec.Python, spec.PythonEnvDir); pool != nil {
+		res, err := pool.Run(ctx, spec)
+		if err == nil {
+			return res, nil
+		}
+		if !errors.Is(err, errWorkerUnavailable) {
+			return nil, err
+		}
+		log.Printf("[SkillWorker] worker 不可用，回退 one-shot - err=%v", err)
+	}
+	return runOneShotSkill(ctx, spec)
+}
+
+// runOneShotSkill 原有执行路径：每次新起一个解释器（worker 池的回退方案）。
+func runOneShotSkill(ctx context.Context, spec skillExecSpec) (*skillExecResult, error) {
+	timeout := spec.Timeout
+	if timeout <= 0 {
+		timeout = executeDefaultTimeout
+	}
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	argv := append([]string{"-u", "-B", spec.Script}, spec.Args...)
+	cmd := exec.CommandContext(execCtx, spec.Python, argv...)
+	hideWindow(cmd)
+	if spec.Cwd != "" {
+		cmd.Dir = spec.Cwd
+	}
+	env := sandboxProcessEnv(spec.Env)
+	if spec.PythonEnvDir != "" {
 		for i, kv := range env {
 			if strings.HasPrefix(kv, "PATH=") {
-				env[i] = "PATH=" + dir + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
+				env[i] = "PATH=" + spec.PythonEnvDir + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
 				break
 			}
 		}
 	}
 	cmd.Env = env
-	if inv.stdinFile != "" {
-		f, err := os.Open(inv.stdinFile)
+	if spec.StdinFile != "" {
+		f, err := os.Open(spec.StdinFile)
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("打开输入文件失败：%w", err)
 		}
 		cmd.Stdin = f
@@ -459,34 +509,27 @@ func (b *OSFilesystemBackend) ExecuteStreaming(ctx context.Context, input *files
 	cmd.Stdout = out
 	cmd.Stderr = out
 
-	sr, sw := schema.Pipe[*filesystem.ExecuteResponse](1)
 	if err := cmd.Start(); err != nil {
-		cancel()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
-	safego.GoWithName("osfs-exec-wait", func() {
-		defer sw.Close()
-		defer cancel()
-		waitErr := cmd.Wait()
-		exitCode := 0
-		if waitErr != nil {
-			var exitErr *exec.ExitError
-			if errors.As(waitErr, &exitErr) {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = -1
-			}
+	waitErr := cmd.Wait()
+	exitCode := 0
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
 		}
-		output := out.String()
-		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			output += fmt.Sprintf("\n(执行超过 %v 已被终止)", executeDefaultTimeout)
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		sw.Send(&filesystem.ExecuteResponse{Output: output, ExitCode: &exitCode}, nil)
-	})
-	return sr, nil
+	}
+	output := out.String()
+	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+		output += fmt.Sprintf("\n(执行超过 %v 已被终止)", timeout)
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return &skillExecResult{Output: output, ExitCode: exitCode}, nil
 }
 
 // pythonEnvDir 返回需要加入子进程 PATH 的 Python 目录（捆绑的便携 Python 不在系统 PATH 中）
@@ -495,4 +538,47 @@ func (b *OSFilesystemBackend) pythonEnvDir() string {
 		return ""
 	}
 	return filepath.Dir(b.pythonPath)
+}
+
+// singleExecuteStream 构造只含一条结果的执行流（用于排队被拒等不需要启动子进程的场景）。
+func singleExecuteStream(resp *filesystem.ExecuteResponse) *schema.StreamReader[*filesystem.ExecuteResponse] {
+	sr, sw := schema.Pipe[*filesystem.ExecuteResponse](1)
+	_ = sw.Send(resp, nil)
+	sw.Close()
+	return sr
+}
+
+// queueFallbackResponse 把排队失败转成普通工具输出（而非工具错误）：
+// 让模型在同一次运行内直接改用 Go 原生导出工具，而不是反复重试 execute。
+func queueFallbackResponse(ctx context.Context, err error) *filesystem.ExecuteResponse {
+	exitCode := 1
+	if ctx != nil && ctx.Err() != nil {
+		return &filesystem.ExecuteResponse{Output: "技能执行已取消（排队等待被中断）。", ExitCode: &exitCode}
+	}
+
+	reason := err
+	var waited time.Duration
+	var waitErr *QueueWaitError
+	if errors.As(err, &waitErr) {
+		reason = waitErr.Reason
+		waited = waitErr.Wait
+	}
+
+	var msg string
+	switch {
+	case errors.Is(reason, ErrQueueDegraded):
+		msg = fmt.Sprintf("用户已选择降级为 Go 原生渲染，本次技能脚本未执行（排队等待 %s）。", waited.Round(time.Second))
+	case errors.Is(reason, ErrQueueTimeout):
+		msg = fmt.Sprintf("技能执行排队超过 %s 仍未获得执行资源，已自动降级为 Go 原生渲染。", waited.Round(time.Second))
+	default:
+		msg = "技能执行未能获得执行资源，本次已跳过。"
+	}
+	msg += "\n请改用 export_analysis_docx / export_ppt / export_html（content 模式）或 export_excel / export_excel_with_chart 完成本次导出，不要再次调用 execute。"
+	return &filesystem.ExecuteResponse{Output: msg, ExitCode: &exitCode}
+}
+
+// skillQueueStats 返回当前槽位使用情况，用于日志排查。
+func skillQueueStats() string {
+	running, waiting := DefaultSkillQueue().Stats()
+	return fmt.Sprintf("running=%d,waiting=%d", running, waiting)
 }

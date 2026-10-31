@@ -18,6 +18,14 @@ export interface StreamChatOptions {
   onSchemasEmpty?: () => void
 }
 
+/** 技能执行排队状态（SSE queue_notice）：phase=waiting/acquired/degraded/timeout */
+export interface SkillQueueNotice {
+  phase: string
+  ahead: number
+  waitMs: number
+  limit: number
+}
+
 /** useChatStream 依赖的外部上下文 */
 export interface UseChatStreamDeps {
   /** 聊天历史（追加消息） */
@@ -46,6 +54,8 @@ export interface UseChatStreamDeps {
   abortController: Ref<AbortController | null>
   /** 流式执行内容（与 useSqlConfirm 共享，由 ChatView 创建） */
   streamingExecContent: Ref<string>
+  /** 技能执行排队状态（与 useSqlConfirm 共享，由 ChatView 创建） */
+  queueNotice: Ref<SkillQueueNotice | null>
   /** 构建 schemas 数组（用于请求体） */
   buildRequestSchemas: () => { connId: string; schema: string }[]
   /** 获取主连接 connId */
@@ -96,7 +106,7 @@ export function useChatStream(deps: UseChatStreamDeps) {
   const {
     chatHistory, showAllHistory, sessionId, selectedSchemas, selectedTables,
     selectedModel, question, uploads, markAttachmentsSent, advancedExport,
-    loading, abortController, streamingExecContent,
+    loading, abortController, streamingExecContent, queueNotice,
     buildRequestSchemas, getPrimaryConnId, scrollToBottom, handleSessionExpired,
     renderMarkdown, doRenderMermaidBlocks, countClosedMermaidBlocks,
     showConfirmDialog, setBatchPendingSQL, resetDetectFlag,
@@ -276,6 +286,7 @@ export function useChatStream(deps: UseChatStreamDeps) {
     loading.value = true
     thinkingText.value = ''
     streamingContent.value = ''
+    queueNotice.value = null
     lastRenderedMermaidCount = 0
     lastStreamingMermaidCount = 0
     lastStreamingExecMermaidCount = 0
@@ -384,6 +395,15 @@ export function useChatStream(deps: UseChatStreamDeps) {
                 tryRenderStreamingMermaid()
                 scrollToBottom()
                 break
+              case 'queue_notice':
+                // 技能脚本排队状态：只更新内联状态条，不写入对话历史
+                queueNotice.value = {
+                  phase: typeof chunk.phase === 'string' ? chunk.phase : 'waiting',
+                  ahead: typeof chunk.position === 'number' ? chunk.position : 0,
+                  waitMs: typeof chunk.waitMs === 'number' ? chunk.waitMs : 0,
+                  limit: typeof chunk.limit === 'number' ? chunk.limit : 0,
+                }
+                break
               case 'danger_confirm':
                 collectedDangerSQLs.push({
                   sql: chunk.sql || chunk.content,
@@ -488,6 +508,8 @@ export function useChatStream(deps: UseChatStreamDeps) {
       // 仅当 abortController 仍指向本次请求时才清理，避免覆盖其他并发请求（如确认执行）
       if (abortController.value === controller) abortController.value = null
       retryingMsg.value = null
+      // 运行结束后排队状态已无意义，清空避免状态条残留
+      queueNotice.value = null
       // 桌面模式：回复完成时闪烁任务栏图标（窗口未激活时才闪，获焦自动停止；web 模式 no-op）
       ;(window as unknown as { Flash?: () => void }).Flash?.()
       // 流结束后渲染 mermaid 图表
@@ -610,6 +632,7 @@ export function useChatStream(deps: UseChatStreamDeps) {
     streamingExecHtml.value = ''
     thinkingHtml.value = ''
     retryingMsg.value = null
+    queueNotice.value = null
     lastRenderedMermaidCount = 0
     lastStreamingMermaidCount = 0
     lastStreamingExecMermaidCount = 0
@@ -625,6 +648,8 @@ export function useChatStream(deps: UseChatStreamDeps) {
     thinkingHtml,
     // 重试状态
     retryingMsg,
+    // 技能执行排队状态
+    queueNotice,
     // 方法
     stopGeneration,
     sendMessage,

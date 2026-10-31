@@ -64,6 +64,24 @@
           @abort="sqlConfirm.showRetryConfirm.value = false"
         />
 
+        <!-- 技能导出排队提示：排队中可一键降级为 Go 原生渲染 -->
+        <Transition name="fade-up">
+          <div v-if="queueWaiting" class="skill-queue-bar">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            <span class="skill-queue-text">{{ queueBarText }}</span>
+            <el-button
+              size="small"
+              text
+              type="primary"
+              :loading="degradeRequesting"
+              title="跳过排队，使用内置导出快速生成文件（不支持自定义格式）"
+              @click="handleSkillDegrade"
+            >
+              跳过排队，直接生成
+            </el-button>
+          </div>
+        </Transition>
+
         <!-- 输入区域 -->
         <ChatInputArea
           v-model:question="question"
@@ -313,16 +331,17 @@ import PromptEditDialog from '@/components/ai/PromptEditDialog.vue'
 import LoginDialog from '@/components/auth/LoginDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
 import { usePromptEditDialog } from '@/components/ai/usePromptEditDialog'
-import { getPromptList, delPrompt, getAIModels } from '@/api/ai'
+import { getPromptList, delPrompt, getAIModels, requestSkillDegrade } from '@/api/ai'
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
 import { getSystemConfig } from '@/api/system'
+import { unwrapResponse } from '@/utils/dbMetadata'
 import { useTheme } from '@/utils/useTheme'
 import { useStorage } from '@/composables/useStorage'
 import { useMarkdownRenderer } from './composables/useMarkdownRenderer'
 import { useChatHistory } from './composables/useChatHistory'
 import { useSqlConfirm } from './composables/useSqlConfirm'
-import { useChatStream } from './composables/useChatStream'
+import { useChatStream, type SkillQueueNotice } from './composables/useChatStream'
 import { useFileUpload } from './composables/useFileUpload'
 import { ACCEPT_ATTR } from './utils/fileTypes'
 import { Bottom, BottomLeft, ChatLineRound, Clock, Coin, Delete, Document, Download, Edit, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, Switch, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
@@ -355,6 +374,8 @@ let speechRecognition: unknown = null
 const loading = ref(false)
 const abortController = ref<AbortController | null>(null)
 const streamingExecContent = ref('')
+// 技能执行排队状态（useChatStream 与 useSqlConfirm 共享：确认后的执行同样可能排队）
+const queueNotice = ref<SkillQueueNotice | null>(null)
 
 // ── 登录/认证状态 ──
 const isRemote = ref(sessionStorage.getItem('isRemote') === 'true')
@@ -527,6 +548,7 @@ const sqlConfirm = useSqlConfirm({
   abortController,
   sessionId,
   streamingExecContent,
+  queueNotice,
   buildRequestSchemas,
   getPrimaryConnId,
   scrollToBottom,
@@ -555,6 +577,7 @@ const chatStream = useChatStream({
   loading,
   abortController,
   streamingExecContent,
+  queueNotice,
   buildRequestSchemas,
   getPrimaryConnId,
   scrollToBottom,
@@ -570,6 +593,35 @@ const chatStream = useChatStream({
   retryMessage: sqlConfirm.retryMessage,
   lastQuestion: sqlConfirm.lastQuestion,
 })
+
+// ── 技能导出排队：内联状态条 + 一键降级为 Go 原生渲染 ──
+const degradeRequesting = ref(false)
+const queueWaiting = computed(() => queueNotice.value?.phase === 'waiting')
+const queueBarText = computed(() => {
+  const notice = queueNotice.value
+  if (!notice) return ''
+  const seconds = Math.max(0, Math.round(notice.waitMs / 1000))
+  const ahead = notice.ahead > 0 ? `前面还有 ${notice.ahead} 个任务，` : ''
+  return `技能导出排队中（${ahead}已等 ${seconds}s）`
+})
+
+async function handleSkillDegrade(): Promise<void> {
+  if (!sessionId.value || degradeRequesting.value) return
+  degradeRequesting.value = true
+  try {
+    const res = await requestSkillDegrade(sessionId.value)
+    const result = unwrapResponse<{ degraded?: boolean }>(res)
+    if (result?.degraded) {
+      ElMessage.success('已跳过排队，正在直接生成文件')
+    } else {
+      ElMessage.info('当前没有排队中的导出任务')
+    }
+  } catch {
+    ElMessage.error('切换失败，请稍后重试')
+  } finally {
+    degradeRequesting.value = false
+  }
+}
 
 // ── 5. Mermaid AI 修复：渲染失败时一键让 AI 修正语法 ──
 function handleFixMermaid(source: string, errorMsg: string): void {
@@ -1517,5 +1569,24 @@ onUnmounted(() => {
 .prompt-detail-content {
   max-height: 50vh;
   overflow-y: auto;
+}
+
+/* ========== 技能导出排队状态条 ========== */
+.skill-queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(64, 158, 255, 0.08);
+  border: 1px solid rgba(64, 158, 255, 0.25);
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+
+.skill-queue-text {
+  flex: 1;
+  min-width: 0;
 }
 </style>

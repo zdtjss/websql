@@ -15,10 +15,14 @@ WebSQL Web 版跨平台打包脚本
   python scripts/build_release.py --skip-build             # 跳过 Go 编译（使用已有二进制）
   python scripts/build_release.py --skip-db                # 跳过全新数据库创建
 
+  构建过程中会交互式询问是否携带 skills 目录（默认携带）与是否捆绑
+  Python 运行时（默认否，非交互环境同样视为否）。
+
 产物:
   dist-pack/websql-web-{platform}.zip — 可独立发行、运行的 zip 包
   包内容: 二进制 + static/ + config.json + nway.sqlite3.db +
-           migrations/ + db_migrate.py + skills/ + startup 脚本
+           migrations/ + db_migrate.py + startup 脚本 +
+           可选 skills/（默认携带）+ 可选 python/（仅 Windows，与二进制同级）
 """
 
 import argparse
@@ -31,6 +35,23 @@ import sys
 import tempfile
 import zipfile
 from datetime import datetime
+
+# 复用桌面版打包脚本的 Python 运行时收集逻辑（embeddable 解压 + pip 交叉安装 + 验证），
+# 避免两套脚本维护同一份依赖清单与安装步骤。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+try:
+    from build_desktop import (
+        BUNDLE_PYTHON_DIR,
+        ask_bundle_python,
+        cleanup_python_bundle,
+        collect_python_runtime,
+    )
+    PY_BUNDLE_AVAILABLE = True
+except ImportError:  # 脚本被单独拷贝运行时退化为不支持捆绑
+    BUNDLE_PYTHON_DIR = ""
+    PY_BUNDLE_AVAILABLE = False
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -209,13 +230,20 @@ def compile_go(platform_key):
     return binary_path
 
 
-def create_package(platform_key, binary_path, db_path):
+def _zip_compress(file_path):
+    """大文件（dll/pyd/模板）不压缩，加速打包并避免体积膨胀。"""
+    return zipfile.ZIP_STORED if os.path.getsize(file_path) > 1 * 1024 * 1024 else zipfile.ZIP_DEFLATED
+
+
+def create_package(platform_key, binary_path, db_path, include_skills=True, include_python=False):
     """组装独立可运行的 zip 发行包。"""
     cfg = PLATFORMS[platform_key]
     goos, goarch, ext = cfg["goos"], cfg["goarch"], cfg["ext"]
 
     zip_name = f"websql-web-{platform_key}.zip"
     zip_path = os.path.join(DIST_PACK_DIR, zip_name)
+    has_skills = include_skills and os.path.isdir(SKILLS_DIR)
+    has_python = include_python and bool(BUNDLE_PYTHON_DIR) and os.path.isdir(BUNDLE_PYTHON_DIR)
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         # 二进制
@@ -254,14 +282,23 @@ def create_package(platform_key, binary_path, db_path):
         if os.path.isfile(DB_MIGRATE_SCRIPT):
             zipf.write(DB_MIGRATE_SCRIPT, "db_migrate.py")
 
-        # skills 目录
-        if os.path.isdir(SKILLS_DIR):
+        # skills 目录（Skill 脚本与模板，可选）
+        if has_skills:
             for root, dirs, files in os.walk(SKILLS_DIR):
                 dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
                 for f in files:
                     file_path = os.path.join(root, f)
                     arcname = os.path.join("skills", os.path.relpath(file_path, SKILLS_DIR))
-                    zipf.write(file_path, arcname)
+                    zipf.write(file_path, arcname, compress_type=_zip_compress(file_path))
+
+        # 捆绑 Python 运行时（解压后 python/ 与可执行文件同级，启动时自动发现）
+        if has_python:
+            for root, dirs, files in os.walk(BUNDLE_PYTHON_DIR):
+                dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    rel = os.path.relpath(file_path, BUNDLE_PYTHON_DIR).replace(os.sep, "/")
+                    zipf.write(file_path, "python/" + rel, compress_type=_zip_compress(file_path))
 
         # AGENTS.md（运行时可热更新覆盖嵌入内容）
         agents_md = os.path.join(PROJECT_ROOT, "AGENTS.md")
@@ -275,8 +312,30 @@ def create_package(platform_key, binary_path, db_path):
             zipf.writestr("startup.sh", STARTUP_SH_CONTENT)
 
     size_mb = os.path.getsize(zip_path) / 1024 / 1024
-    print(f"  [OK] 打包完成: {zip_name} ({size_mb:.1f} MB)")
+    parts = ["skills" if has_skills else "无 skills"]
+    parts.append("捆绑 Python" if has_python else "无捆绑 Python")
+    print(f"  [OK] 打包完成: {zip_name} ({size_mb:.1f} MB, 含: {' + '.join(parts)})")
     return zip_path
+
+
+def ask_include_skills():
+    """交互式询问是否携带 skills 目录（默认携带；非交互环境回退为携带）。"""
+    prompt = "[Package] 是否携带 skills 目录（Skill 脚本与模板，导出功能依赖）? [Y/n]: "
+    try:
+        answer = input(prompt)
+    except EOFError:
+        print("  -> 非交互环境，默认携带 skills")
+        return True
+    return answer.strip().lower() not in ("n", "no")
+
+
+def python_bundle_targets(targets):
+    """返回可捆绑 Python 运行时的目标平台。
+
+    当前仅 Windows 有随仓库分发的 embeddable 运行时（win_amd64/cp315）；
+    Linux/macOS 需目标机自行安装 Python 及 skills 依赖，不做捆绑。
+    """
+    return [key for key in targets if key == "windows-amd64"]
 
 
 def main():
@@ -298,6 +357,14 @@ def main():
     print(f"  产物目录: {DIST_PACK_DIR}")
     print("=" * 55)
 
+    # 打包内容选项（默认携带 skills、不捆绑 Python；非交互环境回退默认值）
+    include_skills = ask_include_skills()
+    include_python = False
+    if PY_BUNDLE_AVAILABLE and python_bundle_targets(targets):
+        include_python = ask_bundle_python()
+    elif PY_BUNDLE_AVAILABLE:
+        print("[Python] 目标平台不包含 windows-amd64，不支持捆绑 Python 运行时")
+
     # 前端
     if not args.skip_frontend:
         build_frontend()
@@ -318,6 +385,14 @@ def main():
     try:
         os.makedirs(DIST_PACK_DIR, exist_ok=True)
 
+        # 按需收集捆绑 Python 运行时（失败不阻塞，导出自动降级 Go 基础版）
+        bundle_targets = []
+        if include_python:
+            if collect_python_runtime():
+                bundle_targets = python_bundle_targets(targets)
+            else:
+                print("[WARN] 捆绑 Python 不可用，发行包将不含 python/（导出自动降级 Go 基础版）")
+
         # 逐平台编译 + 打包
         print("\n[3/4] 交叉编译 Go 二进制...")
         generate_agents_md_embed()
@@ -335,7 +410,9 @@ def main():
                 binary_path = compile_go(platform_key)
 
             print(f"\n[4/4] 打包 {platform_key} ...")
-            zip_path = create_package(platform_key, binary_path, db_path)
+            zip_path = create_package(platform_key, binary_path, db_path,
+                                      include_skills=include_skills,
+                                      include_python=platform_key in bundle_targets)
             packages.append(zip_path)
 
             if not args.skip_build and os.path.isfile(binary_path):
@@ -352,6 +429,8 @@ def main():
 
     finally:
         cleanup_fresh_db(tmp_dir)
+        if PY_BUNDLE_AVAILABLE:
+            cleanup_python_bundle()
 
 
 if __name__ == "__main__":

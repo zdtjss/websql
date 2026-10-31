@@ -203,6 +203,8 @@ func MainRegister(router *gin.Engine) {
 		log.Printf("创建 AI Agent Handler 失败: %v，AI 功能将不可用", err)
 	} else {
 		routerGroup.POST("/ai/agent/chatStream", agentHandler.ChatStream)
+		// 技能执行排队：用户选择「改用 Go 原生导出」
+		routerGroup.POST("/ai/agent/queue/degrade", agentHandler.HandleSkillDegrade)
 		// 文件上传（新链路：仅校验 + 存储，不解析内容）
 		routerGroup.POST("/ai/agent/uploadFile", agent.HandleUploadFile)
 		routerGroup.POST("/ai/agent/uploadFile/delete", agent.HandleDeleteUploadFile)

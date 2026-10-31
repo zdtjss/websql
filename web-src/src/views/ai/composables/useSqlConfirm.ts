@@ -4,6 +4,7 @@ import type { Ref } from 'vue'
 import { sanitizeError } from '@/utils/errorHandler'
 import { analyzeSQL, type SQLAnalysisResult } from '@/utils/sqlRiskAssessment'
 import type { ChatMessage } from './useChatHistory'
+import type { SkillQueueNotice } from './useChatStream'
 
 /** 单条 SQL 风险评估结果（用于批量确认列表） */
 export type SqlRiskItem = {
@@ -29,6 +30,8 @@ export interface UseSqlConfirmDeps {
   sessionId: Ref<string>
   /** 流式执行内容（确认后 Agent 继续输出时使用） */
   streamingExecContent: Ref<string>
+  /** 技能执行排队状态（与 useChatStream 共享，由 ChatView 创建） */
+  queueNotice: Ref<SkillQueueNotice | null>
   /** 构建 schemas 数组（用于请求体） */
   buildRequestSchemas: () => { connId: string; schema: string }[]
   /** 获取主连接 connId */
@@ -52,7 +55,7 @@ export interface UseSqlConfirmDeps {
  */
 export function useSqlConfirm(deps: UseSqlConfirmDeps) {
   const {
-    chatHistory, loading, abortController, sessionId, streamingExecContent,
+    chatHistory, loading, abortController, sessionId, streamingExecContent, queueNotice,
     buildRequestSchemas, getPrimaryConnId, scrollToBottom, handleSessionExpired,
   } = deps
 
@@ -181,6 +184,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       const decoder = new TextDecoder()
       let buf = ''
       streamingExecContent.value = ''
+      queueNotice.value = null
       const collectedDangerSQLs: { sql: string; interruptId: string; checkPointId: string }[] = []
       let hasError = false
       let errorMsg = ''
@@ -218,6 +222,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
 
       const execContent = streamingExecContent.value
       streamingExecContent.value = ''
+      queueNotice.value = null
 
       if (hasError) {
         chatHistory.value.push({
@@ -371,6 +376,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
       const decoder = new TextDecoder()
       let buf = ''
       streamingExecContent.value = ''
+      queueNotice.value = null
       const collectedDangerSQLs: { sql: string; interruptId: string; checkPointId: string }[] = []
       let hasError = false
       let errorMsg = ''
@@ -388,6 +394,15 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
           try {
             const chunk = JSON.parse(trimmed)
             if (chunk.type === 'content') streamingExecContent.value += chunk.content
+            if (chunk.type === 'queue_notice') {
+              // 确认后的执行同样可能排队：复用顶部内联状态条
+              queueNotice.value = {
+                phase: typeof chunk.phase === 'string' ? chunk.phase : 'waiting',
+                ahead: typeof chunk.position === 'number' ? chunk.position : 0,
+                waitMs: typeof chunk.waitMs === 'number' ? chunk.waitMs : 0,
+                limit: typeof chunk.limit === 'number' ? chunk.limit : 0,
+              }
+            }
             if (chunk.type === 'danger_confirm') {
               collectedDangerSQLs.push({
                 sql: chunk.sql || chunk.content,
@@ -402,6 +417,7 @@ export function useSqlConfirm(deps: UseSqlConfirmDeps) {
 
       const execContent = streamingExecContent.value
       streamingExecContent.value = ''
+      queueNotice.value = null
 
       for (const item of sqlItems) {
         chatHistory.value.push({

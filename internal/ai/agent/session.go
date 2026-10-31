@@ -873,6 +873,11 @@ func (s *SessionStore) ListByUserID(userID string) ([]SessionMeta, error) {
 	return metas, nil
 }
 
+// CheckOwnership 供外部（如排队降级接口）校验会话归属，不会创建会话。
+func (s *SessionStore) CheckOwnership(id, userID string) error {
+	return s.checkOwnership(id, userID)
+}
+
 // checkOwnership 校验会话归属：缓存命中时用内存态判断，未命中时回源数据库。
 // 返回 ErrSessionForbidden 表示会话不存在或不属于该用户。
 func (s *SessionStore) checkOwnership(id, userID string) error {

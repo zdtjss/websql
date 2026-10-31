@@ -170,6 +170,7 @@ var allowedSSETypes = map[string]bool{
 	"retract":        true,
 	"cancelled":      true,
 	"danger_confirm": true,
+	"queue_notice":   true,
 }
 
 // flush 推送一个事件（JSON）
@@ -202,6 +203,36 @@ func (s *sseStream) close(sendDone bool) {
 func (s *sseStream) fail(msg string) {
 	s.flush(StreamChunk{Type: "error", Content: msg})
 	s.close(true)
+}
+
+// HandleSkillDegrade 用户选择「改用 Go 原生导出」：唤醒当前排队中的技能执行，
+// 由 execute 返回普通提示，引导模型在同一次运行内改用 Go 原生导出工具。
+//
+// 语义：只跳过本次调用，不锁定整轮运行（用户可能只是不愿等这一次）。
+func (h *Handler) HandleSkillDegrade(c *gin.Context) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.SessionID) == "" {
+		response.WriteErr(c, http.StatusBadRequest, http.StatusBadRequest, "sessionId 不能为空")
+		return
+	}
+
+	user := admin.GetUser(c.GetHeader("Authorization"))
+	if user == nil || user.Id == "" {
+		response.WriteAuthErr(c, "未认证或认证已过期")
+		return
+	}
+
+	// 与下载接口一致：无权限与不存在返回同样的提示，避免探测他人会话。
+	if err := h.sessions.CheckOwnership(req.SessionID, user.Id); err != nil {
+		response.WriteErr(c, http.StatusNotFound, http.StatusNotFound, "会话不存在或无权访问")
+		return
+	}
+
+	degraded := RequestSkillDegrade(req.SessionID)
+	log.Printf("[SkillQueue] 用户请求降级 - session=%s, user=%s, active=%v\n", req.SessionID, user.Id, degraded)
+	response.WriteOK(c, gin.H{"degraded": degraded})
 }
 
 type requestParams struct {

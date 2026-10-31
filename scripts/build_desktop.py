@@ -54,7 +54,7 @@ SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 BUNDLE_PYTHON_DIR = os.path.join(DIST_PACK_DIR, "python")
 
 # 本地官方 embeddable Python 包（scripts/ 下，随仓库分发，无需联网下载）
-EMBEDDABLE_ZIP = os.path.join(PROJECT_ROOT, "scripts", "python-3.15.0-embed-amd64.zip")
+EMBEDDABLE_ZIP = os.path.join(PROJECT_ROOT, "scripts", "python-3.15.2-embed-amd64.zip")
 EMBEDDABLE_PY_VERSION = "3.15"
 EMBEDDABLE_ABI = "cp315"
 EMBEDDABLE_PLATFORM = "win_amd64"

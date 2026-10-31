@@ -10,5 +10,14 @@
     "enable": false,
     "organization": "Nway",
     "commonName": "websql.nway.com"
+  },
+  "skill": {
+    "maxConcurrent": 4,
+    "maxConcurrentPerUser": 2,
+    "queueMaxWaitSec": 60,
+    "executor": "auto",
+    "workerMinWarm": 1,
+    "workerIdleTTLSec": 300,
+    "workerMaxJobs": 50
   }
 }
