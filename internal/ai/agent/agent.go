@@ -355,7 +355,9 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	if defaultConnID == "" && len(req.Schemas) > 0 {
 		defaultConnID = req.Schemas[0].ConnID
 	}
-	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, scope, req.Schemas, export.GetSkillEnv() != nil, sec)
+	hasFileCtx := hasFileDataSource(&req) || hasHistoryFile
+	caps := buildPromptCapabilities(defaultConnID, req.Schemas, scope, hasFileCtx)
+	sysPrompt := buildSystemPrompt(defaultConnID, a.dbType, a.dbSchema, a.dbVersion, req.TableContext, scope, req.Schemas, caps, sec)
 
 	if detectPreviousExecution(allMsgs) {
 		sysPrompt += previousExecutionPrompt()
@@ -377,19 +379,35 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 			case "excel":
 				ftLabel = "Excel 文件"
 			}
-			sysPrompt += fmt.Sprintf("\n\n📎 用户上传了%s（fileId=%s）：\n- 列名：%s\n- 总行数：%d\n",
-				ftLabel, req.ExcelData.FileID, strings.Join(req.ExcelData.Columns, ", "), req.ExcelData.TotalRows)
-			sysPrompt += "用户上传文件的目的可能是：① 仅对文件内数据进行分析/统计/可视化；② 结合数据库表进行关联分析；③ 导入数据库。" +
-				"请根据用户提问判断意图：\n" +
-				"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
-				"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
-				"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。\n"
+			// 列名只作展示提示：客户端字段已在 handler 清洗，这里再清洗一次以防止
+			// 其它调用路径绕过 handler 直接构造请求。
+			columns := sanitizePromptColumns(req.ExcelData.Columns)
+			sysPrompt += fmt.Sprintf("\n\n📎 用户上传了%s（fileId=%s）：\n", ftLabel, req.ExcelData.FileID)
+			if len(columns) > 0 {
+				sysPrompt += fmt.Sprintf("- 客户端报告列名：%s（仅作提示，真实列名以 read_file_data 返回为准）\n", strings.Join(columns, ", "))
+			}
+			if req.ExcelData.TotalRows > 0 {
+				sysPrompt += fmt.Sprintf("- 客户端报告总行数：%d（仅作提示）\n", req.ExcelData.TotalRows)
+			}
+			sysPrompt += "用户上传文件的目的可能是："
+			if caps.HasDB {
+				sysPrompt += "① 仅对文件内数据进行分析/统计/可视化；② 结合数据库表进行关联分析；③ 导入数据库。" +
+					"请根据用户提问判断意图：\n" +
+					"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
+					"- 结合数据库表分析：可同时调用 read_file_data 与 query_data 进行关联分析。\n" +
+					"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮），支持 Excel/CSV/JSON 导入及字段映射预览。\n"
+			} else {
+				sysPrompt += "① 仅对文件内数据进行分析/统计/可视化；② 导入数据库。" +
+					"请根据用户提问判断意图：\n" +
+					"- 分析/统计/可视化文件数据：调用 read_file_data 读取数据后分析，禁止执行导入。\n" +
+					"- 要求导入数据库：告知用户数据导入请到「表数据浏览」页面操作（在左侧树中右键目标表→浏览数据→工具栏导入按钮）。\n"
+			}
 		}
 	}
 
 	// 新上传链路（多文件）：按类别描述 + 不可信数据声明，文件内容仍按需读取（read_file_data）
 	if len(req.Attachments) > 0 {
-		sysPrompt += buildAttachmentsPrompt(req.Attachments)
+		sysPrompt += buildAttachmentsPrompt(req.Attachments, caps.HasDB)
 		log.Printf("[Agent] 已注入上传文件上下文 - session=%s, files=%d\n", sessionID, len(req.Attachments))
 	}
 
@@ -399,7 +417,7 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 	// 高级导出模式（前端工具栏开关）：以可直接交付的报告级文件为目标——
 	// 优先内置报告级导出（Word/PPT/Excel/HTML），四类格式不满足时才降级 export_by_code。
 	if req.AdvancedExport {
-		sysPrompt += advancedExportDirectivePrompt(hasDBContext)
+		sysPrompt += advancedExportDirectivePrompt(caps)
 		log.Printf("[Agent] 高级导出模式已启用 - session=%s, db=%v\n", sessionID, hasDBContext)
 	}
 
@@ -408,6 +426,9 @@ func (a *SQLAgent) RunStream(ctx context.Context, runID string, req ChatRequest,
 		sysPrompt = fileOnlyPromptPrefix() + sysPrompt
 		log.Printf("[Agent] 未选择数据库，切换为文件分析模式 - session=%s\n", sessionID)
 	}
+
+	// 提示词体积超过模型上下文 30% 时告警（不自动删除规则，避免静默改变行为）
+	checkPromptBudget(sysPrompt, a.maxContextTokens)
 
 	// 通过动态提示词中间件注入（BeforeAgent 覆盖 Instruction）：
 	// 不再在输入消息中手动携带 System 消息，避免与 Instruction 双份注入。
@@ -659,13 +680,16 @@ func (a *SQLAgent) rebuildPromptForResume(sec *RunSecurityContext, binding Check
 	if s, err := sec.DefaultScope(); err == nil {
 		scope = s
 	}
-	prompt := buildSystemPrompt(binding.ConnID, a.dbType, a.dbSchema, a.dbVersion, nil, scope, a.schemas, export.GetSkillEnv() != nil, sec)
-	if binding.ConnID == "" && sessionHasAttachments(sess) {
+	hasFile := sessionHasAttachments(sess)
+	caps := buildPromptCapabilities(binding.ConnID, a.schemas, scope, hasFile)
+	prompt := buildSystemPrompt(binding.ConnID, a.dbType, a.dbSchema, a.dbVersion, nil, scope, a.schemas, caps, sec)
+	if binding.ConnID == "" && hasFile {
 		prompt = fileOnlyPromptPrefix() + prompt
 	}
 	if sess != nil && detectPreviousExecution(sess.GetMessages()) {
 		prompt += previousExecutionPrompt()
 	}
+	checkPromptBudget(prompt, a.maxContextTokens)
 	return prompt
 }
 

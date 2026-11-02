@@ -23,7 +23,17 @@
             @toggle-thinking="chatStream.toggleThinking"
             @copy="chatStream.copyMessage"
             @retry="chatStream.retryAssistantMessage"
+            @extract-prompt="handleExtractPrompt"
           />
+          <!-- 回复完成后的提示词沉淀建议：滑入、自动关闭、可手动关闭 -->
+          <Transition name="prompt-suggestion-slide">
+            <div v-if="promptSuggestionVisible" class="prompt-suggestion-anchor">
+              <PromptExtractSuggestion
+                @extract="handlePromptSuggestionExtract"
+                @dismiss="handlePromptSuggestionDismiss"
+              />
+            </div>
+          </Transition>
           <!-- 悬浮「回到底部」按钮：用户上滚离开底部时显示，AI 输出中带新消息红点 -->
           <Transition name="fade-up">
             <div v-if="showBackToBottom" class="back-to-bottom" title="回到底部并继续跟随" @click="scrollToBottom(true)">
@@ -134,18 +144,33 @@
                           <el-icon :size="10" style="top: -10px;" @click="handlePromptAdd"><Plus /></el-icon>
                         </span>
                       </template>
-                      <div class="prompt-search-box">
-                        <el-input v-model="promptSearchKeyword" size="small" placeholder="按标题搜索" clearable
-                          v-if="myPromptsTotal > promptPageSize" @input="handlePromptSearchInput">
+                      <!-- 搜索与对话提取合并为一行，避免额外占高 -->
+                      <div class="prompt-toolbar-row">
+                        <el-input v-model="promptSearchKeyword" class="prompt-search-input" size="small" placeholder="按标题搜索" clearable
+                          v-if="myPromptsTotal > promptPageSize || !!promptSearchKeyword" @input="handlePromptSearchInput">
                           <template #prefix><el-icon><Search /></el-icon></template>
                         </el-input>
+                        <!-- 从当前对话自动提取可复用提示词：AI 生成后进入编辑确认，保存到「我的」 -->
+                        <el-button
+                          class="prompt-extract-btn"
+                          size="small"
+                          text
+                          type="primary"
+                          :loading="promptExtracting"
+                          :disabled="!canExtractPrompt"
+                          title="由 AI 从本次对话提炼可复用的提示词，确认后保存到「我的」"
+                          @click.stop="handleExtractPrompt"
+                        >
+                          <el-icon><MagicStick /></el-icon>
+                          <span>AI 提取</span>
+                        </el-button>
                       </div>
                       <div class="prompt-list">
                         <div v-if="myPromptLoading && myPrompts.length === 0" style="text-align: center; padding: 10px;">
                           <el-icon class="is-loading"><Loading /></el-icon>
                         </div>
                         <div v-else-if="myPrompts.length === 0" class="prompt-empty">
-                          {{ promptSearchKeyword ? '没有匹配的提示词' : '暂无提示词' }}
+                          {{ promptSearchKeyword ? '没有匹配的提示词' : '暂无提示词，可从本次对话提取' }}
                         </div>
                         <div v-for="prompt in myPrompts" :key="prompt.id" class="prompt-item"
                           @click.stop="handlePromptSendToAI(prompt.content, { connSchemas: prompt.connSchemas, tables: prompt.tables })">
@@ -166,9 +191,9 @@
                               <el-icon><BottomLeft /></el-icon>
                             </el-button>
                             <el-button text type="primary">
-                              <el-icon v-if="!prompt.isShared" @click.stop="handlePromptEdit(prompt.id)" title="编辑"><Edit /></el-icon>
+                              <el-icon v-if="prompt.canEdit" @click.stop="handlePromptEdit(prompt.id)" title="编辑"><Edit /></el-icon>
                             </el-button>
-                            <el-popconfirm v-if="!prompt.isShared" title="确定要删除？" @confirm="handleDeletePrompt(prompt)">
+                            <el-popconfirm v-if="prompt.canDelete" title="确定要删除？" @confirm="handleDeletePrompt(prompt)">
                               <template #reference>
                                 <el-button style="margin-left: -10px;" text type="danger" title="删除" @click.stop>
                                   <el-icon><Delete /></el-icon>
@@ -183,9 +208,9 @@
                       </div>
                     </el-tab-pane>
                     <el-tab-pane label="系统" name="system">
-                      <div class="prompt-search-box">
+                      <div v-if="systemPromptsTotal > promptPageSize || !!promptSearchKeyword" class="prompt-search-box">
                         <el-input v-model="promptSearchKeyword" size="small" placeholder="按标题搜索" clearable
-                          v-if="systemPromptsTotal > promptPageSize" @input="handlePromptSearchInput">
+                          @input="handlePromptSearchInput">
                           <template #prefix><el-icon><Search /></el-icon></template>
                         </el-input>
                       </div>
@@ -223,7 +248,6 @@
                     </el-tab-pane>
                   </el-tabs>
                 </div>
-                <PromptEditDialog v-model="promptEditDialogVisible" :prompt-id="editingPromptId" :role-id="editingRoleId" @saved="handlePromptSaved" @send-to-AI="handleSendToAIFromDialog" />
                 <el-dialog v-model="promptDetailVisible" :title="promptDetail?.title || '提示词详情'" width="800px" :draggable="true" append-to-body>
                   <div v-if="promptDetail">
                     <div v-if="promptDetail.connSchemas && promptDetail.connSchemas.length" class="prompt-detail-meta">
@@ -322,6 +346,17 @@
         </el-button>
       </div>
     </div>
+    <PromptEditDialog
+      v-model="promptEditDialogVisible"
+      :prompt-id="editingPromptId"
+      :role-id="editingRoleId"
+      :initial-title="promptInitialTitle"
+      :initial-content="promptInitialContent"
+      :initial-conn-schemas="promptInitialConnSchemas"
+      :initial-tables="promptInitialTables"
+      @saved="handlePromptSaved"
+      @send-to-AI="handleSendToAIFromDialog"
+    />
     <LoginDialog ref="loginDialogRef" v-model="loginDialogVisible" @login-success="handleLoginSuccess" />
   </div>
 </template>
@@ -329,6 +364,7 @@
 <script setup lang="ts">
 import ChatMessageList from './components/ChatMessageList.vue'
 import ChatInputArea from './components/ChatInputArea.vue'
+import PromptExtractSuggestion from './components/PromptExtractSuggestion.vue'
 import SqlConfirmDialog from './components/SqlConfirmDialog.vue'
 import BatchSqlConfirmDialog from './components/BatchSqlConfirmDialog.vue'
 import RetryConfirmDialog from './components/RetryConfirmDialog.vue'
@@ -337,7 +373,7 @@ import PromptEditDialog from '@/components/ai/PromptEditDialog.vue'
 import LoginDialog from '@/components/auth/LoginDialog.vue'
 import { preloadVditor } from '@/utils/vditorLoader'
 import { usePromptEditDialog } from '@/components/ai/usePromptEditDialog'
-import { getPromptList, delPrompt, getAIModels, requestSkillDegrade } from '@/api/ai'
+import { getPromptList, delPrompt, getAIModels, requestSkillDegrade, extractPrompt } from '@/api/ai'
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
 import { resolveSoleSchemaSelection } from './utils/schemaSelection'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
@@ -351,7 +387,7 @@ import { useSqlConfirm } from './composables/useSqlConfirm'
 import { useChatStream, type SkillQueueNotice } from './composables/useChatStream'
 import { useFileUpload } from './composables/useFileUpload'
 import { ACCEPT_ATTR } from './utils/fileTypes'
-import { ArrowRight, Bottom, BottomLeft, ChatLineRound, Clock, Coin, DataAnalysis, Delete, Document, Edit, Grid, Loading, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
+import { ArrowRight, Bottom, BottomLeft, ChatLineRound, Clock, Coin, DataAnalysis, Delete, Document, Edit, Grid, Loading, MagicStick, Microphone, Moon, Plus, Promotion, Search, Setting, Share, Sunny, SwitchButton, Upload, User, VideoPause, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -416,7 +452,7 @@ const aiModelList = ref<{ id: string; model: string; capabilities?: string[] | n
 const modelLoading = ref(false)
 
 // ── 提示词状态 ──
-const { visible: promptEditDialogVisible, promptId: editingPromptId, roleId: editingRoleId, openDialog: openPromptEditDialog, closeDialog: closePromptEditDialog, triggerSaved: triggerPromptSaved, setSendToAIHandler, handleSendToAI: handleSendToAIFromDialog } = usePromptEditDialog()
+const { visible: promptEditDialogVisible, promptId: editingPromptId, roleId: editingRoleId, initialTitle: promptInitialTitle, initialContent: promptInitialContent, initialConnSchemas: promptInitialConnSchemas, initialTables: promptInitialTables, openDialog: openPromptEditDialog, closeDialog: closePromptEditDialog, triggerSaved: triggerPromptSaved, setSendToAIHandler, handleSendToAI: handleSendToAIFromDialog } = usePromptEditDialog()
 const promptPopoverVisible = ref(false)
 const myPrompts = ref<any[]>([])
 const systemPrompts = ref<any[]>([])
@@ -431,6 +467,11 @@ const promptSearchKeyword = ref('')
 const myPromptCurrentPage = ref(1)
 const systemPromptCurrentPage = ref(1)
 const promptPageSize = ref(10)
+const promptExtracting = ref(false)
+// 回复完成后的提示词沉淀建议：自动关闭、可手动关闭；手动关闭后本次会话不再打扰
+const promptSuggestionVisible = ref(false)
+let promptSuggestionSuppressed = false
+let promptSuggestionAutoDismissCount = 0
 let promptSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // ── 文件上传（新链路：暂存 + 延迟解析，多文件队列） ──
@@ -460,6 +501,8 @@ function isNearBottom(): boolean {
  */
 function handleMsgScroll(): void {
   stickToBottom.value = isNearBottom()
+  // 用户上滚查看历史时收起沉淀建议，避免遮挡内容
+  if (!stickToBottom.value) promptSuggestionVisible.value = false
 }
 
 function scrollToBottom(force?: boolean): void {
@@ -907,6 +950,146 @@ function handlePromptFillInput(content: string, connInfo: any): void {
   applyPromptToInput(content, connInfo, false)
 }
 
+/** 是否具备提取条件：已产生会话且当前没有进行中的回复 */
+const canExtractPrompt = computed(() => {
+  if (loading.value || !sessionId.value) return false
+  return chatHistory.chatHistory.value.some((m) => m.role === 'user')
+})
+
+/** 最后一条有效 AI 回复是否适合作为提示词来源 */
+function shouldSuggestPromptExtraction(): boolean {
+  const history = chatHistory.chatHistory.value
+  let lastUserId = -1
+  let lastAssistantId = -1
+  for (let i = history.length - 1; i >= 0; i--) {
+    const role = history[i].role
+    if (lastAssistantId < 0 && role === 'assistant') lastAssistantId = i
+    if (role === 'user') {
+      lastUserId = i
+      break
+    }
+  }
+  if (lastUserId < 0 || lastAssistantId < 0 || lastAssistantId <= lastUserId) return false
+  const content = (history[lastAssistantId].content || '').trim()
+  if (content.length < 20) return false
+  // 错误、手动中止、响应中断类提示不作为沉淀来源
+  return !content.startsWith('❌') && !content.startsWith('⏹') && !content.includes('响应中断')
+}
+
+/**
+ * 回复完成后询问用户是否沉淀为常用提示词。
+ * 仅在正常完成、且有实质回复时出现；提取中、弹窗打开、等待 SQL 确认等场景不打扰。
+ */
+function maybeShowPromptSuggestion(): void {
+  if (promptSuggestionSuppressed || promptSuggestionVisible.value) return
+  if (promptExtracting.value || promptEditDialogVisible.value || promptPopoverVisible.value) return
+  if (loading.value || !sessionId.value) return
+  if (!stickToBottom.value) return
+  if (sqlConfirm.confirmVisible.value || sqlConfirm.pendingSQLList.value.length > 0 || sqlConfirm.showRetryConfirm.value) return
+  if (!shouldSuggestPromptExtraction()) return
+  promptSuggestionVisible.value = true
+}
+
+function handlePromptSuggestionExtract(): void {
+  promptSuggestionVisible.value = false
+  promptSuggestionSuppressed = true
+  void handleExtractPrompt()
+}
+
+function handlePromptSuggestionDismiss(manual: boolean): void {
+  promptSuggestionVisible.value = false
+  if (manual) {
+    // 用户主动关闭：本次会话不再打扰，需要时仍可从工具栏/消息操作栏手动提取
+    promptSuggestionSuppressed = true
+    return
+  }
+  // 连续两次自动消失说明用户不感兴趣，本次会话不再打扰
+  promptSuggestionAutoDismissCount += 1
+  if (promptSuggestionAutoDismissCount >= 2) {
+    promptSuggestionSuppressed = true
+  }
+}
+
+watch(loading, (now, prev) => {
+  if (now) {
+    promptSuggestionVisible.value = false
+    return
+  }
+  if (prev) nextTick(() => maybeShowPromptSuggestion())
+})
+
+// 新会话/切换历史会话时重置打扰抑制状态
+watch(sessionId, () => {
+  promptSuggestionVisible.value = false
+  promptSuggestionSuppressed = false
+  promptSuggestionAutoDismissCount = 0
+})
+
+// 打开提示词弹层时收起建议，避免与弹层重叠
+watch(promptPopoverVisible, (visible) => {
+  if (visible) promptSuggestionVisible.value = false
+})
+
+// 打开提示词编辑弹窗时同样收起建议
+watch(promptEditDialogVisible, (visible) => {
+  if (visible) promptSuggestionVisible.value = false
+})
+
+// 用户开始输入下一个问题时收起建议，不再打扰
+watch(question, (value) => {
+  if (value.trim() && promptSuggestionVisible.value) promptSuggestionVisible.value = false
+})
+
+/**
+ * 从本次对话自动提取可复用提示词。
+ * 服务端读取当前会话（按现有权限投影过滤）后交给 AI 抽象成模板，
+ * 这里只负责把结果预填进新增提示词弹窗，由用户确认后保存到「我的提示词」。
+ */
+async function handleExtractPrompt(): Promise<void> {
+  if (promptExtracting.value) return
+  if (loading.value) {
+    ElMessage.warning('AI 正在回复，请等待本轮结束后再提取')
+    return
+  }
+  if (!sessionId.value) {
+    ElMessage.warning('请先与 AI 进行对话后再提取')
+    return
+  }
+
+  promptExtracting.value = true
+  const loadingMessage = ElMessage({
+    message: 'AI 正在从本次对话提炼提示词…',
+    type: 'info',
+    duration: 0,
+  })
+  try {
+    const resp = await extractPrompt({ sessionId: sessionId.value, modelId: selectedModel.value })
+    const result = unwrapResponse<{ title?: string; content?: string }>(resp)
+    if (!result?.content?.trim()) {
+      ElMessage.info('当前对话内容较少，暂无法提取提示词，请补充更多需求描述')
+      return
+    }
+    promptPopoverVisible.value = false
+    promptSuggestionVisible.value = false
+    // 已经提取过一次，本次会话不再弹出沉淀建议
+    promptSuggestionSuppressed = true
+    // 连接/Schema 与相关表直接取当前会话页面的选择：历史会话加载时已由会话上下文还原，
+    // 比服务端二次拼接更准确
+    openPromptEditDialog({
+      initialTitle: result.title || '',
+      initialContent: result.content,
+      initialConnSchemas: selectedSchemas.value.map(parseSchemaValue).filter(Boolean),
+      initialTables: [...selectedTables.value],
+    })
+  } catch (e) {
+    const message = (e as any)?.response?.data?.msg || (e as any)?.response?.data?.message || (e as any)?.message || '提取失败，请稍后重试'
+    ElMessage.error(message)
+  } finally {
+    loadingMessage.close()
+    promptExtracting.value = false
+  }
+}
+
 // 高级导出开关：切换后本轮（后续）对话以报告级交付为目标——
 // 优先内置报告导出（Word/PPT/Excel/HTML），四类格式不满足时才降级 export_by_code。
 const ADVANCED_EXPORT_PROMPT = '请执行高级导出：优先使用内置报告导出（Word/PPT/Excel/HTML）生成排版专业、可直接汇报的文件；' +
@@ -941,7 +1124,10 @@ async function handleDeletePrompt(prompt: any): Promise<void> {
     await delPrompt(prompt.id)
     ElMessage.success('删除成功')
     void loadPrompts()
-  } catch { ElMessage.error('删除失败') }
+  } catch (e: any) {
+    // 403/400 的文案已由请求拦截器统一提示；无响应体时给出兜底提示
+    if (!e?.response?.data?.msg) ElMessage.error('删除失败')
+  }
 }
 
 function handleViewPromptDetail(prompt: any): void { promptDetail.value = prompt; promptDetailVisible.value = true }
@@ -1207,6 +1393,30 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   position: relative;
+}
+
+/* 提示词沉淀建议：右下角紧凑提示条，滑入/滑出且不挤压输入框 */
+.prompt-suggestion-anchor {
+  position: absolute;
+  right: 20px;
+  bottom: 12px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.prompt-suggestion-anchor > * {
+  pointer-events: auto;
+}
+
+.prompt-suggestion-slide-enter-active,
+.prompt-suggestion-slide-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.prompt-suggestion-slide-enter-from,
+.prompt-suggestion-slide-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 /* 悬浮「回到底部」按钮 */
@@ -1527,32 +1737,32 @@ onUnmounted(() => {
 .prompt-popover-body {
   display: flex;
   flex-direction: column;
-  height: 100%;
-}
-
-.prompt-popover-body .prompt-tabs {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.prompt-popover-body .el-tabs__content {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.prompt-popover-body .el-tab-pane {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 
 .prompt-popover-body .prompt-toolbar {
   flex-shrink: 0;
+}
+
+/* 搜索与提取按钮同一行：不额外占用列表上方高度 */
+.prompt-popover-body .prompt-toolbar-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 8px;
+}
+
+.prompt-popover-body .prompt-toolbar-row .prompt-search-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.prompt-popover-body .prompt-extract-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  height: 24px;
+  padding: 0 4px;
+  font-size: 12px;
 }
 
 .prompt-popover-body .prompt-search-box {
@@ -1574,8 +1784,9 @@ onUnmounted(() => {
   background: transparent !important;
 }
 
+/* 列表高度随内容收缩，超过上限才滚动 */
 .prompt-popover-body .prompt-list {
-  flex: 1;
+  max-height: 320px;
   overflow-y: auto;
   padding: 0 8px 8px;
 }
@@ -1583,7 +1794,7 @@ onUnmounted(() => {
 .prompt-popover-body .prompt-empty {
   text-align: center;
   color: var(--text-tertiary);
-  padding: 40px 0;
+  padding: 20px 0;
   font-size: 14px;
 }
 

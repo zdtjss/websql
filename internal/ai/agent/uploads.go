@@ -152,7 +152,7 @@ func SanitizeChatAttachments(refs []AttachmentRef, userID string) []AttachmentRe
 		seen[id] = true
 		out = append(out, AttachmentRef{
 			FileID:   id,
-			FileName: meta.FileName,
+			FileName: sanitizePromptLabel(meta.FileName, "未命名文件"),
 			FileKind: meta.Kind,
 			FileExt:  meta.Ext,
 			FileSize: meta.Size,

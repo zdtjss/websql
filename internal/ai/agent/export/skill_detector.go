@@ -2,18 +2,51 @@ package export
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	skill "github.com/cloudwego/eino/adk/middlewares/skill"
 )
+
+// Python 运行时发现约定（Web 版两种打包模式共用）
+//
+// 外置自动下载模式由 python_bootstrap.py 在目标机安装运行时，并写入
+// python-runtime.json（记录解释器绝对路径、版本与来源）；同一目录下的
+// python-env.bat / python-env.sh 供运维手动启动时复用相同环境。
+const (
+	// pythonEnvOverride 运维显式指定解释器路径（优先级最高）
+	pythonEnvOverride = "WEBSQL_PYTHON"
+	// pythonManifestName 外置模式安装脚本写入的运行时清单
+	pythonManifestName = "python-runtime.json"
+	// pythonMinMinor 接受的最低 Python 3 次版本号（低于该版本时自动安装脚本会改用托管运行时）
+	pythonMinMinor = 8
+)
+
+// pythonRuntimeManifest 运行时清单（与 scripts/python_bootstrap.py 的 write_manifest 对应）。
+type pythonRuntimeManifest struct {
+	PythonPath string `json:"pythonPath"`
+	Version    string `json:"version"`
+	Source     string `json:"source"`
+}
+
+// pythonResolver 把外部依赖（环境变量/文件/命令查找/版本校验/候选目录）注入探测流程，
+// 便于单元测试覆盖「环境变量 → 清单 → 随包目录 → 系统 PATH」的优先级。
+type pythonResolver struct {
+	getenv   func(string) string
+	readFile func(string) ([]byte, error)
+	lookPath func(string) (string, error)
+	validate func(string) (string, bool)
+	dirs     []string
+}
 
 // SkillEnv 封装 Eino Skill Backend 与 Filesystem Backend 的运行环境。
 //
@@ -160,41 +193,130 @@ func getPythonVersion() string {
 
 // detectPython 检测系统中可用的 Python 解释器。
 //
-// 检测顺序：
-//  1. 运行目录下的捆绑 Python 分发文件（python/python.exe 等）
-//     —— 桌面版与 Web 发行包均可显式随包分发 python/，优先使用，
-//     避免目标机另装 Python 与 skills 依赖
-//  2. 系统 PATH 查找（exec.LookPath，操作系统提供的搜索方案）
+// 检测顺序（与发行包 PYTHON-RUNTIME.md 中的说明一致）：
+//  1. 环境变量 WEBSQL_PYTHON（运维显式指定；Web 外置模式亦可使用）
+//  2. 运行目录下的 python-runtime.json（外置模式安装脚本写入的清单）
+//  3. 随包分发的 python/ 目录（内置模式；桌面版/Web 发行包均可携带）
+//  4. 系统 PATH 查找（exec.LookPath，操作系统提供的搜索方案）
 //
 // Wails3 不提供 Python 搜索能力；操作系统 PATH 查找由 exec.LookPath 完成，
 // 这就是"按操作系统办法执行"的实现。
 func detectPython() {
-	// 1. 优先使用随包分发的捆绑 Python（zip 内 python/ 与可执行文件同级）
-	for _, dir := range candidateSearchDirs() {
-		if path, version := findBundledPython(dir); path != "" {
-			log.Printf("[SkillDetector] 发现运行目录 Python: %s (%s)", path, version)
-			pythonAvailable = true
-			pythonPath = path
-			return
-		}
-	}
-
-	// 2. 回退到系统 PATH 查找（操作系统提供的搜索方案）
-	for _, name := range []string{"python3", "python"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			continue
-		}
-		if version, ok := validatePythonCandidate(path); ok {
-			log.Printf("[SkillDetector] 发现系统 Python: %s (%s)", path, version)
-			pythonAvailable = true
-			pythonPath = path
-			return
-		}
+	path, version, source, ok := resolvePython(defaultPythonResolver())
+	if ok {
+		log.Printf("[SkillDetector] 发现 Python (%s): %s (%s)", source, path, version)
+		pythonAvailable = true
+		pythonPath = path
+		return
 	}
 
 	log.Println("[SkillDetector] 未检测到 Python，Agent 将使用 Go 原生工具兜底")
 	pythonAvailable = false
+}
+
+// defaultPythonResolver 构造生产环境使用的探测依赖。
+func defaultPythonResolver() pythonResolver {
+	return pythonResolver{
+		getenv:   os.Getenv,
+		readFile: os.ReadFile,
+		lookPath: exec.LookPath,
+		validate: validatePythonCandidate,
+		dirs:     candidateSearchDirs(),
+	}
+}
+
+// resolvePython 按优先级解析解释器，返回路径、版本、来源说明与是否命中。
+//
+// 每个候选都会执行 `--version` 校验并拒绝 Python 3.8 以下版本，
+// 避免把 Windows Store 占位程序或 Python 2 误判为可用运行时。
+func resolvePython(r pythonResolver) (path, version, source string, ok bool) {
+	accept := func(candidate string) (string, bool) {
+		if candidate == "" {
+			return "", false
+		}
+		version, valid := r.validate(candidate)
+		if !valid || !isSupportedPythonVersion(version) {
+			return "", false
+		}
+		return version, true
+	}
+
+	// 1. 环境变量显式指定
+	if override := strings.TrimSpace(r.getenv(pythonEnvOverride)); override != "" {
+		candidate := override
+		if !filepath.IsAbs(candidate) {
+			if resolved, err := r.lookPath(candidate); err == nil {
+				candidate = resolved
+			}
+		}
+		if v, valid := accept(candidate); valid {
+			return candidate, v, pythonEnvOverride, true
+		}
+		log.Printf("[SkillDetector] %s 指定的 Python 不可用: %s", pythonEnvOverride, override)
+	}
+
+	// 2. 外置模式运行时清单（相对路径按清单所在目录解析）
+	for _, dir := range r.dirs {
+		manifestPath := filepath.Join(dir, pythonManifestName)
+		data, err := r.readFile(manifestPath)
+		if err != nil {
+			continue
+		}
+		var manifest pythonRuntimeManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			log.Printf("[SkillDetector] 运行时清单解析失败: %s (%v)", manifestPath, err)
+			continue
+		}
+		candidate := strings.TrimSpace(manifest.PythonPath)
+		if candidate == "" {
+			continue
+		}
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(dir, candidate)
+		}
+		if v, valid := accept(candidate); valid {
+			return candidate, v, pythonManifestName, true
+		}
+	}
+
+	// 3. 随包分发的 python/ 目录
+	for _, dir := range r.dirs {
+		if candidate, v := findBundledPython(dir, r.validate); candidate != "" {
+			return candidate, v, "bundled", true
+		}
+	}
+
+	// 4. 系统 PATH
+	for _, name := range []string{"python3", "python"} {
+		candidate, err := r.lookPath(name)
+		if err != nil {
+			continue
+		}
+		if v, valid := accept(candidate); valid {
+			return candidate, v, "PATH", true
+		}
+	}
+
+	return "", "", "", false
+}
+
+// isSupportedPythonVersion 校验 `python --version` 输出（如 "Python 3.15.2"）。
+func isSupportedPythonVersion(version string) bool {
+	text := strings.TrimSpace(strings.ToLower(version))
+	text = strings.TrimSpace(strings.TrimPrefix(text, "python"))
+	parts := strings.SplitN(text, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return false
+	}
+	return major == 3 && minor >= pythonMinMinor
 }
 
 // candidateSearchDirs 返回需要检查捆绑 Python 分发文件的候选目录列表（去重）。
@@ -229,12 +351,14 @@ func candidateSearchDirs() []string {
 }
 
 // findBundledPython 在指定目录下查找捆绑的 Python 分发文件。
-// 支持常见便携/嵌入式分发布局：
+// 支持常见便携/嵌入式分发布局（内置模式来自 embeddable 包，外置模式来自
+// python-build-standalone 的 install_only 布局）：
 //   - Windows: python\python.exe, py\python.exe, python3.exe, python.exe
 //   - Unix:    python/bin/python3, python/bin/python, bin/python3, bin/python
 //
+// validate 由调用方注入（生产环境为 validatePythonCandidate），便于测试。
 // 返回找到的可执行文件绝对路径及其版本号；未找到返回空字符串。
-func findBundledPython(dir string) (path, version string) {
+func findBundledPython(dir string, validate func(string) (string, bool)) (path, version string) {
 	var candidates []string
 	if runtime.GOOS == "windows" {
 		candidates = []string{
@@ -257,7 +381,7 @@ func findBundledPython(dir string) (path, version string) {
 		if err != nil || info.IsDir() {
 			continue
 		}
-		if v, ok := validatePythonCandidate(candidate); ok {
+		if v, ok := validate(candidate); ok {
 			return candidate, v
 		}
 	}

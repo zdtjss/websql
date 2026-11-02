@@ -269,7 +269,8 @@ func TestPermAgentMode(t *testing.T) {
 // TestPromptToolReferencesRegistered 防止提示词引用的工具名与 ToolPolicy 注册表漂移。
 func TestPromptToolReferencesRegistered(t *testing.T) {
 	scope := &PermissionScope{IsRemote: false, AllowModify: true, AIAllowModify: true}
-	prompt := buildSystemPrompt("c1", "mysql", "s1", "8.0", nil, scope, nil, true, nil)
+	prompt := buildSystemPrompt("c1", "mysql", "s1", "8.0", nil, scope, nil,
+		PromptCapabilities{HasDB: true, HasSkill: true, HasPython: true, HasDataset: true, HasAnalyzeData: true, AllowAIWrite: true, HasCodegen: true}, nil)
 	names := []string{
 		"query_data", "get_table_schema", "list_tables", "read_file_data", "read_offload",
 		"dataset_query", "cross_db_join", "analyze_data", "get_current_date_info",
@@ -321,23 +322,30 @@ func TestResolveResumePrompt(t *testing.T) {
 // TestSystemPromptBudget 是提示词体积门禁：超出预算说明又发生了重复注入/失效段落回潮。
 func TestSystemPromptBudget(t *testing.T) {
 	dbScope := &PermissionScope{IsRemote: false, AllowModify: true, AIAllowModify: true, AIPolicyEnforce: false}
-	prompt := buildSystemPrompt("c1", "mysql", "s1", "8.0", nil, dbScope, nil, false, nil)
-	t.Logf("prompt budget (runes): static=%d dynamic=%d agents=%d total=%d",
-		utf8.RuneCountInString(buildStaticPromptPart("mysql", false)),
-		utf8.RuneCountInString(buildDynamicPromptPart("c1", "mysql", "s1", "8.0", nil, dbScope, nil, false, nil)),
-		utf8.RuneCountInString(buildAgentsMDSection(true, true)), utf8.RuneCountInString(prompt))
-	if n := utf8.RuneCountInString(prompt); n > 12000 {
-		t.Fatalf("system prompt too large: %d runes", n)
+	caps := PromptCapabilities{HasDB: true, HasSkill: true, HasPython: true, HasDataset: true, HasAnalyzeData: true, AllowAIWrite: true}
+	prompt := buildSystemPrompt("c1", "mysql", "s1", "8.0", nil, dbScope, nil, caps, nil)
+	t.Logf("prompt budget (runes): static=%d agents=%d dynamic=%d total=%d",
+		utf8.RuneCountInString(buildStaticPromptPart("mysql", caps)),
+		utf8.RuneCountInString(buildAgentsMDSection(caps)),
+		utf8.RuneCountInString(buildDynamicPromptPart("c1", "mysql", "s1", "8.0", nil, dbScope, nil, caps, nil)),
+		utf8.RuneCountInString(prompt))
+	// 基线约 7.3k runes；整改后应低于基线，且远低于 12k 硬上限。
+	if n := utf8.RuneCountInString(prompt); n > 7300 {
+		t.Fatalf("system prompt 不得高于整改前基线 7300 runes，实际 %d", n)
 	}
 	if strings.Contains(prompt, "## SQL 规范（）") {
 		t.Fatal("db prompt must not contain empty dialect header")
 	}
 
-	fileOnly := buildSystemPrompt("", "", "", "", nil, &PermissionScope{IsRemote: true}, nil, false, nil)
+	fileCaps := PromptCapabilities{HasFile: true, HasDataset: true}
+	fileOnly := buildSystemPrompt("", "", "", "", nil, &PermissionScope{IsRemote: true}, nil, fileCaps, nil)
 	if strings.Contains(fileOnly, "## SQL 规范") {
 		t.Fatal("file-only prompt must not contain SQL dialect rules")
 	}
 	if !strings.Contains(fileOnly, "read_file_data") {
 		t.Fatal("file-only prompt should mention read_file_data")
+	}
+	if !strings.Contains(fileOnly, "dataset_query") || !strings.Contains(fileOnly, "read_offload") {
+		t.Fatal("file-only prompt should mention dataset_query/read_offload")
 	}
 }

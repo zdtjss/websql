@@ -216,6 +216,8 @@ func MainRegister(router *gin.Engine) {
 		routerGroup.GET("/ai/agent/sessions", agentHandler.HandleGetSessions)
 		routerGroup.GET("/ai/agent/session", agentHandler.HandleGetSession)
 		routerGroup.POST("/ai/agent/session/delete", agentHandler.HandleDeleteSession)
+		// 从当前会话对话中提取可复用提示词（前端预览确认后保存为「我的提示词」）
+		routerGroup.POST("/ai/agent/prompt/extract", agentHandler.HandleExtractPrompt)
 		// 安全指标快照：仅聚合计数，不含用户/连接/表/列/会话标识
 		routerGroup.GET("/ai/securityMetrics", agent.GetAISecurityMetrics)
 	}

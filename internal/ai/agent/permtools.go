@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -171,43 +172,57 @@ func newGetUserPermissionsFunc(userID, connID string, schemaNames []string) func
 	return func(ctx context.Context, input *PermUserPermissionsInput) (*PermUserPermissionsOutput, error) {
 		log.Printf("[PermAgent:get_user_permissions] userID=%s, connID=%s, schemas=%v\n", userID, connID, schemaNames)
 		scope := BuildPermissionScope(userID, connID, schemaNames)
-		fullSchemas := make([]string, 0, len(scope.FullAccessSchemas))
-		for name := range scope.FullAccessSchemas {
-			fullSchemas = append(fullSchemas, name)
-		}
-		output := &PermUserPermissionsOutput{
-			ConnID:            connID,
-			SchemaName:        firstNonEmpty(schemaNames),
-			HasFullConnAccess: scope.HasFullConnAccess,
-			FullAccessSchemas: fullSchemas,
-		}
-
-		tableSet := make(map[string]*PermTableAccess)
-		for table := range scope.AllowedTables {
-			tableSet[table] = &PermTableAccess{
-				TableName:   table,
-				AccessLevel: "full",
-			}
-		}
-		for table, cols := range scope.AllowedColumns {
-			if _, exists := tableSet[table]; exists {
-				continue
-			}
-			colList := make([]string, 0, len(cols))
-			for col := range cols {
-				colList = append(colList, col)
-			}
-			tableSet[table] = &PermTableAccess{
-				TableName:      table,
-				AccessLevel:    "column",
-				AllowedColumns: colList,
-			}
-		}
-		for _, v := range tableSet {
-			output.TablePermissions = append(output.TablePermissions, *v)
-		}
-		return output, nil
+		return buildPermUserPermissionsOutput(connID, schemaNames, scope), nil
 	}
+}
+
+// buildPermUserPermissionsOutput 把 PermissionScope 转换为权限 Agent 的稳定输出。
+func buildPermUserPermissionsOutput(connID string, schemaNames []string, scope *PermissionScope) *PermUserPermissionsOutput {
+	fullSchemas := make([]string, 0, len(scope.FullAccessSchemas))
+	for name := range scope.FullAccessSchemas {
+		fullSchemas = append(fullSchemas, name)
+	}
+	sort.Strings(fullSchemas)
+	output := &PermUserPermissionsOutput{
+		ConnID:            connID,
+		SchemaName:        firstNonEmpty(schemaNames),
+		HasFullConnAccess: scope.HasFullConnAccess,
+		FullAccessSchemas: fullSchemas,
+	}
+
+	tableSet := make(map[string]*PermTableAccess)
+	for table := range scope.AllowedTables {
+		tableSet[table] = &PermTableAccess{
+			TableName:   table,
+			AccessLevel: "full",
+		}
+	}
+	for table, cols := range scope.AllowedColumns {
+		if _, exists := tableSet[table]; exists {
+			continue
+		}
+		colList := make([]string, 0, len(cols))
+		for col := range cols {
+			colList = append(colList, col)
+		}
+		sort.Strings(colList)
+		tableSet[table] = &PermTableAccess{
+			TableName:      table,
+			AccessLevel:    "column",
+			AllowedColumns: colList,
+		}
+	}
+	// 稳定排序：同一权限快照必须产出同一工具结果，避免模型判断与缓存漂移。
+	tableNames := make([]string, 0, len(tableSet))
+	for name := range tableSet {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+	output.TablePermissions = make([]PermTableAccess, 0, len(tableNames))
+	for _, name := range tableNames {
+		output.TablePermissions = append(output.TablePermissions, *tableSet[name])
+	}
+	return output
 }
 
 type PermDecisionInput struct {

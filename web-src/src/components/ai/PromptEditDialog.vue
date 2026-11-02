@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     v-model="dialogVisible"
-    :title="isEdit ? '编辑提示词' : '新增提示词'"
+    :title="dialogTitle"
     width="1000px"
     :draggable="true"
     :close-on-click-modal="false"
@@ -12,7 +12,7 @@
   >
     <template #header="{ close }">
       <div class="dialog-header">
-        <span class="dialog-title">{{ isEdit ? '编辑提示词' : '新增提示词' }}</span>
+        <span class="dialog-title">{{ dialogTitle }}</span>
         <div class="dialog-header-actions">
           <el-button text @click="close" title="关闭">
             <el-icon><Close /></el-icon>
@@ -86,16 +86,36 @@
         </el-select>
       </el-form-item>
       <el-form-item label="内容" prop="content">
-        <div class="vditor-wrapper" v-loading="vditorLoading" element-loading-text="稍等片刻...">
-          <div ref="vditorContainerRef" class="vditor-container"></div>
+        <div class="vditor-wrapper">
+          <!-- 编辑器异步加载期间先用纯文本输入框兜底，内容立即可见、可编辑 -->
+          <div v-if="!vditorReady" class="vditor-fallback">
+            <el-input
+              v-model="form.content"
+              type="textarea"
+              resize="none"
+              class="vditor-fallback-input"
+              placeholder="请输入提示词内容（支持 Markdown 格式）"
+            />
+            <div class="vditor-fallback-tip">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              <span>正在加载 Markdown 编辑器，可直接先输入内容…</span>
+            </div>
+          </div>
+          <!-- 注意：动态 class 必须加在外层容器上。Vditor 会给挂载元素追加自己的
+               `vditor` class，若对该元素做 :class 绑定，Vue 更新时会整体覆盖
+               className，导致 vditor 样式（flex 布局）丢失、内容溢出弹窗 -->
+          <div class="vditor-holder" :class="{ 'vditor-holder--hidden': !vditorReady }">
+            <div ref="vditorContainerRef" class="vditor-container"></div>
+          </div>
         </div>
       </el-form-item>
-      <el-form-item v-if="!roleId && isRemote" label="分享给">
+      <el-form-item v-if="!form.roleId && isRemote" label="分享给">
         <el-select
           v-model="form.sharedUserIds"
           multiple
           filterable
           remote
+          :multiple-limit="MAX_SHARED_USERS"
           :remote-method="searchUsers"
           :loading="userSearchLoading"
           placeholder="搜索并选择用户进行分享"
@@ -122,30 +142,49 @@
 import { ref, computed, onUnmounted, nextTick, watch, shallowRef, useTemplateRef } from 'vue'
 import { listTableNamesBySchemas } from '@/api/conn'
 import { getPromptDetail, savePrompt } from '@/api/ai'
-import { findUserByLoginName } from '@/api/system'
+import { findUserBase } from '@/api/system'
 import { ElMessage } from 'element-plus'
 import { Close, Promotion, Loading } from '@element-plus/icons-vue'
-import { loadVditorModule, ensureVditorCss, preloadVditor } from '@/utils/vditorLoader'
+import { loadVditorModule, ensureVditorCss, preloadVditor, preloadVditorWhenIdle, getVditorLutePath, getVditorI18n } from '@/utils/vditorLoader'
 
 const dialogVisible = defineModel({ default: false })
 
-const { promptId, roleId } = defineProps({
+const { promptId, roleId, initialTitle, initialContent, initialConnSchemas, initialTables } = defineProps({
   promptId: { type: String, default: '' },
   roleId: { type: String, default: '' },
+  // 新增场景的预填内容：用于「从对话提取提示词」后直接进入编辑确认
+  initialTitle: { type: String, default: '' },
+  initialContent: { type: String, default: '' },
+  // 提取场景：会话中实际使用的连接/Schema，打开时预填「连接/Schema」
+  initialConnSchemas: { type: Array, default: () => [] },
+  // 提取场景：会话中实际使用的表（表标签），打开时预填「相关表」
+  initialTables: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits(['saved', 'sendToAI'])
 
 const isRemote = sessionStorage.getItem('isRemote') === 'true'
 const isEdit = computed(() => !!promptId)
+const dialogTitle = computed(() => {
+  if (isEdit.value) return '编辑提示词'
+  return initialTitle || initialContent ? '保存提取的提示词' : '新增提示词'
+})
 const formRef = useTemplateRef('formRef')
 const saving = ref(false)
 const userSearchLoading = ref(false)
-const userOptions = ref([])
+// 与后端 prompt_policy.go 的 promptMaxSharedUsers 保持一致，后端仍是最终校验方。
+const MAX_SHARED_USERS = 50
+// 用户选项用 id -> option 映射维护：搜索结果只替换“非已选”部分，
+// 已选用户的标签不随后续搜索变化，避免退化成原始 ID。
+const userOptionMap = ref(new Map())
+const userOptions = computed(() => Array.from(userOptionMap.value.values()))
 const vditorContainerRef = useTemplateRef('vditorContainerRef')
 const vditorInstance = shallowRef(null)
-const vditorLoading = ref(false)
+const vditorReady = ref(false)
 const vditorReadyPromise = shallowRef(null)
+
+// 打开页面空闲时就开始预加载编辑器模块，避免首次打开提示词弹窗时干等
+preloadVditorWhenIdle()
 
 const form = ref({
   id: '',
@@ -358,49 +397,60 @@ async function initVditor() {
   if (!vditorContainerRef.value) return
 
   if (vditorInstance.value) {
+    await waitForVditorReady()
+    vditorReady.value = true
     vditorInstance.value.setValue(form.value.content || '')
     return
   }
 
-  vditorLoading.value = true
+  try {
+    ensureVditorCss()
+    const Vditor = await loadVditorModule()
 
-  ensureVditorCss()
-  const Vditor = await loadVditorModule()
+    if (!vditorContainerRef.value) return
 
-  if (!vditorContainerRef.value) {
-    vditorLoading.value = false
-    return
-  }
-
-  vditorReadyPromise.value = new Promise((resolve) => {
-    vditorInstance.value = new Vditor(vditorContainerRef.value, {
-      height: 500,
-      width: '100%',
-      mode: 'ir',
-      preview: { mode: 'editor' },
-      placeholder: '请输入提示词内容（支持 Markdown 格式）',
-      lang: 'zh_CN',
-      toolbar: [
-        'headings', 'bold', 'italic', 'strike', '|',
-        'line', 'quote', 'list', 'ordered-list', 'check', '|',
-        'code', 'inline-code', 'table', 'link', 'undo', 'redo', '|', 'fullscreen',
-      ],
-      cache: { enable: false },
-      math: false,
-      graph: false,
-      codeHighlight: false,
-      after: () => {
-        vditorLoading.value = false
-        resolve()
-        if (form.value.content) {
-          vditorInstance.value.setValue(form.value.content)
-        }
-      },
-      input: (value) => {
-        form.value.content = value
-      },
+    vditorReadyPromise.value = new Promise((resolve) => {
+      vditorInstance.value = new Vditor(vditorContainerRef.value, {
+        _lutePath: getVditorLutePath(),
+        height: 500,
+        width: '100%',
+        mode: 'ir',
+        preview: {
+          mode: 'editor',
+          // 关闭代码块高亮：遇到代码块时 Vditor 会额外从 CDN 拉取 1MB+ 的 highlight.js
+          hljs: { enable: false },
+        },
+        placeholder: '请输入提示词内容（支持 Markdown 格式）',
+        lang: 'zh_CN',
+        i18n: getVditorI18n() || undefined,
+        toolbar: [
+          'headings', 'bold', 'italic', 'strike', '|',
+          'line', 'quote', 'list', 'ordered-list', 'check', '|',
+          'code', 'inline-code', 'table', 'link', 'undo', 'redo', '|', 'fullscreen',
+        ],
+        cache: { enable: false },
+        after: () => {
+          // Lute 默认开启「标题 ID」扩展，会把标题末尾的 `{...}` 当成 heading-id 语法，
+          // 导致 `## {{业务域一}}` 被解析成空标题 + 残余 `}`。提示词模板普遍使用
+          // {{占位符}}，关闭该扩展以保证标题里的占位符原样显示。
+          // 注意：Lute 实例挂在 Vditor 内部对象 `vditor` 上，直接访问实例的 `lute`
+          // 取不到（optional chaining 会静默跳过，看似调用成功实则未生效）。
+          vditorInstance.value?.vditor?.lute?.SetHeadingID(false)
+          vditorReady.value = true
+          resolve()
+          if (form.value.content) {
+            vditorInstance.value.setValue(form.value.content)
+          }
+        },
+        input: (value) => {
+          form.value.content = value
+        },
+      })
     })
-  })
+  } catch (e) {
+    // 编辑器加载失败时保留纯文本输入框，内容仍可正常编辑与保存
+    console.error('Markdown 编辑器加载失败，已降级为纯文本输入', e)
+  }
 }
 
 async function waitForVditorReady() {
@@ -409,19 +459,76 @@ async function waitForVditorReady() {
   }
 }
 
+// 提示词正文本身就是 Markdown。从对话提取或从别处粘贴的内容，常被整段包在
+// ```markdown 围栏里，Vditor 会把围栏内容按代码块渲染（列表、表格都不再排版），
+// 这里把这类围栏解包成普通 Markdown，其它语言的代码块保持原样。
+const MARKDOWN_FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})\s*(?:markdown|md)\s*$/i
+
+function unwrapMarkdownFences(markdown) {
+  if (!markdown || !markdown.includes('```')) return markdown
+  const lines = markdown.split(/\r?\n/)
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    const open = lines[i].match(MARKDOWN_FENCE_OPEN_RE)
+    if (!open) {
+      out.push(lines[i])
+      i++
+      continue
+    }
+    const marker = open[2]
+    const closeRe = new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`)
+    let end = i + 1
+    while (end < lines.length && !closeRe.test(lines[end])) end++
+    // 没有闭合围栏时保持原样，避免误删正文
+    if (end >= lines.length) {
+      out.push(lines[i])
+      i++
+      continue
+    }
+    const indent = open[1]
+    for (const line of lines.slice(i + 1, end)) {
+      out.push(indent && line.startsWith(indent) ? line.slice(indent.length) : line)
+    }
+    i = end + 1
+  }
+  return out.join('\n')
+}
+
 function handleOpen() {
   preloadVditor()
   loadConnList()
+  // 每次打开统一重置分享选项，避免切换不同提示词时残留上一次的用户列表。
+  userOptionMap.value = new Map()
   if (promptId) {
     loadPromptDetail(promptId)
   } else {
-    form.value = { id: '', title: '', content: '', roleId: roleId || '', connSchemas: [], tables: [], sharedUserIds: [] }
-    selectedConnSchema.value = []
+    const schemaValues = (initialConnSchemas || [])
+      .filter(cs => cs && cs.connId && cs.schema)
+      .map(cs => cs.connId + '::' + cs.schema)
+    const tableValues = (initialTables || []).filter(t => typeof t === 'string' && t)
+    form.value = {
+      id: '',
+      title: initialTitle || '',
+      content: unwrapMarkdownFences(initialContent || ''),
+      roleId: roleId || '',
+      connSchemas: [],
+      tables: [],
+      sharedUserIds: [],
+    }
+    selectedConnSchema.value = schemaValues
     selectedTables.value = []
     tableList.value = []
-    userOptions.value = []
-    if (vditorInstance.value) {
-      vditorInstance.value.setValue('')
+    if (schemaValues.length > 0) {
+      // 表选项依赖连接/Schema，加载完成后再按可用表回填，避免出现无效标签
+      loadTableListForSchemas().then(() => {
+        if (tableValues.length === 0) return
+        const available = new Set(tableList.value.map(t => t.label || t.name))
+        selectedTables.value = tableValues.filter(t => available.has(t))
+      })
+    }
+    if (vditorInstance.value && vditorReady.value) {
+      vditorInstance.value.setValue(form.value.content)
     }
   }
   nextTick(() => {
@@ -448,13 +555,14 @@ watch(selectedTables, (val) => {
 
 watch(dialogVisible, (visible) => {
   if (!visible) {
-    if (vditorInstance.value) {
+    if (vditorInstance.value && vditorReady.value) {
       vditorInstance.value.setValue('')
     }
   }
 })
 
 onUnmounted(() => {
+  clearTimeout(searchTimer)
   if (vditorInstance.value) {
     vditorInstance.value.destroy()
     vditorInstance.value = null
@@ -469,16 +577,14 @@ async function loadPromptDetail(id) {
       form.value = {
         id: data.id,
         title: data.title,
-        content: data.content,
+        content: unwrapMarkdownFences(data.content || ''),
         roleId: data.roleId || roleId || '',
         connSchemas: data.connSchemas || [],
         tables: data.tables || [],
         sharedUserIds: data.sharedUserIds || [],
       }
       selectedConnSchema.value = (data.connSchemas || []).map(cs => cs.connId + '::' + cs.schema)
-      if (data.sharedUsers && data.sharedUsers.length > 0) {
-        userOptions.value = data.sharedUsers.map(u => ({ id: u.id, name: u.name, loginName: u.loginName || '' }))
-      }
+      applySharedUsers(data.sharedUserIds || [], data.sharedUsers || [])
       if (data.connSchemas && data.connSchemas.length > 0) {
         await loadTableListForSchemas()
         if (data.tables && data.tables.length > 0) {
@@ -491,13 +597,9 @@ async function loadPromptDetail(id) {
       } else {
         selectedTables.value = []
       }
+      await waitForVditorReady()
       if (vditorInstance.value) {
         vditorInstance.value.setValue(form.value.content)
-      } else {
-        await waitForVditorReady()
-        if (vditorInstance.value) {
-          vditorInstance.value.setValue(form.value.content)
-        }
       }
     }
   } catch (e) {
@@ -505,24 +607,72 @@ async function loadPromptDetail(id) {
   }
 }
 
-async function searchUsers(query) {
-  if (!query) return
-  userSearchLoading.value = true
-  try {
-    const resp = await findUserByLoginName(query)
-    const users = resp.data.data || []
-    userOptions.value = users.map(u => ({ id: u.id, name: u.name, loginName: u.loginName }))
-    const existingIds = new Set(userOptions.value.map(u => u.id))
-    for (const uid of form.value.sharedUserIds) {
-      if (!existingIds.has(uid)) {
-        userOptions.value.push({ id: uid, name: uid, loginName: '' })
-      }
-    }
-  } catch (e) {
-    console.error('搜索用户失败:', e)
-  } finally {
-    userSearchLoading.value = false
+// 详情返回的分享名单：以 sharedUserIds 为已选保底，再用 sharedUsers 补全标签。
+function applySharedUsers(sharedUserIds, sharedUsers) {
+  form.value.sharedUserIds = sharedUserIds || []
+  const next = new Map()
+  for (const id of form.value.sharedUserIds) {
+    next.set(id, { id, name: id, loginName: '' })
   }
+  for (const u of sharedUsers || []) {
+    if (!u?.id) continue
+    next.set(u.id, { id: u.id, name: u.name || u.loginName || u.id, loginName: u.loginName || '' })
+  }
+  userOptionMap.value = next
+}
+
+// 搜索结果只替换非已选项，已选项保留原有姓名标签。
+function replaceOptionsWithSelection(users) {
+  const next = new Map()
+  for (const id of form.value.sharedUserIds) {
+    const old = userOptionMap.value.get(id)
+    if (old) next.set(id, old)
+  }
+  for (const u of users) {
+    if (!u?.id) continue
+    next.set(u.id, { id: u.id, name: u.name || u.loginName || u.id, loginName: u.loginName || '' })
+  }
+  for (const id of form.value.sharedUserIds) {
+    if (!next.has(id)) next.set(id, { id, name: id, loginName: '' })
+  }
+  userOptionMap.value = next
+}
+
+// 清空搜索时只保留已选用户，已选项缺失标签时用 ID 保底显示。
+function pruneUnselectedOptions() {
+  const next = new Map()
+  for (const id of form.value.sharedUserIds) {
+    next.set(id, userOptionMap.value.get(id) || { id, name: id, loginName: '' })
+  }
+  userOptionMap.value = next
+}
+
+let searchTimer = null
+let searchSeq = 0
+
+function searchUsers(query) {
+  const keyword = (query || '').trim()
+  clearTimeout(searchTimer)
+  if (!keyword) {
+    // 让在途请求的响应失效，同时清空非已选结果。
+    searchSeq++
+    userSearchLoading.value = false
+    pruneUnselectedOptions()
+    return
+  }
+  const seq = ++searchSeq
+  userSearchLoading.value = true
+  searchTimer = setTimeout(async () => {
+    try {
+      const resp = await findUserBase(keyword)
+      if (seq !== searchSeq) return
+      replaceOptionsWithSelection(resp.data.data || [])
+    } catch (e) {
+      if (seq === searchSeq) ElMessage.error('搜索用户失败')
+    } finally {
+      if (seq === searchSeq) userSearchLoading.value = false
+    }
+  }, 300)
 }
 
 async function handleSave() {
@@ -537,7 +687,8 @@ async function handleSave() {
     dialogVisible.value = false
   } catch (e) {
     console.error('保存提示词失败:', e)
-    ElMessage.error('保存失败')
+    // 403/400 的文案已由请求拦截器统一提示（如“无权修改该提示词”）
+    if (!e?.response?.data?.msg) ElMessage.error('保存失败')
   } finally {
     saving.value = false
   }
@@ -603,8 +754,40 @@ function handleSendToAI() {
 }
 
 .vditor-wrapper {
+  position: relative;
   width: 100%;
   min-height: 500px;
+}
+
+.vditor-fallback {
+  width: 100%;
+}
+
+.vditor-fallback-input :deep(.el-textarea__inner) {
+  height: 500px;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  line-height: 1.6;
+}
+
+.vditor-fallback-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.vditor-holder {
+  width: 100%;
+}
+
+/* 加载期间编辑器先在后台初始化，避免撑出空白区域 */
+.vditor-holder--hidden {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .vditor-container {

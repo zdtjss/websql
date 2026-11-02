@@ -3,6 +3,10 @@ import { ref } from 'vue'
 const visible = ref(false)
 const promptId = ref('')
 const roleId = ref('')
+const initialTitle = ref('')
+const initialContent = ref('')
+const initialConnSchemas = ref([])
+const initialTables = ref([])
 const savedCallbacks = []
 let sendToAIHandler = null
 
@@ -10,6 +14,12 @@ export function usePromptEditDialog() {
   function openDialog(options = {}) {
     promptId.value = options.promptId || ''
     roleId.value = options.roleId || ''
+    // 提取场景：把 AI 生成的结果预填进新增提示词弹窗，由用户确认后保存
+    initialTitle.value = options.initialTitle || ''
+    initialContent.value = options.initialContent || ''
+    // 提取场景：会话中实际使用的连接/Schema，打开弹窗时预填
+    initialConnSchemas.value = options.initialConnSchemas || []
+    initialTables.value = options.initialTables || []
     visible.value = true
   }
 
@@ -46,6 +56,10 @@ export function usePromptEditDialog() {
     visible,
     promptId,
     roleId,
+    initialTitle,
+    initialContent,
+    initialConnSchemas,
+    initialTables,
     openDialog,
     closeDialog,
     onSaved,

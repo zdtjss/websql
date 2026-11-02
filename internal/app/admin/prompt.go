@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 )
 
 type Prompt struct {
@@ -30,6 +32,8 @@ type Prompt struct {
 	CurrentUserId string             `json:"currentUserId" db:"-"`
 	IsShared      bool               `json:"isShared" db:"-"`
 	IsRolePrompt  bool               `json:"isRolePrompt" db:"-"`
+	CanEdit       bool               `json:"canEdit" db:"-"`
+	CanDelete     bool               `json:"canDelete" db:"-"`
 	SharedByName  string             `json:"sharedByName,omitempty" db:"-"`
 	SharedUserIds []string           `json:"sharedUserIds,omitempty" db:"-"`
 	SharedUsers   []SharedUser       `json:"sharedUsers,omitempty" db:"-"`
@@ -278,6 +282,8 @@ func PromptList(c *gin.Context) {
 			}
 		}
 		p.IsShared = p.CreatedBy != nil && *p.CreatedBy != userId
+		p.CanEdit = canWritePrompt(p, userId, userRoleIds)
+		p.CanDelete = canDeletePrompt(p, userId)
 		if p.IsShared && !p.IsRolePrompt {
 			var sharerName string
 			err := getDB().Get(&sharerName, "select name from t_user where id = ?", *p.CreatedBy)
@@ -339,62 +345,185 @@ func PromptListByRole(c *gin.Context) {
 func PromptDetail(c *gin.Context) {
 	id := c.Query("id")
 	if id == "" {
-		response.WriteErr(c, 200, 400, "缺少 id 参数")
+		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 id 参数")
 		return
 	}
+
+	userId := getCurrentUserId(c)
 
 	prompt := &Prompt{}
 	err := getDB().Get(prompt, "select id, title, content, created_by, role_id, schemas, tables, created_at, updated_at from t_prompt where id = ?", id)
 	if err != nil {
-		log.Printf("查询提示词详情失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+		response.WriteErr(c, http.StatusBadRequest, 400, "提示词不存在")
 		return
 	}
 
-	sharedToIds := []string{}
-	getDB().Select(&sharedToIds, "select shared_to from t_prompt_share where prompt_id = ?", id)
-	prompt.SharedUserIds = sharedToIds
+	// 读取权限：管理员 / 创建者 / 同角色 / 被分享用户。
+	// 不满足时不能返回正文与分享名单，避免通过 id 枚举他人提示词。
+	roleIDs := promptUserRoleIDs(userId)
+	sharedToMe := promptSharedToMe(id, userId)
+	if !canReadPrompt(prompt, userId, roleIDs, sharedToMe) {
+		response.WriteErr(c, http.StatusForbidden, 403, "无权查看该提示词")
+		return
+	}
 
-	if len(sharedToIds) > 0 {
-		users := []struct {
-			Id        string `db:"id"`
-			Name      string `db:"name"`
-			LoginName string `db:"login_name"`
-		}{}
-		getDB().Select(&users, "select id, name, login_name from t_user where id in (?)", sharedToIds)
-		prompt.SharedUsers = make([]SharedUser, 0, len(users))
-		for _, u := range users {
-			prompt.SharedUsers = append(prompt.SharedUsers, SharedUser{
-				Id:        u.Id,
-				Name:      u.Name,
-				LoginName: u.LoginName,
-			})
+	// 分享名单只对可写用户（创建者/管理员）展示，避免泄露其他接收者。
+	if canWritePrompt(prompt, userId, roleIDs) {
+		sharedToIds := []string{}
+		getDB().Select(&sharedToIds, "select shared_to from t_prompt_share where prompt_id = ?", id)
+		prompt.SharedUserIds = sharedToIds
+
+		if len(sharedToIds) > 0 {
+			users := []struct {
+				Id        string `db:"id"`
+				Name      string `db:"name"`
+				LoginName string `db:"login_name"`
+			}{}
+			// IN (?) 必须经 sqlx.In 展开切片参数，否则会被当成单个不支持的类型。
+			query, args, inErr := sqlx.In("select id, name, login_name from t_user where id in (?)", sharedToIds)
+			if inErr == nil {
+				if err := getDB().Select(&users, getDB().Rebind(query), args...); err != nil {
+					log.Printf("查询分享用户失败: %v", err)
+				}
+			}
+			prompt.SharedUsers = make([]SharedUser, 0, len(users))
+			for _, u := range users {
+				prompt.SharedUsers = append(prompt.SharedUsers, SharedUser{
+					Id:        u.Id,
+					Name:      u.Name,
+					LoginName: u.LoginName,
+				})
+			}
 		}
 	}
 
 	response.WriteOK(c, prompt)
 }
 
+// promptUserRoleIDs 返回当前用户的角色 ID（用于判断角色提示词可读）。
+func promptUserRoleIDs(userId string) []string {
+	roleIDs := []string{}
+	if err := getDB().Select(&roleIDs, "select role_id from t_user_role where user_id = ?", userId); err != nil {
+		log.Printf("查询用户角色失败: %v", err)
+		return nil
+	}
+	return roleIDs
+}
+
+// promptSharedToMe 判断提示词是否分享给当前用户。
+func promptSharedToMe(promptId, userId string) bool {
+	var count int
+	if err := getDB().Get(&count, "select count(*) from t_prompt_share where prompt_id = ? and shared_to = ?", promptId, userId); err != nil {
+		log.Printf("查询提示词分享关系失败: %v", err)
+		return false
+	}
+	return count > 0
+}
+
+// promptRoleExists 校验角色 ID 是否存在，避免写入孤儿角色 ID。
+func promptRoleExists(roleId string) bool {
+	var count int
+	if err := getDB().Get(&count, "select count(*) from t_role where id = ?", roleId); err != nil {
+		log.Printf("校验角色失败: %v", err)
+		return false
+	}
+	return count > 0
+}
+
+// promptUsersExist 校验分享目标用户是否全部存在。
+func promptUsersExist(userIds []string) bool {
+	if len(userIds) == 0 {
+		return true
+	}
+	// IN (?) 必须经 sqlx.In 展开切片参数，否则查询会直接失败并误判为“用户不存在”。
+	query, args, err := sqlx.In("select count(*) from t_user where id in (?)", userIds)
+	if err != nil {
+		log.Printf("构造分享用户查询失败: %v", err)
+		return false
+	}
+	var count int
+	if err := getDB().Get(&count, getDB().Rebind(query), args...); err != nil {
+		log.Printf("校验分享用户失败: %v", err)
+		return false
+	}
+	return count == len(userIds)
+}
+
 func SavePrompt(c *gin.Context) {
 	userId := getCurrentUserId(c)
 	req := &PromptSave{}
 	if err := jsonutil.UnmarshalJson(c.Request.Body, req); err != nil {
-		response.WriteErr(c, 200, 400, "请求参数解析失败")
+		response.WriteErr(c, http.StatusBadRequest, 400, "请求参数解析失败")
 		return
 	}
 
-	if req.Title == "" {
-		response.WriteErr(c, 200, 400, "标题不能为空")
+	title, err := normalizePromptTitle(req.Title)
+	if err != nil {
+		response.WriteErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
-	if req.Content == "" {
-		response.WriteErr(c, 200, 400, "内容不能为空")
+	content, err := normalizePromptContent(req.Content)
+	if err != nil {
+		response.WriteErr(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	sharedUserIds, err := normalizePromptSharedUserIDs(req.SharedUserIds)
+	if err != nil {
+		response.WriteErr(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	req.RoleId = strings.TrimSpace(req.RoleId)
+	// 分享给自己没有意义；角色提示词按角色分发，不接受单独分享。
+	sharedUserIds = excludeUserID(sharedUserIds, userId)
+	sharedUserIds = effectiveSharedUserIDs(req.RoleId != "", sharedUserIds)
+
+	isAdmin := isUserAdmin(userId)
+	roleIDs := promptUserRoleIDs(userId)
+
+	if req.Id == "" {
+		// 新增：角色提示词仅管理员可建，普通用户只能建个人提示词。
+		if req.RoleId != "" && !isAdmin {
+			response.WriteErr(c, http.StatusForbidden, 403, "无权创建角色提示词")
+			return
+		}
+		if req.RoleId != "" && !promptRoleExists(req.RoleId) {
+			response.WriteErr(c, http.StatusBadRequest, 400, "角色不存在")
+			return
+		}
+	} else {
+		existing := &Prompt{}
+		if err := getDB().Get(existing, "select id, created_by, role_id from t_prompt where id = ?", req.Id); err != nil {
+			response.WriteErr(c, http.StatusBadRequest, 400, "提示词不存在")
+			return
+		}
+		if !canWritePrompt(existing, userId, roleIDs) {
+			response.WriteErr(c, http.StatusForbidden, 403, "无权修改该提示词")
+			return
+		}
+		// 普通用户不得把个人提示词改成角色提示词，也不得改动既有角色归属。
+		if !isAdmin && req.RoleId != "" {
+			response.WriteErr(c, http.StatusForbidden, 403, "无权修改角色提示词")
+			return
+		}
+		if req.RoleId != "" && !promptRoleExists(req.RoleId) {
+			response.WriteErr(c, http.StatusBadRequest, 400, "角色不存在")
+			return
+		}
+	}
+
+	if len(sharedUserIds) > 0 && !promptUsersExist(sharedUserIds) {
+		response.WriteErr(c, http.StatusBadRequest, 400, "分享用户不存在")
 		return
 	}
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	tx, _ := getDB().Beginx()
+	tx, err := getDB().Beginx()
+	if err != nil {
+		log.Printf("开始提示词事务失败: %v", err)
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
+		return
+	}
 	defer tx.Rollback()
 
 	var roleId any
@@ -421,40 +550,41 @@ func SavePrompt(c *gin.Context) {
 	if req.Id == "" {
 		req.Id = idgen.RandomStr()
 		_, err := tx.Exec("insert into t_prompt (id, title, content, created_by, role_id, schemas, tables, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			req.Id, req.Title, req.Content, userId, roleId, schemasVal, tablesVal, now, now)
+			req.Id, title, content, userId, roleId, schemasVal, tablesVal, now, now)
 		if err != nil {
 			log.Printf("保存提示词失败: %v", err)
-			response.WriteErr(c, 200, 500, "操作失败")
+			response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
 			return
 		}
 	} else {
 		_, err := tx.Exec("update t_prompt set title = ?, content = ?, role_id = ?, schemas = ?, tables = ?, updated_at = ? where id = ?",
-			req.Title, req.Content, roleId, schemasVal, tablesVal, now, req.Id)
+			title, content, roleId, schemasVal, tablesVal, now, req.Id)
 		if err != nil {
 			log.Printf("更新提示词失败: %v", err)
-			response.WriteErr(c, 200, 500, "操作失败")
+			response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
 			return
 		}
 	}
 
-	tx.Exec("delete from t_prompt_share where prompt_id = ?", req.Id)
+	if _, err := tx.Exec("delete from t_prompt_share where prompt_id = ?", req.Id); err != nil {
+		log.Printf("清理提示词分享失败: %v", err)
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
+		return
+	}
 
-	if len(req.SharedUserIds) > 0 {
-		for _, sharedTo := range req.SharedUserIds {
-			_, err := tx.Exec("insert into t_prompt_share (id, prompt_id, shared_by, shared_to) values (?, ?, ?, ?)",
-				idgen.RandomStr(), req.Id, userId, sharedTo)
-			if err != nil {
-				log.Printf("保存提示词分享失败: %v", err)
-				response.WriteErr(c, 200, 500, "操作失败")
-				return
-			}
+	for _, sharedTo := range sharedUserIds {
+		_, err := tx.Exec("insert into t_prompt_share (id, prompt_id, shared_by, shared_to) values (?, ?, ?, ?)",
+			idgen.RandomStr(), req.Id, userId, sharedTo)
+		if err != nil {
+			log.Printf("保存提示词分享失败: %v", err)
+			response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
+			return
 		}
 	}
 
-	err := tx.Commit()
-	if err != nil {
+	if err := tx.Commit(); err != nil {
 		log.Printf("保存提示词失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
 		return
 	}
 	response.WriteOK(c, "保存成功")
@@ -464,39 +594,47 @@ func DelPrompt(c *gin.Context) {
 	userId := getCurrentUserId(c)
 	id := c.Query("id")
 	if id == "" {
-		response.WriteErr(c, 200, 400, "缺少 id 参数")
+		response.WriteErr(c, http.StatusBadRequest, 400, "缺少 id 参数")
 		return
 	}
 
 	prompt := &Prompt{}
 	err := getDB().Get(prompt, "select id, created_by, role_id from t_prompt where id = ?", id)
 	if err != nil {
-		response.WriteErr(c, 200, 400, "提示词不存在")
+		response.WriteErr(c, http.StatusBadRequest, 400, "提示词不存在")
 		return
 	}
 
-	isCreator := prompt.CreatedBy != nil && *prompt.CreatedBy == userId
-	isRoleOwner := prompt.RoleId != nil && *prompt.RoleId != ""
-	if !isCreator && !isRoleOwner {
-		response.WriteErr(c, 200, 400, "无权删除此提示词")
+	// 角色提示词仅管理员可删；个人提示词仅创建者或管理员可删。
+	if !canDeletePrompt(prompt, userId) {
+		response.WriteErr(c, http.StatusForbidden, 403, "无权删除该提示词")
 		return
 	}
 
-	tx, _ := getDB().Beginx()
+	tx, err := getDB().Beginx()
+	if err != nil {
+		log.Printf("开始提示词事务失败: %v", err)
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
+		return
+	}
 	defer tx.Rollback()
 
-	tx.Exec("delete from t_prompt_share where prompt_id = ?", id)
+	if _, err := tx.Exec("delete from t_prompt_share where prompt_id = ?", id); err != nil {
+		log.Printf("删除提示词分享失败: %v", err)
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
+		return
+	}
 	_, err = tx.Exec("delete from t_prompt where id = ?", id)
 	if err != nil {
 		log.Printf("删除提示词失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
 		return
 	}
 
 	err = tx.Commit()
 	if err != nil {
 		log.Printf("删除提示词失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+		response.WriteErr(c, http.StatusInternalServerError, 500, "操作失败")
 		return
 	}
 	response.WriteOK(c, "删除成功")

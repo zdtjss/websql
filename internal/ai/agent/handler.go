@@ -349,6 +349,23 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest, isResume bool) (*req
 		log.Printf("[Handler] 丢弃非本人上传的文件引用 - user=%s, fileId=%s\n", user.Id, req.ExcelData.FileID)
 		req.ExcelData = nil
 	}
+	// 旧版 ExcelData 的列名/类型/行数均为客户端可控字段，进入系统提示词前必须清洗；
+	// 文件类型优先采用服务端上传元数据，避免客户端伪造类别改变模型行为。
+	if req.ExcelData != nil {
+		req.ExcelData.Columns = sanitizePromptColumns(req.ExcelData.Columns)
+		req.ExcelData.FileType = sanitizeLegacyFileType(req.ExcelData.FileType)
+		if meta, ok := LookupUploadedFile(req.ExcelData.FileID); ok && meta != nil {
+			if meta.FileType != "" {
+				req.ExcelData.FileType = sanitizeLegacyFileType(meta.FileType)
+			}
+		}
+		if req.ExcelData.TotalRows < 0 {
+			req.ExcelData.TotalRows = 0
+		}
+		if req.ExcelData.CharCount < 0 {
+			req.ExcelData.CharCount = 0
+		}
+	}
 	// 新上传链路（多文件）：校验归属并剔除已过期引用，展示字段一律以服务端元数据回填
 	if len(req.Attachments) > 0 {
 		req.Attachments = SanitizeChatAttachments(req.Attachments, user.Id)

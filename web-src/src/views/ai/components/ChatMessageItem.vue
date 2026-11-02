@@ -1,4 +1,4 @@
-﻿<template>
+﻿﻿<template>
   <!-- 思考过程（历史中的，可折叠） -->
   <div v-if="msg.role === 'thinking'" class="thinking-block">
     <div class="thinking-label" style="cursor:pointer;" @click="emit('toggle-thinking', msg)">
@@ -42,6 +42,16 @@
         class="msg-action-btn"
         size="small"
         text
+        title="从本次对话提取提示词"
+        :disabled="loading"
+        @click="emit('extract-prompt', msg)"
+      >
+        <el-icon><MagicStick /></el-icon>
+      </el-button>
+      <el-button
+        class="msg-action-btn"
+        size="small"
+        text
         title="重试"
         :loading="retryingMsg === msg"
         :disabled="!canRetry || loading"
@@ -64,7 +74,7 @@
  * 单条聊天消息渲染组件。
  * 根据消息角色（thinking / user / assistant / tool_call）渲染不同样式。
  */
-import { CopyDocument, RefreshRight } from '@element-plus/icons-vue'
+import { CopyDocument, MagicStick, RefreshRight } from '@element-plus/icons-vue'
 import ChatFileCard from './ChatFileCard.vue'
 import type { ChatMessage } from '../composables/useChatHistory'
 
@@ -90,6 +100,8 @@ const emit = defineEmits<{
   (e: 'copy', msg: ChatMessage): void
   /** 重试消息 */
   (e: 'retry', msg: ChatMessage): void
+  /** 从本次对话提取可复用提示词 */
+  (e: 'extract-prompt', msg: ChatMessage): void
 }>()
 </script>
 
@@ -195,7 +207,7 @@ const emit = defineEmits<{
   right: 10px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -205,10 +217,12 @@ const emit = defineEmits<{
   opacity: 1;
   pointer-events: auto;
 }
-.msg-action-btn {
+/* 覆盖 Element Plus 相邻按钮默认的 margin-left: 12px，否则按钮间距会被撑大 */
+.msg-action-bar .msg-action-btn {
   font-size: 12px !important;
   color: #909399;
-  padding: 2px 6px !important;
+  padding: 2px 4px !important;
+  margin-left: 0;
   height: 24px;
 }
 .msg-action-btn:hover {

@@ -121,7 +121,9 @@ func HandleUploadFile(c *gin.Context) {
 		return
 	}
 
-	displayName := filepath.Base(strings.ReplaceAll(fileHeader.Filename, "\\", "/"))
+	// 文件名会进入系统提示词与历史消息，先剥离控制字符/换行并限制长度，
+	// 避免客户端通过文件名注入伪指令段落。
+	displayName := sanitizePromptLabel(filepath.Base(strings.ReplaceAll(fileHeader.Filename, "\\", "/")), "未命名文件"+ext)
 	meta := &uploadstore.FileMeta{
 		ID:       fileID,
 		UserID:   ownerID,

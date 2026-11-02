@@ -93,7 +93,7 @@ func TestSanitizeChatAttachments(t *testing.T) {
 }
 
 func TestBuildAttachmentsPrompt(t *testing.T) {
-	if got := buildAttachmentsPrompt(nil); got != "" {
+	if got := buildAttachmentsPrompt(nil, true); got != "" {
 		t.Errorf("无附件时应返回空串，实际 %q", got)
 	}
 
@@ -104,7 +104,7 @@ func TestBuildAttachmentsPrompt(t *testing.T) {
 		{FileID: "f4", FileName: "演示.mp4", FileKind: "video", FileSize: 4096},
 		{FileID: "f5", FileName: "销售2.xlsx", FileKind: "table", FileSize: 1024},
 	}
-	got := buildAttachmentsPrompt(refs)
+	got := buildAttachmentsPrompt(refs, true)
 
 	// 元信息：文件名 / fileId / 大小
 	for _, want := range []string{"销售.xlsx", "f1", "2KB", "报告.pdf", "截图.png", "演示.mp4"} {

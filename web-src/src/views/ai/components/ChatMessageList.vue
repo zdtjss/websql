@@ -18,6 +18,7 @@
       @toggle-thinking="emit('toggle-thinking', $event)"
       @copy="emit('copy', $event)"
       @retry="emit('retry', $event)"
+      @extract-prompt="emit('extract-prompt', $event)"
     />
 
     <!-- 实时思考过程（流式中） -->
@@ -89,6 +90,8 @@ const emit = defineEmits<{
   (e: 'copy', msg: ChatMessage): void
   /** 重试消息 */
   (e: 'retry', msg: ChatMessage): void
+  /** 从本次对话提取可复用提示词 */
+  (e: 'extract-prompt', msg: ChatMessage): void
 }>()
 
 /** 容器元素引用（父组件通过 ref 访问用于滚动控制） */

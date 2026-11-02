@@ -436,6 +436,34 @@ func GetSelectedModelConfig(modelId string) *AIConfig {
 	return nil
 }
 
+// GetModelConfigByID 按模型 ID 精确查找已配置的模型；不存在时返回 nil。
+// 用于需要严格使用调用方指定模型的场景（如提示词提取），避免静默回退到默认模型。
+func GetModelConfigByID(modelID string) *AIConfig {
+	if modelID == "" {
+		return nil
+	}
+	for _, m := range getModelListFromDB() {
+		if m.Id != modelID {
+			continue
+		}
+		caps, capsSource := ResolveModelCapabilities(m)
+		return &AIConfig{
+			Provider:           m.Provider,
+			BaseURL:            m.BaseURL,
+			Model:              m.Model,
+			ApiKey:             m.ApiKey,
+			Temperature:        m.Temperature,
+			FrequencyPenalty:   m.FrequencyPenalty,
+				PresencePenalty:    m.PresencePenalty,
+			MaxContextTokens:   m.MaxContextTokens,
+			EnableThinking:     m.EnableThinking,
+			Capabilities:       caps,
+			CapabilitiesSource: capsSource,
+		}
+	}
+	return nil
+}
+
 func GetSystemConfig(c *gin.Context) {
 	configType := c.Query("type")
 	configs := ListSystemConfig(configType)

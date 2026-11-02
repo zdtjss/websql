@@ -98,40 +98,46 @@ func TestFailedToolNames(t *testing.T) {
 
 // ─── F-34 AGENTS.md 段裁剪与加载 ───
 
-func TestApplyAgentsMDConditions(t *testing.T) {
+func TestAgentsMDConditions(t *testing.T) {
 	raw := "保留段\n<!-- @if conn -->\n有连接才注入\n<!-- @endif -->\n" +
 		"<!-- @if skill -->\n有 Skill 才注入\n<!-- @endif -->\n" +
+		"<!-- @if file -->\n有文件才注入\n<!-- @endif -->\n" +
+		"<!-- @if codegen -->\n有 Codegen 才注入\n<!-- @endif -->\n" +
 		"<!-- @if conn -->\n<!-- @if skill -->\n两者都要\n<!-- @endif -->\n<!-- @endif -->\n"
 
-	got := applyAgentsMDConditions(raw, false, false)
-	if strings.Contains(got, "有连接才注入") || strings.Contains(got, "有 Skill 才注入") || strings.Contains(got, "两者都要") {
+	got := applyAgentsMDConditions(raw, PromptCapabilities{})
+	if strings.Contains(got, "有连接才注入") || strings.Contains(got, "有 Skill 才注入") ||
+		strings.Contains(got, "有文件才注入") || strings.Contains(got, "有 Codegen 才注入") || strings.Contains(got, "两者都要") {
 		t.Fatalf("条件段未被裁剪：%q", got)
 	}
 	if !strings.Contains(got, "保留段") {
 		t.Fatalf("无条件内容必须保留：%q", got)
 	}
 
-	got2 := applyAgentsMDConditions(raw, true, true)
-	for _, want := range []string{"有连接才注入", "有 Skill 才注入", "两者都要"} {
+	got2 := applyAgentsMDConditions(raw, PromptCapabilities{HasDB: true, HasSkill: true, HasFile: true, HasCodegen: true})
+	for _, want := range []string{"有连接才注入", "有 Skill 才注入", "有文件才注入", "有 Codegen 才注入", "两者都要"} {
 		if !strings.Contains(got2, want) {
 			t.Fatalf("应包含 %q，实际：%q", want, got2)
 		}
 	}
 
-	got3 := applyAgentsMDConditions(raw, true, false)
-	if strings.Contains(got3, "两者都要") || !strings.Contains(got3, "有连接才注入") {
-		t.Fatalf("嵌套条件判定错误：%q", got3)
+	got3 := applyAgentsMDConditions(raw, PromptCapabilities{HasDB: true, HasSkill: false, HasFile: true, HasCodegen: false})
+	if strings.Contains(got3, "两者都要") || strings.Contains(got3, "有 Codegen 才注入") ||
+		!strings.Contains(got3, "有连接才注入") || !strings.Contains(got3, "有文件才注入") {
+		t.Fatalf("嵌套/新增条件判定错误：%q", got3)
 	}
 }
 
 func TestLoadAgentsMD_CachesAndTruncates(t *testing.T) {
 	originalContent, originalMtime := agentsMDLoader.content, agentsMDLoader.mtime
 	originalCheck, originalLoaded := agentsMDLoader.lastCheck, agentsMDLoader.loaded
+	originalPath, originalMax := agentsMDLoader.path, agentsMDLoader.maxBytes
 	defer func() {
 		agentsMDLoader.mu.Lock()
 		defer agentsMDLoader.mu.Unlock()
 		agentsMDLoader.content, agentsMDLoader.mtime = originalContent, originalMtime
 		agentsMDLoader.lastCheck, agentsMDLoader.loaded = originalCheck, originalLoaded
+		agentsMDLoader.path, agentsMDLoader.maxBytes = originalPath, originalMax
 	}()
 	// 本包其它用例会先加载真实 AGENTS.md，必须强制从“未加载”开始才能验证读取/缓存。
 	agentsMDLoader.mu.Lock()
@@ -139,6 +145,8 @@ func TestLoadAgentsMD_CachesAndTruncates(t *testing.T) {
 	agentsMDLoader.loaded = false
 	agentsMDLoader.lastCheck = time.Time{}
 	agentsMDLoader.mtime = time.Time{}
+	agentsMDLoader.path = ""
+	agentsMDLoader.maxBytes = 0
 	agentsMDLoader.mu.Unlock()
 
 	t.Chdir(t.TempDir())
@@ -166,7 +174,8 @@ func TestLoadAgentsMD_CachesAndTruncates(t *testing.T) {
 		t.Fatalf("超过检查间隔后应热更新：%q", got)
 	}
 
-	oversize := strings.Repeat("字", agentsMDMaxBytes)
+	maxBytes := agentsMDMaxBytes()
+	oversize := strings.Repeat("字", maxBytes)
 	if err := os.WriteFile("AGENTS.md", []byte(oversize), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +184,18 @@ func TestLoadAgentsMD_CachesAndTruncates(t *testing.T) {
 	}
 	agentsMDLoader.lastCheck = time.Time{}
 	got := loadAgentsMD()
-	if len(got) > agentsMDMaxBytes {
-		t.Fatalf("超大 AGENTS.md 必须截断：%d > %d", len(got), agentsMDMaxBytes)
+	if !strings.Contains(got, "[AGENTS.md 已截断") {
+		t.Fatalf("截断后应提示模型规范不完整：%q", got)
+	}
+	if len(got) > maxBytes+64 {
+		t.Fatalf("超大 AGENTS.md 必须截断：%d > %d（含提示行）", len(got), maxBytes+64)
 	}
 	if !utf8.ValidString(got) {
 		t.Fatal("截断必须落在合法 rune 边界")
+	}
+	metrics := SecurityMetricsSnapshot()
+	if metrics["ai_agents_md_truncated_total|true"] <= 0 {
+		t.Fatalf("截断必须记录指标：%v", metrics)
 	}
 }
 
@@ -491,7 +507,8 @@ func TestBuildDynamicPromptPartDoesNotOpenConnections(t *testing.T) {
 	// 但更重要的是不会尝试 Ping 不可达的数据库。
 	scope := &PermissionScope{UserID: "u1", ConnID: "prompt-c1", SchemaName: "s1", IsRemote: true}
 	out := buildDynamicPromptPart("prompt-c1", "mysql", "s1", "8.0", nil, scope,
-		[]SchemaRef{{ConnID: "prompt-c1", Schema: "s1"}, {ConnID: "prompt-c2", Schema: "s2"}}, false, nil)
+		[]SchemaRef{{ConnID: "prompt-c1", Schema: "s1"}, {ConnID: "prompt-c2", Schema: "s2"}},
+		PromptCapabilities{HasDB: true}, nil)
 	if !strings.Contains(out, "prompt-c2") {
 		t.Fatalf("多连接提示词应包含非默认连接：%q", out)
 	}

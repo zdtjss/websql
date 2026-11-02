@@ -184,6 +184,9 @@ CREATE TABLE IF NOT EXISTS t_prompt_share (
 	shared_to TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_prompt_share_prompt ON t_prompt_share (prompt_id);
+CREATE INDEX IF NOT EXISTS idx_prompt_share_to ON t_prompt_share (shared_to);
+
 -- SQL 收藏夹：支持后端同步、分类、标签、关联连接/Schema
 CREATE TABLE IF NOT EXISTS t_sql_snippet (
 	id TEXT PRIMARY KEY,

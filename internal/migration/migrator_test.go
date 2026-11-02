@@ -11,7 +11,7 @@ import (
 // TestRunMigrations_AISecuritySchema 验证增量迁移脚本可在全新 SQLite 库上依次执行，
 // 并产出 AI 数据权限改造所需的列与表。
 //
-// 不走 fullScriptContent 快速建库路径：这里需要按 0001 → 0002 → 0003 → 0004
+// 不走 fullScriptContent 快速建库路径：这里需要按 0001 → 0005
 // 顺序执行增量脚本，确保 ALTER/CREATE 语句本身正确。
 func TestRunMigrations_AISecuritySchema(t *testing.T) {
 	db, err := sqlx.Open("sqlite", ":memory:")
@@ -60,12 +60,22 @@ func TestRunMigrations_AISecuritySchema(t *testing.T) {
 		t.Fatal("同连接同表同列应触发唯一索引冲突")
 	}
 
-	// 4) 迁移版本记录完整
+	// 4) 提示词分享表索引就绪
+	var indexCount int
+	if err := db.Get(&indexCount, `select count(1) from sqlite_master
+		where type = 'index' and name in ('idx_prompt_share_prompt', 'idx_prompt_share_to')`); err != nil {
+		t.Fatalf("读取分享表索引失败：%v", err)
+	}
+	if indexCount != 2 {
+		t.Fatalf("t_prompt_share 应有 2 个索引，实际 %d", indexCount)
+	}
+
+	// 5) 迁移版本记录完整
 	var applied int
 	if err := db.Get(&applied, "select count(1) from t_schema_migration"); err != nil {
 		t.Fatalf("读取迁移记录失败：%v", err)
 	}
-	if applied < 4 {
-		t.Fatalf("应记录至少 4 个迁移版本，实际 %d", applied)
+	if applied < 5 {
+		t.Fatalf("应记录至少 5 个迁移版本，实际 %d", applied)
 	}
 }

@@ -53,12 +53,23 @@ DIST_DIR = os.path.join(WEB_SRC_DIR, "dist")
 MIGRATIONS_DIR = os.path.join(PROJECT_ROOT, "migrations")
 SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 
+# 运行时版本与依赖清单唯一定义在 python_bootstrap.py（外置自动下载模式同样使用），
+# 内置模式在此复用，避免两套脚本维护同一份版本/依赖信息。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from python_bootstrap import (  # noqa: E402
+    PIP_DEPS,
+    PYTHON_FULL_VERSION,
+    REQUIRED_MODULES,
+)
+
 # 捆绑 Python 运行时暂存目录（zip 内为 python/，与可执行文件同级）
 BUNDLE_PYTHON_DIR = os.path.join(DIST_PACK_DIR, "python")
 
 # 本地官方 embeddable Python 包（scripts/ 下，随仓库分发，无需联网下载）
 # 版本号只在此处定义：包名、pip 交叉安装参数、产物校验都从它派生，避免多处不一致
-EMBEDDABLE_PY_FULL_VERSION = "3.15.2"
+EMBEDDABLE_PY_FULL_VERSION = PYTHON_FULL_VERSION
 EMBEDDABLE_ZIP = os.path.join(
     PROJECT_ROOT, "scripts", f"python-{EMBEDDABLE_PY_FULL_VERSION}-embed-amd64.zip")
 EMBEDDABLE_PY_VERSION = ".".join(EMBEDDABLE_PY_FULL_VERSION.split(".")[:2])  # pip --python-version 3.15
@@ -81,14 +92,10 @@ USER_SITE_EXCLUDE = {
 # 导出渲染与文件解析所需的 Python 依赖（捆绑后验证用）
 # 说明：pdfplumber 用于上传 PDF 的文本抽取（pdfminer.six + Pillow 为传递依赖），
 # 与 python-docx 共同支撑 AI 对话中的文档解析能力（见 internal/ai/agent/fileparse）。
-BUNDLE_REQUIRED_MODULES = ["pptx", "docx", "docxtpl", "matplotlib", "numpy", "PIL", "pdfplumber"]
+BUNDLE_REQUIRED_MODULES = list(REQUIRED_MODULES)
 
 # pip 安装的依赖清单（精确版本，与 skills/*/requirements.txt 保持一致）
-BUNDLE_PIP_DEPS = [
-    "python-pptx==1.0.2", "python-docx==1.2.0", "docxtpl==0.20.2",
-    "matplotlib==3.11.2", "numpy==2.5.2", "Pillow==12.3.0",
-    "pdfplumber==0.11.7",
-]
+BUNDLE_PIP_DEPS = list(PIP_DEPS)
 
 # 平台配置：key 用于 --platform 参数和 zip 命名
 DESKTOP_PLATFORMS = {

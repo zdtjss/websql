@@ -220,3 +220,17 @@ export function getPromptDetail(id: string): Promise<AxiosResponse<ApiResponse<u
 export function savePrompt(form: unknown): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/savePrompt', form)
 }
+
+/** 从当前会话对话中提取可复用提示词，对应 POST /ai/agent/prompt/extract */
+export interface ExtractPromptResult {
+  title: string
+  content: string
+}
+
+export function extractPrompt(params: {
+  sessionId: string
+  modelId?: string
+}): Promise<AxiosResponse<ApiResponse<ExtractPromptResult>>> {
+  // 提取失败由调用方统一提示，避免与全局错误弹窗重复
+  return http.post('/ai/agent/prompt/extract', params, { skipGlobalError: true })
+}

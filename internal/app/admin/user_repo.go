@@ -148,6 +148,11 @@ func (r *userRepo) FindUserRole(userIdList []any) (map[string][]*UserRole, error
 }
 
 func (r *userRepo) FindUserBaseList(loginName, key string) ([]*SharedUser, error) {
+	userList := []*SharedUser{}
+	// 该接口对任意登录用户开放：两个条件都为空时返回空列表，避免一次拉取全部用户。
+	if loginName == "" && key == "" {
+		return userList, nil
+	}
 	param := []any{}
 	sql := bytes.Buffer{}
 	sql.WriteString("select id, name, login_name from t_user where 1 = 1")
@@ -158,7 +163,8 @@ func (r *userRepo) FindUserBaseList(loginName, key string) ([]*SharedUser, error
 		sql.WriteString(" and (login_name like ? or name like ?)")
 		param = append(param, "%"+key+"%", "%"+key+"%")
 	}
-	userList := []*SharedUser{}
+	// 限制返回条数，降低按姓名/登录名片段批量枚举用户的风险。
+	sql.WriteString(" order by login_name limit 50")
 	err := r.db.Select(&userList, sql.String(), param...)
 	return userList, err
 }
@@ -289,6 +295,11 @@ func (r *userRepo) Delete(id string) error {
 	defer tx.Rollback()
 
 	if _, err := tx.Exec("delete from t_user_role where user_id = ?", id); err != nil {
+		return err
+	}
+	// 清理该用户相关的提示词分享关系：shared_to 删除后分享已无意义，
+	// shared_by 删除后其发起的分享记录一并清理，避免孤儿数据阻断提示词保存。
+	if _, err := tx.Exec("delete from t_prompt_share where shared_to = ? or shared_by = ?", id, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec("delete from t_user where id = ?", id); err != nil {
