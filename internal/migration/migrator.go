@@ -121,6 +121,10 @@ func (m *Migrator) run() error {
 		return fmt.Errorf("加载已执行迁移版本失败: %w", err)
 	}
 
+	// 存量库首次接入：schema 可能已由全量脚本直接创建，重放增量脚本时
+	// 重复列/已存在对象应视为已应用，而不是中断启动。
+	legacyDB := false
+
 	// 无任何迁移记录时，判断是存量库还是全新库
 	if len(applied) == 0 {
 		hasBusinessTable, err := m.hasExistingBusinessTable()
@@ -134,6 +138,7 @@ func (m *Migrator) run() error {
 				return fmt.Errorf("标记基线版本失败: %w", err)
 			}
 			applied[baselineVersion] = true
+			legacyDB = true
 		} else if m.fullScriptContent != "" {
 			// 全新库 + 提供了全量脚本：快速建库并标记所有增量版本为已执行
 			if err := m.applyFullScript(scripts); err != nil {
@@ -148,7 +153,7 @@ func (m *Migrator) run() error {
 		if applied[script.version] {
 			continue
 		}
-		if err := m.applyScript(script); err != nil {
+		if err := m.applyScript(script, legacyDB); err != nil {
 			return fmt.Errorf("执行迁移 %s 失败: %w", script.version, err)
 		}
 		log.Printf("[Migration] 已执行迁移: %s", script.version)
@@ -268,7 +273,7 @@ func (m *Migrator) applyFullScript(scripts []scriptFile) error {
 	return nil
 }
 
-func (m *Migrator) applyScript(script scriptFile) error {
+func (m *Migrator) applyScript(script scriptFile, tolerateExisting bool) error {
 	tx, err := beginTxWithRetry(m.db, 3, 50*time.Millisecond)
 	if err != nil {
 		return err
@@ -285,6 +290,12 @@ func (m *Migrator) applyScript(script scriptFile) error {
 			continue
 		}
 		if _, err := tx.Exec(stmt); err != nil {
+			// 存量库可能由全量脚本直接创建：schema 已是最新但缺少版本记录，
+			// 重放 ALTER/CREATE 会报「已存在」，此时跳过该语句并继续执行后续语句（如数据回填）。
+			if tolerateExisting && isObjectExistsErr(err) {
+				log.Printf("[Migration] %s 目标对象已存在，跳过语句: %v", script.version, err)
+				continue
+			}
 			return fmt.Errorf("执行语句失败: %w\n语句: %s", err, truncate(stmt, 200))
 		}
 	}
@@ -352,6 +363,18 @@ func isBusyErr(err error) bool {
 	return strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "SQLITE_BUSY") ||
 		strings.Contains(msg, "is locked")
+}
+
+// isObjectExistsErr 判断错误是否为「目标对象已存在」（重复列、重复表/索引）。
+// 仅用于存量库首次接入的增量重放：这类库若由全量脚本创建，schema 已最新但无版本记录，
+// 重复执行迁移语句应视为已应用，避免启动失败。
+func isObjectExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column name") ||
+		strings.Contains(msg, "already exists")
 }
 
 func md5Hex(s string) string {

@@ -249,6 +249,8 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/modeler/reverse", modeler.ReverseEngineer)
 	routerGroup.POST("/modeler/forward", modeler.ForwardEngineer)
 	routerGroup.POST("/modeler/export", modeler.ExportModel)
+	// ER 图统一元数据接口：方言适配 + 表级权限过滤 + 批量取数（前端不再拼接 SQL）
+	routerGroup.POST("/er/schema", modeler.ERSchemaHandler)
 	// ER 关系 AI 推断：根据表结构（命名/注释/字段）推断表关系，不持久化
 	routerGroup.POST("/er/analyzeRelations", modeler.AnalyzeRelationsHandler)
 

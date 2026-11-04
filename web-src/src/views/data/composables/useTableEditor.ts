@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/index'
-import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper.ts'
+import { buildWhereCondition, fmtVal, isBinaryOrLobColumnType, quoteId } from '@/utils/sqlHelper.ts'
 import type { Ref } from 'vue'
 import type { DataColumn } from './useDataQuery'
 
@@ -246,7 +246,20 @@ export function useTableEditor(params: TableEditorParams) {
   }
 
   // ===== Inline edit lifecycle =====
+  function isBinaryColumnName(colName: string): boolean {
+    const col = dataColumns.value.find((c) => c.name === colName)
+    return isBinaryOrLobColumnType(col?.type)
+  }
+
+  function warnBinaryColumn() {
+    ElMessage({ message: '二进制/LOB 列不支持在表格中编辑，请使用 SQL 编辑器修改', type: 'warning' })
+  }
+
   function startInlineEdit(row: Record<string, any>, colName: string) {
+    if (isBinaryColumnName(colName)) {
+      warnBinaryColumn()
+      return
+    }
     const key = getRowKey(row)
     const changed = changedRows.value[key]
     const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
@@ -257,6 +270,10 @@ export function useTableEditor(params: TableEditorParams) {
   }
 
   function startInlineEditReplace(row: Record<string, any>, colName: string, initialChar: string) {
+    if (isBinaryColumnName(colName)) {
+      warnBinaryColumn()
+      return
+    }
     const key = getRowKey(row)
     const changed = changedRows.value[key]
     const currentVal = changed && changed[colName] !== undefined ? changed[colName] : row[colName]
@@ -402,7 +419,7 @@ export function useTableEditor(params: TableEditorParams) {
   function clearSelectedCells() {
     const bounds = selectionBounds.value
     if (!bounds) {
-      if (activeCellIndex.value >= 0 && activeColName.value) {
+      if (activeCellIndex.value >= 0 && activeColName.value && !isBinaryColumnName(activeColName.value)) {
         setCellValue(activeCellIndex.value, activeColName.value, '')
       }
       return
@@ -413,6 +430,7 @@ export function useTableEditor(params: TableEditorParams) {
         const row = rows.value[r]
         if (!row) continue
         const colName = dataColumns.value[c].name
+        if (isBinaryColumnName(colName)) continue
         const rowKey = getRowKey(row)
         const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
         const newVal = ''
@@ -439,6 +457,7 @@ export function useTableEditor(params: TableEditorParams) {
     pushUndoSnapshot()
     for (let c = bounds.colMin; c <= bounds.colMax; c++) {
       const colName = dataColumns.value[c].name
+      if (isBinaryColumnName(colName)) continue
       const sourceRow = rows.value[bounds.rowMin]
       if (!sourceRow) continue
       const sourceKey = getRowKey(sourceRow)
@@ -501,6 +520,7 @@ export function useTableEditor(params: TableEditorParams) {
         const targetColIdx = startColIdx + ci
         if (targetColIdx >= dataColumns.value.length) break
         const colName = dataColumns.value[targetColIdx].name
+        if (isBinaryColumnName(colName)) continue
         const newVal: any = grid[ri][ci]
         const origVal = originalRows.value[rowKey] ? originalRows.value[rowKey][colName] : undefined
         const newIsNull = newVal === null || newVal === undefined
@@ -1066,6 +1086,11 @@ export function useTableEditor(params: TableEditorParams) {
     savingInline.value = true
     try {
       const sqlStatements: string[] = []
+      // 列类型用于生成 WHERE：MySQL JSON 列必须 CAST 成 JSON 才能参与比较
+      const colTypes: Record<string, string> = {}
+      dataColumns.value.forEach((c) => {
+        colTypes[c.name] = c.type
+      })
 
       for (const rowKey of newKeys) {
         const changed = changedRows.value[rowKey]
@@ -1088,7 +1113,7 @@ export function useTableEditor(params: TableEditorParams) {
         })
         if (insertCols.length === 0) continue
         const colList = insertCols.map((c) => quoteId(c.name, params.effectiveDbType())).join(', ')
-        const valList = insertCols.map((c) => fmtVal(merged[c.name], params.effectiveDbType())).join(', ')
+        const valList = insertCols.map((c) => fmtVal(merged[c.name], params.effectiveDbType(), c.type)).join(', ')
         sqlStatements.push(
           'INSERT INTO ' + quoteId(params.tableName() || '', params.effectiveDbType()) + ' (' + colList + ') VALUES (' + valList + ')',
         )
@@ -1100,11 +1125,15 @@ export function useTableEditor(params: TableEditorParams) {
         if (!orig) continue
         const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
         const setClauses = Object.keys(changed)
-          .map((k) => quoteId(k, params.effectiveDbType()) + ' = ' + fmtVal(changed[k], params.effectiveDbType()))
+          .map((k) => quoteId(k, params.effectiveDbType()) + ' = ' + fmtVal(changed[k], params.effectiveDbType(), colTypes[k]))
           .join(', ')
-        const allWhereCols = [...pkCols, ...Object.keys(changed).filter((k) => !pkCols.includes(k))]
+        // 二进制/LOB 列无法用字符串字面量比较（Oracle 会报 ORA-00932），不能进 WHERE
+        const allWhereCols = [...pkCols, ...Object.keys(changed).filter((k) => !pkCols.includes(k))].filter(
+          (k) => !isBinaryOrLobColumnType(colTypes[k]),
+        )
+        if (allWhereCols.length === 0) continue
         const whereClauses = allWhereCols
-          .map((k) => buildWhereCondition(k, orig[k], params.effectiveDbType()))
+          .map((k) => buildWhereCondition(k, orig[k], params.effectiveDbType(), colTypes[k]))
           .join(' AND ')
         sqlStatements.push(
           'UPDATE ' + quoteId(params.tableName() || '', params.effectiveDbType()) + ' SET ' + setClauses + ' WHERE ' + whereClauses,
@@ -1114,9 +1143,12 @@ export function useTableEditor(params: TableEditorParams) {
       for (const rowKey of pendingDeleteKeys.value) {
         const orig = originalRows.value[rowKey]
         if (!orig) continue
-        const pkCols = pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)
+        const pkCols = (pkColumns.value.length > 0 ? pkColumns.value : Object.keys(orig).slice(0, 1)).filter(
+          (k) => !isBinaryOrLobColumnType(colTypes[k]),
+        )
+        if (pkCols.length === 0) continue
         const whereClauses = pkCols
-          .map((k) => buildWhereCondition(k, orig[k], params.effectiveDbType()))
+          .map((k) => buildWhereCondition(k, orig[k], params.effectiveDbType(), colTypes[k]))
           .join(' AND ')
         sqlStatements.push(
           'DELETE FROM ' + quoteId(params.tableName() || '', params.effectiveDbType()) + ' WHERE ' + whereClauses,

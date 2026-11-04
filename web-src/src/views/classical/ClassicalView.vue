@@ -10,10 +10,10 @@
           <div class="sidebar-header">
             <span class="sidebar-title">📂 数据库</span>
             <div class="sidebar-header-actions">
-              <el-popover ref="searchPopoverRef" placement="bottom-start" :width="560" trigger="click" :show-arrow="false" :offset="4" popper-class="global-search-popover" @show="onSearchPopoverShow" @hide="onSearchPopoverHide">
+              <el-popover ref="searchPopoverRef" v-model:visible="searchPopoverVisible" placement="bottom-start" :width="560" trigger="click" :show-arrow="false" :offset="4" popper-class="global-search-popover" @show="onSearchPopoverShow" @hide="onSearchPopoverHide">
                 <template #reference>
                   <!-- 图标按钮：仅图标无文字，需补充 aria-label（复用 title 的值），附快捷键提示 -->
-                  <el-button text size="small" class="theme-toggle-btn" title="全局搜索" aria-label="全局搜索数据库对象" aria-keyshortcuts="Ctrl+F">
+                  <el-button text size="small" class="theme-toggle-btn" title="全局搜索" aria-label="全局搜索数据库对象" aria-keyshortcuts="Ctrl+F" @click="prepareSearchFromActiveTab">
                     <el-icon :size="14"><Search /></el-icon>
                   </el-button>
                 </template>
@@ -38,7 +38,7 @@
           </div>
           <div class="sidebar-tree">
             <el-tree ref="connTree" :highlight-current="true" :load="loadTree" :lazy="true" :data="treeData" empty-text=""
-              :props="{ isLeaf: 'isLeaf' }" :indent="16">
+              :props="{ isLeaf: 'isLeaf' }" :indent="16" @node-click="handleTreeNodeClick">
               <template #default="{ node, data }">
                 <div class="tree-node" :class="'tree-node--' + data.type">
                   <span class="tree-node-icon">
@@ -78,6 +78,9 @@
                       <el-tooltip content="表管理" placement="top" :show-after="400">
                         <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="表管理" @click.stop="openTableManager(node)" @keyup.enter.stop="openTableManager(node)"><Tickets /></el-icon>
                       </el-tooltip>
+                      <el-tooltip content="全局搜索" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="全局搜索当前Schema" @click.stop="openSearchFromNode(node)" @keyup.enter.stop="openSearchFromNode(node)"><Search /></el-icon>
+                      </el-tooltip>
                       <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
                         <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多数据库工具操作"><MoreFilled /></el-icon>
                         <template #dropdown>
@@ -87,19 +90,20 @@
                             <el-dropdown-item command="openBackupDialog">📦 备份恢复</el-dropdown-item>
                             <el-dropdown-item command="openDictDialog">📖 数据字典</el-dropdown-item>
                             <el-dropdown-item command="openCompareDialog" divided>🔍 结构比较</el-dropdown-item>
-                                                        <el-dropdown-item command="togglePin" divided>{{ isPinnedConn(data) ? '取消置顶' : '★ 置顶连接' }}</el-dropdown-item>
+                            <el-dropdown-item command="togglePin" divided>{{ isPinnedConn(data) ? '取消置顶' : '★ 置顶连接' }}</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
                     </template>
                     <template v-if="data.type === 'table'">
+                      <el-tooltip content="查看表结构" placement="top" :show-after="400">
+                        <el-icon :size="14" class="tree-action-icon" role="button" tabindex="0" aria-label="查看表结构" @click.stop="viewTableInfo(node)" @keyup.enter.stop="viewTableInfo(node)"><InfoFilled /></el-icon>
+                      </el-tooltip>
                       <el-dropdown trigger="hover" @command="(cmd) => handleTreeDropdownAction(node, cmd)">
-                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多表操作"><MoreFilled /></el-icon>
+                        <el-icon :size="14" class="tree-action-icon tree-action-more" role="button" tabindex="0" aria-label="更多表操作" @click.stop><MoreFilled /></el-icon>
                         <template #dropdown>
                           <el-dropdown-menu>
-                            <el-dropdown-item command="viewTableInfo">ℹ️ 查看表结构</el-dropdown-item>
-                            <el-dropdown-item command="openDataBrowserFromNode">📄 浏览数据</el-dropdown-item>
-                            <el-dropdown-item command="viewObjectDdl" divided>📜 查看DDL</el-dropdown-item>
+                            <el-dropdown-item command="viewObjectDdl">📜 查看DDL</el-dropdown-item>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -273,7 +277,7 @@ import { useStorage } from '@/composables/useStorage'
 const dbSchemaProxy = useDbSchemaStore()
 const storage = useStorage()
 import { client, parsers, server } from '@passwordless-id/webauthn'
-import { ChatLineSquare, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts, UserFilled } from '@element-plus/icons-vue'
+import { ChatLineSquare, InfoFilled, Loading, Monitor, MoreFilled, Moon, Refresh, Search, Setting, Sunny, Tickets, TrendCharts, UserFilled } from '@element-plus/icons-vue'
 import { MagicStick, SwitchButton, User } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref, shallowRef, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
@@ -373,6 +377,8 @@ const searchPopoverRef = useTemplateRef('searchPopoverRef')
 const searchPopoverVisible = ref(false)
 const searchConnId = ref('')
 const searchSchema = ref('')
+// 标记本次全局搜索由 schema 节点搜索按钮触发（连接与 schema 已带入，不再用当前 Tab 覆盖）
+const searchFromNode = ref(false)
 const tableMeta = ref({})
 const tableMgntTitle = ref("")
 const treeLoading = ref(false)
@@ -1068,6 +1074,12 @@ function openDataBrowserFromNode(node) {
   openDataBrowser({ connId, schema, tableName, dbType, connName: conn.label })
 }
 
+// 点击树节点：表节点直接打开「浏览数据」页签，免去再点省略号菜单
+function handleTreeNodeClick(data, node) {
+  if (!node?.data || node.data.type !== 'table') return
+  openDataBrowserFromNode(node)
+}
+
 function openTableManagerFromChild({ connId, schema, schemaPath }) {
   const connName = schemaPath ? schemaPath.split('/')[0] : ''
   const node = {
@@ -1224,15 +1236,35 @@ function handleTreeDropdownAction(node, command) {
   }
 }
 
-function onSearchPopoverShow() {
-  // 先设置连接和 schema，再设置 visible 触发子组件 init，保证 props 就绪
+// 点击侧栏搜索按钮：先同步带入当前激活 Tab 的连接与 schema，保证弹层初始化时参数就绪
+function prepareSearchFromActiveTab() {
   const activeTab = editableTabs.value.find(t => t.tabId === editableTabsValue.value)
-  if (activeTab) {
-    searchConnId.value = activeTab.connId
-    searchSchema.value = activeTab.schema
-  } else {
-    searchConnId.value = ''
-    searchSchema.value = ''
+  searchConnId.value = activeTab ? activeTab.connId : ''
+  searchSchema.value = activeTab ? activeTab.schema : ''
+}
+
+// schema 节点搜索按钮：带入该节点的连接与 schema 打开全局搜索
+function openSearchFromNode(node) {
+  if (!node || node.data.type !== "schema") return
+  const conn = findConn(node)
+  searchConnId.value = conn ? conn.id : ''
+  searchSchema.value = node.data.label || ''
+  searchFromNode.value = true
+  searchPopoverVisible.value = true
+}
+
+function onSearchPopoverShow() {
+  // 节点按钮触发时连接与 schema 已带入，跳过当前 Tab 覆盖
+  if (searchFromNode.value) {
+    searchFromNode.value = false
+    return
+  }
+  if (!searchConnId.value && !searchSchema.value) {
+    const activeTab = editableTabs.value.find(t => t.tabId === editableTabsValue.value)
+    if (activeTab) {
+      searchConnId.value = activeTab.connId
+      searchSchema.value = activeTab.schema
+    }
   }
   searchPopoverVisible.value = true
 }

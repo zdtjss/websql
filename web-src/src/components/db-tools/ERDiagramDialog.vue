@@ -1,37 +1,44 @@
 <template>
   <div class="er-diagram-wrapper" role="application" aria-label="ER 关系图">
     <div class="er-toolbar" role="toolbar" aria-label="ER 图工具栏">
-      <el-checkbox v-model="showAllTables" @change="onShowAllTablesChange" aria-label="显示所有表，取消则仅显示有外键关联的表">显示所有表</el-checkbox>
-      <!-- 搜索框：输入表名关键字高亮匹配节点，回车依次跳转 -->
+      <el-checkbox v-model="showAllTables" aria-label="显示所有表，取消则仅显示有外键关联的表" @change="onShowAllTablesChange">
+        显示所有表
+      </el-checkbox>
       <el-input
         v-model="searchQuery"
-        placeholder="搜索表名（回车跳转下一个）"
+        placeholder="搜索表名/字段/注释（回车跳转）"
         size="small"
         clearable
         class="er-search-input"
-        aria-label="搜索表名"
+        aria-label="搜索表名、字段或注释"
         @keydown.enter="focusNextMatch"
         @clear="onSearchClear"
       >
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
       <span v-if="searchQuery" class="er-toolbar-hint er-search-count">{{ matchedNodeIds.length }} 个匹配</span>
-      <span class="er-toolbar-hint">💡 双击表名浏览数据 | 滚轮原地缩放 | 拖动平移 | 悬停表后从字段圆点拖拽连线 | 点击连线切换类型 | 选中连线 Delete 删除</span>
-      <div style="flex:1;"></div>
-      <el-radio-group v-model="layoutType" size="small" @change="rebuildGraph" aria-label="布局方向">
+      <span class="er-toolbar-hint">双击表名浏览数据 | 点击连线选中 | 双击连线切换类型 | Delete 删除</span>
+      <div class="er-toolbar-spacer"></div>
+      <el-checkbox v-model="focusNeighbors" class="er-toolbar-check" aria-label="悬停表时聚焦其邻居">聚焦邻居</el-checkbox>
+      <el-radio-group v-model="layoutType" size="small" aria-label="布局方向" @change="onLayoutChange">
         <el-radio-button value="TB">从上到下</el-radio-button>
         <el-radio-button value="LR">从左到右</el-radio-button>
       </el-radio-group>
-      <!-- AI 分析表关系：实际数据库通常不建外键，关系由程序定义，
-           此按钮调用 AI 根据表名/字段/注释推断关系并叠加到画布上。
-           推断结果仅保存在内存中，不持久化、不写数据库。 -->
-      <el-button size="small" type="primary" plain :loading="aiAnalyzing" @click="analyzeRelationsWithAI"
+      <el-button
+        size="small"
+        type="primary"
+        plain
+        :loading="aiAnalyzing"
         title="调用 AI 根据表名、字段、注释推断表关系（仅当前会话有效，不持久化）"
-        aria-label="AI 分析表关系">
-        <el-icon style="margin-right:4px;"><MagicStick /></el-icon>AI 分析关系
+        aria-label="AI 分析表关系"
+        @click="analyzeRelationsWithAI"
+      >
+        <el-icon style="margin-right: 4px"><MagicStick /></el-icon>AI 分析关系
       </el-button>
-      <!-- 导出：支持 PNG / SVG，包含白色背景 -->
-      <el-dropdown trigger="click" @command="handleExport" aria-label="导出 ER 图">
+      <el-button size="small" title="刷新元数据（保留手动/AI 关系与手动布局）" aria-label="刷新元数据" @click="refreshSchema">
+        <el-icon><Refresh /></el-icon>
+      </el-button>
+      <el-dropdown trigger="click" aria-label="导出 ER 图" @command="handleExport">
         <el-button size="small">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
         <template #dropdown>
           <el-dropdown-menu>
@@ -40,18 +47,47 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-button size="small" @click="fitGraph" aria-label="适应画布">适应画布</el-button>
+      <el-button size="small" aria-label="适应画布" @click="fitGraph">适应画布</el-button>
+      <el-button size="small" :plain="true" :type="showPanel ? 'primary' : undefined" @click="showPanel = !showPanel">关系面板</el-button>
     </div>
-    <!-- 画布加载态：aria-busy 通知屏幕阅读器 -->
-    <div ref="containerRef" class="er-canvas" v-loading="loading" :aria-busy="loading" role="img" :aria-label="loading ? '正在加载 ER 图' : 'ER 关系图画布'"></div>
-    <div v-if="!loading && allNodes.length === 0" class="er-empty" role="status">该数据库没有表</div>
-    <!-- 底部统计信息：动态更新，aria-live 通知屏幕阅读器 -->
+
+    <div class="er-legend-row">
+      <LegendBar :items="legendItems" @toggle="toggleLegend" />
+    </div>
+
+    <div class="er-body">
+      <div class="er-canvas-wrap">
+        <div
+          ref="containerRef"
+          class="er-canvas"
+          v-loading="loading"
+          :aria-busy="loading"
+          role="img"
+          :aria-label="loading ? '正在加载 ER 图' : 'ER 关系图画布'"
+        ></div>
+        <div v-if="emptyState" class="er-empty-overlay" role="status">
+          <div class="er-empty-text">{{ emptyState.message }}</div>
+          <el-button v-if="emptyState.action === 'showAll'" size="small" type="primary" @click="enableShowAll">显示所有表</el-button>
+          <el-button v-if="emptyState.action === 'refresh'" size="small" @click="refreshSchema">重新加载</el-button>
+        </div>
+      </div>
+      <RelationPanel
+        v-if="showPanel"
+        :rows="relationRows"
+        :selected-key="selectedRelationKey"
+        @select="selectRelationFromPanel"
+        @delete="deleteRelation"
+        @cycle="cycleRelation"
+      />
+    </div>
+
     <div class="er-footer" aria-live="polite">
-      表: {{ filteredNodes.length }} | 关系: {{ filteredEdges.length }}
+      表: {{ filteredNodes.length }} / {{ allNodes.length }} | 关系: {{ displayedEdges.length }} / {{ filteredEdges.length }}
+      <span v-if="hiddenEdgeCount > 0"> | 已按图例隐藏: {{ hiddenEdgeCount }}</span>
       <span v-if="collapsedNodes.size > 0"> | 已折叠: {{ collapsedNodes.size }}</span>
       <span v-if="manualPositions.size > 0"> | 已手动定位: {{ manualPositions.size }}</span>
     </div>
-    <!-- 关系连线 hover 提示框 -->
+
     <div
       v-show="edgeTooltip.visible"
       class="er-edge-tooltip"
@@ -60,143 +96,74 @@
     >
       <div class="er-edge-tooltip-type">{{ edgeTooltip.relationType }}</div>
       <div class="er-edge-tooltip-line"><b>{{ edgeTooltip.source }}</b> → <b>{{ edgeTooltip.target }}</b></div>
-      <div class="er-edge-tooltip-cols">字段映射: {{ edgeTooltip.sourceCol }} = {{ edgeTooltip.targetCol }}</div>
+      <div class="er-edge-tooltip-cols">字段映射: {{ edgeTooltip.sourceCol || '?' }} = {{ edgeTooltip.targetCol || '?' }}</div>
       <div v-if="edgeTooltip.constraintName" class="er-edge-tooltip-fk">外键: {{ edgeTooltip.constraintName }}</div>
+      <div v-if="edgeTooltip.origin === 'ai'" class="er-edge-tooltip-fk">
+        AI 推断（{{ edgeTooltip.confidence || 'medium' }}）<span v-if="edgeTooltip.reason">：{{ edgeTooltip.reason }}</span>
+      </div>
     </div>
   </div>
 </template>
 
-<script setup>
-import { DagreLayout } from '@antv/layout'
-import { Graph, Shape, Export, Keyboard } from '@antv/x6'
-import { Search, ArrowDown, MagicStick } from '@element-plus/icons-vue'
+<script setup lang="ts">
+import { Export, Graph, Keyboard, Selection, Shape } from '@antv/x6'
+import { ArrowDown, MagicStick, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
-import { execSQL } from '@/api/sql'
 import { analyzeERRelations } from '@/api/er'
 import { useDbSchemaStore } from '@/stores/dbSchema'
-import { isValidIdentifier } from '@/utils/identifierValidator'
 import { handleError } from '@/utils/errorHandler'
-const dbSchemaProxy = useDbSchemaStore()
+import { useTheme } from '@/utils/useTheme'
+import { loadERSchema } from './er/data/schemaLoader'
+import {
+  displayRelationType,
+  inferRelationTypes,
+  mergeAiRelations,
+  relationKey,
+  removeAiRelations,
+  reverseRelationKey,
+  uniqueKeysOf,
+} from './er/data/infer'
+import type { ERRelation, ERTable } from './er/data/types'
+import LegendBar from './er/panels/LegendBar.vue'
+import RelationPanel from './er/panels/RelationPanel.vue'
+import type { LegendItem, RelationRow } from './er/panels/types'
+import { computeLayout } from './er/render/layout'
+import {
+  NODE_WIDTH,
+  buildNodePorts,
+  buildPortGroups,
+  colNameByPortId,
+  columnIndexFor,
+  createErTableHtml,
+  getNodeHeightByState,
+  pickPortPair,
+  type ERNodeData,
+} from './er/render/nodeHtml'
+import { erOrthRouter } from './er/render/route'
+import { getERTheme, originColor, relationColor, type ERTheme } from './er/render/theme'
 
-// 节点尺寸常量
-const NODE_WIDTH = 300
-const HEADER_HEIGHT = 30
-const COMMENT_HEIGHT = 20
-const COL_ROW_HEIGHT = 22
-const BOTTOM_PADDING = 4
 // 表数量超过该阈值时启用异步/虚拟渲染，提升大数据量下的性能
 const VIRTUAL_THRESHOLD = 50
+// 关系数超过该阈值时从正交路由回退到 smooth，避免交叉过多导致布局与渲染变慢
+const ORTH_ROUTE_LIMIT = 200
 
-// 计算表节点高度（展开状态下）
-function getNodeHeight(n) {
-  let h = HEADER_HEIGHT
-  if (n.comment) h += COMMENT_HEIGHT
-  if (n.columns && n.columns.length > 0) h += n.columns.length * COL_ROW_HEIGHT
-  h += BOTTOM_PADDING
-  return h
-}
+const props = defineProps<{
+  tabId?: string
+  connId?: string
+  schema?: string
+  dbType?: string
+  tableName?: string
+}>()
 
-// 计算表节点高度（考虑折叠状态）
-function getNodeHeightByState(n, collapsed) {
-  if (collapsed) return HEADER_HEIGHT + BOTTOM_PADDING
-  return getNodeHeight(n)
-}
+const emit = defineEmits<{
+  (e: 'openDataBrowser', payload: { connId: string; schema: string; tableName: string; dbType: string }): void
+}>()
 
-// 创建 ER 表节点的 HTML 内容（支持折叠态：折叠后仅显示表名）
-function createErTableHtml(cell) {
-  const nodeData = cell.getData() || {}
-  const isCollapsed = !!nodeData.collapsed
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
-  const c = {
-    headerBg: isDark ? '#313147' : '#409eff',
-    headerText: '#ffffff',
-    nodeBg: isDark ? '#1e1e2e' : '#ffffff',
-    nodeBorder: isDark ? '#45475a' : '#d9d9d9',
-    commentColor: isDark ? '#a6adc8' : '#606266',
-    colNameColor: isDark ? '#cdd6f4' : '#303133',
-    colTypeColor: isDark ? '#a6adc8' : '#909399',
-    colCommentColor: isDark ? '#6c7086' : '#b0b0b0',
-    borderColor: isDark ? '#313244' : '#ebeef5',
-    pkColor: '#e6a23c',
-  }
+const dbSchemaProxy = useDbSchemaStore()
+const { currentTheme } = useTheme()
 
-  const el = document.createElement('div')
-  el.setAttribute('data-node-id', nodeData.id || cell.id)
-  el.style.cssText = `background:${c.nodeBg};border:2px solid ${c.nodeBorder};border-radius:6px;overflow:hidden;cursor:default;box-shadow:0 1px 4px rgba(0,0,0,0.1);width:100%;height:100%;display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;transition:opacity 0.15s ease,border-color 0.15s ease;`
-
-  // 表标题栏：包含折叠按钮、表名、类型标识
-  const header = document.createElement('div')
-  header.className = 'er-table-header'
-  header.setAttribute('data-table-id', nodeData.id || cell.id)
-  header.style.cssText = `background:${c.headerBg};padding:6px 10px;font-size:12px;font-weight:600;color:${c.headerText};cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px;`
-
-  // 折叠/展开切换按钮（▾ 展开 / ▶ 折叠）
-  const toggle = document.createElement('span')
-  toggle.className = 'er-collapse-toggle'
-  toggle.setAttribute('role', 'button')
-  toggle.setAttribute('aria-label', isCollapsed ? '展开表字段' : '折叠表字段')
-  toggle.style.cssText = `cursor:pointer;display:inline-block;width:14px;text-align:center;flex-shrink:0;font-size:11px;opacity:0.9;`
-  toggle.textContent = isCollapsed ? '▶' : '▾'
-  header.appendChild(toggle)
-
-  const title = document.createElement('span')
-  title.style.cssText = `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;`
-  title.textContent = nodeData.label || cell.id
-  header.appendChild(title)
-
-  // 表类型标识（VIEW 用不同颜色）
-  if (nodeData.type === 'VIEW') {
-    const typeTag = document.createElement('span')
-    typeTag.style.cssText = `font-size:9px;background:rgba(255,255,255,0.25);padding:1px 5px;border-radius:3px;font-weight:400;flex-shrink:0;`
-    typeTag.textContent = 'VIEW'
-    header.appendChild(typeTag)
-  }
-  el.appendChild(header)
-
-  // 折叠状态下不渲染注释与字段列表
-  if (!isCollapsed) {
-    if (nodeData.comment) {
-      const comment = document.createElement('div')
-      comment.style.cssText = `padding:3px 10px;font-size:10px;color:${c.commentColor};border-bottom:1px solid ${c.borderColor};line-height:1.4;`
-      comment.textContent = nodeData.comment
-      el.appendChild(comment)
-    }
-
-    if (nodeData.columns && nodeData.columns.length > 0) {
-      nodeData.columns.forEach(col => {
-        const row = document.createElement('div')
-        row.style.cssText = `display:flex;padding:2px 10px;font-size:10px;border-bottom:1px solid ${c.borderColor};align-items:center;line-height:1.5;user-select:text;cursor:text;position:relative;`
-        row.setAttribute('title', `字段: ${col.name}\n类型: ${col.type}${col.comment ? '\n注释: ' + col.comment : ''}`)
-
-        const nameSpan = document.createElement('span')
-        // 主键字段用金色钥匙图标标记
-        const pkMark = col.primaryKey ? '🔑 ' : ''
-        nameSpan.style.cssText = `flex:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${col.primaryKey ? c.pkColor : c.colNameColor};font-weight:${col.primaryKey ? 600 : 500};user-select:text;`
-        nameSpan.textContent = pkMark + col.name
-        nameSpan.setAttribute('title', col.name)
-        row.appendChild(nameSpan)
-
-        const typeSpan = document.createElement('span')
-        typeSpan.style.cssText = `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${c.colTypeColor};font-family:Consolas,Monaco,monospace;font-size:9px;user-select:text;`
-        typeSpan.textContent = col.type
-        typeSpan.setAttribute('title', col.type)
-        row.appendChild(typeSpan)
-
-        const commentSpan = document.createElement('span')
-        commentSpan.style.cssText = `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${c.colCommentColor};font-size:9px;user-select:text;`
-        commentSpan.textContent = col.comment || ''
-        commentSpan.setAttribute('title', col.comment || '')
-        row.appendChild(commentSpan)
-
-        el.appendChild(row)
-      })
-    }
-  }
-
-  return el
-}
-
+// 注册 ER 表节点（HTML 节点：唯一几何来源在 er/render/nodeHtml.ts）
 Shape.HTML.register({
   shape: 'er-table',
   width: NODE_WIDTH,
@@ -205,109 +172,271 @@ Shape.HTML.register({
   html: createErTableHtml,
 })
 
-const { tabId, connId, schema, dbType, tableName } = defineProps({
-  tabId: String,
-  connId: String,
-  schema: String,
-  dbType: String,
-  tableName: String,
-})
-
-const emit = defineEmits(['openDataBrowser'])
+// 注册 ER 正交路由：内置 orth 会沿目标节点端口列折返，改用节点 bbox 计算 Z 形折线
+Graph.registerRouter('er-orth', erOrthRouter)
 
 const loading = ref(false)
+const aiAnalyzing = ref(false)
 const containerRef = useTemplateRef('containerRef')
-const layoutType = ref('TB')
+const layoutType = ref<'TB' | 'LR'>('TB')
 const showAllTables = ref(true)
+const showPanel = ref(true)
+const focusNeighbors = ref(false)
+const unsupportedDb = ref(false)
+const loadError = ref('')
+const resolvedDbType = ref('')
+const themeVersion = ref(0)
+const themeColors = ref<ERTheme>(getERTheme(currentTheme.value === 'dark'))
 
 // 搜索状态
 const searchQuery = ref('')
 const currentMatchIndex = ref(0)
+const hoveredNodeId = ref<string | null>(null)
 
 // 折叠状态（组件存活期间持久化）
-const collapsedNodes = ref(new Set())
-
+const collapsedNodes = ref(new Set<string>())
 // 手动拖动后的节点位置（在显式重新布局前保持）
-const manualPositions = ref(new Map())
+const manualPositions = ref(new Map<string, { x: number; y: number }>())
+// 图例过滤：隐藏的类别/来源 key
+const hiddenLegend = ref(new Set<string>())
+const selectedRelationKey = ref('')
 
-// 关系连线 hover 提示框状态
-const edgeTooltip = ref({ visible: false, x: 0, y: 0, relationType: '', source: '', target: '', sourceCol: '', targetCol: '', constraintName: '' })
+const edgeTooltip = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  relationType: '',
+  source: '',
+  target: '',
+  sourceCol: '',
+  targetCol: '',
+  constraintName: '',
+  origin: '',
+  confidence: '',
+  reason: '',
+})
 
-let graph = null
-const allNodes = ref([])
-const allEdges = ref([])
+let graph: any = null
+let edgeMap = new Map<string, any>()
+let labelsHidden = false
 let maxZIndex = 1
-let mousedownHandler = null
-let lastHeaderClick = { tableId: null, time: 0 }
+let mousedownHandler: ((e: MouseEvent) => void) | null = null
+let lastHeaderClick = { tableId: null as string | null, time: 0 }
+let resizeObserver: ResizeObserver | null = null
 
-// 主题色配置（响应深色模式切换）
-const themeColors = ref(getThemeColors())
+const allNodes = ref<ERNodeData[]>([])
+const allEdges = ref<ERRelation[]>([])
 
-function getThemeColors() {
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
-  return {
-    nodeBorder: isDark ? '#45475a' : '#d9d9d9',
-    edgeColor: isDark ? '#585b70' : '#8c8c8c',
-    hoverBorder: isDark ? '#89b4fa' : '#1890ff',
-    gridColor: isDark ? '#2a2a3c' : '#e0e0e0',
-    labelColor: isDark ? '#a6adc8' : '#999999',
-    // 关系类型徽标颜色：1:1 绿色 / 1:N 蓝色 / N:M 橙色
-    rel11: '#67c23a',
-    rel1N: '#409eff',
-    relNM: '#e6a23c',
-  }
+const nodeMap = computed(() => new Map(allNodes.value.map(node => [node.id, node])))
+
+function edgeCategoryKey(relation: ERRelation): string {
+  if (relation.relationType === '1:1') return 'c-11'
+  if (relation.relationType === 'N:M') return 'c-nm'
+  return 'c-1n'
 }
 
-const filteredNodes = computed(() => {
-  let nodes
-  if (showAllTables.value) {
-    nodes = allNodes.value
-  } else {
-    const connectedIds = new Set()
-    allEdges.value.forEach(e => { connectedIds.add(e.source); connectedIds.add(e.target) })
-    nodes = allNodes.value.filter(n => connectedIds.has(n.id))
+function edgeOriginKey(relation: ERRelation): string {
+  return `o-${relation.origin || 'fk'}`
+}
+
+function isEdgeHidden(relation: ERRelation): boolean {
+  return hiddenLegend.value.has(edgeCategoryKey(relation)) || hiddenLegend.value.has(edgeOriginKey(relation))
+}
+
+const filteredNodes = computed<ERNodeData[]>(() => {
+  let nodes = allNodes.value
+  if (!showAllTables.value) {
+    const connected = new Set<string>()
+    allEdges.value.forEach(edge => {
+      connected.add(edge.source)
+      connected.add(edge.target)
+    })
+    nodes = nodes.filter(node => connected.has(node.id))
   }
   return [...nodes].sort((a, b) => a.label.localeCompare(b.label))
 })
 
-const filteredEdges = computed(() => {
-  if (showAllTables.value) return allEdges.value
-  const connectedIds = new Set()
-  allEdges.value.forEach(e => { connectedIds.add(e.source); connectedIds.add(e.target) })
-  return allEdges.value.filter(e => connectedIds.has(e.source) && connectedIds.has(e.target))
+const filteredEdges = computed<ERRelation[]>(() => {
+  const nodeIds = new Set(filteredNodes.value.map(node => node.id))
+  return allEdges.value.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
 })
 
-// 搜索匹配的节点 ID 列表（按表名字母顺序）
-const matchedNodeIds = computed(() => {
+const displayedEdges = computed<ERRelation[]>(() => filteredEdges.value.filter(edge => !isEdgeHidden(edge)))
+const hiddenEdgeCount = computed(() => filteredEdges.value.length - displayedEdges.value.length)
+
+const matchedNodeIds = computed<string[]>(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return []
   return filteredNodes.value
-    .filter(n => n.label.toLowerCase().includes(q))
-    .map(n => n.id)
+    .filter(node =>
+      node.label.toLowerCase().includes(q) ||
+      (node.comment || '').toLowerCase().includes(q) ||
+      (node.columns || []).some(col => col.name.toLowerCase().includes(q) || (col.comment || '').toLowerCase().includes(q))
+    )
+    .map(node => node.id)
 })
 
-async function execQuery(sql, maxLine) {
-  const resp = await execSQL({ connId, schema, sql, maxLine: String(maxLine || 5000) })
-  return resp.data.data?.data || []
+const matchedNodeIdSet = computed(() => new Set(matchedNodeIds.value))
+
+const legendItems = computed<LegendItem[]>(() => {
+  const theme = themeColors.value
+  const edges = filteredEdges.value
+  const count = (predicate: (edge: ERRelation) => boolean) => edges.filter(predicate).length
+  return [
+    { key: 'c-11', label: '1:1', color: theme.rel11, count: count(e => e.relationType === '1:1'), active: !hiddenLegend.value.has('c-11') },
+    { key: 'c-1n', label: 'N:1（子:父）', color: theme.rel1N, count: count(e => e.relationType !== '1:1' && e.relationType !== 'N:M'), active: !hiddenLegend.value.has('c-1n') },
+    { key: 'c-nm', label: 'N:M', color: theme.relNM, count: count(e => e.relationType === 'N:M'), active: !hiddenLegend.value.has('c-nm') },
+    { key: 'o-fk', label: '物理外键', color: theme.edgeFk, count: count(e => (e.origin || 'fk') === 'fk'), active: !hiddenLegend.value.has('o-fk') },
+    { key: 'o-ai', label: 'AI 推断', color: theme.edgeAi, count: count(e => e.origin === 'ai'), active: !hiddenLegend.value.has('o-ai') },
+    { key: 'o-manual', label: '手动', color: theme.edgeManual, count: count(e => e.origin === 'manual'), active: !hiddenLegend.value.has('o-manual') },
+  ]
+})
+
+const relationRows = computed<RelationRow[]>(() => {
+  return [...filteredEdges.value]
+    .sort((a, b) => `${a.source}.${a.sourceCol}->${a.target}`.localeCompare(`${b.source}.${b.sourceCol}->${b.target}`))
+    .map(relation => ({
+      key: relation.key || relationKey(relation),
+      relationType: displayRelationType(relation.relationType),
+      typeKey: relation.relationType === '1:1' ? '11' : relation.relationType === 'N:M' ? 'nm' : '1n',
+      origin: relation.origin || 'fk',
+      source: relation.source,
+      target: relation.target,
+      sourceCol: relation.sourceCol,
+      targetCol: relation.targetCol,
+      confidence: relation.confidence,
+      constraintName: relation.constraintName || relation.constraintId || '',
+    }))
+})
+
+const emptyState = computed<{ message: string; action: 'showAll' | 'refresh' } | null>(() => {
+  if (loading.value) return null
+  if (unsupportedDb.value) {
+    const type = resolvedDbType.value || props.dbType || ''
+    return { message: `暂不支持该数据库类型${type ? `（${type}）` : ''}，目前支持 MySQL / MariaDB / Oracle / SQLite`, action: 'refresh' }
+  }
+  if (loadError.value) return { message: `加载失败：${loadError.value}`, action: 'refresh' }
+  if (allNodes.value.length === 0) return { message: '该数据库没有表', action: 'refresh' }
+  if (filteredNodes.value.length === 0) return { message: '当前无关联表，可开启“显示所有表”或使用 AI 分析关系', action: 'showAll' }
+  return null
+})
+
+// ==================== 工具函数 ====================
+
+function escapeSelector(value: string): string {
+  const css = (globalThis as { CSS?: { escape?: (v: string) => string } }).CSS
+  if (css?.escape) return css.escape(value)
+  return value.replace(/(["\\])/g, '\\$1')
 }
 
-async function loadData() {
+function nodeElement(nodeId: string): HTMLElement | null {
+  return containerRef.value?.querySelector(`[data-node-id="${escapeSelector(nodeId)}"]`) as HTMLElement | null
+}
+
+function rowElement(nodeId: string, index: number): HTMLElement | null {
+  return containerRef.value?.querySelector(
+    `[data-node-id="${escapeSelector(nodeId)}"] [data-row-index="${index}"]`
+  ) as HTMLElement | null
+}
+
+function findRelationByKey(key: string): ERRelation | undefined {
+  return allEdges.value.find(relation => relation.key === key)
+}
+
+function uniqueEdgeKey(relation: ERRelation, existing: ERRelation[]): string {
+  const base = `${relationKey(relation)}|${relation.origin || 'fk'}|${relation.constraintName || relation.constraintId || ''}`
+  let key = base
+  let index = 1
+  while (existing.some(item => item.key === key)) {
+    key = `${base}#${index++}`
+  }
+  return key
+}
+
+function assignEdgeKeys(relations: ERRelation[]): void {
+  const groups = new Map<string, number>()
+  relations.forEach(relation => {
+    const base = `${relationKey(relation)}|${relation.origin || 'fk'}|${relation.constraintName || relation.constraintId || ''}`
+    const count = groups.get(base) || 0
+    groups.set(base, count + 1)
+    relation.key = count === 0 ? base : `${base}#${count}`
+  })
+}
+
+function neighborNodeIds(nodeId: string): Set<string> {
+  const neighbors = new Set<string>([nodeId])
+  filteredEdges.value.forEach(edge => {
+    if (edge.source === nodeId) neighbors.add(edge.target)
+    if (edge.target === nodeId) neighbors.add(edge.source)
+  })
+  return neighbors
+}
+
+function getTimestamp(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function download(uri: string, filename: string): void {
+  const link = document.createElement('a')
+  link.download = filename
+  link.href = uri
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+// ==================== 数据加载 ====================
+
+async function loadData(preserve = false): Promise<void> {
   loading.value = true
+  unsupportedDb.value = false
+  loadError.value = ''
+  const previousEdges = preserve ? allEdges.value.slice() : []
+  const previousNodes = preserve ? allNodes.value.slice() : []
+  const previousPositions = preserve ? new Map(manualPositions.value) : new Map<string, { x: number; y: number }>()
   allNodes.value = []
   allEdges.value = []
+  selectedRelationKey.value = ''
   try {
-    const dbTypeVal = (dbType || dbSchemaProxy.getDbType(schema) || '').toLowerCase()
-    if (dbTypeVal === 'mysql') {
-      await loadMysqlData(schema)
-    } else if (dbTypeVal === 'sqlite') {
-      await loadSqliteData()
+    const loaded = await loadERSchema({ connId: props.connId || '', schema: props.schema || '' })
+    resolvedDbType.value = loaded.dbType || props.dbType || ''
+    allNodes.value = loaded.tables.map(table => ({
+      id: table.name,
+      label: table.name,
+      name: table.name,
+      type: table.type,
+      comment: table.comment,
+      columns: table.columns,
+      uniqueKeys: table.uniqueKeys,
+    }))
+    allEdges.value = loaded.relations.map(relation => ({ ...relation, origin: 'fk' as const }))
+    inferRelationTypes(allNodes.value as unknown as ERTable[], allEdges.value)
+    if (preserve) restorePreservedRelations(previousEdges)
+    assignEdgeKeys(allEdges.value)
+    if (preserve) {
+      const existing = new Set(allNodes.value.map(node => node.id))
+      const kept = new Map<string, { x: number; y: number }>()
+      previousPositions.forEach((position, id) => {
+        if (existing.has(id)) kept.set(id, position)
+      })
+      manualPositions.value = kept
     }
-    // 加载完成后推断关系类型（1:1 / 1:N / N:M）
-    inferAllRelationTypes()
-    // 物理外键标记为 origin=fk，便于在编辑器中与 AI 推断/手动新增的关系区分
-    allEdges.value.forEach(e => { e.origin = 'fk' })
   } catch (err) {
-    handleError(err, '加载ER图数据')
+    const message = err instanceof Error ? err.message : String(err)
+    if (/暂不支持该数据库类型/.test(message)) {
+      unsupportedDb.value = true
+    } else {
+      if (preserve) {
+        // 刷新失败时保留原图，避免用户丢失当前布局与关系；错误由 toast 提示
+        allNodes.value = previousNodes
+        allEdges.value = previousEdges
+      } else {
+        loadError.value = message
+      }
+      handleError(err, '加载ER图数据')
+    }
   } finally {
     loading.value = false
     await nextTick()
@@ -315,158 +444,42 @@ async function loadData() {
   }
 }
 
-async function loadMysqlData(schema) {
-  if (!isValidIdentifier(schema)) {
-    console.error('[ERDiagram] 非法的 schema 名:', schema)
-    return
-  }
-  // 增加 COLUMN_KEY 字段以判断主键(PRI)/唯一键(UNI)，用于推断关系类型
-  const [tableRows, fkRows, columnRows] = await Promise.all([
-    execQuery(`SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT, TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${schema}' AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')`),
-    execQuery(`SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '${schema}' AND REFERENCED_TABLE_NAME IS NOT NULL`),
-    execQuery(`SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${schema}' ORDER BY TABLE_NAME, ORDINAL_POSITION`, 50000),
-  ])
-
-  const colMap = {}
-  const tableNamesFromColumns = new Set()
-  columnRows.forEach(r => {
-    const tableName = r.TABLE_NAME || r.table_name
-    tableNamesFromColumns.add(tableName)
-    if (!colMap[tableName]) colMap[tableName] = []
-    const colKey = r.COLUMN_KEY || r.column_key || ''
-    colMap[tableName].push({
-      name: r.COLUMN_NAME || r.column_name,
-      type: r.COLUMN_TYPE || r.column_type,
-      comment: r.COLUMN_COMMENT || r.column_comment || '',
-      primaryKey: colKey === 'PRI',
-      unique: colKey === 'UNI',
-    })
+/** 刷新时恢复手动/AI 关系：校验端点与字段，物理外键去重、手动关系保留 */
+function restorePreservedRelations(previousEdges: ERRelation[]): void {
+  const tableMap = new Map(allNodes.value.map(node => [node.id, node]))
+  const keys = new Set<string>()
+  allEdges.value.forEach(relation => {
+    keys.add(relationKey(relation))
+    keys.add(reverseRelationKey(relation))
   })
 
-  if (tableRows.length > 0) {
-    allNodes.value = tableRows.map(r => ({
-      id: r.TABLE_NAME || r.table_name,
-      label: r.TABLE_NAME || r.table_name,
-      type: (r.TABLE_TYPE || r.table_type) === 'VIEW' ? 'VIEW' : 'TABLE',
-      comment: r.TABLE_COMMENT || r.table_comment || '',
-      rows: r.TABLE_ROWS || r.table_rows || '',
-      columns: colMap[r.TABLE_NAME || r.table_name] || [],
-    }))
-  } else {
-    const sortedNames = [...tableNamesFromColumns].sort()
-    allNodes.value = sortedNames.map(name => ({
-      id: name,
-      label: name,
-      type: 'TABLE',
-      comment: '',
-      rows: '',
-      columns: colMap[name] || [],
-    }))
+  let restored = 0
+  for (const relation of previousEdges) {
+    if (relation.origin !== 'manual' && relation.origin !== 'ai') continue
+    const source = tableMap.get(relation.source)
+    const target = tableMap.get(relation.target)
+    if (!source || !target || source.id === target.id) continue
+    if (relation.sourceCol && source.columns && !source.columns.some(col => col.name === relation.sourceCol)) continue
+    if (relation.targetCol && target.columns && !target.columns.some(col => col.name === relation.targetCol)) continue
+
+    const forward = relationKey(relation)
+    const reverse = reverseRelationKey(relation)
+    if (relation.origin === 'ai' && (keys.has(forward) || keys.has(reverse))) continue
+    if (relation.origin === 'manual' && keys.has(forward)) continue
+
+    allEdges.value.push({ ...relation, key: undefined })
+    keys.add(forward)
+    keys.add(reverse)
+    restored++
   }
-
-  // 一条边对应一对字段映射（sourceCol / targetCol），便于字段级拖拽连线
-  allEdges.value = fkRows.map(r => ({
-    source: r.TABLE_NAME || r.table_name,
-    target: r.REFERENCED_TABLE_NAME || r.referenced_table_name,
-    sourceCol: r.COLUMN_NAME || r.column_name || '',
-    targetCol: r.REFERENCED_COLUMN_NAME || r.referenced_column_name || '',
-    constraintName: r.CONSTRAINT_NAME || r.constraint_name || '',
-  }))
-}
-
-async function loadSqliteData() {
-  const tableRows = await execQuery("SELECT name AS TABLE_NAME, type AS TABLE_TYPE FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name")
-
-  allNodes.value = tableRows.map(r => ({
-    id: r.TABLE_NAME || r.name,
-    label: r.TABLE_NAME || r.name,
-    type: (r.TABLE_TYPE || r.type) === 'view' ? 'VIEW' : 'TABLE',
-    comment: '',
-    rows: '',
-    columns: [],
-  }))
-
-  const tablePromises = allNodes.value
-    .filter(n => n.type === 'TABLE')
-    .map(async n => {
-      try {
-        if (!isValidIdentifier(n.id)) {
-          return { tableName: n.id, columns: [], fks: [] }
-        }
-        // PRAGMA table_info 返回 pk 字段（1 表示主键列）
-        const [cols, fks] = await Promise.all([
-          execQuery(`PRAGMA table_info('${n.id}')`),
-          execQuery(`PRAGMA foreign_key_list('${n.id}')`),
-        ])
-        return {
-          tableName: n.id,
-          columns: cols.map(c => ({ name: c.name, type: c.type, comment: '', primaryKey: c.pk === 1, unique: false })),
-          fks: fks.map(fk => ({
-            source: n.id,
-            target: fk.table,
-            sourceCol: fk.from || '',
-            targetCol: fk.to || '',
-          })),
-        }
-      } catch (err) { handleError(err, '加载SQLite表结构'); return { tableName: n.id, columns: [], fks: [] } }
-    })
-
-  const results = await Promise.all(tablePromises)
-  const colMap = {}
-  const fkList = []
-  results.forEach(r => {
-    colMap[r.tableName] = r.columns
-    fkList.push(...r.fks)
-  })
-  allNodes.value.forEach(n => {
-    if (colMap[n.id]) n.columns = colMap[n.id]
-  })
-
-  // 一条边对应一对字段映射（sourceCol / targetCol）
-  allEdges.value = fkList.map(e => ({
-    source: e.source,
-    target: e.target,
-    sourceCol: e.sourceCol,
-    targetCol: e.targetCol,
-    constraintName: '',
-  }))
-}
-
-// 判断表是否为多对多中间表：至少 2 个外键且所有主键列均为外键列
-function isMiddleTable(node, edges) {
-  const outEdges = edges.filter(e => e.source === node.id)
-  if (outEdges.length < 2) return false
-  const fkSourceCols = new Set(outEdges.map(e => e.sourceCol).filter(Boolean))
-  const pkCols = (node.columns || []).filter(c => c.primaryKey).map(c => c.name)
-  if (pkCols.length === 0) return false
-  return pkCols.every(pk => fkSourceCols.has(pk))
-}
-
-// 推断单条关系的关系类型：中间表→N:M，目标列为唯一/主键→1:1，否则→1:N
-function inferRelationType(edge, nodes, edges) {
-  const sourceNode = nodes.find(n => n.id === edge.source)
-  if (sourceNode && isMiddleTable(sourceNode, edges)) {
-    return 'N:M'
+  if (restored > 0) {
+    ElMessage.info(`已保留 ${restored} 条手动/AI 关系`)
   }
-  const targetNode = nodes.find(n => n.id === edge.target)
-  if (targetNode && edge.targetCol) {
-    const col = targetNode.columns.find(c => c.name === edge.targetCol)
-    if (col && (col.primaryKey || col.unique)) return '1:1'
-  }
-  return '1:N'
 }
 
-// 为所有边推断关系类型
-// 注意：AI 推断（origin=ai）与手动新增（origin=manual）的关系类型由来源给定，
-// 不参与自动推断，避免被覆盖。仅物理外键（origin=fk）走推断逻辑。
-function inferAllRelationTypes() {
-  allEdges.value.forEach(e => {
-    if (e.origin === 'ai' || e.origin === 'manual') return
-    e.relationType = inferRelationType(e, allNodes.value, allEdges.value)
-  })
-}
+// ==================== 图实例 ====================
 
-function destroyGraph() {
+function destroyGraph(): void {
   if (mousedownHandler && containerRef.value) {
     containerRef.value.removeEventListener('mousedown', mousedownHandler, true)
     mousedownHandler = null
@@ -475,66 +488,173 @@ function destroyGraph() {
     graph.dispose()
     graph = null
   }
+  edgeMap = new Map()
+  labelsHidden = false
+  hoveredNodeId.value = null
+  selectedRelationKey.value = ''
+  edgeTooltip.value.visible = false
 }
 
-// 构造节点的端口配置：每个字段一个端口，左侧圆点 magnet 用于拖拽连线
-// 端口 ID 格式 `p-<colIdx>`，仅节点内唯一即可
-function buildNodePorts(n) {
-  const hasComment = !!n.comment
+function edgeLabelConfig(relation: ERRelation, theme: ERTheme) {
   return {
-    groups: {
-      left: {
-        position: { name: 'absolute' },
-        attrs: {
-          circle: {
-            r: 4,
-            magnet: true,
-            stroke: '#5F95FF',
-            fill: '#ffffff',
-            strokeWidth: 1,
-          },
-        },
+    attrs: {
+      text: { text: displayRelationType(relation.relationType), fontSize: 12, fill: theme.labelText, fontWeight: 600 },
+      rect: {
+        fill: relationColor(theme, relation.relationType),
+        stroke: '#ffffff',
+        'stroke-width': 1,
+        rx: 4,
+        ry: 4,
       },
     },
-    items: n.columns.map((col, idx) => {
-      // Y 坐标：标题 + (注释) + 第 idx 行字段中点
-      const portY = HEADER_HEIGHT + (hasComment ? COMMENT_HEIGHT : 0) + idx * COL_ROW_HEIGHT + COL_ROW_HEIGHT / 2
-      return {
-        id: 'p-' + idx,
-        group: 'left',
-        args: { x: 0, y: portY },
-      }
-    }),
+    position: { distance: 0.5 },
   }
 }
 
-// 查找节点中字段对应的端口 ID（找不到返回 null，回退到节点中心）
-function portIdFor(node, colName) {
-  if (!node || !node.columns || !colName) return null
-  const idx = node.columns.findIndex(c => c.name === colName)
-  return idx >= 0 ? 'p-' + idx : null
+function edgeDash(relation: ERRelation): string | null {
+  const sourceCollapsed = collapsedNodes.value.has(relation.source)
+  const targetCollapsed = collapsedNodes.value.has(relation.target)
+  if (sourceCollapsed || targetCollapsed) return '4 3'
+  if (relation.origin === 'ai') return '6 4'
+  return null
 }
 
-// 根据端口 ID 反查字段名（端口 ID 格式 `p-<colIdx>`）
-function colNameByPortId(node, portId) {
-  if (!node || !node.columns || !portId) return ''
-  const idx = parseInt(String(portId).replace('p-', ''), 10)
-  return Number.isNaN(idx) ? '' : (node.columns[idx]?.name || '')
+function applyEdgeStyle(edge: any, relation: ERRelation): void {
+  const theme = themeColors.value
+  const selected = relation.key === selectedRelationKey.value
+  edge.setVisible(!isEdgeHidden(relation))
+  const color = selected ? theme.edgeSelected : originColor(theme, relation.origin)
+  const lowConfidence = relation.origin === 'ai' && relation.confidence === 'low'
+  edge.attr({
+    wrap: { strokeWidth: theme.edgeWrapWidth },
+    line: {
+      stroke: color,
+      strokeWidth: selected ? theme.edgeHoverWidth : theme.edgeWidth,
+      opacity: selected ? 1 : lowConfidence ? theme.edgeAiLowOpacity : 1,
+      strokeDasharray: edgeDash(relation),
+      targetMarker: { name: 'classic', width: 8, height: 6, fill: color, stroke: color },
+      sourceMarker: { name: 'circle', r: 3, fill: color, stroke: color },
+    },
+  })
+  if (labelsHidden) {
+    edge.setLabels([])
+  } else {
+    edge.setLabels([edgeLabelConfig(relation, theme)])
+  }
 }
 
-async function rebuildGraph() {
+function applyEdgeVisibility(): void {
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (!relation) return
+    edge.setVisible(!isEdgeHidden(relation))
+  })
+}
+
+function clearEndpointHighlight(): void {
+  containerRef.value?.querySelectorAll('.er-col-row.is-edge-active').forEach(el => el.classList.remove('is-edge-active'))
+}
+
+function highlightEdgeEndpoints(relation: ERRelation): void {
+  clearEndpointHighlight()
+  const sourceIndex = columnIndexFor(nodeMap.value.get(relation.source), relation.sourceCol)
+  const targetIndex = columnIndexFor(nodeMap.value.get(relation.target), relation.targetCol)
+  if (sourceIndex >= 0) rowElement(relation.source, sourceIndex)?.classList.add('is-edge-active')
+  if (targetIndex >= 0) rowElement(relation.target, targetIndex)?.classList.add('is-edge-active')
+}
+
+function refreshVisualState(): void {
+  if (!graph || !containerRef.value) return
+  const theme = themeColors.value
+  const q = searchQuery.value.trim().toLowerCase()
+  const searchActive = q.length > 0 && matchedNodeIdSet.value.size > 0
+  const focusActive = focusNeighbors.value && hoveredNodeId.value !== null
+  const focusSet = focusActive && hoveredNodeId.value ? neighborNodeIds(hoveredNodeId.value) : null
+
+  filteredNodes.value.forEach(node => {
+    const el = nodeElement(node.id)
+    if (!el) return
+    let opacity = '1'
+    let borderColor = theme.nodeBorder
+    let borderWidth = '2px'
+    if (searchActive) {
+      if (matchedNodeIdSet.value.has(node.id)) {
+        borderColor = theme.edgeHover
+        borderWidth = '3px'
+      } else {
+        opacity = '0.25'
+      }
+    }
+    if (focusSet && !focusSet.has(node.id)) {
+      opacity = '0.25'
+    } else if (focusActive && !searchActive) {
+      borderColor = hoveredNodeId.value === node.id ? theme.edgeHover : theme.nodeBorder
+    } else if (!searchActive && hoveredNodeId.value === node.id) {
+      borderColor = theme.edgeHover
+    }
+    el.style.opacity = opacity
+    el.style.borderColor = borderColor
+    el.style.borderWidth = borderWidth
+  })
+
+  containerRef.value.querySelectorAll('.er-col-row.is-active').forEach(el => el.classList.remove('is-active'))
+  if (searchActive) {
+    filteredNodes.value.forEach(node => {
+      if (!matchedNodeIdSet.value.has(node.id)) return
+      ;(node.columns || []).forEach((col, index) => {
+        if (col.name.toLowerCase().includes(q) || (col.comment || '').toLowerCase().includes(q)) {
+          rowElement(node.id, index)?.classList.add('is-active')
+        }
+      })
+    })
+  }
+
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (!relation) return
+    const baseOpacity = relation.origin === 'ai' && relation.confidence === 'low' ? theme.edgeAiLowOpacity : 1
+    let dim = false
+    if (searchActive) {
+      dim = !(matchedNodeIdSet.value.has(relation.source) || matchedNodeIdSet.value.has(relation.target))
+    }
+    if (focusSet) {
+      dim = dim || !(focusSet.has(relation.source) && focusSet.has(relation.target))
+    }
+    edge.attr('line/opacity', baseOpacity * (dim ? 0.15 : 1))
+  })
+
+  if (selectedRelationKey.value) {
+    const selected = findRelationByKey(selectedRelationKey.value)
+    if (selected) highlightEdgeEndpoints(selected)
+  }
+}
+
+function applyLabelVisibility(scale: number): void {
+  const hide = scale < 0.7
+  if (hide === labelsHidden) return
+  labelsHidden = hide
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (relation) applyEdgeStyle(edge, relation)
+  })
+  refreshVisualState()
+}
+
+async function rebuildGraph(): Promise<void> {
   destroyGraph()
   if (!containerRef.value) return
 
   const nodes = filteredNodes.value
-  const edges = filteredEdges.value
+  const layoutEdges = filteredEdges.value
+  const renderEdges = filteredEdges.value
+  themeColors.value = getERTheme(currentTheme.value === 'dark')
+  containerRef.value.style.setProperty('--er-row-active-bg', themeColors.value.rowActiveBg)
   if (nodes.length === 0) return
 
-  // 刷新主题色（支持深色模式切换后重建）
-  themeColors.value = getThemeColors()
   const colors = themeColors.value
-
   const useAsync = nodes.length > VIRTUAL_THRESHOLD
+  const useOrth = layoutEdges.length <= ORTH_ROUTE_LIMIT
+
   graph = new Graph({
     container: containerRef.value,
     width: containerRef.value.clientWidth,
@@ -544,73 +664,304 @@ async function rebuildGraph() {
     panning: { enabled: true },
     mousewheel: {
       enabled: true,
-      // 滚轮直接缩放，以鼠标位置为锚点原地放大/缩小，避免画布漂移
       factor: 1.1,
       minScale: 0.3,
       maxScale: 3,
       zoomAtMousePosition: true,
     },
-    selecting: {
-      enabled: true,
-      showEdge: true,
-      // 仅允许选中边，节点不参与多选避免误操作
-      filter: ['edge'],
-    },
     connecting: {
-      // 端口级拖拽连线
       snap: true,
-      allowLoop: false,        // 禁止自环
-      allowNode: false,        // 必须连到端口，不能连到节点中心
+      allowLoop: false,
+      allowNode: false,
       allowEdge: false,
       allowPort: true,
-      allowBlank: false,       // 拖到空白处取消，不创建悬挂边
-      allowMulti: true,        // 允许同一对节点间多条关系（不同字段）
-      highlight: true,         // 拖拽时高亮可用端口
+      allowBlank: false,
+      allowMulti: true,
+      highlight: true,
       connectionPoint: 'anchor',
       anchor: 'center',
       createEdge() {
-        // 新建边的视觉样式与现有 FK 边一致；关系类型默认 1:N
-        const c = themeColors.value
         return new Shape.Edge({
           zIndex: 0,
-          // 平滑曲线，与现有边一致，便于区分不同字段间的关系
-          connector: { name: 'smooth' },
+          ...(useOrth
+            ? { router: { name: 'er-orth' }, connector: { name: 'rounded', args: { radius: 12 } } }
+            : { connector: { name: 'smooth' } }),
           attrs: {
+            wrap: { strokeWidth: colors.edgeWrapWidth },
             line: {
-              stroke: c.edgeColor,
-              strokeWidth: 1.5,
-              targetMarker: { name: 'classic', width: 8, height: 6 },
-              sourceMarker: { name: 'circle', r: 3 },
+              stroke: colors.edgeManual,
+              strokeWidth: colors.edgeWidth,
+              targetMarker: { name: 'classic', width: 8, height: 6, fill: colors.edgeManual, stroke: colors.edgeManual },
+              sourceMarker: { name: 'circle', r: 3, fill: colors.edgeManual, stroke: colors.edgeManual },
             },
           },
-          labels: [{
-            attrs: {
-              text: { text: '1:N', fontSize: 10, fill: '#ffffff', fontWeight: 600 },
-              rect: { fill: c.rel1N, stroke: '#ffffff', 'stroke-width': 1, rx: 4, ry: 4 },
-            },
-            position: { distance: 0.5 },
-          }],
+          labels: [edgeLabelConfig({ source: '', target: '', sourceCol: '', targetCol: '', constraintName: '', relationType: '1:N', origin: 'manual' }, colors)],
         })
       },
-      validateConnection({ sourceMagnet, targetMagnet }) {
-        // 源端和目标端都必须是端口 magnet（circle），避免误连到节点正文
+      validateConnection({ sourceMagnet, targetMagnet }: any) {
         return !!(sourceMagnet && targetMagnet)
       },
     },
     interacting: { nodeMovable: true },
-    // 表数量较多时启用异步与虚拟渲染，避免一次性渲染卡顿
     async: useAsync,
     virtual: useAsync,
   })
 
-  // 注册导出插件（X6 v3 需显式注册后才能使用 toPNG/toSVG）
   graph.use(new Export())
-  // 启用键盘插件，bindKey 删除选中边才生效
   graph.use(new Keyboard())
+  graph.use(new Selection({ enabled: true, multiple: false, rubberband: false, filter: ['edge'] }))
 
-  mousedownHandler = (e) => {
-    // 端口圆点 mousedown：进入"连接中"状态，临时显示所有端口圆点，便于看清可连接的目标字段
-    if (e.target.closest('.x6-port')) {
+  graph.on('scale', ({ sx }: { sx: number }) => applyLabelVisibility(sx))
+
+  registerGraphEvents()
+  registerContainerEvents()
+
+  maxZIndex = 1
+  const layoutPositions = await computeLayout({
+    nodes,
+    edges: layoutEdges,
+    rankdir: layoutType.value,
+    collapsed: collapsedNodes.value,
+  })
+
+  nodes.forEach(node => {
+    const collapsed = collapsedNodes.value.has(node.id)
+    const nodeData: ERNodeData = {
+      ...node,
+      collapsed,
+      junction: !!node.junction,
+      themeVersion: themeVersion.value,
+    }
+    const nodeConfig: any = {
+      id: node.id,
+      shape: 'er-table',
+      width: NODE_WIDTH,
+      height: getNodeHeightByState(nodeData, collapsed),
+      data: nodeData,
+      zIndex: 1,
+    }
+    const manual = manualPositions.value.get(node.id)
+    if (manual) {
+      nodeConfig.x = manual.x
+      nodeConfig.y = manual.y
+    } else if (layoutPositions.has(node.id)) {
+      const position = layoutPositions.get(node.id)!
+      nodeConfig.x = position.x
+      nodeConfig.y = position.y
+    }
+    if (!collapsed && (node.columns || []).length > 0) {
+      nodeConfig.ports = buildNodePorts(nodeData, colors)
+    }
+    graph.addNode(nodeConfig)
+  })
+
+  renderEdges.forEach(relation => addGraphEdge(relation))
+  applyEdgeVisibility()
+
+  if (manualPositions.value.size < nodes.length) {
+    graph.positionContent('center', { padding: 40 })
+  }
+
+  setupResizeObserver()
+
+  if (useAsync) {
+    graph.on('render:done', () => refreshVisualState())
+    await nextTick()
+  } else {
+    await nextTick()
+    refreshVisualState()
+  }
+}
+
+function addGraphEdge(relation: ERRelation): void {
+  if (!graph || !relation.key) return
+  const sourceNode = nodeMap.value.get(relation.source)
+  const targetNode = nodeMap.value.get(relation.target)
+  if (!sourceNode || !targetNode) return
+  const sourceCell = graph.getCellById(relation.source)
+  const targetCell = graph.getCellById(relation.target)
+  if (!sourceCell || !targetCell) return
+
+  const sourcePosition = sourceCell.getPosition()
+  const targetPosition = targetCell.getPosition()
+  const sourceIndex = columnIndexFor(sourceNode, relation.sourceCol)
+  const targetIndex = columnIndexFor(targetNode, relation.targetCol)
+  const sides = pickPortPair(sourcePosition, targetPosition, sourceIndex, targetIndex)
+  const collapsed = collapsedNodes.value
+  const useOrth = filteredEdges.value.length <= ORTH_ROUTE_LIMIT
+
+  const config: any = {
+    source: { cell: relation.source },
+    target: { cell: relation.target },
+    zIndex: 0,
+    ...(useOrth
+      ? { router: { name: 'er-orth' }, connector: { name: 'rounded', args: { radius: 12 } } }
+      : { connector: { name: 'smooth' } }),
+    attrs: {},
+    data: { ...relation },
+  }
+  if (
+    sides.sourcePort &&
+    !collapsed.has(relation.source) &&
+    sourceCell.hasPort(sides.sourcePort) &&
+    sourceIndex >= 0
+  ) {
+    config.source.port = sides.sourcePort
+  }
+  if (
+    sides.targetPort &&
+    !collapsed.has(relation.target) &&
+    targetCell.hasPort(sides.targetPort) &&
+    targetIndex >= 0
+  ) {
+    config.target.port = sides.targetPort
+  }
+
+  const edge = graph.addEdge(config)
+  edgeMap.set(relation.key, edge)
+  applyEdgeStyle(edge, relation)
+}
+
+function registerGraphEvents(): void {
+  if (!graph) return
+
+  graph.on('node:click', ({ node }: { node: any }) => {
+    maxZIndex++
+    node.setZIndex(maxZIndex)
+  })
+
+  graph.on('node:moved', ({ node }: { node: any }) => {
+    const position = node.getPosition()
+    manualPositions.value.set(node.id, { x: position.x, y: position.y })
+  })
+
+  graph.on('node:mouseenter', ({ node }: { node: any }) => {
+    hoveredNodeId.value = node.id
+    refreshVisualState()
+  })
+
+  graph.on('node:mouseleave', ({ node }: { node: any }) => {
+    if (hoveredNodeId.value === node.id) hoveredNodeId.value = null
+    refreshVisualState()
+  })
+
+  graph.on('edge:mouseenter', ({ edge, e }: { edge: any; e: MouseEvent }) => {
+    const relation = findRelationByKey(edge.getData()?.key)
+    if (!relation) return
+    const theme = themeColors.value
+    edge.setZIndex(3)
+    edge.attr('line/stroke', theme.edgeHover)
+    edge.attr('line/strokeWidth', theme.edgeHoverWidth)
+    highlightEdgeEndpoints(relation)
+
+    const rect = containerRef.value?.getBoundingClientRect()
+    if (rect) {
+      const maxX = Math.max(8, rect.width - 340)
+      const maxY = Math.max(8, rect.height - 120)
+      edgeTooltip.value = {
+        visible: true,
+        x: Math.min(Math.max(0, e.clientX - rect.left + 12), maxX),
+        y: Math.min(Math.max(0, e.clientY - rect.top + 12), maxY),
+        relationType: displayRelationType(relation.relationType),
+        source: relation.source,
+        target: relation.target,
+        sourceCol: relation.sourceCol || '',
+        targetCol: relation.targetCol || '',
+        constraintName: relation.constraintName || relation.constraintId || '',
+        origin: relation.origin || 'fk',
+        confidence: relation.confidence || '',
+        reason: relation.reason || '',
+      }
+    }
+  })
+
+  graph.on('edge:mouseleave', ({ edge }: { edge: any }) => {
+    edgeTooltip.value.visible = false
+    const relation = findRelationByKey(edge.getData()?.key)
+    if (relation) {
+      applyEdgeStyle(edge, relation)
+      if (relation.key !== selectedRelationKey.value) clearEndpointHighlight()
+    }
+    edge.setZIndex(relation && relation.key === selectedRelationKey.value ? 2 : 0)
+    refreshVisualState()
+  })
+
+  graph.on('edge:click', ({ edge }: { edge: any }) => {
+    const key = edge.getData()?.key
+    if (key) setSelectedRelation(key, false)
+  })
+
+  graph.on('edge:dblclick', ({ edge }: { edge: any }) => {
+    const key = edge.getData()?.key
+    if (key) cycleRelation(key)
+  })
+
+  graph.on('blank:click', () => {
+    clearSelection()
+  })
+
+  graph.on('edge:connected', ({ edge, isNew, currentCell, currentPort }: any) => {
+    if (!isNew) return
+    const sourceCell = edge.getSourceCell()
+    const sourcePortId = edge.getSourcePortId()
+    if (!sourceCell || !currentCell || !sourcePortId || !currentPort) {
+      edge.remove()
+      return
+    }
+    const sourceNode = nodeMap.value.get(sourceCell.id)
+    const targetNode = nodeMap.value.get(currentCell.id)
+    if (!sourceNode || !targetNode) {
+      edge.remove()
+      return
+    }
+    const relation: ERRelation = {
+      source: sourceCell.id,
+      sourceCol: colNameByPortId(sourceNode, sourcePortId),
+      target: currentCell.id,
+      targetCol: colNameByPortId(targetNode, currentPort),
+      constraintName: '',
+      relationType: '1:N',
+      origin: 'manual',
+    }
+    relation.key = uniqueEdgeKey(relation, allEdges.value)
+    edge.setData({ ...relation })
+    allEdges.value.push(relation)
+    edgeMap.set(relation.key, edge)
+    applyEdgeStyle(edge, relation)
+    setSelectedRelation(relation.key, true)
+    refreshVisualState()
+  })
+
+  graph.bindKey(['del', 'backspace'], () => {
+    if (!graph) return false
+    const selectedEdges = graph.getSelectedCells().filter((cell: any) => cell.isEdge())
+    if (selectedEdges.length === 0) return false
+    selectedEdges.forEach((edge: any) => {
+      const key = edge.getData()?.key
+      if (key) deleteRelation(key)
+    })
+    return false
+  })
+}
+
+function setupResizeObserver(): void {
+  if (!containerRef.value) return
+  if (!resizeObserver) {
+    resizeObserver = new ResizeObserver(() => {
+      if (!graph || !containerRef.value) return
+      graph.resize(containerRef.value.clientWidth, containerRef.value.clientHeight)
+    })
+  }
+  resizeObserver.disconnect()
+  resizeObserver.observe(containerRef.value)
+}
+
+/** 容器级 mousedown：折叠按钮、表头双击浏览数据、拖节点时暂停画布平移、端口拖线状态 */
+function registerContainerEvents(): void {
+  if (!containerRef.value) return
+  mousedownHandler = (event: MouseEvent) => {
+    const target = event.target as HTMLElement
+    if (target.closest('.x6-port')) {
       containerRef.value?.classList.add('connecting')
       const onPortUp = () => {
         containerRef.value?.classList.remove('connecting')
@@ -618,43 +969,42 @@ async function rebuildGraph() {
       }
       document.addEventListener('mouseup', onPortUp)
     }
-    // 折叠按钮点击：优先处理，阻止冒泡以避免触发标题栏的双击逻辑
-    const toggle = e.target.closest('.er-collapse-toggle')
+    const toggle = target.closest('.er-collapse-toggle') as HTMLElement | null
     if (toggle) {
-      e.stopPropagation()
-      e.preventDefault()
-      const nodeEl = toggle.closest('[data-node-id]')
+      event.stopPropagation()
+      event.preventDefault()
+      const nodeEl = toggle.closest('[data-node-id]') as HTMLElement | null
       const nodeId = nodeEl?.getAttribute('data-node-id')
-      if (nodeId) {
-        toggleCollapse(nodeId)
-      }
+      if (nodeId) toggleCollapse(nodeId)
       return
     }
-    const header = e.target.closest('.er-table-header')
+    const header = target.closest('.er-table-header') as HTMLElement | null
     if (header) {
-      const nodeEl = header.closest('[data-node-id]')
+      const nodeEl = header.closest('[data-node-id]') as HTMLElement | null
       const nodeId = nodeEl?.getAttribute('data-node-id')
-      if (nodeId) {
-        const node = graph.getCellById(nodeId)
-        if (node) {
-          maxZIndex++
-          node.setZIndex(maxZIndex)
-        }
+      if (nodeId && graph) {
+        maxZIndex++
+        graph.getCellById(nodeId)?.setZIndex(maxZIndex)
       }
       const tableId = header.getAttribute('data-table-id')
       const now = Date.now()
-      if (tableId && lastHeaderClick.tableId === tableId && (now - lastHeaderClick.time) < 400) {
+      if (tableId && lastHeaderClick.tableId === tableId && now - lastHeaderClick.time < 400) {
         lastHeaderClick = { tableId: null, time: 0 }
-        emit('openDataBrowser', { connId, schema, tableName: tableId, dbType })
+        emit('openDataBrowser', {
+          connId: props.connId || '',
+          schema: props.schema || '',
+          tableName: tableId,
+          dbType: resolvedDbType.value || props.dbType || '',
+        })
         return
       }
       lastHeaderClick = { tableId, time: now }
     } else {
       lastHeaderClick = { tableId: null, time: 0 }
-      if (e.target.closest('[data-node-id]')) {
+      if (target.closest('[data-node-id]') && graph) {
         graph.disablePanning()
         const onUp = () => {
-          graph.enablePanning()
+          graph?.enablePanning()
           document.removeEventListener('mouseup', onUp)
         }
         document.addEventListener('mouseup', onUp)
@@ -662,310 +1012,141 @@ async function rebuildGraph() {
     }
   }
   containerRef.value.addEventListener('mousedown', mousedownHandler, true)
-
-  maxZIndex = 1
-
-  // 先计算布局坐标（与 graph 实例解耦，避免异步渲染下 addNode 后 setPosition 时机不对导致节点叠在原点）
-  const layoutPositions = await computeLayout()
-
-  // 添加节点（应用折叠状态、布局坐标与持久化的手动位置）
-  nodes.forEach(n => {
-    const isCollapsed = collapsedNodes.value.has(n.id)
-    const nodeHeight = getNodeHeightByState(n, isCollapsed)
-    const nodeConfig = {
-      id: n.id,
-      shape: 'er-table',
-      width: NODE_WIDTH,
-      height: nodeHeight,
-      data: { ...n, collapsed: isCollapsed },
-      zIndex: 1,
-    }
-    // 手动位置优先，否则使用 dagre 布局坐标
-    const manualPos = manualPositions.value.get(n.id)
-    if (manualPos) {
-      nodeConfig.x = manualPos.x
-      nodeConfig.y = manualPos.y
-    } else if (layoutPositions.has(n.id)) {
-      const pos = layoutPositions.get(n.id)
-      nodeConfig.x = pos.x
-      nodeConfig.y = pos.y
-    }
-    // 展开且有字段时注册端口（每个字段一个，左侧圆点 magnet）
-    if (!isCollapsed && n.columns && n.columns.length > 0) {
-      nodeConfig.ports = buildNodePorts(n)
-    }
-    graph.addNode(nodeConfig)
-  })
-
-  // 添加边：平滑曲线连接字段端口，中点显示关系类型徽标，源端圆点 + 目标端箭头
-  edges.forEach(e => {
-    const relType = e.relationType || '1:N'
-    const relColor = relType === '1:1' ? colors.rel11 : relType === 'N:M' ? colors.relNM : colors.rel1N
-    // 查找源/目标字段对应的端口，让连线从字段圆点出发而非节点中心
-    const sourceNode = nodes.find(n => n.id === e.source)
-    const targetNode = nodes.find(n => n.id === e.target)
-    const sourcePort = portIdFor(sourceNode, e.sourceCol)
-    const targetPort = portIdFor(targetNode, e.targetCol)
-    const edgeConfig = {
-      source: { cell: e.source },
-      target: { cell: e.target },
-      zIndex: 0,
-      // 平滑曲线，使不同字段间的关系连线更易区分（直线在多关系时易重叠难辨）
-      connector: { name: 'smooth' },
-      attrs: {
-        line: {
-          stroke: colors.edgeColor,
-          strokeWidth: 1.5,
-          // 目标端箭头表示引用方向
-          targetMarker: { name: 'classic', width: 8, height: 6 },
-          // 源端圆点表示关系起点
-          sourceMarker: { name: 'circle', r: 3 },
-        },
-      },
-      labels: [{
-        attrs: {
-          text: { text: relType, fontSize: 10, fill: '#ffffff', fontWeight: 600 },
-          rect: { fill: relColor, stroke: '#ffffff', 'stroke-width': 1, rx: 4, ry: 4 },
-        },
-        position: { distance: 0.5 },
-      }],
-      data: { ...e },
-    }
-    if (sourcePort) edgeConfig.source.port = sourcePort
-    if (targetPort) edgeConfig.target.port = targetPort
-    graph.addEdge(edgeConfig)
-  })
-
-  // 存在非手动定位的节点时，将内容居中显示；全部手动定位则保持用户布局
-  if (manualPositions.value.size < nodes.length) {
-    graph.positionContent('center', { padding: 40 })
-  }
-
-  graph.on('node:click', ({ node }) => {
-    maxZIndex++
-    node.setZIndex(maxZIndex)
-  })
-
-  // 节点拖动结束后记录位置，以便在折叠/展开等操作后保持
-  graph.on('node:moved', ({ node }) => {
-    const pos = node.getPosition()
-    manualPositions.value.set(node.id, { x: pos.x, y: pos.y })
-  })
-
-  graph.on('node:mouseenter', ({ node }) => {
-    const el = containerRef.value?.querySelector(`[data-node-id="${node.id}"]`)
-    if (el && !searchQuery.value) el.style.borderColor = colors.hoverBorder
-  })
-
-  graph.on('node:mouseleave', ({ node }) => {
-    const el = containerRef.value?.querySelector(`[data-node-id="${node.id}"]`)
-    if (el && !searchQuery.value) el.style.borderColor = colors.nodeBorder
-  })
-
-  // 边 hover：高亮连线并显示关系详情提示框
-  graph.on('edge:mouseenter', ({ edge, e }) => {
-    edge.attr('line/strokeWidth', 3)
-    edge.attr('line/stroke', colors.hoverBorder)
-    const data = edge.getData() || {}
-    const rect = containerRef.value?.getBoundingClientRect()
-    if (rect) {
-      edgeTooltip.value = {
-        visible: true,
-        x: e.clientX - rect.left + 12,
-        y: e.clientY - rect.top + 12,
-        relationType: data.relationType || '1:N',
-        source: data.source,
-        target: data.target,
-        sourceCol: data.sourceCol || '',
-        targetCol: data.targetCol || '',
-        constraintName: data.constraintName || '',
-      }
-    }
-  })
-
-  graph.on('edge:mouseleave', ({ edge }) => {
-    edge.attr('line/strokeWidth', 1.5)
-    edge.attr('line/stroke', colors.edgeColor)
-    edgeTooltip.value.visible = false
-  })
-
-  // 拖拽连线完成：把新建边写入 allEdges（手动关系，不持久化）
-  // 注意：edge:connected 事件参数中 previousCell/previousPort 是"被拖动那一端的前值"，
-  // 对新建边恒为 null；源端信息必须从 edge 自身读取（getSourceCell/getSourcePortId）。
-  graph.on('edge:connected', ({ edge, isNew, currentCell, currentPort }) => {
-    if (!isNew || !currentCell || !currentPort) {
-      // 目标端不是端口（落到节点中心或空白）→ 移除该边
-      edge.remove()
-      return
-    }
-    const sourceCell = edge.getSourceCell()
-    const sourcePortId = edge.getSourcePortId()
-    if (!sourceCell || !sourcePortId) {
-      edge.remove()
-      return
-    }
-    const sourceNode = allNodes.value.find(n => n.id === sourceCell.id)
-    const targetNode = allNodes.value.find(n => n.id === currentCell.id)
-    const newEdge = {
-      source: sourceCell.id,
-      target: currentCell.id,
-      sourceCol: colNameByPortId(sourceNode, sourcePortId),
-      targetCol: colNameByPortId(targetNode, currentPort),
-      constraintName: '',
-      relationType: '1:N',
-      origin: 'manual',
-    }
-    edge.setData(newEdge)
-    allEdges.value.push(newEdge)
-  })
-
-  // 点击边：循环切换关系类型 1:N → 1:1 → N:M → 1:N，同步更新标签颜色与 allEdges
-  graph.on('edge:click', ({ edge }) => {
-    const data = edge.getData() || {}
-    const newType = data.relationType === '1:N' ? '1:1' : data.relationType === '1:1' ? 'N:M' : '1:N'
-    const c = themeColors.value
-    const relColor = newType === '1:1' ? c.rel11 : newType === 'N:M' ? c.relNM : c.rel1N
-    // 不可变写法：构造新对象回写，避免直接变异 getData() 返回的引用
-    const newData = { ...data, relationType: newType }
-    edge.setData(newData)
-    edge.setLabels([{
-      attrs: {
-        text: { text: newType, fontSize: 10, fill: '#ffffff', fontWeight: 600 },
-        rect: { fill: relColor, stroke: '#ffffff', 'stroke-width': 1, rx: 4, ry: 4 },
-      },
-      position: { distance: 0.5 },
-    }])
-    // 同步到 allEdges（按 source+target+sourceCol+targetCol 定位）
-    const idx = allEdges.value.findIndex(e =>
-      e.source === newData.source && e.target === newData.target &&
-      (e.sourceCol || '') === (newData.sourceCol || '') &&
-      (e.targetCol || '') === (newData.targetCol || ''))
-    if (idx >= 0) allEdges.value[idx].relationType = newType
-  })
-
-  // 选中边后按 Delete/Backspace 删除（同步 allEdges）
-  graph.bindKey(['del', 'backspace'], () => {
-    if (!graph) return false
-    const selectedEdges = graph.getSelectedCells().filter(c => c.isEdge())
-    if (selectedEdges.length === 0) return false
-    selectedEdges.forEach(edge => {
-      const data = edge.getData() || {}
-      const idx = allEdges.value.findIndex(e =>
-        e.source === data.source && e.target === data.target &&
-        (e.sourceCol || '') === (data.sourceCol || '') &&
-        (e.targetCol || '') === (data.targetCol || ''))
-      if (idx >= 0) allEdges.value.splice(idx, 1)
-      edge.remove()
-    })
-    return false  // 阻止浏览器默认删除行为
-  })
-
-  // 异步渲染完成后应用搜索高亮
-  if (useAsync) {
-    graph.on('render:done', () => {
-      applySearchHighlight()
-    })
-  } else {
-    await nextTick()
-    applySearchHighlight()
-  }
 }
 
-// 计算所有节点的布局坐标（左上角），与 graph 实例解耦。
-// 在 addNode 之前调用，把坐标直接传给节点，避免异步渲染（表数量较多开启 async 时）
-// 下 addNode 后 setPosition 时机不对、节点停留在原点叠在一起的问题。
-// 返回 Map<id, {x, y}>；手动定位的节点也参与计算（保证 dagre 看到完整图结构），addNode 时由 manualPositions 覆盖。
-async function computeLayout() {
-  const nodes = filteredNodes.value
-  const edges = filteredEdges.value
-  const positions = new Map()
-  if (nodes.length === 0) return positions
-  try {
-    const dagreLayout = new DagreLayout({
-      type: 'dagre',
-      rankdir: layoutType.value,
-      // 适当增加间距以减少节点重叠
-      nodesep: 60,
-      ranksep: 100,
-      nodeSize: (n) => {
-        // dagre 传入的 n 是 _original（仅含 id），需回查完整节点以拿到折叠状态与字段数
-        const node = nodes.find(x => x.id === n.id) || n
-        return [NODE_WIDTH, getNodeHeightByState(node, collapsedNodes.value.has(n.id))]
-      },
-    })
-    await dagreLayout.execute({
-      nodes: nodes.map(n => ({ id: n.id })),
-      edges: edges.map(e => ({ source: e.source, target: e.target })),
-    })
-    dagreLayout.forEachNode((layoutNode) => {
-      if (layoutNode.x == null || layoutNode.y == null) return
-      const n = nodes.find(x => x.id === layoutNode.id) || {}
-      const w = NODE_WIDTH
-      const h = getNodeHeightByState(n, collapsedNodes.value.has(layoutNode.id))
-      // dagre 返回节点中心坐标，转为左上角坐标
-      positions.set(layoutNode.id, {
-        x: layoutNode.x - w / 2,
-        y: layoutNode.y - h / 2,
-      })
-    })
-    dagreLayout.destroy()
-  } catch (err) {
-    handleError(err, 'ER图布局计算')
-    // 布局失败时使用网格排列兜底
-    const cols = Math.ceil(Math.sqrt(nodes.length))
-    nodes.forEach((n, idx) => {
-      const row = Math.floor(idx / cols)
-      const col = idx % cols
-      const nodeHeight = getNodeHeightByState(n, collapsedNodes.value.has(n.id))
-      positions.set(n.id, { x: col * (NODE_WIDTH + 60) + 40, y: row * (nodeHeight + 60) + 40 })
-    })
+// ==================== 选中/关系编辑 ====================
+
+function setSelectedRelation(key: string, center = false): void {
+  selectedRelationKey.value = key
+  edgeMap.forEach((edge, edgeKey) => {
+    const relation = findRelationByKey(edgeKey)
+    if (relation) applyEdgeStyle(edge, relation)
+    edge.setZIndex(edgeKey === key ? 2 : 0)
+  })
+  const edge = edgeMap.get(key)
+  const relation = findRelationByKey(key)
+  if (edge && graph) {
+    graph.select(edge)
+    if (center) graph.centerCell(edge)
   }
-  return positions
+  clearEndpointHighlight()
+  if (relation) highlightEdgeEndpoints(relation)
+  refreshVisualState()
 }
 
-// 重新布局已移除（用户要求）；如需重置可拖动节点后释放，位置自动记录
-
-function fitGraph() {
-  if (graph) {
-    graph.zoomToFit({ padding: 40, maxScale: 2 })
-  }
+function clearSelection(): void {
+  if (!selectedRelationKey.value) return
+  selectedRelationKey.value = ''
+  graph?.cleanSelection()
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (relation) applyEdgeStyle(edge, relation)
+    edge.setZIndex(0)
+  })
+  clearEndpointHighlight()
+  refreshVisualState()
 }
 
-// ========== 搜索功能 ==========
-// 应用搜索高亮：匹配节点高亮边框，非匹配节点降低透明度
-function applySearchHighlight() {
-  if (!graph || !containerRef.value) return
-  const q = searchQuery.value.trim().toLowerCase()
-  const matched = new Set(matchedNodeIds.value)
-  const colors = themeColors.value
-  // 有搜索词但无匹配时，不改变任何节点样式（避免全部变暗造成困惑）
-  const hasMatch = matched.size > 0
-  filteredNodes.value.forEach(n => {
-    const el = containerRef.value.querySelector(`[data-node-id="${n.id}"]`)
-    if (!el) return
-    if (!q || !hasMatch) {
-      el.style.opacity = '1'
-      el.style.borderColor = colors.nodeBorder
-      el.style.borderWidth = '2px'
-    } else if (matched.has(n.id)) {
-      el.style.opacity = '1'
-      el.style.borderColor = colors.hoverBorder
-      el.style.borderWidth = '3px'
-    } else {
-      el.style.opacity = '0.25'
-      el.style.borderColor = colors.nodeBorder
-      el.style.borderWidth = '2px'
-    }
+function selectRelationFromPanel(key: string): void {
+  const relation = findRelationByKey(key)
+  if (!relation) return
+  // 面板是主要入口：若该关系被图例过滤，先自动恢复显示
+  if (isEdgeHidden(relation)) {
+    const next = new Set(hiddenLegend.value)
+    next.delete(edgeCategoryKey(relation))
+    next.delete(edgeOriginKey(relation))
+    hiddenLegend.value = next
+    applyEdgeVisibility()
+  }
+  setSelectedRelation(key, true)
+}
+
+function deleteRelation(key: string): void {
+  const index = allEdges.value.findIndex(relation => relation.key === key)
+  if (index < 0) return
+  allEdges.value.splice(index, 1)
+  const edge = edgeMap.get(key)
+  if (edge) edge.remove()
+  edgeMap.delete(key)
+  if (selectedRelationKey.value === key) {
+    selectedRelationKey.value = ''
+    graph?.cleanSelection()
+    clearEndpointHighlight()
+  }
+  refreshVisualState()
+}
+
+function cycleRelation(key: string): void {
+  const relation = findRelationByKey(key)
+  if (!relation) return
+  const current = relation.relationType || '1:N'
+  const next = current === '1:N' ? '1:1' : current === '1:1' ? 'N:M' : '1:N'
+  relation.relationType = next
+  const edge = edgeMap.get(key)
+  if (edge) applyEdgeStyle(edge, relation)
+  refreshVisualState()
+}
+
+// ==================== 折叠/展开 ====================
+
+function rebuildPorts(node: any, data: ERNodeData): void {
+  node.removePorts()
+  if (data.collapsed) return
+  node.setProp('ports/groups', buildPortGroups(themeColors.value))
+  const ports = buildNodePorts(data, themeColors.value)
+  node.addPorts(ports.items)
+}
+
+function updateEdgesDash(nodeId: string): void {
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (!relation) return
+    if (relation.source === nodeId || relation.target === nodeId) applyEdgeStyle(edge, relation)
   })
 }
 
-// 回车依次跳转到下一个匹配节点
-function focusNextMatch() {
+function toggleCollapse(nodeId: string): void {
+  if (collapsedNodes.value.has(nodeId)) collapsedNodes.value.delete(nodeId)
+  else collapsedNodes.value.add(nodeId)
+
+  const node = graph?.getCellById(nodeId)
+  if (!node) return
+  const collapsed = collapsedNodes.value.has(nodeId)
+  const data = node.getData() || {}
+  node.setData({ ...data, collapsed, themeVersion: ++themeVersion.value })
+  const sourceData = nodeMap.value.get(nodeId)
+  if (!sourceData) return
+  node.resize(NODE_WIDTH, getNodeHeightByState(sourceData, collapsed))
+  rebuildPorts(node, { ...sourceData, collapsed })
+  updateEdgesDash(nodeId)
+  nextTick(() => refreshVisualState())
+}
+
+function onShowAllTablesChange(): void {
+  rebuildGraph()
+}
+
+function onLayoutChange(): void {
+  manualPositions.value.clear()
+  ElMessage.info('已重置手动布局')
+  rebuildGraph()
+}
+
+function enableShowAll(): void {
+  showAllTables.value = true
+  rebuildGraph()
+}
+
+// ==================== 搜索 ====================
+
+function applySearchHighlight(): void {
+  refreshVisualState()
+}
+
+function focusNextMatch(): void {
   const matched = matchedNodeIds.value
   if (matched.length === 0) return
-  if (currentMatchIndex.value >= matched.length) {
-    currentMatchIndex.value = 0
-  }
+  if (currentMatchIndex.value >= matched.length) currentMatchIndex.value = 0
   const nodeId = matched[currentMatchIndex.value]
   const node = graph?.getCellById(nodeId)
   if (node) {
@@ -976,123 +1157,196 @@ function focusNextMatch() {
   currentMatchIndex.value = (currentMatchIndex.value + 1) % matched.length
 }
 
-function onSearchClear() {
+function onSearchClear(): void {
   currentMatchIndex.value = 0
   applySearchHighlight()
 }
 
-// 监听搜索关键字变化，重置匹配索引并应用高亮
 watch(searchQuery, () => {
   currentMatchIndex.value = 0
   nextTick(() => applySearchHighlight())
 })
 
-// ========== 折叠/展开功能 ==========
-// 切换单个节点的折叠状态（更新数据触发 HTML 重渲染 + 调整节点高度）
-function toggleCollapse(nodeId) {
-  if (collapsedNodes.value.has(nodeId)) {
-    collapsedNodes.value.delete(nodeId)
-  } else {
-    collapsedNodes.value.add(nodeId)
+watch(focusNeighbors, () => {
+  refreshVisualState()
+})
+
+// ==================== 图例 ====================
+
+function toggleLegend(key: string): void {
+  const next = new Set(hiddenLegend.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  hiddenLegend.value = next
+  applyEdgeVisibility()
+  if (selectedRelationKey.value) {
+    const relation = findRelationByKey(selectedRelationKey.value)
+    if (relation && isEdgeHidden(relation)) clearSelection()
   }
-  const node = graph?.getCellById(nodeId)
-  if (!node) return
-  const isCollapsed = collapsedNodes.value.has(nodeId)
-  const data = node.getData()
-  node.setData({ ...data, collapsed: isCollapsed })
-  const nodeData = filteredNodes.value.find(n => n.id === nodeId) || data
-  const height = getNodeHeightByState(nodeData, isCollapsed)
-  node.resize(NODE_WIDTH, height)
-  // 折叠后端口会浮在节点可视区外，需先移除；展开时按新字段位置重建
-  node.removePorts()
-  if (!isCollapsed && nodeData.columns && nodeData.columns.length > 0) {
-    const portsConfig = buildNodePorts(nodeData)
-    node.addPorts(portsConfig.items)
+  refreshVisualState()
+}
+
+// ==================== 刷新 ====================
+
+async function refreshSchema(): Promise<void> {
+  await loadData(true)
+}
+
+// ==================== 主题 ====================
+
+async function applyTheme(): Promise<void> {
+  themeColors.value = getERTheme(currentTheme.value === 'dark')
+  if (!graph) return
+  const theme = themeColors.value
+  containerRef.value?.style.setProperty('--er-row-active-bg', theme.rowActiveBg)
+  const version = ++themeVersion.value
+  allNodes.value.forEach(node => {
+    const cell = graph?.getCellById(node.id)
+    if (!cell) return
+    cell.setData({ ...cell.getData(), themeVersion: version })
+    ;(cell.getPorts?.() || []).forEach((port: { id: string }) => {
+      cell.setPortProp(port.id, 'attrs/circle/stroke', theme.portStroke)
+      cell.setPortProp(port.id, 'attrs/circle/fill', theme.portFill)
+    })
+  })
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (relation) applyEdgeStyle(edge, relation)
+  })
+  graph.drawGrid({ type: 'dot', args: { color: theme.gridColor } })
+  await nextTick()
+  refreshVisualState()
+}
+
+watch(currentTheme, () => {
+  applyTheme()
+})
+
+// ==================== 导出 ====================
+
+function addExportStamp(svg: SVGSVGElement): SVGSVGElement {
+  if (!graph) return svg
+  const bbox = graph.getContentBBox()
+  const ns = 'http://www.w3.org/2000/svg'
+  const background = document.createElementNS(ns, 'rect')
+  const label = document.createElementNS(ns, 'text')
+  const stamp = `${props.schema || ''} · ${filteredNodes.value.length} 表 · ${displayedEdges.value.length} 关系 · ${getTimestamp()}`
+  const width = Math.min(420, Math.max(220, stamp.length * 7 + 16))
+  background.setAttribute('x', String(bbox.x + 4))
+  background.setAttribute('y', String(bbox.y + 4))
+  background.setAttribute('width', String(width))
+  background.setAttribute('height', '20')
+  background.setAttribute('rx', '4')
+  background.setAttribute('fill', '#ffffff')
+  background.setAttribute('opacity', '0.92')
+  label.setAttribute('x', String(bbox.x + 10))
+  label.setAttribute('y', String(bbox.y + 19))
+  label.setAttribute('fill', '#475569')
+  label.setAttribute('font-size', '12')
+  label.setAttribute('font-family', 'sans-serif')
+  label.textContent = stamp
+  svg.appendChild(background)
+  svg.appendChild(label)
+  return svg
+}
+
+async function withPrintTheme<T>(task: () => Promise<T>): Promise<T> {
+  if (!graph) return task()
+  const nodes = graph.getNodes()
+  const version = ++themeVersion.value
+  nodes.forEach((node: any) => node.setData({ ...node.getData(), print: true, themeVersion: version }))
+  edgeMap.forEach((edge, key) => {
+    const relation = findRelationByKey(key)
+    if (!relation) return
+    edge.attr({
+      wrap: { strokeWidth: 24 },
+      line: {
+        stroke: '#334155',
+        strokeWidth: 2.5,
+        opacity: 1,
+        strokeDasharray: edgeDash(relation),
+        targetMarker: { name: 'classic', width: 9, height: 7, fill: '#334155', stroke: '#334155' },
+        sourceMarker: { name: 'circle', r: 3.5, fill: '#334155', stroke: '#334155' },
+      },
+    })
+    edge.setLabels([edgeLabelConfig(relation, getERTheme(false))])
+  })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  try {
+    return await task()
+  } finally {
+    nodes.forEach((node: any) => node.setData({ ...node.getData(), print: false, themeVersion: ++themeVersion.value }))
+    edgeMap.forEach((edge, key) => {
+      const relation = findRelationByKey(key)
+      if (relation) applyEdgeStyle(edge, relation)
+    })
+    await nextTick()
+    refreshVisualState()
   }
-  // HTML 重渲染会重置内联样式，需在下一帧重新应用搜索高亮
-  nextTick(() => applySearchHighlight())
 }
 
-// 全部折叠/展开已移除（用户要求仅保留单节点折叠）
-
-// ========== 导出功能 ==========
-// 生成时间戳字符串用于文件名
-function getTimestamp() {
-  const d = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+function handleExport(command: string): void {
+  if (command === 'png') void exportPNG()
+  else if (command === 'svg') void exportSVG()
 }
 
-function handleExport(command) {
-  if (command === 'png') exportPNG()
-  else if (command === 'svg') exportSVG()
-}
-
-// 导出 PNG：使用 X6 Export 插件的 toPNG，带白色背景
-function exportPNG() {
+async function exportPNG(): Promise<void> {
   if (!graph) return
-  graph.toPNG((dataUri) => {
-    const link = document.createElement('a')
-    link.download = `er_diagram_${schema}_${getTimestamp()}.png`
-    link.href = dataUri
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }, {
-    padding: 20,
-    backgroundColor: '#ffffff',
-  })
+  await withPrintTheme(
+    () =>
+      new Promise<void>(resolve => {
+        graph!.toPNG(
+          (dataUri: string) => {
+            download(dataUri, `er_diagram_${props.schema || 'schema'}_${getTimestamp()}.png`)
+            resolve()
+          },
+          {
+            padding: 20,
+            backgroundColor: '#ffffff',
+            ratio: 2,
+            beforeSerialize: addExportStamp,
+          }
+        )
+      })
+  )
 }
 
-// 导出 SVG：通过 beforeSerialize 注入白色背景矩形
-function exportSVG() {
+async function exportSVG(): Promise<void> {
   if (!graph) return
-  graph.toSVG((svg) => {
-    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.download = `er_diagram_${schema}_${getTimestamp()}.svg`
-    link.href = url
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-  }, {
-    copyStyles: true,
-    beforeSerialize: (svg) => {
-      // SVG 无 backgroundColor 选项，手动插入白色背景矩形
-      const bbox = graph.getContentBBox()
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      rect.setAttribute('x', bbox.x)
-      rect.setAttribute('y', bbox.y)
-      rect.setAttribute('width', bbox.width)
-      rect.setAttribute('height', bbox.height)
-      rect.setAttribute('fill', '#ffffff')
-      svg.insertBefore(rect, svg.firstChild)
-      return svg
-    },
-  })
+  await withPrintTheme(
+    () =>
+      new Promise<void>(resolve => {
+        graph!.toSVG(
+          (svg: string) => {
+            const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
+            const url = URL.createObjectURL(blob)
+            download(url, `er_diagram_${props.schema || 'schema'}_${getTimestamp()}.svg`)
+            URL.revokeObjectURL(url)
+            resolve()
+          },
+          {
+            // 节点样式以内联为主，关闭 copyStyles 可显著降低大图导出耗时
+            copyStyles: false,
+            stylesheet: '.x6-edge path { vector-effect: non-scaling-stroke; }',
+            beforeSerialize: addExportStamp,
+          }
+        )
+      })
+  )
 }
 
-// 切换"显示所有表"时清除手动位置（图结构变化，旧位置不再适用）
-function onShowAllTablesChange() {
-  manualPositions.value.clear()
-  rebuildGraph()
+function fitGraph(): void {
+  if (graph) graph.zoomToFit({ padding: 40, maxScale: 2 })
 }
 
-// ========== AI 分析表关系 ==========
-// 实际数据库通常不建物理外键（关系由程序定义），ER 图加载到的物理外键常常为空。
-// 此功能把表元数据发给后端 AI，由 AI 根据命名/注释推断表关系，
-// 推断结果仅保存在内存 allEdges 中（origin='ai'），不持久化、不写数据库。
-const aiAnalyzing = ref(false)
+// ==================== AI 分析 ====================
 
-async function analyzeRelationsWithAI() {
+async function analyzeRelationsWithAI(): Promise<void> {
   if (allNodes.value.length === 0) {
     ElMessage.warning('当前没有表，无法分析关系')
     return
   }
   if (allNodes.value.length > 30) {
-    // 与后端 maxTables=30 对齐，避免发送过大数据
     try {
       await ElMessageBox.confirm(
         `当前共 ${allNodes.value.length} 张表，AI 分析将仅取前 30 张（按当前排序）。是否继续？`,
@@ -1100,71 +1354,78 @@ async function analyzeRelationsWithAI() {
         { type: 'warning' }
       )
     } catch {
-      return  // 用户取消
+      return
     }
   }
 
   aiAnalyzing.value = true
   try {
-    // 取前 30 张表（与后端限制一致）
-    const tablesForAI = allNodes.value.slice(0, 30).map(n => ({
-      name: n.id,
-      comment: n.comment || '',
-      columns: (n.columns || []).map(c => ({
-        name: c.name,
-        type: c.type,
-        comment: c.comment || '',
-        primaryKey: !!c.primaryKey,
-        unique: !!c.unique,
+    const sentNodes = allNodes.value.slice(0, 30)
+    const tablesForAI = sentNodes.map(node => ({
+      name: node.id,
+      comment: node.comment || '',
+      columns: (node.columns || []).map(column => ({
+        name: column.name,
+        type: column.type,
+        comment: column.comment || '',
+        primaryKey: !!column.primaryKey,
+        unique: uniqueKeysOf(node).some(key => key.length === 1 && key[0] === column.name),
       })),
     }))
-    // 已有的物理外键/AI 关系一并传给 AI，避免重复推断
+    // 只把物理外键传给 AI：旧 AI 边会在合并前被清除，不能当作已知关系发送（否则被删后不再返回）。
     const existingRelations = allEdges.value
-      .filter(e => e.origin !== 'manual')
-      .map(e => ({
-        source: e.source,
-        sourceCol: e.sourceCol || '',
-        target: e.target,
-        targetCol: e.targetCol || '',
-        relationType: e.relationType || '1:N',
-        confidence: 'high',
-        reason: '已存在的外键关系',
+      .filter(relation => (relation.origin || 'fk') === 'fk')
+      .map(relation => ({
+        source: relation.source,
+        sourceCol: relation.sourceCol || '',
+        target: relation.target,
+        targetCol: relation.targetCol || '',
+        relationType: relation.relationType || '1:N',
+        confidence: 'high' as const,
+        reason: '已存在的物理外键关系',
       }))
 
     const resp = await analyzeERRelations({
-      connId,
-      schema,
-      dbType: dbType || dbSchemaProxy.getDbType(schema) || '',
+      connId: props.connId || '',
+      schema: props.schema || '',
+      dbType: resolvedDbType.value || props.dbType || dbSchemaProxy.getDbType(props.schema || '') || '',
       tables: tablesForAI,
       existingRelations,
     })
-    const inferred = resp.data?.data?.relations || []
+    const inferred: ERRelation[] = (resp.data?.data?.relations || []).map(relation => ({
+      source: relation.source,
+      sourceCol: relation.sourceCol || '',
+      target: relation.target,
+      targetCol: relation.targetCol || '',
+      constraintName: '',
+      relationType: relation.relationType,
+      confidence: relation.confidence,
+      reason: relation.reason || '',
+    }))
     if (inferred.length === 0) {
       ElMessage.info('AI 未推断出表关系，可尝试手动编辑')
       return
     }
 
-    // 合并 AI 推断结果：先去掉之前的 AI 关系（origin=ai），再追加新结果
-    // 物理外键（origin=fk）和手动新增（origin=manual）保留
-    allEdges.value = allEdges.value.filter(e => e.origin !== 'ai')
-    inferred.forEach(r => {
-      allEdges.value.push({
-        source: r.source,
-        target: r.target,
-        sourceCol: r.sourceCol || '',
-        targetCol: r.targetCol || '',
-        constraintName: '',
-        relationType: r.relationType || '1:N',
-        origin: 'ai',
-        confidence: r.confidence || 'medium',
-        reason: r.reason || '',
-      })
-    })
-    // 重新推断关系类型（仅对物理外键生效，AI/manual 的 type 已由来源给定）
-    inferAllRelationTypes()
-    manualPositions.value.clear()
+    const withoutAi = removeAiRelations(allEdges.value)
+    const sentTables: ERTable[] = sentNodes.map(node => ({
+      name: node.id,
+      type: node.type || 'TABLE',
+      comment: node.comment || '',
+      columns: (node.columns || []).map(column => ({
+        name: column.name,
+        type: column.type,
+        comment: column.comment || '',
+        primaryKey: !!column.primaryKey,
+      })),
+      uniqueKeys: node.uniqueKeys,
+    }))
+    const { accepted, skipped } = mergeAiRelations(inferred, sentTables, withoutAi)
+    allEdges.value = [...withoutAi, ...accepted]
+    inferRelationTypes(allNodes.value as unknown as ERTable[], allEdges.value)
+    assignEdgeKeys(allEdges.value)
     await rebuildGraph()
-    ElMessage.success(`AI 推断出 ${inferred.length} 条关系`)
+    ElMessage.success(`AI 推断出 ${accepted.length} 条关系${skipped > 0 ? `（跳过 ${skipped} 条重复/无效）` : ''}`)
   } catch (err) {
     handleError(err, 'AI 分析表关系')
   } finally {
@@ -1172,21 +1433,15 @@ async function analyzeRelationsWithAI() {
   }
 }
 
-// 关系编辑改为字段级拖拽连线 + 点击切换类型，不再使用对话框（见 rebuildGraph 中的 connecting / edge 事件）
+// ==================== 生命周期 ====================
 
 onMounted(() => {
-  loadData()
-})
-
-// 监听主题变化，刷新主题色并重建图形以应用新颜色
-watch(() => document.documentElement.getAttribute('data-theme'), () => {
-  themeColors.value = getThemeColors()
-  if (allNodes.value.length > 0) {
-    nextTick(() => rebuildGraph())
-  }
+  loadData(false)
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   destroyGraph()
 })
 </script>
@@ -1204,20 +1459,42 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-primary);
-  background: var(--bg-primary);
+  padding: 8px 12px 4px;
+}
+.er-toolbar-spacer {
+  flex: 1;
+}
+.er-toolbar-check {
+  font-size: 12px;
 }
 .er-toolbar-hint {
   font-size: 12px;
   color: var(--text-tertiary);
 }
 .er-search-input {
-  width: 200px;
+  width: 220px;
 }
 .er-search-count {
   color: var(--db-accent, #409eff);
   font-weight: 600;
+}
+.er-legend-row {
+  padding: 0 12px 6px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+}
+.er-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 8px;
+  padding: 8px 12px 0;
+}
+.er-canvas-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 .er-canvas {
   flex: 1;
@@ -1225,19 +1502,34 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-primary);
   border-radius: 6px;
   overflow: hidden;
-  margin: 8px 12px;
 }
-.er-empty {
-  text-align: center;
-  padding: 40px;
-  color: var(--text-tertiary);
+.er-empty-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 5;
+}
+.er-empty-text {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text-tertiary, #909399);
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-primary, #e4e7ed);
+  border-radius: 6px;
+}
+.er-empty-overlay :deep(.el-button) {
+  pointer-events: auto;
 }
 .er-footer {
   padding: 4px 12px 8px;
   font-size: 12px;
   color: var(--text-tertiary);
 }
-/* 关系连线 hover 提示框 */
 .er-edge-tooltip {
   position: absolute;
   z-index: 1000;
@@ -1275,21 +1567,6 @@ onBeforeUnmount(() => {
   font-size: 11px;
   margin-top: 2px;
 }
-/* 关系编辑器 */
-.relation-editor-tip {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: var(--bg-tertiary, #f5f7fa);
-  border-left: 3px solid var(--accent-color, #409eff);
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--text-secondary, #606266);
-  line-height: 1.5;
-}
-.relation-editor-count {
-  font-size: 12px;
-  color: var(--text-tertiary, #909399);
-}
 :deep(.el-radio-button__inner) {
   font-size: 12px;
   padding: 4px 12px;
@@ -1297,7 +1574,11 @@ onBeforeUnmount(() => {
 :deep(.el-input__wrapper) {
   font-size: 12px;
 }
-/* 端口连线圆点：默认隐藏，悬停节点或拖拽连线时显示，避免每个字段前都出现标记 */
+/* 缩放不变细：线宽与包裹命中区在所有缩放下保持固定物理像素 */
+.er-canvas :deep(.x6-edge path) {
+  vector-effect: non-scaling-stroke;
+}
+/* 端口连线圆点：默认隐藏，悬停节点或拖拽连线时显示 */
 .er-canvas :deep(.x6-port-body circle) {
   opacity: 0;
   transition: opacity 0.15s ease;
@@ -1305,5 +1586,13 @@ onBeforeUnmount(() => {
 .er-canvas :deep(.x6-node:hover .x6-port-body circle),
 .er-canvas.connecting :deep(.x6-port-body circle) {
   opacity: 1;
+}
+/* 搜索命中字段行 / 关系两端字段行高亮 */
+.er-canvas :deep(.er-col-row.is-active) {
+  background: #eaf3ff;
+}
+.er-canvas :deep(.er-col-row.is-edge-active) {
+  background: var(--er-row-active-bg, #eaf3ff);
+  box-shadow: inset 2px 0 0 var(--db-accent, #409eff);
 }
 </style>

@@ -49,7 +49,7 @@
 import { ref, computed, watch, h, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { execSQL } from '@/api/sql'
-import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper'
+import { buildWhereCondition, fmtVal, getDatePickerKind, isBinaryOrLobColumnType, quoteId } from '@/utils/sqlHelper'
 import { buildGridText, GRID_COPY_FORMAT_LABELS, type GridCopyFormat } from '@/utils/gridCopy'
 import SqlBatchResultTabs from './SqlBatchResultTabs.vue'
 import SqlErrorPanel from './SqlErrorPanel.vue'
@@ -322,18 +322,24 @@ function copyColumnNames() {
 
 // ── 内联编辑 ──
 
+function colTypeOf(colKey: string): string | undefined {
+    return props.rawColumns.find((c: any) => c.name === colKey)?.type
+}
+
 function isDateType(colType: string | undefined): boolean {
-    if (!colType) return false
-    const upper = colType.toUpperCase()
-    return (
-        upper === 'DATETIME' ||
-        upper === 'DATE' ||
-        upper === 'TIMESTAMP' ||
-        upper === 'TIMESTAMP(6)' ||
-        upper.includes('TIMESTAMP') ||
-        upper === 'TIMESTAMPTZ' ||
-        upper === 'TIMESTAMPLTZ'
-    )
+    return getDatePickerKind(colType, props.effectiveDbType) === 'datetime'
+}
+
+function isDateOnlyType(colType: string | undefined): boolean {
+    return getDatePickerKind(colType, props.effectiveDbType) === 'date'
+}
+
+function toDateTimeLocalInput(val: any): string {
+    if (val === null || val === undefined) return ''
+    const text = String(val).trim().replace(' ', 'T')
+    if (text.length >= 19) return text.substring(0, 19)
+    if (text.length === 16) return text + ':00'
+    return text
 }
 
 function isEditingCell(rowIndex: number, colKey: string) {
@@ -348,6 +354,10 @@ function isCellChanged(rowIndex: number, colKey: string) {
 function startInlineEdit(rowIndex: number, colKey: string, event: MouseEvent) {
     if (!props.canInlineEdit) return
     if (props.tableKeys.length === 0) return
+    if (isBinaryOrLobColumnType(colTypeOf(colKey))) {
+        ElMessage({ message: '二进制/LOB 列不支持在表格中编辑，请使用 SQL 编辑器修改', type: 'warning' })
+        return
+    }
     const target = event.target as HTMLElement
     if (target.tagName === 'INPUT') return
     clearRangeSelection2()
@@ -400,6 +410,12 @@ function saveInlineChanges() {
         groupedByRow.get(rowIdx)!.set(colKey, newVal)
     })
 
+    // 列类型用于生成 WHERE：MySQL JSON 列必须 CAST 成 JSON 才能参与比较
+    const colTypes: Record<string, string> = {}
+    props.rawColumns.forEach((c: any) => {
+        colTypes[c.name] = c.type
+    })
+
     const promises: Promise<any>[] = []
     groupedByRow.forEach((colMap, rowIdx) => {
         const row = props.result[rowIdx]
@@ -407,12 +423,12 @@ function saveInlineChanges() {
 
         const pkConditions = props.tableKeys
             .filter((k) => k in row)
-            .map((k) => buildWhereCondition(k, row[k], props.effectiveDbType))
+            .map((k) => buildWhereCondition(k, row[k], props.effectiveDbType, colTypes[k]))
 
         const setClauses: string[] = []
         colMap.forEach((newVal, colKey) => {
             setClauses.push(
-                quoteId(colKey, props.effectiveDbType) + ' = ' + fmtVal(newVal, props.effectiveDbType)
+                quoteId(colKey, props.effectiveDbType) + ' = ' + fmtVal(newVal, props.effectiveDbType, colTypes[colKey])
             )
         })
 
@@ -432,7 +448,7 @@ function saveInlineChanges() {
                 (k: string) => k !== 'col-idx' && colMap.has(k)
             )
             const whereConditions = allWhereCols.map((k: string) =>
-                buildWhereCondition(k, row[k], props.effectiveDbType)
+                buildWhereCondition(k, row[k], props.effectiveDbType, colTypes[k])
             )
             sql =
                 'update ' +
@@ -550,6 +566,7 @@ function handlePaste2(event: ClipboardEvent) {
             if (targetColIdx >= colKeys.length) break
             const colKey = colKeys[targetColIdx]
             if (colKey === 'col-idx' || props.tableKeys.includes(colKey)) continue
+            if (isBinaryOrLobColumnType(colTypeOf(colKey))) continue
 
             const newVal = grid[ri][ci].trim()
 
@@ -751,10 +768,10 @@ function buildColumnDef(col: any): any {
             const colType = col.type
 
             if (isEditing) {
-                if (isDateType(colType)) {
+                if (isDateOnlyType(colType)) {
                     return h('input', {
-                        type: 'datetime-local',
-                        value: editingCellValue.value ? editingCellValue.value.substring(0, 16) : '',
+                        type: 'date',
+                        value: editingCellValue.value ? String(editingCellValue.value).substring(0, 10) : '',
                         style: {
                             width: '100%',
                             height: '28px',
@@ -767,8 +784,34 @@ function buildColumnDef(col: any): any {
                             boxSizing: 'border-box',
                         },
                         onInput: (e: Event) => {
-                            const target = e.target as HTMLInputElement
-                            editingCellValue.value = target.value + ':00'
+                            editingCellValue.value = (e.target as HTMLInputElement).value
+                        },
+                        onKeyup: (e: KeyboardEvent) => {
+                            if (e.key === 'Enter') commitInlineEdit()
+                            if (e.key === 'Escape') cancelInlineEdit()
+                        },
+                        onBlur: () => commitInlineEdit(),
+                    })
+                }
+                if (isDateType(colType)) {
+                    return h('input', {
+                        type: 'datetime-local',
+                        step: 1,
+                        value: toDateTimeLocalInput(editingCellValue.value),
+                        style: {
+                            width: '100%',
+                            height: '28px',
+                            border: '1px solid #409eff',
+                            borderRadius: '4px',
+                            padding: '0 4px',
+                            fontSize: '12px',
+                            background: 'var(--bg-secondary)',
+                            color: 'var(--text-primary)',
+                            boxSizing: 'border-box',
+                        },
+                        onInput: (e: Event) => {
+                            const v = (e.target as HTMLInputElement).value
+                            editingCellValue.value = v.length === 16 ? v + ':00' : v
                         },
                         onKeyup: (e: KeyboardEvent) => {
                             if (e.key === 'Enter') commitInlineEdit()

@@ -125,7 +125,7 @@ func AnalyzeRelationsHandler(c *gin.Context) {
 		return
 	}
 
-	relations := parseAnalyzeResponse(resp.Content)
+	relations := parseAnalyzeResponse(resp.Content, tables)
 	log.Printf("[ER-Analyze] connId=%s schema=%s tables=%d inferred=%d\n",
 		appctx.Ctx.GetConnID(c), req.Schema, len(tables), len(relations))
 
@@ -201,7 +201,7 @@ func buildAnalyzePrompt(tables []AnalyzeTable, existing []AnalyzeRelation) strin
 }
 
 // parseAnalyzeResponse 从 AI 输出中提取 JSON 数组
-func parseAnalyzeResponse(content string) []AnalyzeRelation {
+func parseAnalyzeResponse(content string, tables []AnalyzeTable) []AnalyzeRelation {
 	if content == "" {
 		return []AnalyzeRelation{}
 	}
@@ -215,7 +215,7 @@ func parseAnalyzeResponse(content string) []AnalyzeRelation {
 	// 直接尝试解析
 	var relations []AnalyzeRelation
 	if err := json.Unmarshal([]byte(cleaned), &relations); err == nil {
-		return normalizeRelations(relations)
+		return normalizeRelations(relations, tables)
 	}
 
 	// 兜底：用正则提取首个 JSON 数组
@@ -229,28 +229,124 @@ func parseAnalyzeResponse(content string) []AnalyzeRelation {
 		log.Printf("[ER-Analyze] JSON 解析失败 - err=%v, content=%s\n", err, truncForLog(match, 200))
 		return []AnalyzeRelation{}
 	}
-	return normalizeRelations(relations)
+	return normalizeRelations(relations, tables)
 }
 
-// normalizeRelations 过滤掉明显无效的关系（source/target 为空或自环）
-func normalizeRelations(relations []AnalyzeRelation) []AnalyzeRelation {
+// normalizeRelations 校验并归一化 AI 关系：
+//   - 端点表必须属于本次发送给 AI 的表集合；
+//   - 源/目标字段若填写则必须存在于对应表；
+//   - 过滤自环、重复边（同向），归一化关系类型与置信度。
+//
+// 只校验本次实际发送的表集合，避免与后端 maxTables 截断口径不一致。
+func normalizeRelations(relations []AnalyzeRelation, tables []AnalyzeTable) []AnalyzeRelation {
+	tableByName := make(map[string]*AnalyzeTable, len(tables))
+	tableByLower := make(map[string]*AnalyzeTable, len(tables))
+	for i := range tables {
+		name := strings.TrimSpace(tables[i].Name)
+		if name == "" {
+			continue
+		}
+		tableByName[name] = &tables[i]
+		tableByLower[strings.ToLower(name)] = &tables[i]
+	}
+	findTable := func(name string) *AnalyzeTable {
+		name = strings.TrimSpace(name)
+		if t, ok := tableByName[name]; ok {
+			return t
+		}
+		return tableByLower[strings.ToLower(name)]
+	}
+	hasColumn := func(t *AnalyzeTable, name string) bool {
+		name = strings.TrimSpace(name)
+		for _, c := range t.Columns {
+			if c.Name == name {
+				return true
+			}
+		}
+		for _, c := range t.Columns {
+			if strings.EqualFold(c.Name, name) {
+				return true
+			}
+		}
+		return false
+	}
+	canonicalColumn := func(t *AnalyzeTable, name string) string {
+		name = strings.TrimSpace(name)
+		for _, c := range t.Columns {
+			if c.Name == name {
+				return c.Name
+			}
+		}
+		for _, c := range t.Columns {
+			if strings.EqualFold(c.Name, name) {
+				return c.Name
+			}
+		}
+		return name
+	}
+
+	seen := make(map[string]bool, len(relations))
 	out := make([]AnalyzeRelation, 0, len(relations))
 	for _, r := range relations {
-		if r.Source == "" || r.Target == "" {
+		r.Source = strings.TrimSpace(r.Source)
+		r.Target = strings.TrimSpace(r.Target)
+		r.SourceCol = strings.TrimSpace(r.SourceCol)
+		r.TargetCol = strings.TrimSpace(r.TargetCol)
+		if r.Source == "" || r.Target == "" || r.Source == r.Target {
 			continue
 		}
-		if r.Source == r.Target {
+		s := findTable(r.Source)
+		t := findTable(r.Target)
+		if s == nil || t == nil {
 			continue
 		}
-		if r.RelationType == "" {
-			r.RelationType = "1:N"
+		if r.SourceCol != "" && !hasColumn(s, r.SourceCol) {
+			continue
 		}
-		if r.Confidence == "" {
-			r.Confidence = "medium"
+		if r.TargetCol != "" && !hasColumn(t, r.TargetCol) {
+			continue
 		}
+		r.Source = s.Name
+		r.Target = t.Name
+		if r.SourceCol != "" {
+			r.SourceCol = canonicalColumn(s, r.SourceCol)
+		}
+		if r.TargetCol != "" {
+			r.TargetCol = canonicalColumn(t, r.TargetCol)
+		}
+		r.RelationType = normalizeRelationType(r.RelationType)
+		r.Confidence = normalizeConfidence(r.Confidence)
+
+		key := r.Source + "." + r.SourceCol + "->" + r.Target + "." + r.TargetCol
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, r)
 	}
 	return out
+}
+
+func normalizeRelationType(t string) string {
+	switch strings.ToUpper(strings.TrimSpace(t)) {
+	case "1:1":
+		return "1:1"
+	case "N:M", "M:N":
+		return "N:M"
+	default:
+		return "1:N"
+	}
+}
+
+func normalizeConfidence(c string) string {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "high":
+		return "high"
+	case "low":
+		return "low"
+	default:
+		return "medium"
+	}
 }
 
 func truncForLog(s string, n int) string {

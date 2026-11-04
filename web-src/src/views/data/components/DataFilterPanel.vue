@@ -193,17 +193,19 @@ function buildColumnCondition(): string {
     return ''
   }
 
+  const colType = op === 'LIKE' || op === 'NOT LIKE' ? undefined : currentColumn.value?.type
+
   if (op === 'IN' || op === 'NOT IN') {
     const values = val.split(',').map((v) => v.trim()).filter((v) => v)
     if (values.length === 0) {
       ElMessage({ message: '请至少输入一个值', type: 'warning' })
       return ''
     }
-    const formatted = values.map((v) => fmtVal(v, props.effectiveDbType)).join(', ')
+    const formatted = values.map((v) => fmtVal(v, props.effectiveDbType, colType)).join(', ')
     return `${colName} ${op} (${formatted})`
   }
 
-  return `${colName} ${op} ${fmtVal(val, props.effectiveDbType)}`
+  return `${colName} ${op} ${fmtVal(val, props.effectiveDbType, colType)}`
 }
 
 // ===== Public actions =====

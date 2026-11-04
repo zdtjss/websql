@@ -79,6 +79,7 @@
       :sort-column="dataQuery.sortColumn.value"
       :sort-order="dataQuery.sortOrder.value"
       :is-date-column="dataQuery.isDateColumn"
+      :is-date-only-column="dataQuery.isDateOnlyColumn"
       :get-row-key="dataQuery.getRowKey"
       :is-column-filtered="filterPanelRef?.isColumnFiltered || (() => false)"
       :handle-sort="dataQuery.handleSort"
@@ -118,11 +119,28 @@
         >
           <div style="display: flex; align-items: flex-start; gap: 6px; width: 100%;">
             <el-date-picker
-              v-if="dataQuery.isDateColumn(col.name)"
+              v-if="dataQuery.isDateOnlyColumn(col.name)"
+              v-model="editRowData[col.name]"
+              type="date"
+              value-format="YYYY-MM-DD"
+              :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
+              style="flex: 1;"
+            />
+            <el-date-picker
+              v-else-if="dataQuery.isDateColumn(col.name)"
               v-model="editRowData[col.name]"
               type="datetime"
               value-format="YYYY-MM-DDTHH:mm:ss"
               :placeholder="editRowData[col.name] === null ? 'NULL' : ''"
+              style="flex: 1;"
+            />
+            <el-input
+              v-else-if="dataQuery.isBinaryColumn(col.name)"
+              :model-value="editRowData[col.name]"
+              disabled
+              type="textarea"
+              autosize
+              placeholder="二进制/LOB 列不支持在此编辑，请使用 SQL 编辑器"
               style="flex: 1;"
             />
             <el-input
@@ -134,6 +152,7 @@
               style="flex: 1;"
             />
             <el-button
+              v-if="!dataQuery.isBinaryColumn(col.name)"
               size="small"
               :type="editRowData[col.name] === null ? 'warning' : 'default'"
               link
@@ -168,10 +187,23 @@
           :title="col.comment"
         >
           <el-date-picker
-            v-if="dataQuery.isDateColumn(col.name)"
+            v-if="dataQuery.isDateOnlyColumn(col.name)"
+            v-model="insertRowData[col.name]"
+            type="date"
+            value-format="YYYY-MM-DD"
+          />
+          <el-date-picker
+            v-else-if="dataQuery.isDateColumn(col.name)"
             v-model="insertRowData[col.name]"
             type="datetime"
             value-format="YYYY-MM-DDTHH:mm:ss"
+          />
+          <el-input
+            v-else-if="dataQuery.isBinaryColumn(col.name)"
+            disabled
+            type="textarea"
+            autosize
+            placeholder="二进制/LOB 列不支持在此编辑，请使用 SQL 编辑器"
           />
           <el-input
             v-else
@@ -210,7 +242,7 @@ import { ElLoading, ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
 import ImportPreviewDialog from '@/components/data/ImportPreviewDialog.vue'
 import http from '@/api/index'
-import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper.ts'
+import { buildWhereCondition, fmtVal, isBinaryOrLobColumnType, quoteId } from '@/utils/sqlHelper.ts'
 import { useDataQuery } from './composables/useDataQuery'
 import { useDataExport } from './composables/useDataExport'
 import type { ExportFormat } from './composables/useDataExport'
@@ -355,13 +387,25 @@ async function saveData() {
     return
   }
   const dbType = dataQuery.effectiveDbType.value
+  // 列类型用于生成 WHERE：MySQL JSON 列必须 CAST 成 JSON 才能参与比较
+  const colTypes: Record<string, string> = {}
+  dataQuery.dataColumns.value.forEach((c) => {
+    colTypes[c.name] = c.type
+  })
   const setClauses = changedCols
-    .map((key) => quoteId(key, dbType) + ' = ' + fmtVal(current[key], dbType))
+    .map((key) => quoteId(key, dbType) + ' = ' + fmtVal(current[key], dbType, colTypes[key]))
     .join(', ')
-  // 有主键时仅以主键作为 WHERE 条件；无主键时以所有字段作为 WHERE 条件
+  // 有主键时仅以主键作为 WHERE 条件；无主键时以所有字段作为 WHERE 条件。
+  // 二进制/LOB 列无法用字符串字面量比较（Oracle 会报 ORA-00932），必须排除。
   const pkCols = dataQuery.pkColumns.value
-  const whereCols = pkCols.length > 0 ? pkCols : Object.keys(origin)
-  const whereClauses = whereCols.map((key) => buildWhereCondition(key, origin[key], dbType)).join(' AND ')
+  const whereCols = (pkCols.length > 0 ? pkCols : Object.keys(origin)).filter(
+    (key) => !isBinaryOrLobColumnType(colTypes[key]),
+  )
+  if (whereCols.length === 0) {
+    ElMessage({ message: '该行没有可用于定位的非二进制字段，无法保存', type: 'error' })
+    return
+  }
+  const whereClauses = whereCols.map((key) => buildWhereCondition(key, origin[key], dbType, colTypes[key])).join(' AND ')
   const sql = 'UPDATE ' + quoteId(tableName, dbType) + ' SET ' + setClauses + ' WHERE ' + whereClauses
 
   saving.value = true
@@ -402,7 +446,11 @@ async function insertData() {
     return
   }
   const colList = cols.map((k) => quoteId(k, dbType)).join(', ')
-  const valList = cols.map((k) => fmtVal(row[k], dbType)).join(', ')
+  const colTypes: Record<string, string> = {}
+  dataQuery.dataColumns.value.forEach((c) => {
+    colTypes[c.name] = c.type
+  })
+  const valList = cols.map((k) => fmtVal(row[k], dbType, colTypes[k])).join(', ')
   const sql = 'INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + valList + ')'
 
   inserting.value = true
@@ -621,6 +669,11 @@ async function handleCsvJsonImport({ data, mode }: { data: Record<string, any>[]
   let successCount = 0
   let errorCount = 0
   const dbType = dataQuery.effectiveDbType.value
+  // 列类型用于生成 WHERE：MySQL JSON 列必须 CAST 成 JSON 才能参与比较
+  const colTypes: Record<string, string> = {}
+  dataQuery.dataColumns.value.forEach((c) => {
+    colTypes[c.name] = c.type
+  })
 
   try {
     const batchSize = 50
@@ -628,18 +681,20 @@ async function handleCsvJsonImport({ data, mode }: { data: Record<string, any>[]
       const batch = data.slice(i, i + batchSize)
       const sqlStatements: string[] = []
       for (const row of batch) {
-        const cols = Object.keys(row).filter((k) => row[k] !== undefined)
+        const cols = Object.keys(row).filter((k) => row[k] !== undefined && !isBinaryOrLobColumnType(colTypes[k]))
         if (cols.length === 0) continue
         if (mode === 'insert') {
           const nonNullCols = cols.filter((k) => row[k] !== null)
           if (nonNullCols.length === 0) continue
           const colList = nonNullCols.map((k) => quoteId(k, dbType)).join(', ')
-          const valList = nonNullCols.map((k) => fmtVal(row[k], dbType)).join(', ')
+          const valList = nonNullCols.map((k) => fmtVal(row[k], dbType, colTypes[k])).join(', ')
           sqlStatements.push('INSERT INTO ' + quoteId(tableName, dbType) + ' (' + colList + ') VALUES (' + valList + ')')
         } else {
-          const setClauses = cols.map((k) => quoteId(k, dbType) + ' = ' + fmtVal(row[k], dbType)).join(', ')
-          const pkCols = dataQuery.pkColumns.value.length > 0 ? dataQuery.pkColumns.value : cols.slice(0, 1)
-          const whereClauses = pkCols.map((k) => buildWhereCondition(k, row[k], dbType)).join(' AND ')
+          const setClauses = cols.map((k) => quoteId(k, dbType) + ' = ' + fmtVal(row[k], dbType, colTypes[k])).join(', ')
+          const pkCols = (dataQuery.pkColumns.value.length > 0 ? dataQuery.pkColumns.value : cols.slice(0, 1)).filter(
+            (k) => !isBinaryOrLobColumnType(colTypes[k]),
+          )
+          const whereClauses = pkCols.map((k) => buildWhereCondition(k, row[k], dbType, colTypes[k])).join(' AND ')
           if (!whereClauses) continue
           sqlStatements.push('UPDATE ' + quoteId(tableName, dbType) + ' SET ' + setClauses + ' WHERE ' + whereClauses)
         }

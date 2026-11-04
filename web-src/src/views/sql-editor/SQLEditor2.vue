@@ -72,17 +72,22 @@
             <el-form :model="rowData" label-width="auto" style="margin-right: 10px;">
                 <el-form-item v-for="col in rawColumns" :key="col.name" :label="col.name" :title="col.comment">
                     <div style="display: flex; align-items: flex-start; gap: 6px; width: 100%;">
-                        <el-date-picker v-if="col.type === 'DATETIME'" v-model="rowData[col.name]" type="datetime"
+                        <el-date-picker v-if="getDatePickerKind(col.type, effectiveDbType) === 'date'" v-model="rowData[col.name]" type="date"
+                            value-format="YYYY-MM-DD" :placeholder="rowData[col.name] === null ? 'NULL' : ''"
+                            style="flex: 1;" />
+                        <el-date-picker v-else-if="getDatePickerKind(col.type, effectiveDbType) === 'datetime'" v-model="rowData[col.name]" type="datetime"
                             value-format="YYYY-MM-DD HH:mm:ss" :placeholder="rowData[col.name] === null ? 'NULL' : ''"
                             style="flex: 1;" />
                         <el-switch v-if="col.type === 'BIT'" v-model="rowData[col.name]" active-value="b'1'"
                             inactive-value="b'0'" />
-                        <el-input v-if="col.type !== 'DATETIME' && col.type !== 'BIT'"
+                        <el-input v-if="isBinaryOrLobColumnType(col.type)" :model-value="rowData[col.name]" type="textarea" autosize
+                            disabled placeholder="二进制/LOB 列不支持在此编辑，请使用 SQL 编辑器" style="flex: 1;" />
+                        <el-input v-if="getDatePickerKind(col.type, effectiveDbType) === '' && col.type !== 'BIT' && !isBinaryOrLobColumnType(col.type)"
                             v-model="rowData[col.name]" type="textarea" autosize
                             :disabled="tableKeys.includes(col.name)"
                             :placeholder="rowData[col.name] === null ? 'NULL' : ''" style="flex: 1;" />
                         <el-button
-                            v-if="col.type !== 'DATETIME' && col.type !== 'BIT' && !tableKeys.includes(col.name)"
+                            v-if="getDatePickerKind(col.type, effectiveDbType) === '' && col.type !== 'BIT' && !isBinaryOrLobColumnType(col.type) && !tableKeys.includes(col.name)"
                             size="small"
                             :type="rowData[col.name] === null ? 'warning' : 'default'"
                             link
@@ -149,7 +154,7 @@ import { canModifyData } from '@/api/auth'
 import { showTree } from '@/api/conn'
 import { execSQL, type SQLResult } from '@/api/sql'
 import { useStorage } from '@/composables/useStorage'
-import { buildWhereCondition, fmtVal, getSqlDialect, quoteId } from '@/utils/sqlHelper'
+import { buildWhereCondition, fmtVal, getDatePickerKind, getSqlDialect, isBinaryOrLobColumnType, quoteId } from '@/utils/sqlHelper'
 import { useTheme } from '@/utils/useTheme'
 import { useSqlExecution } from './composables/useSqlExecution'
 import { useSqlFormat } from './composables/useSqlFormat'
@@ -539,9 +544,14 @@ function saveData(rowData: any) {
         ElMessage({ message: '数据未修改', type: 'warning' })
         return
     }
-    const updateColumnSets = changedKeys.map((key) => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(rowData[key], effectiveDbType.value))
+    // 列类型用于生成 SET/WHERE：Oracle 日期字面量与 MySQL JSON 比较都依赖列类型
+    const columnTypes: Record<string, string> = {}
+    rawColumns.value.forEach((c: any) => {
+        columnTypes[c.name] = c.type
+    })
+    const updateColumnSets = changedKeys.map((key) => quoteId(key, effectiveDbType.value) + ' = ' + fmtVal(rowData[key], effectiveDbType.value, columnTypes[key]))
     const allWhereCols = [...tableKeys.value, ...changedKeys.filter((k: string) => !tableKeys.value.includes(k))]
-    const whereColumns = allWhereCols.map((key: string) => buildWhereCondition(key, originRowData[key], effectiveDbType.value))
+    const whereColumns = allWhereCols.map((key: string) => buildWhereCondition(key, originRowData[key], effectiveDbType.value, columnTypes[key]))
     let effiectiveSql = 'update ' + currentSelectTable.value + ' set '
     effiectiveSql += updateColumnSets.join(', ') + ' where '
     effiectiveSql += whereColumns.join(' and ')

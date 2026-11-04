@@ -79,3 +79,61 @@ func TestRunMigrations_AISecuritySchema(t *testing.T) {
 		t.Fatalf("应记录至少 5 个迁移版本，实际 %d", applied)
 	}
 }
+
+// TestRunMigrations_PackagedFreshDB 复现发行包首次启动场景：
+// 包内 nway.sqlite3.db 由全量脚本直接创建（schema 已最新但没有迁移版本记录），
+// 迁移器会将其识别为存量库并重放增量脚本；重复列等「已存在」错误应视为已应用，
+// 不得中断启动，且脚本中的后续数据回填仍需执行。
+func TestRunMigrations_PackagedFreshDB(t *testing.T) {
+	db, err := sqlx.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("打开内存库失败：%v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	full, err := os.ReadFile("../../migrations/full/sqlite_full.sql")
+	if err != nil {
+		t.Fatalf("读取全量脚本失败：%v", err)
+	}
+	for _, stmt := range splitStatements(string(full)) {
+		if stmt == "" {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("执行全量脚本语句失败：%v\n语句: %s", err, truncate(stmt, 200))
+		}
+	}
+
+	// 模拟旧打包脚本产出的库：有全量 schema，但无任何迁移版本记录
+	if _, err := db.Exec("DELETE FROM t_schema_migration"); err != nil {
+		t.Fatalf("清空迁移记录失败：%v", err)
+	}
+	// 构造待回填数据，验证跳过重复列后 UPDATE 仍会执行
+	if _, err := db.Exec("UPDATE t_role SET allow_modify = 0, ai_allow_modify = 1 WHERE id = '825683877266722816'"); err != nil {
+		t.Fatalf("准备回填数据失败：%v", err)
+	}
+
+	if err := RunMigrations(db, "sqlite", os.DirFS("../../migrations/sqlite")); err != nil {
+		t.Fatalf("存量库重放迁移应成功，实际失败：%v", err)
+	}
+
+	var applied int
+	if err := db.Get(&applied, "select count(1) from t_schema_migration"); err != nil {
+		t.Fatalf("读取迁移记录失败：%v", err)
+	}
+	if applied != 5 {
+		t.Fatalf("应登记 5 个迁移版本，实际 %d", applied)
+	}
+
+	var row struct {
+		AllowModify   int `db:"allow_modify"`
+		AIAllowModify int `db:"ai_allow_modify"`
+	}
+	if err := db.Get(&row, "select allow_modify, ai_allow_modify from t_role where id = '825683877266722816'"); err != nil {
+		t.Fatalf("读取角色数据失败：%v", err)
+	}
+	if row.AIAllowModify != row.AllowModify {
+		t.Fatalf("跳过重复列后仍应执行回填：ai_allow_modify(%d) 应等于 allow_modify(%d)", row.AIAllowModify, row.AllowModify)
+	}
+}

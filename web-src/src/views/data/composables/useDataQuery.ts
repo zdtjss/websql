@@ -2,7 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/index'
 import { useDbSchemaStore } from '@/stores/dbSchema'
-import { buildCountSQL, buildSelectSQL, quoteId } from '@/utils/sqlHelper.ts'
+import { buildCountSQL, buildSelectSQL, getDatePickerKind, isBinaryOrLobColumnType, quoteId, stripBigNumberMarker } from '@/utils/sqlHelper.ts'
 import type { Ref } from 'vue'
 
 export interface DataColumn {
@@ -89,17 +89,19 @@ export function useDataQuery(params: DataQueryParams) {
 
   function isDateColumn(colName: string): boolean {
     const col = dataColumns.value.find((c) => c.name === colName)
-    if (!col || !col.type) return false
-    const upper = col.type.toUpperCase()
-    return (
-      upper === 'DATETIME' ||
-      upper === 'DATE' ||
-      upper === 'TIMESTAMP' ||
-      upper === 'TIMESTAMP(6)' ||
-      upper.includes('TIMESTAMP') ||
-      upper === 'TIMESTAMPTZ' ||
-      upper === 'TIMESTAMPLTZ'
-    )
+    if (!col) return false
+    // 带时区的 TIMESTAMP 用文本编辑，避免选择器丢掉时区偏移
+    return getDatePickerKind(col.type, effectiveDbType.value) !== ''
+  }
+
+  function isDateOnlyColumn(colName: string): boolean {
+    const col = dataColumns.value.find((c) => c.name === colName)
+    return !!col && getDatePickerKind(col.type, effectiveDbType.value) === 'date'
+  }
+
+  function isBinaryColumn(colName: string): boolean {
+    const col = dataColumns.value.find((c) => c.name === colName)
+    return isBinaryOrLobColumnType(col?.type)
   }
 
   async function fetchTotal() {
@@ -162,9 +164,14 @@ export function useDataQuery(params: DataQueryParams) {
     }
 
     const rawRows = data?.data ?? []
+    const columnTypes = new Map(dataColumns.value.map((c) => [c.name, c.type]))
     rows.value = rawRows.map((row: Record<string, any>) => {
       const filtered = { ...row }
       delete filtered.RN
+      // 后端大数/高精度数值带有 "s:" 精度标记，落库与展示前必须剥离
+      Object.keys(filtered).forEach((k) => {
+        filtered[k] = stripBigNumberMarker(filtered[k], columnTypes.get(k))
+      })
       return filtered
     })
   }
@@ -279,6 +286,8 @@ export function useDataQuery(params: DataQueryParams) {
     getSortIcon,
     isColumnFiltered,
     isDateColumn,
+    isDateOnlyColumn,
+    isBinaryColumn,
     getRowKey,
     clearAllFilters,
   }

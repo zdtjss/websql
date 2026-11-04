@@ -5,7 +5,7 @@ import { isCancel } from '@/api'
 import { exportToCsv, exportToJson, exportToCsvMulti } from '@/utils/exportHelper'
 import excel from '@/utils/excel'
 import copyToClipboard from '@/utils/copy-to-clipboard'
-import { buildWhereCondition, fmtVal, quoteId } from '@/utils/sqlHelper'
+import { buildWhereCondition, fmtVal, quoteId, stripBigNumberMarker } from '@/utils/sqlHelper'
 import type { EditorView } from '@codemirror/view'
 
 export interface UseSqlExecutionOptions {
@@ -406,6 +406,17 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         return null
     }
 
+    function stripPrecisionMarkers(rows: any[]) {
+        const columnTypes = new Map<string, string>(
+            (rawColumns.value || []).map((c: any) => [c.name, c.type] as [string, string])
+        )
+        rows.forEach((row: any) => {
+            Object.keys(row).forEach((k) => {
+                row[k] = stripBigNumberMarker(row[k], columnTypes.get(k))
+            })
+        })
+    }
+
     // ── 结果应用到 UI（仅设置原始数据，列渲染由组件处理） ──
 
     function applyResultToUI(data: any) {
@@ -413,6 +424,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
         tableKeys.value = data.keys || []
         rawColumns.value = data.columns || []
         result.value = data.data || []
+        stripPrecisionMarkers(result.value)
         result.value.forEach((row: any, idx: number) => {
             row['col-idx'] = idx + 1
         })
@@ -650,6 +662,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
                 names.forEach((name, idx) => { obj[name] = rowArr[idx] ?? null })
                 return obj
             })
+            stripPrecisionMarkers(appended)
             result.value = [...result.value, ...appended]
             hasMoreResults.value = !!page.hasMore
             if (appended.length === 0) {
@@ -886,7 +899,7 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             const valueArr: string[] = []
             for (let i = 0; i < rawColumns.value.length; i++) {
                 const val = result.value[j][rawColumns.value[i].name]
-                rowVal.push(fmtVal(val, effectiveDbType.value))
+                rowVal.push(fmtVal(val, effectiveDbType.value, rawColumns.value[i].type))
             }
             valueArr.push(rowVal.join(','))
             sqlArr.push(sql + columnArr.join(',') + ') values (' + valueArr.join(',') + ')')
@@ -905,6 +918,11 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             return
         }
         const sqlArr: string[] = []
+        // 列类型用于生成 WHERE：MySQL JSON 列必须 CAST 成 JSON 才能参与比较
+        const colTypes: Record<string, string> = {}
+        rawColumns.value.forEach((c: any) => {
+            colTypes[c.name] = c.type
+        })
         let sql = `update ${currentSelectTable.value} set `
         for (let j = 0; j < result.value.length; j++) {
             const rowVal: string[] = []
@@ -912,13 +930,13 @@ export function useSqlExecution(options: UseSqlExecutionOptions) {
             for (let i = 1; i < rawColumns.value.length; i++) {
                 const column = rawColumns.value[i].name
                 const val = result.value[j][column]
-                rowVal.push(quoteId(column, effectiveDbType.value) + ' = ' + fmtVal(val, effectiveDbType.value))
+                rowVal.push(quoteId(column, effectiveDbType.value) + ' = ' + fmtVal(val, effectiveDbType.value, rawColumns.value[i].type))
             }
 
             const conditionVal: string[] = []
             for (let i = 0; i < tableKeys.value.length; i++) {
                 conditionVal.push(
-                    buildWhereCondition(tableKeys.value[i], result.value[j][tableKeys.value[i]], effectiveDbType.value)
+                    buildWhereCondition(tableKeys.value[i], result.value[j][tableKeys.value[i]], effectiveDbType.value, colTypes[tableKeys.value[i]])
                 )
             }
 

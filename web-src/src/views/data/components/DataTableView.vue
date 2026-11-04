@@ -84,7 +84,18 @@
           >
             <template v-if="editor.isEditingCell(scope.row, col.name)">
               <el-date-picker
-                v-if="props.isDateColumn(col.name)"
+                v-if="props.isDateOnlyColumn(col.name)"
+                v-model="editor.editingValue.value"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="选择日期"
+                size="small"
+                class="inline-edit-input"
+                @keyup.escape="editor.cancelInlineEdit()"
+                @visible-change="(visible: boolean) => { if (!visible) editor.commitInlineEdit() }"
+              />
+              <el-date-picker
+                v-else-if="props.isDateColumn(col.name)"
                 v-model="editor.editingValue.value"
                 type="datetime"
                 value-format="YYYY-MM-DDTHH:mm:ss"
@@ -189,6 +200,8 @@ const props = defineProps<{
   sortColumn: string
   sortOrder: 'ascending' | 'descending' | null
   isDateColumn: (colName: string) => boolean
+  /** 纯日期列（MySQL/MariaDB DATE），使用 date 选择器而不是 datetime */
+  isDateOnlyColumn: (colName: string) => boolean
   getRowKey: (row: Record<string, any>) => string
   isColumnFiltered: (colName: string) => boolean
   handleSort: (colName: string) => void

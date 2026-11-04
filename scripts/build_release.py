@@ -392,6 +392,14 @@ def build_frontend():
     print("  [OK] 前端构建完成")
 
 
+def get_sqlite_migration_versions():
+    """读取 SQLite 增量迁移版本号（与程序内 Migrator 的 version 命名一致）。"""
+    sqlite_dir = os.path.join(MIGRATIONS_DIR, "sqlite")
+    if not os.path.isdir(sqlite_dir):
+        return []
+    return sorted(f[: -len(".sql")] for f in os.listdir(sqlite_dir) if f.endswith(".sql"))
+
+
 def create_fresh_db():
     """从全量 SQL 脚本创建全新数据库，用于首次部署开箱即用。"""
     print("\n[2/4] 创建全新数据库...")
@@ -410,12 +418,23 @@ def create_fresh_db():
         sql_script = f.read()
 
     conn.executescript(sql_script)
+
+    # 全量脚本已包含最新 schema，必须同时登记全部增量迁移版本，
+    # 否则首次启动会被识别为「存量库」并重放增量脚本，触发 duplicate column 错误。
+    versions = get_sqlite_migration_versions()
+    if versions:
+        conn.executemany(
+            "INSERT OR IGNORE INTO t_schema_migration (version, description, checksum) VALUES (?, ?, ?)",
+            [(v, "applied via full init", "") for v in versions],
+        )
+        conn.commit()
+
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.close()
 
     size_kb = os.path.getsize(db_path) / 1024
-    print(f"  [OK] 数据库创建完成: {DB_NAME} ({size_kb:.1f} KB)")
+    print(f"  [OK] 数据库创建完成: {DB_NAME} ({size_kb:.1f} KB)，已登记 {len(versions)} 个迁移版本")
     return db_path, tmp_dir
 
 

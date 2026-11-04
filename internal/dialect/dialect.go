@@ -158,17 +158,19 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				if err != nil {
 					logger.PrintErrf("MySQL INT解析失败, colType=%s, val=%s", err, *colType, strVal)
 					v = strVal
-				} else if overSign && iv > 9007199254740992 {
+				} else if overSign && needsPrecisionMarker(iv) {
 					v = fmt.Sprintf("s:%d", iv)
 				} else {
 					v = iv
 				}
-			case "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE":
+			case "DECIMAL", "NUMERIC":
+				v = convertDecimalValue(strVal, overSign, "MySQL")
+			case "FLOAT", "DOUBLE":
 				fv, err := strconv.ParseFloat(strVal, 64)
 				if err != nil {
 					logger.PrintErrf("MySQL FLOAT解析失败, colType=%s, val=%s", err, *colType, strVal)
 					v = strVal
-				} else if overSign && fv > 9007199254740992 {
+				} else if overSign && needsPrecisionMarkerFloat(fv) {
 					v = fmt.Sprintf("s:%f", fv)
 				} else {
 					v = fv
@@ -193,7 +195,15 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				v = strVal
 			}
 		} else if t, ok := (*val).(time.Time); ok {
-			v = t.Format(time.DateTime)
+			// parseTime=true 时驱动返回 time.Time；按列类型保留日期精度（DATE 只到日，DATETIME/TIMESTAMP 保留小数秒）
+			switch strings.ToUpper(*colType) {
+			case "DATE":
+				v = t.Format("2006-01-02")
+			case "TIME":
+				v = t.Format("15:04:05")
+			default:
+				v = formatTimeWithFraction(t)
+			}
 		} else {
 			v = *val
 		}
@@ -204,34 +214,15 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 		if b, ok := (*val).([]byte); ok {
 			strVal := fixOracleEncoding(string(b))
 			switch *colType {
-			case "NUMBER":
-				i, err := strconv.ParseInt(strVal, 10, 64)
-				if err != nil {
-					f, err2 := strconv.ParseFloat(strVal, 64)
-					if err2 != nil {
-						logger.PrintErrf("Oracle NUMBER类型解析失败: %s", err2)
-						v = strVal
-					} else {
-						if overSign && f > 9007199254740992 {
-							v = fmt.Sprintf("s:%f", f)
-						} else {
-							v = f
-						}
-					}
-				} else {
-					if overSign && i > 9007199254740992 {
-						v = fmt.Sprintf("s:%d", i)
-					} else {
-						v = i
-					}
-				}
+			case "NUMBER", "FLOAT":
+				v = convertDecimalValue(strVal, overSign, "Oracle")
 			case "INTEGER":
 				i, err := strconv.ParseInt(strVal, 10, 64)
 				if err != nil {
 					logger.PrintErrf("Oracle INTEGER类型解析失败", err)
 					v = strVal
 				} else {
-					if overSign && i > 9007199254740992 {
+					if overSign && needsPrecisionMarker(i) {
 						v = fmt.Sprintf("s:%d", i)
 					} else {
 						v = i
@@ -241,7 +232,8 @@ var ConvertColHandler = map[string]func(colType *string, val *any, overSign bool
 				v = strVal
 			}
 		} else if t, ok := (*val).(time.Time); ok {
-			v = time.Time(t).Format(time.DateTime)
+			// 按 Oracle 列类型保留小数秒与时区偏移（TIMESTAMP WITH [LOCAL] TIME ZONE 需要显式偏移才能精确回写）
+			v = formatOracleTime(t, *colType)
 		} else if s, ok := (*val).(string); ok {
 			v = fixOracleEncoding(s)
 		} else {
@@ -433,4 +425,87 @@ func normalizeDateTimeVal(val string) string {
 		return t.Format("2006-01-02")
 	}
 	return val
+}
+
+// maxSafeJSONInt 是 JS Number 能精确表示的最大整数（2^53）。
+const maxSafeJSONInt = int64(9007199254740992)
+
+// needsPrecisionMarker 判断整数是否超出 JS 安全整数范围，超出时用 "s:" 字符串标记保留精度。
+func needsPrecisionMarker(v int64) bool {
+	return v > maxSafeJSONInt || v < -maxSafeJSONInt
+}
+
+func needsPrecisionMarkerFloat(v float64) bool {
+	return v > float64(maxSafeJSONInt) || v < -float64(maxSafeJSONInt)
+}
+
+// needsExactDecimal 统计十进制文本的有效数字（忽略前导零与小数末尾零），
+// 超过 15 位时 float64 往返会丢精度，应保留原始文本。
+func needsExactDecimal(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if s[0] == '-' || s[0] == '+' {
+		s = s[1:]
+	}
+	intPart, fracPart := s, ""
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		intPart, fracPart = s[:dot], s[dot+1:]
+	}
+	intPart = strings.TrimLeft(intPart, "0")
+	fracPart = strings.TrimRight(fracPart, "0")
+	return len(intPart)+len(fracPart) > 15
+}
+
+// convertDecimalValue 将 DECIMAL/NUMBER 文本转换为前端数值：
+// 超出 float64 安全精度时返回原始文本（overSign=true 时加 "s:" 标记，供前端精确展示与跨库匹配）。
+func convertDecimalValue(strVal string, overSign bool, tag string) any {
+	s := strings.TrimSpace(strVal)
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if overSign && needsPrecisionMarker(i) {
+			return fmt.Sprintf("s:%d", i)
+		}
+		return i
+	}
+	if needsExactDecimal(s) {
+		if overSign {
+			return "s:" + s
+		}
+		return s
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		logger.PrintErrf("%s数值解析失败", err, tag)
+		return strVal
+	}
+	if overSign && needsPrecisionMarkerFloat(f) {
+		return "s:" + s
+	}
+	return f
+}
+
+// formatTimeWithFraction 输出 "YYYY-MM-DD HH:mm:ss[.ffffff]"：仅在有小数秒时追加，并去掉末尾零。
+func formatTimeWithFraction(t time.Time) string {
+	base := t.Format("2006-01-02 15:04:05")
+	ns := t.Nanosecond()
+	if ns == 0 {
+		return base
+	}
+	frac := strings.TrimRight(fmt.Sprintf("%09d", ns), "0")
+	return base + "." + frac
+}
+
+// formatOracleTime 按 Oracle 列类型输出时间文本：
+// DATE 无小数秒；TIMESTAMP 保留小数秒；TIMESTAMP WITH [LOCAL] TIME ZONE 追加时区偏移。
+func formatOracleTime(t time.Time, colType string) string {
+	upper := strings.ToUpper(colType)
+	if upper == "DATE" || !strings.Contains(upper, "TIMESTAMP") {
+		return t.Format("2006-01-02 15:04:05")
+	}
+	base := formatTimeWithFraction(t)
+	if strings.Contains(upper, "TIME ZONE") || strings.Contains(upper, "TZ") {
+		return base + " " + t.Format("-07:00")
+	}
+	return base
 }
