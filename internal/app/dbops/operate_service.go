@@ -209,7 +209,8 @@ func (s *operateService) ListColumns(connId string, table, schema, authorization
 	columns := s.repo.ListColumnsForTable(dc, table)
 	tree := make([]*conn.Tree, 0)
 	for _, c := range columns {
-		tree = append(tree, &conn.Tree{Label: c.Name, Data: map[string]any{"text": c.Comment}, Type: conn.TREE_NODE_TYPE_COLUMN})
+		text := strings.TrimSpace(c.Type + " " + c.Comment)
+		tree = append(tree, &conn.Tree{Label: c.Name, Data: map[string]any{"text": text}, Type: conn.TREE_NODE_TYPE_COLUMN})
 	}
 
 	if schema == "" {
@@ -234,7 +235,8 @@ func (s *operateService) ListAllColumns(key string, schema, authorization string
 	columns := s.repo.ListAllColumnsRaw(dc, schema)
 	tree := make([]*conn.Tree, 0)
 	for _, c := range columns {
-		tree = append(tree, &conn.Tree{Label: c.Name, Data: map[string]any{"text": c.Comment}, Type: conn.TREE_NODE_TYPE_COLUMN})
+		text := strings.TrimSpace(c.Type + " " + c.Comment)
+		tree = append(tree, &conn.Tree{Label: c.Name, Data: map[string]any{"text": text}, Type: conn.TREE_NODE_TYPE_COLUMN})
 	}
 	return tree
 }

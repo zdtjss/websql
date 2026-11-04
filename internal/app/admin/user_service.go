@@ -29,11 +29,12 @@ type UserService interface {
 	FindByToken(token string) (*User, error)
 	FindUserBase(loginName, key string) ([]*SharedUser, error)
 	FindUser(roleId, name, loginName, key string, userIdList []string) ([]*User, error)
+	FindUserPage(roleId, name, loginName, key string, page, pageSize int) ([]*User, int, error)
 	Save(user *User, currentUserId, currentUserName string) error
 	SaveUserBio(userId, bioKey string) error
 	ChangePassword(userId, oldPwd, newPwd string) error
 	InitUser() error
-	Delete(id string) error
+	Delete(id, currentUserId, currentUserName string) error
 }
 
 type userService struct {
@@ -135,7 +136,24 @@ func (s *userService) FindUser(roleId, name, loginName, key string, userIdList [
 	if err != nil {
 		return nil, err
 	}
+	return s.fillUserRoles(userList)
+}
 
+// FindUserPage 管理员全量分页查询用户，并填充角色信息。
+func (s *userService) FindUserPage(roleId, name, loginName, key string, page, pageSize int) ([]*User, int, error) {
+	userList, total, err := s.repo.FindUserListPage(roleId, name, loginName, key, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	filled, err := s.fillUserRoles(userList)
+	if err != nil {
+		return nil, 0, err
+	}
+	return filled, total, nil
+}
+
+// fillUserRoles 为用户列表填充角色 ID 与角色名，并清空密码字段。
+func (s *userService) fillUserRoles(userList []*User) ([]*User, error) {
 	userIds := []any{}
 	for _, user := range userList {
 		userIds = append(userIds, user.Id)
@@ -155,12 +173,38 @@ func (s *userService) FindUser(roleId, name, loginName, key string, userIdList [
 		user.RoleId = roleIds
 		user.RoleName = roleNames
 	}
-
 	return userList, nil
 }
 
 // Save 保存用户，包含密码哈希、校验与审计记录
 func (s *userService) Save(user *User, currentUserId, currentUserName string) error {
+	if user == nil {
+		return errors.New("用户信息不能为空")
+	}
+	// 登录名统一小写并去除首尾空白：配合唯一索引实现大小写不敏感的唯一性。
+	user.LoginName = strings.ToLower(strings.TrimSpace(user.LoginName))
+	user.Name = strings.TrimSpace(user.Name)
+	if user.LoginName == "" {
+		return errors.New("登录名不能为空")
+	}
+	if user.Name == "" {
+		return errors.New("姓名不能为空")
+	}
+	if user.Id == "" {
+		if err := ValidatePassword(user.Pwd); err != nil {
+			return err
+		}
+	} else if user.Pwd != "" {
+		if err := ValidatePassword(user.Pwd); err != nil {
+			return err
+		}
+	}
+	// 不允许把系统内最后一个管理员用户降级为非管理员。
+	if user.Id != "" {
+		if err := ensureLastAdminUserNotDemoted(user); err != nil {
+			return err
+		}
+	}
 	if err := s.repo.CheckUserExist(user); err != nil {
 		return err
 	}
@@ -226,14 +270,115 @@ func (s *userService) InitUser() error {
 	return s.repo.InitUser(userId, "admin", "admin", hashedPwd)
 }
 
-// Delete 删除用户
-func (s *userService) Delete(id string) error {
+// Delete 删除用户。
+//
+// 保护规则：不允许删除当前登录用户；不允许删除系统内最后一个管理员用户。
+func (s *userService) Delete(id, currentUserId, currentUserName string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("缺少用户 ID")
+	}
+	if id == currentUserId {
+		return errors.New("不能删除当前登录用户")
+	}
+	if isUserAdmin(id) {
+		count, err := countAdminUsers()
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return errors.New("系统至少保留一个管理员用户")
+		}
+	}
 	if err := s.repo.Delete(id); err != nil {
 		return err
 	}
 	// 用户删除后立即失效其权限缓存与外部缓存（避免已删用户仍可按旧权限访问）
 	authCache.InvalidateByUserId(id)
+	recordPermissionAudit("del_user", fmt.Sprintf("删除用户 id=%s", id), currentUserId, currentUserName)
 	return nil
+}
+
+// ValidatePassword 统一密码策略：新建与重置密码必须满足。
+//
+// 现有改密策略为「长度不少于 6 位」，此处保持一致并补充空白字符校验。
+func ValidatePassword(pwd string) error {
+	if strings.TrimSpace(pwd) == "" {
+		return errors.New("密码不能为空")
+	}
+	if len(pwd) < 6 {
+		return errors.New("密码长度不能少于6位")
+	}
+	return nil
+}
+
+// ensureLastAdminUserNotDemoted 阻止把系统内最后一个管理员用户降级为非管理员。
+//
+// 仅当用户当前是管理员、且保存后的角色中不含任何管理员角色时校验。
+func ensureLastAdminUserNotDemoted(user *User) error {
+	if !isUserAdmin(user.Id) {
+		return nil
+	}
+	roleIds := user.RoleId
+	if len(roleIds) == 0 {
+		count, err := countAdminUsers()
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return errors.New("系统至少保留一个管理员用户")
+		}
+		return nil
+	}
+	adminRoleIds, err := findAdminRoleIds()
+	if err != nil {
+		return err
+	}
+	for _, rid := range roleIds {
+		if rid == nil {
+			continue
+		}
+		if adminRoleIds[*rid] {
+			return nil
+		}
+	}
+	count, err := countAdminUsers()
+	if err != nil {
+		return err
+	}
+	if count <= 1 {
+		return errors.New("系统至少保留一个管理员用户")
+	}
+	return nil
+}
+
+// findAdminRoleIds 返回 is_admin=1 的角色 ID 集合。
+func findAdminRoleIds() (map[string]bool, error) {
+	ids := make(map[string]bool)
+	rows, err := getDB().Query("select id from t_role where is_admin = 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// countAdminUsers 返回拥有管理员角色的用户数（去重）。
+func countAdminUsers() (int, error) {
+	var count int
+	err := getDB().Get(&count, `
+		select count(distinct ur.user_id)
+		from t_user_role ur
+		join t_role r on r.id = ur.role_id
+		where r.is_admin = 1`)
+	return count, err
 }
 
 // HashPassword 使用 bcrypt 加密密码
@@ -278,6 +423,18 @@ func findByToken(token string) (*User, error) {
 }
 
 func findUserPower(userId string) []string {
+	// 内置管理员视为拥有全部连接的数据权限：与提示词/历史记录等管理员特权保持一致，
+	// 避免全新实例的 admin 进入经典视图后因 t_power 为空而看不到任何数据。
+	if isUserAdmin(userId) {
+		details := findUserPowerDetails(userId)
+		ids := make([]string, 0, len(details))
+		for _, d := range details {
+			if d != nil && d.ConnId != "" {
+				ids = append(ids, d.ConnId)
+			}
+		}
+		return ids
+	}
 	return getDefaultUserRepo().FindUserPower(userId)
 }
 
@@ -291,18 +448,46 @@ func findUserPowerDetails(userId string) []*PowerDetail {
 	if details, ok := powerCache.getDetails(userId); ok {
 		return details
 	}
-	details := getDefaultUserRepo().FindUserPowerDetails(userId)
+	var details []*PowerDetail
+	if isUserAdmin(userId) {
+		details = adminFullPowerDetails()
+	} else {
+		details = getDefaultUserRepo().FindUserPowerDetails(userId)
+	}
 	powerCache.setDetails(userId, details)
 	return details
 }
 
 func FindUserPowerDetails(userId string) []*PowerDetail {
-	// 优先走缓存，避免每次权限检查都查询 t_power 表
-	if details, ok := powerCache.getDetails(userId); ok {
-		return details
+	return findUserPowerDetails(userId)
+}
+
+// adminFullPowerDetails 为内置管理员生成「全部连接 conn 级」的权限视图。
+//
+// 不落库、不依赖 t_power：管理员本身已可读取连接口令并管理连接，
+// 因此数据权限按全量处理，与提示词/审计等既有管理员特权语义一致。
+func adminFullPowerDetails() []*PowerDetail {
+	db := getDBOrNil()
+	if db == nil {
+		return nil
 	}
-	details := getDefaultUserRepo().FindUserPowerDetails(userId)
-	powerCache.setDetails(userId, details)
+	type connRow struct {
+		Id   string  `db:"id"`
+		Name *string `db:"name"`
+	}
+	rows := []connRow{}
+	if err := db.Select(&rows, "select id, name from t_conn"); err != nil {
+		log.Printf("[PermScope] 查询管理员全量连接失败: %v", err)
+		return nil
+	}
+	details := make([]*PowerDetail, 0, len(rows))
+	for _, row := range rows {
+		details = append(details, &PowerDetail{
+			ConnId:   row.Id,
+			ConnName: row.Name,
+			Level:    "conn",
+		})
+	}
 	return details
 }
 

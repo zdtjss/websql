@@ -117,7 +117,7 @@ func init() {
 }
 
 func Add(key string, val any) {
-	if RDB != nil {
+	if rdb := currentRedis(); rdb != nil {
 		// Redis 中以 JSON 字符串存储，确保 Get 时能正确反序列化到调用方的结构体
 		fval, mErr := json.Marshal(val)
 		if mErr != nil {
@@ -125,7 +125,7 @@ func Add(key string, val any) {
 			localStore.add(key, val)
 			return
 		}
-		err := RDB.Set(ctx, key, string(fval), defaultTTL).Err()
+		err := rdb.Set(ctx, key, string(fval), defaultTTL).Err()
 		if err != nil {
 			logger.PrintErrf("Redis 写入失败 key:%s，降级到本地缓存", err, key)
 			localStore.add(key, val)
@@ -136,8 +136,8 @@ func Add(key string, val any) {
 }
 
 func Remove(key string) {
-	if RDB != nil {
-		RDB.Del(ctx, key)
+	if rdb := currentRedis(); rdb != nil {
+		rdb.Del(ctx, key)
 	}
 	localStore.remove(key)
 }
@@ -146,10 +146,10 @@ func Get(key string, dist any) {
 	if key == "" {
 		return
 	}
-	if RDB != nil {
-		val, err := RDB.Get(ctx, key).Result()
+	if rdb := currentRedis(); rdb != nil {
+		val, err := rdb.Get(ctx, key).Result()
 		if err == nil {
-			RDB.Expire(ctx, key, defaultTTL)
+			rdb.Expire(ctx, key, defaultTTL)
 			// dist 是调用方传入的指针（如 *User），直接传给 json.Unmarshal
 			// 使其通过反射写入指针指向的结构体
 			if err2 := json.Unmarshal([]byte(val), dist); err2 != nil && val != "" {

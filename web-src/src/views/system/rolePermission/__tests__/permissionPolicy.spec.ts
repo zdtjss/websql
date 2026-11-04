@@ -113,7 +113,7 @@ describe('buildDiff 文档专项用例', () => {
 })
 
 describe('displayCheckedKeys', () => {
-  it('包含 working 与隐式父级', () => {
+  it('只返回 working 中真实授权的 key，隐式父级不再显示为勾选', () => {
     const treeKeys = new Set([
       'c1',
       'c1::s1',
@@ -122,6 +122,12 @@ describe('displayCheckedKeys', () => {
       'c2',
     ])
     const keys = displayCheckedKeys(['c1::s1::t1::id'], treeKeys)
-    expect(keys.sort()).toEqual(['c1', 'c1::s1', 'c1::s1::t1', 'c1::s1::t1::id'])
+    expect(keys.sort()).toEqual(['c1::s1::t1::id'])
+  })
+
+  it('working 中的父级授权仍应勾选', () => {
+    const treeKeys = new Set(['c1', 'c1::s1', 'c1::s1::t1'])
+    const keys = displayCheckedKeys(['c1', 'c1::s1::t1'], treeKeys)
+    expect(keys.sort()).toEqual(['c1', 'c1::s1::t1'])
   })
 })

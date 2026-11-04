@@ -352,11 +352,12 @@ func (a *SQLAgent) handleInterrupt(eventIdx int, info *adk.InterruptInfo, flush 
 		hasDangerConfirm = true
 		log.Printf("[Agent] 危险 SQL 中断 - eventIdx=%d, id=%s, riskLevel=%s, sqlType=%s, sqlLen=%d\n",
 			eventIdx, ictx.ID, sqlInfo.RiskLevel, sqlInfo.SQLType, len(sqlInfo.SQL))
-		// 展示副本只保留 SQL 结构，字面量内容脱敏；待执行的原始语句只保存在服务端 checkpoint。
+		// 展示副本保留 SQL 结构：字段名/运算符可见，普通值部分隐藏，凭据类列全遮；
+		// 待执行的原始语句只保存在服务端 checkpoint。
 		flush(StreamChunk{
 			Type:         "danger_confirm",
 			Content:      "检测到需要确认的写操作",
-			SQL:          audit.MaskSQL(sqlInfo.SQL),
+			SQL:          audit.PreviewSQL(sqlInfo.SQL),
 			InterruptID:  ictx.ID,
 			CheckPointID: checkPointID,
 		})

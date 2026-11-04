@@ -137,7 +137,8 @@ func resolveTableName(name, defaultSchema string) (string, string) {
 }
 
 func extractInsertTarget(sql string, defaultSchema string) (*TableRef, []ColumnRef) {
-	re := regexp.MustCompile(`(?i)\bINSERT\s+INTO\s+(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)(?:\.(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))?`)
+	// INSERT / REPLACE / MERGE 的写入目标语法同为「关键字 + INTO + 表」。
+	re := regexp.MustCompile(`(?i)\b(?:INSERT|REPLACE|MERGE)\s+INTO\s+(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+)(?:\.(?:` + "`" + `[^` + "`" + `]+` + "`" + `|\w+))?`)
 	match := re.FindString(sql)
 	if match == "" {
 		return nil, nil
@@ -614,9 +615,25 @@ func CheckTableWritePermission(connId string, schemaName string, tableName strin
 		return
 	}
 	CheckTablePermission(connId, schemaName, tableName, authorization)
-	if !CheckUserCanModify(authorization) {
+	if !userCanWriteTable(connId, schemaName, tableName, authorization) {
 		panic(errors.New("当前角色禁止修改数据"))
 	}
+}
+
+// userCanWriteTable 判定用户是否能写指定表：写能力与写范围必须来自同一角色。
+func userCanWriteTable(connId, schemaName, tableName, authorization string) bool {
+	userPower := admin.GetUserPower(authorization)
+	if userPower == nil {
+		return false
+	}
+	powerDetails := admin.FindUserPowerDetails(userPower.UserId)
+	if len(powerDetails) == 0 {
+		return false
+	}
+	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+	writeRoleIDs := writeRoleIDsForUser(userPower.UserId, admin.FindUserRoles(userPower.UserId))
+	return hasWriteCapableRoleOnConn(byRole, writeRoleIDs) &&
+		checkWriteTableAccessWithRoles(byRole, writeRoleIDs, schemaName, tableName)
 }
 
 // StripComments 剥离 SQL 注释。
@@ -787,23 +804,6 @@ type SQLPermissionResult struct {
 	Message        string
 }
 
-func CheckUserCanModify(authorization string) bool {
-	if config.IsLocalMode() {
-		return true
-	}
-	user := admin.GetUser(authorization)
-	if user == nil {
-		return false
-	}
-	roles := admin.FindUserRoles(user.Id)
-	for _, role := range roles {
-		if role.AllowModify > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // requiresModifyPermission 判断语句是否必须持有「数据修改权限（allow_modify）」。
 //
 // 口径（fail-closed）：仅「明确只读」的语句（SELECT / SHOW / DESCRIBE / EXPLAIN /
@@ -852,6 +852,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 		return &SQLPermissionResult{Allowed: false, Message: "无权访问"}
 	}
 	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+	writeRoleIDs := writeRoleIDsForUser(userPower.UserId, admin.FindUserRoles(userPower.UserId))
 
 	// 检查是否有写权限（只检查一次）
 	hasWritePermission := false
@@ -863,7 +864,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 		// 写操作权限检查（延迟到第一次遇到写操作时）
 		if requiresModifyPermission(analysis) {
 			if !writeCheckDone {
-				hasWritePermission = CheckUserCanModify(authorization)
+				hasWritePermission = len(writeRoleIDs) > 0 && hasWriteCapableRoleOnConn(byRole, writeRoleIDs)
 				writeCheckDone = true
 			}
 			if !hasWritePermission {
@@ -871,6 +872,17 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 				return &SQLPermissionResult{
 					Allowed: false,
 					Message: "当前角色禁止修改数据，无法执行写操作",
+				}
+			}
+			// 写范围：仅可写角色自身的数据范围参与判定
+			for _, t := range analysis.WriteTables {
+				if !checkWriteTableAccessWithRoles(byRole, writeRoleIDs, t.Schema, t.Name) {
+					log.Printf("[PermCheck] 批量写表权限拒绝 - conn=%s, user=%s, table=%s\n", connId, userPower.UserId, t.Name)
+					return &SQLPermissionResult{
+						Allowed:      false,
+						DeniedTables: []string{t.Name},
+						Message:      fmt.Sprintf("无权访问表: %s", t.Name),
+					}
 				}
 			}
 		}
@@ -887,7 +899,7 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 			}
 		}
 
-		// 检查写表权限
+		// 检查写表权限（读范围也须可见）
 		for _, t := range analysis.WriteTables {
 			if !checkTableAccessWithRoles(byRole, t.Schema, t.Name) {
 				log.Printf("[PermCheck] 批量表权限拒绝 - conn=%s, user=%s, table=%s\n", connId, userPower.UserId, t.Name)
@@ -905,17 +917,6 @@ func CheckBatchSQLPermission(sqlList []string, connId, schema, authorization str
 
 func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string) *SQLPermissionResult {
 	result := &SQLPermissionResult{Allowed: true}
-
-	// 写操作的角色级修改权限检查（allow_modify 开关，fail-closed 口径）
-	if requiresModifyPermission(analysis) {
-		if !CheckUserCanModify(authorization) {
-			result.Allowed = false
-			result.Message = "当前角色禁止修改数据，无法执行写操作"
-			log.Printf("[PermCheck] 写权限拒绝 - conn=%s, user=%s, writeTables=%v, sql=%s\n",
-				connId, authorization, analysis.WriteTables, truncateSQL(analysis.OriginalSQL))
-			return result
-		}
-	}
 
 	// 【设计说明】经典模式下不检查 WriteColumns 的列级权限。
 	// 原因：用户在 SQL 编辑器中编写的 SQL 可能非常复杂（子查询、CTE、多表 JOIN、
@@ -944,6 +945,31 @@ func CheckAnalysisPermission(analysis *SQLAnalysis, connId, authorization string
 		return result
 	}
 	byRole := admin.GroupPowerDetailsByRole(powerDetails, connId)
+	writeRoleIDs := writeRoleIDsForUser(userPower.UserId, admin.FindUserRoles(userPower.UserId))
+
+	// 写校验：写能力与写范围必须由「同一角色」授予。
+	// 写范围只取可写角色各自的数据范围；只读角色（allow_modify=0）的数据不得进入写范围，
+	// 否则「连接级只读角色 + 表级可写角色」会放大成可写全库。
+	if requiresModifyPermission(analysis) {
+		if len(writeRoleIDs) == 0 || !hasWriteCapableRoleOnConn(byRole, writeRoleIDs) {
+			result.Allowed = false
+			result.Message = "当前角色禁止修改数据，无法执行写操作"
+			log.Printf("[PermCheck] 写权限拒绝 - conn=%s, user=%s, writeTables=%v, sql=%s\n",
+				connId, userPower.UserId, analysis.WriteTables, truncateSQL(analysis.OriginalSQL))
+			return result
+		}
+		for _, t := range analysis.WriteTables {
+			if !checkWriteTableAccessWithRoles(byRole, writeRoleIDs, t.Schema, t.Name) {
+				result.DeniedTables = append(result.DeniedTables, t.Name)
+			}
+		}
+		if len(result.DeniedTables) > 0 {
+			result.Allowed = false
+			result.Message = fmt.Sprintf("无权访问表: %s", strings.Join(result.DeniedTables, ", "))
+			log.Printf("[PermCheck] 写表权限拒绝 - conn=%s, user=%s, deniedTables=%v\n", connId, userPower.UserId, result.DeniedTables)
+			return result
+		}
+	}
 
 	// 检查读表权限
 	for _, t := range analysis.ReadTables {
@@ -975,6 +1001,57 @@ func checkTableAccessWithRoles(byRole map[string][]*admin.PowerDetail, schemaNam
 	for _, roleDetails := range byRole {
 		roleAccess := resolveRoleTableAccess(roleDetails, schemaName, tableName)
 		// 经典模式下列级降级为表级，只要不是 AccessNone 就算有权限
+		if roleAccess.Level != AccessNone {
+			return true
+		}
+	}
+	return false
+}
+
+// writeCapableRoleIDs 返回 allow_modify>0 的角色 ID 集合。
+//
+// 写能力与写范围必须来自同一角色：只读角色（allow_modify=0）的数据范围
+// 不得因为其它角色开启写能力而变成可写。
+func writeCapableRoleIDs(roles []*admin.Role) map[string]bool {
+	ids := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		if role == nil || role.AllowModify <= 0 {
+			continue
+		}
+		ids[role.Id] = true
+	}
+	return ids
+}
+
+// writeRoleIDsForUser 返回可写角色 ID 集合。
+//
+// 内置管理员的数据权限由 adminFullPowerDetails 动态生成（RoleId 为空），
+// 需要在写范围中显式纳入，避免「管理员全量读权限」因 RoleId 不匹配而失去写能力。
+func writeRoleIDsForUser(userId string, roles []*admin.Role) map[string]bool {
+	ids := writeCapableRoleIDs(roles)
+	if len(ids) > 0 && admin.IsUserAdmin(userId) {
+		ids[""] = true
+	}
+	return ids
+}
+
+// hasWriteCapableRoleOnConn 判断该连接上是否存在至少一个可写角色的授权记录。
+func hasWriteCapableRoleOnConn(byRole map[string][]*admin.PowerDetail, writeRoleIDs map[string]bool) bool {
+	for roleID := range byRole {
+		if writeRoleIDs[roleID] {
+			return true
+		}
+	}
+	return false
+}
+
+// checkWriteTableAccessWithRoles 判定写表权限：只有可写角色自身的数据范围参与判定。
+func checkWriteTableAccessWithRoles(byRole map[string][]*admin.PowerDetail, writeRoleIDs map[string]bool, schemaName, tableName string) bool {
+	for roleID, roleDetails := range byRole {
+		if !writeRoleIDs[roleID] {
+			continue
+		}
+		roleAccess := resolveRoleTableAccess(roleDetails, schemaName, tableName)
 		if roleAccess.Level != AccessNone {
 			return true
 		}

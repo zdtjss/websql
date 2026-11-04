@@ -521,13 +521,8 @@ func ApplyDataSync(c *gin.Context) {
 		return
 	}
 
-	// 权限校验：对每条 SQL 做表级/列级权限检查
+	// 权限校验：对每条 SQL 做表级/列级权限检查（含可写角色的写范围）
 	if !config.IsLocalMode() {
-		// 检查用户是否有写权限
-		if !permission.CheckUserCanModify(authorization) {
-			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行同步操作"})
-			return
-		}
 		for _, s := range validatedSQLs {
 			analysis := permission.AnalyzeSQL(s, schema)
 			permResult := permission.CheckAnalysisPermission(analysis, connId, authorization)

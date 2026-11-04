@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,14 @@ import (
 	"websql/internal/pkg/idgen"
 
 	"github.com/jmoiron/sqlx"
+)
+
+// 角色保护相关错误。
+var (
+	ErrRoleNotFound        = errors.New("角色不存在")
+	ErrBuiltinRoleDelete   = errors.New("内置角色不允许删除")
+	ErrBuiltinRoleRename   = errors.New("内置角色不允许改名")
+	ErrLastAdminRoleDelete = errors.New("系统至少保留一个管理员角色")
 )
 
 // RoleRepo 定义角色数据访问接口，所有 SQL 查询均在此实现
@@ -36,21 +45,41 @@ func NewRoleRepo(db *sqlx.DB) RoleRepo {
 }
 
 func (r *roleRepo) FindRoleList() ([]*Role, error) {
-	roleList := []*Role{}
-	err := r.db.Select(&roleList, "select id, name, view_classic, allow_modify, ai_allow_modify from t_role")
-	return roleList, err
+	return r.findRoleList()
 }
 
 func (r *roleRepo) FindRoleBaseList() ([]*Role, error) {
+	return r.findRoleList()
+}
+
+// findRoleList 查询角色列表；对尚未执行角色标志迁移的存量库回退旧字段，
+// 避免升级顺序不一致时管理页直接 500。
+func (r *roleRepo) findRoleList() ([]*Role, error) {
 	roleList := []*Role{}
-	err := r.db.Select(&roleList, "select id, name, view_classic, allow_modify, ai_allow_modify from t_role")
+	err := r.db.Select(&roleList,
+		"select id, name, view_classic, allow_modify, ai_allow_modify, coalesce(is_builtin, 0) is_builtin, coalesce(is_admin, 0) is_admin from t_role")
+	if err != nil {
+		log.Printf("[Role] 查询角色标志失败，回退旧字段: %v", err)
+		roleList = []*Role{}
+		err = r.db.Select(&roleList, "select id, name, view_classic, allow_modify, ai_allow_modify from t_role")
+	}
 	return roleList, err
 }
 
 func (r *roleRepo) FindUsersByRoleId(roleId string) ([]*User, error) {
 	userList := []*User{}
-	err := r.db.Select(&userList, "select * from t_user where role_id = ?", roleId)
-	return userList, err
+	// t_user 没有 role_id 列，真实关系在 t_user_role；旧查询恒失败。
+	err := r.db.Select(&userList, `
+		select u.* from t_user u
+		join t_user_role ur on ur.user_id = u.id
+		where ur.role_id = ?`, roleId)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range userList {
+		u.Pwd = ""
+	}
+	return userList, nil
 }
 
 func (r *roleRepo) FindConnByRole(roleIdList []any) (map[string][]*PowerDto, error) {
@@ -128,6 +157,10 @@ func (r *roleRepo) saveRoleInternal(role *RoleSave) (string, error) {
 	existing, err := loadRoleForUpdate(tx, role.Id)
 	if err != nil {
 		return "", err
+	}
+	// 内置角色（如 admin）不允许改名：避免管理入口因名称变化而失效。
+	if existing != nil && existing.IsBuiltin > 0 && strings.TrimSpace(role.Name) != existing.Name {
+		return "", ErrBuiltinRoleRename
 	}
 	if existing != nil && role.ExpectedDigest != "" {
 		existingPowers, err := loadPowersTx(tx, role.Id)
@@ -262,7 +295,9 @@ func loadRoleForUpdate(tx *sqlx.Tx, roleID string) (*Role, error) {
 	if roleID == "" {
 		return nil, nil
 	}
-	query := "select id, name, view_classic, allow_modify, ai_allow_modify from t_role where id = ?"
+	query := `select id, name, view_classic, allow_modify, ai_allow_modify,
+		coalesce(is_builtin, 0) is_builtin, coalesce(is_admin, 0) is_admin
+		from t_role where id = ?`
 	if isMySQLDriver() {
 		query += " for update"
 	}
@@ -274,6 +309,15 @@ func loadRoleForUpdate(tx *sqlx.Tx, roleID string) (*Role, error) {
 		return nil, err
 	}
 	return role, nil
+}
+
+// countAdminRolesTx 统计事务内管理员角色数量。
+func countAdminRolesTx(tx *sqlx.Tx) (int, error) {
+	var count int
+	if err := tx.Get(&count, "select count(*) from t_role where is_admin = 1"); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func loadPowersTx(tx *sqlx.Tx, roleID string) ([]*PowerDetail, error) {
@@ -300,6 +344,28 @@ func (r *roleRepo) DeleteRole(id string) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	existing, err := loadRoleForUpdate(tx, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return ErrRoleNotFound
+	}
+	// 内置角色是管理面的最后恢复路径，禁止删除。
+	if existing.IsBuiltin > 0 {
+		return ErrBuiltinRoleDelete
+	}
+	// 删除管理员角色前必须保证系统仍保留至少一个管理员角色。
+	if existing.IsAdmin > 0 {
+		count, err := countAdminRolesTx(tx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return ErrLastAdminRoleDelete
+		}
+	}
 
 	if _, err := tx.Exec("delete from t_power where role_id = ?", id); err != nil {
 		return err

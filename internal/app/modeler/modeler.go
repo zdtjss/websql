@@ -63,7 +63,12 @@ func ReverseEngineer(c *gin.Context) {
 	includeRelations := c.DefaultPostForm("includeRelations", "true")
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
+	connDB, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return
+	}
+	conn := connDB
 	dbType := conn.DriverName()
 
 	model := &ERModel{
@@ -326,7 +331,12 @@ func ForwardEngineer(c *gin.Context) {
 	ddlSql := c.PostForm("ddl")
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
+	connDB, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return
+	}
+	conn := connDB
 
 	if strings.TrimSpace(ddlSql) == "" {
 		response.WriteErr(c, 200, 400, "DDL不能为空")
@@ -432,7 +442,12 @@ func ExportModel(c *gin.Context) {
 	format := c.DefaultPostForm("format", "json")
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
+	connDB, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return
+	}
+	conn := connDB
 	dbType := conn.DriverName()
 
 	model := &ERModel{

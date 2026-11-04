@@ -112,7 +112,7 @@ describe('useRolePermissionEditor', () => {
     expect(editor.state.conflict).toBe(false)
   })
 
-  it('隐式父级用于展示但不写入 working', () => {
+  it('隐式父级用于展示但不写入 working 也不进入勾选集合', () => {
     const editor = useRolePermissionEditor()
     const column = power('c1', 's1', 't1', 'id')
     editor.load(roleWith([column]))
@@ -124,7 +124,8 @@ describe('useRolePermissionEditor', () => {
     ])
     const checked = editor.checkedKeysFor(treeKeys)
     expect(checked).toContain(permToKey(column))
-    expect(checked).toContain(permToKey(power('c1', 's1', 't1', null)))
+    expect(checked).not.toContain(permToKey(power('c1', 's1', 't1', null)))
+    expect(editor.isImplicit(permToKey(power('c1', 's1', 't1', null)), treeKeys)).toBe(true)
     expect(editor.state.working.has(permToKey(power('c1', 's1', 't1', null)))).toBe(false)
   })
 })

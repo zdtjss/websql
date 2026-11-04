@@ -29,10 +29,12 @@ create table if not exists t_role (
 	name varchar(64),
 	view_classic integer default 0,
 	allow_modify integer default 1,
-	ai_allow_modify integer not null default 1
+	ai_allow_modify integer not null default 1,
+	is_builtin integer not null default 0,
+	is_admin integer not null default 0
 );
 
-insert ignore into t_role (id, name, view_classic, allow_modify, ai_allow_modify) values ('825683877266722816', 'admin', 1, 1, 1);
+insert ignore into t_role (id, name, view_classic, allow_modify, ai_allow_modify, is_builtin, is_admin) values ('825683877266722816', 'admin', 1, 1, 1, 1, 1);
 
 create table if not exists t_tree (
 	id varchar(36) primary key,
@@ -45,7 +47,8 @@ create table if not exists t_user (
 	login_name varchar(64),
 	name varchar(64),
 	pwd varchar(256),
-	bio varchar(512)
+	bio varchar(512),
+	unique key uk_t_user_login_name (login_name)
 );
 
 -- 管理员id一定是 825683877312860160 密码是 Nway@12345
@@ -148,7 +151,7 @@ insert ignore into t_system_config (id, config_key, config_value, config_type, r
 ('825683877400000001', 'ai.modelList', '[{"id":"model_default_001","provider":"ollama","baseUrl":"https://ollama.com","model":"deepseek-v3.2","apiKey":"","temperature":0.7,"frequencyPenalty":0.5,"presencePenalty":0.3,"maxTokens":0,"enableThinking":false,"isDefault":true}]', 'ai', 'AI 模型配置列表'),
 ('825683877400000002', 'ai.selectedModelId', 'model_default_001', 'ai', '当前选中的模型ID'),
 ('825683877400000003', 'system.outterUser', 'http://localhost:8081/nway-system/login/getLoginUser', 'system', '外部用户认证接口 URL'),
-('825683877400000006', 'system.allowedIP', '["[::1]","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）'),
+('825683877400000006', 'system.allowedIP', '["::1","127.0.0.1"]', 'system', '允许的 IP 地址列表（JSON 格式）'),
 ('825683877400000007', 'system.defaultHomepage', 'ai', 'system', '默认首页'),
 ('825683877400000010', 'audit.enabled', 'true', 'audit', '审计日志全局开关'),
 ('825683877400000011', 'audit.recordQuery', 'false', 'audit', '是否审计只读查询（SELECT/SHOW/DESCRIBE）'),
@@ -157,7 +160,9 @@ insert ignore into t_system_config (id, config_key, config_value, config_type, r
 ('825683877400000014', 'audit.recordAgentTools', 'true', 'audit', '是否审计 AI Agent 工具调用'),
 ('825683877400000015', 'audit.recordSQLEditor', 'true', 'audit', '是否审计 SQL 编辑器直接执行'),
 ('825683877400000016', 'audit.retentionDays', '90', 'audit', '审计日志保留天数'),
-('825683877400000017', 'audit.minRiskLevel', 'low', 'audit', '最低记录风险等级（low/medium/high）');
+('825683877400000017', 'audit.minRiskLevel', 'low', 'audit', '最低记录风险等级（low/medium/high）'),
+('825683877400000020', 'ai.roleCapabilityVersion', '2', 'ai', '角色能力版本：1=旧协议，2=支持独立 AI 开关'),
+('825683877400000021', 'ai.aiPolicyEnforce', 'true', 'ai', 'AI 写双门槛是否已生效');
 
 CREATE TABLE IF NOT EXISTS t_prompt (
 	id varchar(36) primary key,

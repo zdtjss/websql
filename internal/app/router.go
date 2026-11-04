@@ -106,6 +106,8 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/conn/readonly/state", conn.ReadOnlyStateHandler)
 	routerGroup.POST("/conn/readonly/unlock", conn.UnlockWriteHandler)
 	routerGroup.GET("/userPermissions", admin.UserPermissions)
+	// 当前用户对指定表的有效访问级别（仅用于经典视图的列级权限提示）
+	routerGroup.GET("/tableAccess", permission.GetTableAccess)
 	routerGroup.GET("/listTableNames", tree.ListTableNames)
 	routerGroup.GET("/showTree", tree.ShowTree)
 
@@ -143,18 +145,24 @@ func MainRegister(router *gin.Engine) {
 
 	routerGroup.POST("/saveRole", admin.SaveRole)
 	routerGroup.POST("/delRole", admin.DelRole)
-	routerGroup.GET("/roleList", admin.RoleList)
-	routerGroup.GET("/roleBaseList", admin.RoleBaseList)
 	routerGroup.GET("/roleCapability", admin.GetRoleCapability)
-	routerGroup.GET("/findUserByRole", admin.FindUserByRole)
 	routerGroup.GET("/permissionTree", admin.GetPermissionTree)
 	routerGroup.GET("/canUseClassicView", admin.CanUseClassicView)
 	routerGroup.GET("/canModifyData", admin.CanModifyData)
 
-	// 数据脱敏规则（管理员对已授权列配置的数据保护策略，不改变权限层级）
-	routerGroup.GET("/dataMaskRuleList", admin.ListMaskRulesHandler)
-	routerGroup.POST("/saveDataMaskRule", admin.SaveMaskRuleHandler)
-	routerGroup.POST("/delDataMaskRule", admin.DeleteMaskRuleHandler)
+	// 管理面读接口统一守卫：路由组级检查，避免新增接口漏挂 CheckAdminPower。
+	adminGroup := routerGroup.Group("")
+	adminGroup.Use(func(c *gin.Context) {
+		if !admin.CheckAdminPower(c) {
+			c.Abort()
+			return
+		}
+	})
+	adminGroup.GET("/roleList", admin.RoleList)
+	adminGroup.GET("/roleBaseList", admin.RoleBaseList)
+	adminGroup.GET("/findUserByRole", admin.FindUserByRole)
+	adminGroup.GET("/findUser", admin.FindUser)
+	adminGroup.GET("/userEffectivePermissions", admin.GetUserEffectivePermissions)
 
 	routerGroup.GET("/promptList", admin.PromptList)
 	routerGroup.GET("/promptListByRole", admin.PromptListByRole)
@@ -162,7 +170,6 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.POST("/savePrompt", admin.SavePrompt)
 	routerGroup.POST("/delPrompt", admin.DelPrompt)
 
-	routerGroup.GET("/findUser", admin.FindUser)
 	routerGroup.GET("/findUserBase", admin.FindUserBase)
 	routerGroup.POST("/saveUser", admin.SaveUser)
 	routerGroup.POST("/delUser", admin.DelUser)
@@ -174,16 +181,17 @@ func MainRegister(router *gin.Engine) {
 	routerGroup.GET("/showBackupData", admin.ShowBackupData)
 
 	// 系统配置接口
-	routerGroup.GET("/system/config/list", system.GetSystemConfig)
+	routerGroup.GET("/system/config/public", system.GetPublicConfigHandler)
+	adminGroup.GET("/system/config/list", system.GetSystemConfig)
 	routerGroup.POST("/system/config/save", system.SaveSystemConfigHandler)
-	routerGroup.GET("/system/config/all/get", system.GetAllSystemConfigHandler)
+	adminGroup.GET("/system/config/all/get", system.GetAllSystemConfigHandler)
 	routerGroup.POST("/system/config/all/save", system.SaveAllSystemConfigHandler)
 	routerGroup.GET("/system/config/ai/get", system.GetAIConfigHandler)
 	routerGroup.POST("/system/config/ai/save", system.SaveAIConfigHandler)
-	routerGroup.GET("/system/config/outterUser/get", system.GetOutterUserHandler)
+	adminGroup.GET("/system/config/outterUser/get", system.GetOutterUserHandler)
 	routerGroup.POST("/system/config/outterUser/save", system.SaveOutterUserHandler)
 	routerGroup.POST("/system/config/outterUser/test", system.TestOutterUserHandler)
-	routerGroup.GET("/system/config/allowedIP/get", system.GetAllowedIPHandler)
+	adminGroup.GET("/system/config/allowedIP/get", system.GetAllowedIPHandler)
 	routerGroup.POST("/system/config/allowedIP/save", system.SaveAllowedIPHandler)
 	routerGroup.GET("/system/config/ai/models", system.GetAIModelListHandler)
 	routerGroup.POST("/system/config/ai/model/save", system.SaveAIModelHandler)

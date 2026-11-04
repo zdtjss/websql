@@ -307,6 +307,15 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
     showAllHistory.value = false
   }
 
+  /** 清空历史会话浮层与搜索状态（登出/切换账号时使用，避免残留上一账号数据） */
+  function clearSessionList(): void {
+    sessionList.value = []
+    sessionListTotal.value = 0
+    sessionHistoryVisible.value = false
+    sessionSearchKeyword.value = ''
+    sessionCurrentPage.value = 1
+  }
+
   return {
     chatHistory,
     showAllHistory,
@@ -332,5 +341,6 @@ export function useChatHistory(deps: UseChatHistoryDeps) {
     handleClickSession,
     loadSession,
     clearMessages,
+    clearSessionList,
   }
 }

@@ -8,10 +8,35 @@
             <el-button type="primary" size="small" @click="createRole" :icon="Plus">新建角色</el-button>
           </div>
           <el-table :data="roles" style="width: 100%" highlight-current-row @current-change="handleRoleChange">
-            <el-table-column prop="name" label="角色名称" resizable />
-            <el-table-column label="操作" width="80" resizable>
+            <el-table-column label="角色名称" resizable>
               <template #default="scope">
-                <el-button type="danger" link size="small" :icon="Delete" @click.stop="deleteRole(scope.row)" />
+                <span>{{ scope.row.name }}</span>
+                <el-tag v-if="scope.row.isBuiltin" size="small" type="info" style="margin-left: 6px;">内置</el-tag>
+                <el-tag v-if="scope.row.isAdmin" size="small" type="warning" style="margin-left: 6px;">管理员</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" resizable>
+              <template #default="scope">
+                <el-button
+                  type="primary"
+                  link
+                  size="small"
+                  :icon="Edit"
+                  title="重命名角色"
+                  aria-label="重命名角色"
+                  :disabled="scope.row.isBuiltin === 1"
+                  @click.stop="renameRole(scope.row)"
+                />
+                <el-button
+                  type="danger"
+                  link
+                  size="small"
+                  :icon="Delete"
+                  title="删除角色"
+                  aria-label="删除角色"
+                  :disabled="scope.row.isBuiltin === 1"
+                  @click.stop="deleteRole(scope.row)"
+                />
               </template>
             </el-table-column>
           </el-table>
@@ -53,6 +78,14 @@
               </div>
             </div>
             <el-alert title="勾选复选框授予权限，点击节点名称进入下一级。上级权限包含下级（如勾选连接则拥有其下所有权限）。「子级已选」表示下级有权限配置但当前节点本身未直接授权。" type="info" :closable="false" style="margin-bottom: 12px; flex-shrink: 0;" />
+            <el-alert
+              v-if="currentLevel === 'column'"
+              title="列级授权仅约束 AI 对话：经典视图与 SQL 编辑器按表级授权放行，读取该表时会返回全部列。"
+              type="warning"
+              :closable="false"
+              show-icon
+              style="margin-bottom: 12px; flex-shrink: 0;"
+            />
             <div class="classic-view-toggle" v-if="currentLevel === 'conn'">
               <el-switch v-model="classicViewEnabled" active-text="允许使用经典视图" inactive-text="禁止使用经典视图" />
               <el-switch v-model="modifyDataEnabled" style="margin-left: 20px;" active-text="允许修改数据" inactive-text="禁止修改数据" />
@@ -66,6 +99,12 @@
                 />
               </el-tooltip>
               <span v-if="showAISwitch && !modifyDataEnabled" class="switch-hint">需先允许修改数据</span>
+              <el-tag
+                v-if="showAISwitch && aiModifyEnabled && !modifyDataEnabled"
+                size="small"
+                type="warning"
+                style="margin-left: 8px;"
+              >存量配置：开（当前不生效）</el-tag>
             </div>
             <div v-if="editor.state.conflict" class="conflict-banner">
               <el-alert
@@ -95,17 +134,19 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, ref, useTemplateRef } from 'vue'
-import { Delete, Plus, Close, Check, Connection, Folder, Grid, Document } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Close, Check, Connection, Folder, Grid, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getPermissionTree,
   getRoleCapability,
   getRoleList,
+  getUsersByRole,
   saveRole,
   delRole,
   type Role,
   type RoleCapability,
 } from '@/api/system'
+import { unwrap } from '@/utils/apiResult'
 import RolePermissionTree from './rolePermission/RolePermissionTree.vue'
 import { useRolePermissionEditor, type EditorRole } from './rolePermission/useRolePermissionEditor'
 import { computeImplicitKeys } from './rolePermission/permissionPolicy'
@@ -204,20 +245,64 @@ function createRole() {
     cancelButtonText: '取消',
     inputPattern: /.+/,
     inputErrorMessage: '角色名称不能为空',
-  }).then(({ value }) => {
-    saveRole({
-      id: '',
+  }).then(async ({ value }) => {
+    try {
+      unwrap(await saveRole({
+        id: '',
+        name: value,
+        addPowers: [],
+        delPowers: [],
+        viewClassic: 0,
+        allowModify: 1,
+        // AIPolicyEnforce 生效后由服务端默认写入 0（AI 只读）；兼容期不提交该字段。
+        aiAllowModify: showAISwitch.value ? 0 : undefined,
+      }))
+      loadRoles()
+    } catch (e: any) {
+      ElMessage.error(e?.message || '新建角色失败')
+    }
+  })
+}
+
+async function renameRole(row: unknown) {
+  const role = row as Role
+  if (!role?.id || role.isBuiltin === 1) return
+  let value = ''
+  try {
+    const result = await ElMessageBox.prompt('请输入新的角色名称', '重命名角色', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: role.name,
+      inputPattern: /\S+/,
+      inputErrorMessage: '角色名称不能为空',
+    })
+    value = String(result.value || '').trim()
+  } catch {
+    return
+  }
+  if (!value || value === role.name) return
+  try {
+    unwrap(await saveRole({
+      id: role.id,
       name: value,
       addPowers: [],
       delPowers: [],
-      viewClassic: 0,
-      allowModify: 1,
-      // AIPolicyEnforce 生效后由服务端默认写入 0（AI 只读）；兼容期不提交该字段。
-      aiAllowModify: showAISwitch.value ? 0 : undefined,
-    }).then(() => {
+      viewClassic: role.viewClassic ?? 0,
+      allowModify: role.allowModify ?? 0,
+      // 仅在 AI 开关开放时提交该字段，避免旧协议把存量配置重置
+      aiAllowModify: showAISwitch.value ? (role.aiAllowModify ?? 0) : undefined,
+      expectedDigest: role.permissionDigest,
+    }))
+    ElMessage.success('重命名成功')
+    loadRoles()
+  } catch (e: any) {
+    if (e?.response?.status === 409) {
+      ElMessage.warning('角色权限已被其他管理员修改，请刷新后重试')
       loadRoles()
-    })
-  })
+      return
+    }
+    ElMessage.error(e?.message || '重命名失败')
+  }
 }
 
 // el-table 的 current-change 事件类型为 DefaultRow，这里在函数内收窄为 Role。
@@ -230,17 +315,29 @@ function handleRoleChange(row: unknown) {
   navigateToLevel('conn')
 }
 
-function deleteRole(row: unknown) {
+async function deleteRole(row: unknown) {
   const role = row as Role
   if (!role?.id) return
-  ElMessageBox.confirm(`确定要删除角色 "${role.name}" 吗？`, '确认删除', {
+  // 删除前统计已绑定用户：删除角色会级联清理 t_user_role，成员会瞬间失去权限。
+  let boundCount = 0
+  try {
+    const users = unwrap(await getUsersByRole(role.id))
+    boundCount = Array.isArray(users) ? users.length : 0
+  } catch {
+    boundCount = 0
+  }
+  const extra = boundCount > 0 ? `\n该角色已绑定 ${boundCount} 个用户，删除后这些用户将失去对应权限。` : ''
+  ElMessageBox.confirm(`确定要删除角色 "${role.name}" 吗？${extra}`, '确认删除', {
     confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
-  }).then(() => {
-    delRole(role.id).then(() => {
+  }).then(async () => {
+    try {
+      unwrap(await delRole(role.id))
       ElMessage.success('删除成功')
       if (currentRole.value?.id === role.id) currentRole.value = null
       loadRoles()
-    })
+    } catch (e: any) {
+      ElMessage.error(e?.message || '删除失败')
+    }
   })
 }
 
@@ -354,8 +451,10 @@ function savePermissions() {
   editor.state.saving = true
   saveRole(payload)
     .then((resp) => {
-      const digest = (resp.data?.data as { permissionDigest?: string } | undefined)?.permissionDigest
-      editor.markSaved(digest)
+      // 后端参数错误为 HTTP 200 + code 400，必须校验业务 code，
+      // 否则会把失败当成功并留下过期 digest。
+      const data = unwrap(resp) as { permissionDigest?: string }
+      editor.markSaved(data?.permissionDigest)
       ElMessage.success('保存成功')
       loadRoles()
       loadTree()
@@ -369,7 +468,7 @@ function savePermissions() {
         return
       }
       editor.state.saving = false
-      const msg = err?.response?.data?.msg || '保存失败'
+      const msg = err?.message || err?.response?.data?.msg || '保存失败'
       ElMessage.error(msg)
     })
 }

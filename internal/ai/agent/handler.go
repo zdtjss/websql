@@ -384,15 +384,10 @@ func resolveRequestParams(c *gin.Context, req *ChatRequest, isResume bool) (*req
 	schemaNames := collectSchemaNames(connID, dbSchema, req)
 	profile := CurrentRuntimeProfile()
 
-	// 脱敏规则不可用（管理库读取失败）时禁止数据出域：不能降级为「不脱敏继续查」。
-	masker := GetMaskerProvider().Get()
+	// 数据脱敏已按产品决策停用：数据库管理工具需要展示数据原貌。
+	// 权限过滤、审计与写操作门禁仍然生效。
+	masker := NewDisabledMasker()
 	egressBlocked := false
-	if masker == nil {
-		log.Printf("[Handler] 脱敏规则不可用，本轮禁止数据出域 - user=%s\n", user.Id)
-		recordDegraded("masker", "unavailable")
-		masker = NewNoopMasker()
-		egressBlocked = true
-	}
 
 	revision := admin.CurrentPermissionRevision()
 	revisionUnavailable := false
@@ -728,12 +723,8 @@ func (h *Handler) sessionDetailForDisplay(sessionID, userID string) (*SessionDet
 	if err != nil || sessCtx == nil || len(sessCtx.Schemas) == 0 {
 		return h.sessions.GetDetail(sessionID, userID)
 	}
-	masker := GetMaskerProvider().Get()
+	masker := NewDisabledMasker()
 	egressBlocked := false
-	if masker == nil {
-		masker = NewNoopMasker()
-		egressBlocked = true
-	}
 	profile := CurrentRuntimeProfile()
 	defaultConn := sessCtx.Schemas[0].ConnID
 	sec, buildErr := BuildRunSecurityContext(profile, userID, defaultConn, sessCtx.Schemas, admin.CurrentPermissionRevision(), masker)

@@ -55,7 +55,11 @@ func ExportText(c *gin.Context) {
 	}
 
 	if schema == "" && connId != "" {
-		dc := conn.GetConn(connId, authorization)
+		dc, connErr := conn.GetConnWithReason(connId, authorization)
+		if connErr != nil {
+			conn.WriteConnError(c, connErr)
+			return
+		}
 		switch dc.DriverName() {
 		case "mysql", "mariadb":
 			dc.Get(&schema, "SELECT DATABASE()")
@@ -97,10 +101,10 @@ func ExportText(c *gin.Context) {
 
 // streamExport 逐行读取并直接写响应；返回成功写出的行数。
 func streamExport(c *gin.Context, connId, authorization, schema, sqlStr, format, filename string) (int, error) {
-	db := conn.GetConn(connId, authorization)
-	if db == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用")
-		return 0, fmt.Errorf("连接不可用")
+	db, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return 0, connErr
 	}
 
 	rows, err := db.Queryx(sqlStr)
@@ -175,7 +179,6 @@ func streamExport(c *gin.Context, connId, authorization, schema, sqlStr, format,
 				converted[i] = nil
 			}
 		}
-
 		var line string
 		switch format {
 		case "csv":

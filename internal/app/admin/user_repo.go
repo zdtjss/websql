@@ -12,6 +12,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// ErrUserNotFound 删除/更新用户时目标不存在。
+var ErrUserNotFound = errors.New("用户不存在")
+
 // UserRepo 定义用户数据访问接口，所有 SQL 查询均在此实现
 type UserRepo interface {
 	FindByLoginName(loginName string) (*User, error)
@@ -23,6 +26,7 @@ type UserRepo interface {
 	FindUserRole(userIdList []any) (map[string][]*UserRole, error)
 	FindUserBaseList(loginName, key string) ([]*SharedUser, error)
 	FindUserList(roleId, name, loginName, key string, userIdList []string) ([]*User, error)
+	FindUserListPage(roleId, name, loginName, key string, page, pageSize int) ([]*User, int, error)
 	GetPassword(userId string) (string, error)
 	CheckUserExist(user *User) error
 	Save(user *User) error
@@ -43,7 +47,8 @@ func NewUserRepo(db *sqlx.DB) UserRepo {
 
 func (r *userRepo) FindByLoginName(loginName string) (*User, error) {
 	var users []User
-	err := r.db.Select(&users, "select id,name,pwd from t_user where login_name = ?", loginName)
+	// 登录名按大小写不敏感匹配：写入时统一小写，这里兼容存量混合大小写账号。
+	err := r.db.Select(&users, "select id,name,pwd from t_user where lower(login_name) = lower(?)", strings.TrimSpace(loginName))
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +72,7 @@ func (r *userRepo) FindByBio(hashedBioKey string) (*User, error) {
 
 func (r *userRepo) FindByLoginNameForToken(loginName any) (*User, error) {
 	var users []User
-	err := r.db.Select(&users, "select id,login_name,name from t_user where login_name = ?", loginName)
+	err := r.db.Select(&users, "select id,login_name,name from t_user where lower(login_name) = lower(?)", loginName)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +115,19 @@ func (r *userRepo) FindUserPowerDetails(userId string) []*PowerDetail {
 func (r *userRepo) FindUserRoles(userId string) []*Role {
 	roles := []*Role{}
 	err := r.db.Select(&roles,
-		"select r.id, r.name, r.allow_modify, r.ai_allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", userId)
+		`select r.id, r.name, r.allow_modify, r.ai_allow_modify,
+		        coalesce(r.is_builtin, 0) as is_builtin, coalesce(r.is_admin, 0) as is_admin
+		   from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?`, userId)
 	if err != nil {
+		// 兼容尚未执行角色标志迁移的 MySQL 存量库：回退到旧字段查询，
+		// 管理员判定由 isUserAdmin 的名称回退逻辑兜底，避免升级即失去管理入口。
 		logger.PrintErr(err)
-		return nil
+		roles = []*Role{}
+		if err2 := r.db.Select(&roles,
+			"select r.id, r.name, r.allow_modify, r.ai_allow_modify from t_role r inner join t_user_role ur on r.id = ur.role_id where ur.user_id = ?", userId); err2 != nil {
+			logger.PrintErr(err2)
+			return nil
+		}
 	}
 	return roles
 }
@@ -170,9 +184,41 @@ func (r *userRepo) FindUserBaseList(loginName, key string) ([]*SharedUser, error
 }
 
 func (r *userRepo) FindUserList(roleId, name, loginName, key string, userIdList []string) ([]*User, error) {
+	where, param := buildUserListWhere(roleId, name, loginName, key, userIdList)
+	if len(param) == 0 {
+		where += " and 1 = 2"
+	}
+	userList := []*User{}
+	err := r.db.Select(&userList, "select u.* from t_user u where 1 = 1"+where, param...)
+	return userList, err
+}
+
+// FindUserListPage 管理员全量分页：空条件时返回全部用户，不再追加 1=2。
+func (r *userRepo) FindUserListPage(roleId, name, loginName, key string, page, pageSize int) ([]*User, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	where, param := buildUserListWhere(roleId, name, loginName, key, nil)
+
+	var total int
+	if err := r.db.Get(&total, "select count(*) from t_user u where 1 = 1"+where, param...); err != nil {
+		return nil, 0, err
+	}
+	pagedParam := append(param, pageSize, (page-1)*pageSize)
+	userList := []*User{}
+	err := r.db.Select(&userList,
+		"select u.* from t_user u where 1 = 1"+where+" order by u.login_name limit ? offset ?", pagedParam...)
+	return userList, total, err
+}
+
+// buildUserListWhere 复用「条件搜索」与「全量分页」的过滤条件。
+// 注意保留原有 else-if 优先级：姓名 > 登录名 > 关键字 > 指定用户集合。
+func buildUserListWhere(roleId, name, loginName, key string, userIdList []string) (string, []any) {
 	param := []any{}
 	sql := bytes.Buffer{}
-	sql.WriteString("select u.* from t_user u where 1 = 1")
 	if roleId != "" {
 		sql.WriteString(" and u.id in (select ur.user_id from t_user_role ur where ur.role_id = ?)")
 		param = append(param, roleId)
@@ -194,12 +240,7 @@ func (r *userRepo) FindUserList(roleId, name, loginName, key string, userIdList 
 		sql.WriteString(strings.Repeat("?,", len(userIdList))[0 : len(userIdList)*2-1])
 		sql.WriteString(") ")
 	}
-	if len(param) == 0 {
-		sql.WriteString(" and 1 = 2")
-	}
-	userList := []*User{}
-	err := r.db.Select(&userList, sql.String(), param...)
-	return userList, err
+	return sql.String(), param
 }
 
 func (r *userRepo) GetPassword(userId string) (string, error) {
@@ -211,7 +252,8 @@ func (r *userRepo) GetPassword(userId string) (string, error) {
 func (r *userRepo) CheckUserExist(user *User) error {
 	checkSqlParam := make([]any, 2)
 	checkSqlParam[0] = &user.LoginName
-	sql := bytes.NewBufferString("select id from t_user where login_name = ?")
+	// 唯一性按大小写不敏感比较：避免 Reader01 与 reader01 并存。
+	sql := bytes.NewBufferString("select id from t_user where lower(login_name) = lower(?)")
 	if user.Id != "" {
 		checkSqlParam[1] = user.Id
 		sql.WriteString(" and id <> ?")
@@ -302,8 +344,14 @@ func (r *userRepo) Delete(id string) error {
 	if _, err := tx.Exec("delete from t_prompt_share where shared_to = ? or shared_by = ?", id, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("delete from t_user where id = ?", id); err != nil {
+	res, err := tx.Exec("delete from t_user where id = ?", id)
+	if err != nil {
 		return err
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrUserNotFound
 	}
 	if err := BumpPermissionRevisionTx(tx); err != nil {
 		return err

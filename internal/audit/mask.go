@@ -37,11 +37,56 @@ func MaskSQL(sql string) string {
 	if sql == "" {
 		return sql
 	}
-	return truncateMasked(maskStringLiterals(sql))
+	return truncateMasked(rewriteStringLiterals(sql, func(string, string) string { return "***" }))
 }
 
-// maskStringLiterals 将注释外的单引号字符串字面量内容替换为 ***。
-func maskStringLiterals(sql string) string {
+// PreviewSQL 为审批面板生成「结构可见、值部分隐藏」的 SQL 预览。
+//
+// 与 MaskSQL（审计落库全遮）不同：
+//   - 字段名、表名、运算符与 WHERE 结构原样保留；
+//   - 普通字面量长度 ≤ 8 时完整展示，> 8 时保留首尾各 2 字符（ab***yz）；
+//   - 敏感列（password/pwd/token/secret/key 等）的值仍完全替换为 ***。
+//
+// 原始语句仍只保存在服务端 checkpoint，本函数只用于前端确认面板展示。
+func PreviewSQL(sql string) string {
+	if sql == "" {
+		return sql
+	}
+	return truncateMasked(rewriteStringLiterals(sql, previewLiteral))
+}
+
+// previewLiteral 按列名敏感度与值长度生成展示副本。
+func previewLiteral(value, column string) string {
+	if value == "" {
+		return value
+	}
+	if isSensitiveColumn(column) {
+		return "***"
+	}
+	runes := []rune(value)
+	if len(runes) <= 8 {
+		return value
+	}
+	return string(runes[:2]) + "***" + string(runes[len(runes)-2:])
+}
+
+// isSensitiveColumn 判断列名是否属于凭据类字段，这类值即使很短也必须全遮。
+func isSensitiveColumn(column string) bool {
+	col := strings.ToLower(strings.Trim(strings.TrimSpace(column), "`\"[]"))
+	if col == "" {
+		return false
+	}
+	for _, keyword := range []string{"password", "passwd", "pwd", "token", "secret", "key", "credential"} {
+		if strings.Contains(col, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteStringLiterals 将所有注释外的单引号字面量交给 replace 生成展示副本。
+// replace 的第二个参数是字面量左侧最近的列名（无法识别时为空串）。
+func rewriteStringLiterals(sql string, replace func(value, column string) string) string {
 	runes := []rune(sql)
 	n := len(runes)
 	var sb strings.Builder
@@ -50,21 +95,25 @@ func maskStringLiterals(sql string) string {
 	for i := 0; i < n; {
 		switch {
 		case runes[i] == '\'':
-			// 字符串字面量：保留引号本身，内容统一替换为 ***
+			// 字符串字面量：保留引号本身，内容交给 replace 处理
+			literalStart := i
 			sb.WriteRune('\'')
 			i++
+			var value strings.Builder
 			for i < n {
 				if runes[i] == '\'' {
 					if i+1 < n && runes[i+1] == '\'' {
+						value.WriteRune('\'')
 						i += 2 // '' 转义，仍在字面量内部
 						continue
 					}
 					i++ // 字面量闭合
 					break
 				}
+				value.WriteRune(runes[i])
 				i++
 			}
-			sb.WriteString("***")
+			sb.WriteString(replace(value.String(), precedingColumn(runes, literalStart)))
 			sb.WriteRune('\'')
 		case runes[i] == '-' && i+1 < n && runes[i+1] == '-':
 			// 行注释：原样保留至行尾
@@ -100,6 +149,66 @@ func maskStringLiterals(sql string) string {
 	}
 
 	return sb.String()
+}
+
+// precedingColumn 从字面量位置向前回溯，尝试识别所属列名。
+// 识别失败返回空串（此时按普通值处理）。
+func precedingColumn(runes []rune, literalStart int) string {
+	i := literalStart - 1
+	// 最多回溯 3 个「运算符词」：IN / LIKE / BETWEEN / NOT IN 等
+	for attempt := 0; attempt < 3 && i >= 0; attempt++ {
+		i = skipSpacesBackward(runes, i)
+		// 跳过 = < > ! + - * / % | & ^ ~ 等运算符
+		for i >= 0 && strings.ContainsRune("=<>!+-*/%|&^~", runes[i]) {
+			i--
+		}
+		i = skipSpacesBackward(runes, i)
+		word, next := readWordBackward(runes, i)
+		if word == "" {
+			return ""
+		}
+		if !isOperatorWord(word) {
+			return word
+		}
+		i = next - 1
+	}
+	return ""
+}
+
+func skipSpacesBackward(runes []rune, i int) int {
+	for i >= 0 && (runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\n' || runes[i] == '\r') {
+		i--
+	}
+	return i
+}
+
+func readWordBackward(runes []rune, i int) (string, int) {
+	end := i
+	for i >= 0 && isWordRune(runes[i]) {
+		i--
+	}
+	if end < 0 || i == end {
+		return "", end
+	}
+	word := strings.Trim(string(runes[i+1:end+1]), "`\"[]")
+	// 仅保留最后一段（schema.table.col → col）
+	if idx := strings.LastIndex(word, "."); idx >= 0 {
+		word = word[idx+1:]
+	}
+	return word, i + 1
+}
+
+func isWordRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+		r == '_' || r == '$' || r == '.' || r == '`' || r == '"' || r == '[' || r == ']'
+}
+
+func isOperatorWord(word string) bool {
+	switch strings.ToLower(word) {
+	case "like", "in", "between", "is", "not", "and", "or", "then", "else", "when", "case", "values", "set", "where", "having", "on":
+		return true
+	}
+	return false
 }
 
 // truncateMasked 按 rune 截断超长 SQL，避免截断出非法 UTF-8 序列。

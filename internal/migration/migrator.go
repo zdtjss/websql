@@ -50,6 +50,44 @@ func GetLatestAppliedVersion(db *sqlx.DB) (string, error) {
 	return v, nil
 }
 
+// EnsureLoginNameUniqueness 规范化登录名并在无重复数据时创建唯一索引。
+//
+// 存量库可能已经存在 Reader01/reader01 这类大小写重复账号，直接建唯一索引会导致
+// 迁移失败、服务无法启动。这里先输出人工处理清单，确认无重复后再建索引；
+// 应用层的大小写不敏感查询仍然生效，索引只是并发写入的最终防线。
+func EnsureLoginNameUniqueness(db *sqlx.DB, driverName string) error {
+	if db == nil {
+		return nil
+	}
+	if driverName != "sqlite" && driverName != "sqlite3" {
+		return nil
+	}
+	if _, err := db.Exec(`UPDATE t_user SET login_name = lower(trim(login_name))
+		WHERE login_name <> lower(trim(login_name))`); err != nil {
+		return fmt.Errorf("规范化登录名失败: %w", err)
+	}
+	type dupRow struct {
+		LoginName string `db:"login_name"`
+		Count     int    `db:"cnt"`
+	}
+	dups := []dupRow{}
+	if err := db.Select(&dups, `SELECT lower(trim(login_name)) AS login_name, count(*) AS cnt
+		FROM t_user GROUP BY lower(trim(login_name)) HAVING count(*) > 1`); err != nil {
+		return fmt.Errorf("检查重复登录名失败: %w", err)
+	}
+	if len(dups) > 0 {
+		for _, d := range dups {
+			log.Printf("[Migration] 登录名重复，跳过唯一索引 - loginName=%s, count=%d", d.LoginName, d.Count)
+		}
+		log.Printf("[Migration] 请人工处理上述重复账号后重启；当前依赖应用层唯一性校验")
+		return nil
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_t_user_login_name ON t_user(login_name)`); err != nil {
+		return fmt.Errorf("创建登录名唯一索引失败: %w", err)
+	}
+	return nil
+}
+
 const appVersionKey = "system.appVersion"
 
 // GetPreviousAppVersion 从 t_system_config 读取上次运行的程序版本号。

@@ -440,6 +440,9 @@ func TestCheckSelectColumnAccessStrict_RejectsStar(t *testing.T) {
 
 func TestCheckWriteColumnAccess_DeniesUnauthorizedColumn(t *testing.T) {
 	mw := &PermissionMiddleware{Scope: newRemoteScope(nil, map[string][]string{"orders": {"id"}})}
+	// 写范围与读范围同源（单角色场景），显式构造以覆盖写范围判定。
+	writeScope := *mw.Scope
+	mw.Scope.WriteScope = &writeScope
 
 	if err := mw.checkWriteColumnAccess("UPDATE orders SET id=1 WHERE id=2"); err != nil {
 		t.Errorf("授权字段应放行：%v", err)
@@ -453,6 +456,8 @@ func TestCheckWriteColumnAccess_DeniesUnauthorizedColumn(t *testing.T) {
 
 	// 表级（full）授权不受列级限制
 	full := &PermissionMiddleware{Scope: newRemoteScope([]string{"orders"}, nil)}
+	fullScope := *full.Scope
+	full.Scope.WriteScope = &fullScope
 	if err := full.checkWriteColumnAccess("UPDATE orders SET amount=1"); err != nil {
 		t.Errorf("表级授权应放行：%v", err)
 	}

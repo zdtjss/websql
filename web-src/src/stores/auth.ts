@@ -54,7 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
     currentUser.value = null
     sessionStorage.removeItem('authentication')
     sessionStorage.removeItem('currentUser')
-    sessionStorage.removeItem('isRemote')
+    // isRemote/isDesktop 属于部署模式事实，退出登录不应清除
   }
 
   async function login(loginName: string, password: string): Promise<boolean> {

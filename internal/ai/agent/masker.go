@@ -56,6 +56,9 @@ type DataMasker struct {
 	rules   map[string]MaskAction // key: conn|schema.table|column
 	key     []byte
 	version string
+	// disabled 为 true 时完全停用数据脱敏：查询结果、导出与文本均保持原貌。
+	// 产品定位为数据库管理工具，用户需要查看/分析数据原貌，因此生产链路使用禁用态。
+	disabled bool
 }
 
 // maskRuleKey 规则匹配键。列名统一小写：数据库列名大小写差异不应绕过脱敏。
@@ -103,9 +106,17 @@ func NewNoopMasker() *DataMasker {
 	return &DataMasker{rules: map[string]MaskAction{}}
 }
 
+// NewDisabledMasker 返回完全停用的脱敏器：不读取规则、不遮蔽任何数据。
+//
+// 用于数据库管理工具的“数据原貌”产品决策：权限过滤仍然生效，
+// 但查询结果、导出文件与助手文本不再做脱敏。
+func NewDisabledMasker() *DataMasker {
+	return &DataMasker{rules: map[string]MaskAction{}, disabled: true}
+}
+
 // Version 返回规则版本（用于消息安全元数据）。
 func (m *DataMasker) Version() string {
-	if m == nil {
+	if m == nil || m.disabled {
 		return ""
 	}
 	return m.version
@@ -113,12 +124,12 @@ func (m *DataMasker) Version() string {
 
 // HasRules 判断是否存在列级规则。
 func (m *DataMasker) HasRules() bool {
-	return m != nil && len(m.rules) > 0
+	return m != nil && !m.disabled && len(m.rules) > 0
 }
 
 // ActionFor 返回指定列配置的动作；未配置返回空串。
 func (m *DataMasker) ActionFor(connID, schema, table, column string) MaskAction {
-	if m == nil {
+	if m == nil || m.disabled {
 		return ""
 	}
 	return m.rules[maskRuleKey(connID, schema, table, column)]
@@ -310,7 +321,7 @@ func maskEncodedTokens(text string) string {
 //
 // 用于 assistant/thinking/工具文本/导出正文；列级规则由 MaskQueryResult 处理。
 func (m *DataMasker) MaskText(text string) string {
-	if text == "" {
+	if text == "" || m == nil || m.disabled {
 		return text
 	}
 	normalized := normalizeMaskText(text)
@@ -370,6 +381,9 @@ func (m *DataMasker) maskWithAction(action MaskAction, value any) any {
 	if value == nil {
 		return nil
 	}
+	if m == nil || m.disabled {
+		return value
+	}
 	switch action {
 	case MaskRedact:
 		return "***"
@@ -427,8 +441,13 @@ func (m *DataMasker) MaskQueryOutput(
 		return
 	}
 	if scope != nil {
+		// 权限过滤始终生效：未授权列必须删除或拒绝。
 		out.Columns, out.Data = scope.FilterResultColumns(out.Columns, out.Data, tables)
 		out.Count = len(out.Data)
+	}
+	// 数据脱敏已按产品决策停用：保留原貌，仅执行权限过滤。
+	if m == nil || m.disabled {
+		return
 	}
 
 	for _, col := range out.Columns {
@@ -460,7 +479,7 @@ func (m *DataMasker) MaskQueryOutput(
 // 与 MaskQueryOutput 使用同一规则与“来源不明按 redact”策略：
 // 导出结果会直接落盘，没有结果过滤兜底，必须与查询结果同等对待。
 func (m *DataMasker) MaskTable(columns []string, rows [][]string, origins map[string]ResourceRef, tables []string) [][]string {
-	if m == nil || len(columns) == 0 || len(rows) == 0 {
+	if m == nil || m.disabled || len(columns) == 0 || len(rows) == 0 {
 		return rows
 	}
 	actions := make([]MaskAction, len(columns))

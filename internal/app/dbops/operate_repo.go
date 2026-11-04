@@ -160,9 +160,13 @@ func (r *operateRepo) ListColumnsForTable(dc *sqlx.DB, table string) []*columnRa
 	defer row.Close()
 	for row.Next() {
 		var c columnRawRow
-		if err := row.Scan(&c.Name, &c.Comment); err != nil {
+		var comment sql.NullString
+		if err := row.Scan(&c.Name, &c.Type, &comment); err != nil {
 			logger.PrintErr(err)
 			continue
+		}
+		if comment.Valid {
+			c.Comment = comment.String
 		}
 		columns = append(columns, &c)
 	}

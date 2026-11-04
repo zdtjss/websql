@@ -20,6 +20,7 @@ import (
 	connpkg "websql/internal/app/conn"
 	"websql/internal/app/monitor"
 	sqlhand "websql/internal/app/sql"
+	"websql/internal/app/system"
 	"websql/internal/audit"
 	"websql/internal/config"
 	"websql/internal/database"
@@ -99,6 +100,9 @@ func main() {
 	if err := migration.RunMigrations(mngtDB, config.Get().DB.DriverName, migrationSubFS, string(fullInitSQL)); err != nil {
 		log.Fatalf("[Main] 管理库迁移失败: %v", err)
 	}
+	if err := migration.EnsureLoginNameUniqueness(mngtDB, config.Get().DB.DriverName); err != nil {
+		log.Fatalf("[Main] 登录名唯一性校验失败: %v", err)
+	}
 
 	// 校验 DB schema 版本是否满足要求
 	if v, _ := migration.GetLatestAppliedVersion(mngtDB); v != "" && v < version.RequiredMigrationVersion {
@@ -133,13 +137,12 @@ func main() {
 	// 启动后台指标采集任务（每 60 秒采集一次，供历史趋势查询）
 	monitor.StartMetricCollector()
 
-	if config.Get().IsRemote && strings.TrimSpace(config.Get().Redis.Addr) != "" {
-		store.InitRedis(config.Get())
-	}
-
 	// 构建应用依赖容器（注入管理库 DB 到各业务包）
 	container := app.NewContainerWithDB(mngtDB)
 	defer container.Close()
+
+	// 启动时完成旧版扁平 AI 配置迁移（GET 接口保持只读）
+	system.MigrateLegacyAIConfig()
 
 	// 本地模式自动登录 local 用户
 	app.EnsureLocalUser()
@@ -159,6 +162,14 @@ func main() {
 
 	// 启动服务
 	go startServer(server, isHttps, port)
+
+	// Redis 初始化放到监听启动之后：不可达地址不能阻塞端口监听，
+	// 失败时自动降级本地缓存并后台重试。
+	if config.Get().IsRemote && strings.TrimSpace(config.Get().Redis.Addr) != "" {
+		safego.GoWithName("redis-init", func() {
+			store.InitRedis(config.Get())
+		})
+	}
 
 	// 检测是否启动成功（使用 safego 防止 goroutine panic 导致进程退出）
 	safego.GoWithName("startup-check", listenStartStatus)

@@ -80,17 +80,7 @@ func newReportDataSource(defaultConnID, userID string, schemas []SchemaRef) expo
 			return nil, nil
 		}
 
-		// 导出结果会直接落盘，没有结果过滤兜底：先按「输出列 → 原始列」脱敏，再交给渲染器。
-		masker := GetMaskerProvider().Get()
-		if masker == nil {
-			recordDegraded("masker", "export_blocked")
-			return nil, &PermissionError{Message: "脱敏规则不可用，已阻止导出数据"}
-		}
-		origins := resolveColumnOriginsForNames(ref.SQL, table.Headers, scope)
-		table.Rows = masker.MaskTable(table.Headers, table.Rows, origins, appperm.ExtractTablesFromSQL(ref.SQL))
-		if masker.HasRules() {
-			recordMaskEvent(StageExport, "report_table")
-		}
+		// 数据脱敏已停用：导出保持原貌，权限校验仍由上层完成。
 		return table, nil
 	}
 }
@@ -204,11 +194,9 @@ func exportByCodeAllowed(scope *PermissionScope) bool {
 	if !export.IsPythonAvailable() || !export.CodegenIsolationAvailable() {
 		return false
 	}
-	masker := GetMaskerProvider().Get()
-	if masker == nil {
-		return false // 规则存储不可用：按最严格策略不开放
-	}
-	return !masker.HasRules()
+	// 数据脱敏已停用：不存在需要向 Python 边界传递的生效脱敏策略，
+	// 仍保留完整连接权限、代码执行与 OS 隔离等其余门禁。
+	return true
 }
 
 // validateExportReadSQL 导出 SQL 的程序化校验（不依赖权限 Agent，确定性）：

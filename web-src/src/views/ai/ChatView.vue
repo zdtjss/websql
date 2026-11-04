@@ -377,7 +377,7 @@ import { getPromptList, delPrompt, getAIModels, requestSkillDegrade, extractProm
 import { listTableNames, listTableNamesBySchemas } from '@/api/conn'
 import { resolveSoleSchemaSelection } from './utils/schemaSelection'
 import { logout as logoutApi, canUseClassicView as canUseClassicViewApi, getSysMode } from '@/api/auth'
-import { getSystemConfig } from '@/api/system'
+import { getPublicConfig } from '@/api/system'
 import { unwrapResponse } from '@/utils/dbMetadata'
 import { useTheme } from '@/utils/useTheme'
 import { useStorage } from '@/composables/useStorage'
@@ -519,7 +519,7 @@ function handleSessionExpired(): void {
   canUseClassicView.value = false
   sessionStorage.removeItem('authentication')
   sessionStorage.removeItem('currentUser')
-  sessionStorage.removeItem('isRemote')
+  // 保留 isRemote/isDesktop：会话过期不代表部署模式变化
   nextTick(() => { loginDialogVisible.value = true })
 }
 
@@ -1220,7 +1220,10 @@ function logout(): void {
     ElMessage(resp.data.data)
     sessionStorage.removeItem('authentication')
     sessionStorage.removeItem('currentUser')
-    sessionStorage.removeItem('isRemote')
+    // 保留 isRemote/isDesktop：部署模式不随登录态变化
+    clearSession()
+    // 清空历史会话浮层与搜索状态，避免共享终端残留上一账号内容
+    chatHistory.clearSessionList()
   })
 }
 
@@ -1236,6 +1239,12 @@ function handleSessionExpiredEvent(event: Event): void {
 }
 
 function handleLoginSuccess(userData: any): void {
+  // 切换账号（非登出后登录）时清空上一用户的消息与会话列表，避免上下文继承
+  const previousUserId = currentUser.value?.id
+  if (previousUserId && userData?.id && previousUserId !== userData.id) {
+    clearSession()
+    chatHistory.clearSessionList()
+  }
   currentUser.value = userData
   loginSucc.value = true
   void loadConnList().then(() => {
@@ -1250,7 +1259,7 @@ function checkClassicViewPermission(): void {
   canUseClassicViewApi().then((resp) => {
     canUseClassicView.value = !!(resp.data.data && resp.data.data.allowed)
   }).catch(() => { canUseClassicView.value = false })
-  getSystemConfig().then((resp) => {
+  getPublicConfig().then((resp) => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       storage.setItem('defaultHomepage', resp.data.data.defaultHomepage)
     }

@@ -1138,6 +1138,13 @@ func (m *PermissionMiddleware) checkExecAccess(ctx context.Context, args string,
 
 	m.logInfo("exec_sql", "sql{%s}", safeSQLSummary(sql))
 
+	// 写范围校验必须先于任何快速路径：读范围可以由角色并集放大，
+	// 但写目标表只能由具备写能力的角色授予，不能由只读角色的连接级授权放大。
+	if err := m.checkWriteScope(sql); err != nil {
+		m.logDeny("exec_sql", "写范围拦截", permErrorObjects(err))
+		return "", err
+	}
+
 	if m.Scope.AllSchemasFull {
 		m.logAllow("exec_sql", "schema_full(fast)")
 		if err := m.verifyTablesStrict("exec_sql", appperm.ExtractTablesFromSQL(sql)); err != nil {
@@ -1593,6 +1600,38 @@ func (m *PermissionMiddleware) checkSelectColumnAccessWithStar(sql string, table
 	return err
 }
 
+// checkWriteScope 校验写操作的目标表是否落在「可写角色」的数据范围内。
+//
+// 写能力（allow_modify / ai_allow_modify）与写范围必须来自角色自身的授权：
+// 只读角色的 conn 级读范围不能因为另一个角色开启了写能力而变成可写。
+func (m *PermissionMiddleware) checkWriteScope(sql string) error {
+	analysis := appperm.AnalyzeSQL(sql, m.Scope.SchemaName)
+	if len(analysis.WriteTables) == 0 {
+		if sqlguard.IsReadOnlyStatement(sql) {
+			return nil // 纯读语句走读范围校验
+		}
+		// 非只读但无法解析写目标（fail-closed）：不允许在无法判定表范围时执行写操作。
+		return &PermissionError{
+			Message: "无法确定写操作的目标表，已按权限策略拒绝执行",
+			Objects: []string{},
+		}
+	}
+
+	for _, t := range analysis.WriteTables {
+		ref := t.Name
+		if t.Schema != "" {
+			ref = t.Schema + "." + t.Name
+		}
+		if !m.Scope.CanWriteTableRef(ref) {
+			return &PermissionError{
+				Message: fmt.Sprintf("当前可写角色未授予表 %s 的写权限", ref),
+				Objects: []string{ref},
+			}
+		}
+	}
+	return nil
+}
+
 // checkWriteColumnAccess 写操作的列级程序化校验。
 //
 // 用途：exec_sql 在 Permission Agent（LLM）允许后追加，与降级路径使用同一逻辑，
@@ -1614,11 +1653,11 @@ func (m *PermissionMiddleware) checkWriteColumnAccess(sql string) error {
 			deniedCols = append(deniedCols, "<unknown>."+col.ColumnName)
 			continue
 		}
-		switch m.Scope.GetTableAccessLevel(col.TableName) {
+		switch m.Scope.GetWriteTableAccessLevel(col.TableName) {
 		case "full":
 			continue
 		case "column":
-			if !m.Scope.IsColumnAllowed(col.TableName, col.ColumnName) {
+			if !m.Scope.IsWriteColumnAllowed(col.TableName, col.ColumnName) {
 				deniedCols = append(deniedCols, col.TableName+"."+col.ColumnName)
 			}
 		default:

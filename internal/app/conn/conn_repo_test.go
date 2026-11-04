@@ -41,6 +41,38 @@ func setupConnRepoDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
+func TestConnRepo_CountConnByName(t *testing.T) {
+	db := setupConnRepoDB(t)
+	repo := NewConnRepo(db)
+
+	// 同目录同名：排除自身后仍应命中另一条
+	count, err := repo.CountConnByName("正常连接", "d1", "")
+	if err != nil {
+		t.Fatalf("统计失败：%v", err)
+	}
+	if count != 1 {
+		t.Fatalf("同目录同名应命中 1 条，实际 %d", count)
+	}
+
+	// 排除自身后不再命中
+	count, err = repo.CountConnByName("正常连接", "d1", "c-dir")
+	if err != nil {
+		t.Fatalf("排除自身统计失败：%v", err)
+	}
+	if count != 0 {
+		t.Fatalf("排除自身后应为 0，实际 %d", count)
+	}
+
+	// 不同目录允许同名
+	count, err = repo.CountConnByName("正常连接", "d2", "")
+	if err != nil {
+		t.Fatalf("跨目录统计失败：%v", err)
+	}
+	if count != 0 {
+		t.Fatalf("不同目录应允许同名，实际命中 %d", count)
+	}
+}
+
 func TestConnRepo_NullParentIdIsReadable(t *testing.T) {
 	db := setupConnRepoDB(t)
 	repo := NewConnRepo(db)

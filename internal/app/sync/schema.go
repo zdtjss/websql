@@ -774,14 +774,6 @@ func ApplySchemaDiff(c *gin.Context) {
 	userVal, _ := c.Get("currentUser")
 	user, _ := userVal.(*admin.User)
 
-	// 权限校验：检查用户是否有写权限
-	if !config.IsLocalMode() {
-		if !permission.CheckUserCanModify(authorization) {
-			response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行 Schema 变更"})
-			return
-		}
-	}
-
 	// 引号感知切分，与数据同步保持一致
 	validatedSQLs := make([]string, 0, 16)
 	for _, s := range splitSQLStatements(sqlStr) {
@@ -794,6 +786,18 @@ func ApplySchemaDiff(c *gin.Context) {
 	if len(validatedSQLs) == 0 {
 		response.WriteOK(c, map[string]any{"success": true, "message": "没有有效的SQL语句"})
 		return
+	}
+
+	// 权限校验：逐条按「可写角色自身的数据范围」校验，避免只读角色的连接级授权
+	// 被另一个角色的写开关放大（与经典 SQL/AI 写路径同一口径）。
+	if !config.IsLocalMode() {
+		for _, s := range validatedSQLs {
+			permResult := permission.CheckAnalysisPermission(permission.AnalyzeSQL(s, schema), connId, authorization)
+			if !permResult.Allowed {
+				response.WriteOK(c, map[string]any{"success": false, "message": permResult.Message})
+				return
+			}
+		}
 	}
 
 	// 执行上下文：携带客户端取消信号，并提供整体超时保护

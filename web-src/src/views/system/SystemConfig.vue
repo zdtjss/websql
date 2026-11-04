@@ -80,6 +80,26 @@
         </TransitionGroup>
       </div>
 
+      <!-- AI 权限策略 -->
+      <div class="config-card" v-if="isRemote">
+        <div class="config-card-header">
+          <el-icon class="card-icon"><Lock /></el-icon>
+          <h3 class="card-title">AI 权限策略</h3>
+        </div>
+        <el-form label-width="140px" :model="systemConfig">
+          <el-form-item label="AI 写双门槛">
+            <el-switch v-model="systemConfig.aiPolicyEnforce" />
+            <div class="form-hint">
+              开启后，AI 写操作要求同一角色同时开启「允许修改数据」与「允许 AI 对话修改数据」。
+            </div>
+          </el-form-item>
+          <el-form-item label="角色能力版本">
+            <el-input-number v-model="systemConfig.roleCapabilityVersion" :min="1" :max="2" :step="1" />
+            <div class="form-hint">版本 2 支持角色级独立 AI 写开关；修改后需重新进入角色管理页。</div>
+          </el-form-item>
+        </el-form>
+      </div>
+
       <!-- 外部用户认证 -->
       <div class="config-card" v-if="isRemote">
         <div class="config-card-header">
@@ -98,11 +118,11 @@
         </el-form>
       </div>
 
-      <!-- IP 访问控制 -->
-      <div class="config-card" v-if="isRemote">
+      <!-- IP 访问控制：仅本地模式生效；远程模式由反向代理/网关控制来源 IP -->
+      <div class="config-card" v-if="!isRemote">
         <div class="config-card-header">
           <el-icon class="card-icon"><Lock /></el-icon>
-          <h3 class="card-title">IP 访问控制</h3>
+          <h3 class="card-title">IP 访问控制（仅本地模式生效）</h3>
         </div>
         <el-form label-width="120px" :model="systemConfig">
           <el-form-item label="允许的 IP 列表" :error="ipError">
@@ -110,7 +130,7 @@
               placeholder="请输入 IP 地址，每行一个"
               :class="{ 'is-error': ipError }" />
             <div class="form-hint">
-              每行一个 IP 地址，例如：127.0.0.1 或 192.168.1.100
+              每行一个 IP 地址，例如：127.0.0.1 或 ::1。远程模式不读取该白名单。
             </div>
           </el-form-item>
         </el-form>
@@ -264,6 +284,7 @@
 
 <script setup>
 import { getSystemConfig, saveSystemConfig, saveAIModel, deleteAIModel, selectAIModel, testOutterUser } from '@/api/system'
+import { unwrap } from '@/utils/apiResult'
 import { testAIConfig } from '@/api/ai'
 import { saveUserBio } from '@/api/auth'
 import { client, parsers, server } from '@passwordless-id/webauthn'
@@ -294,15 +315,21 @@ const systemConfig = ref({
   redisAddr: '',
   redisPassword: '',
   redisDB: 0,
-  defaultHomepage: 'ai'
+  defaultHomepage: 'ai',
+  roleCapabilityVersion: 1,
+  aiPolicyEnforce: false
 })
 
-// IP 格式验证
+// IP 格式验证：兼容 IPv6 方括号写法（[::1]），保存前统一去掉方括号
+const normalizeIpLine = (line) => {
+  const value = String(line || '').trim()
+  return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1).trim() : value
+}
 const ipError = computed(() => {
   const text = systemConfig.value.allowedIP
   if (!text || !text.trim()) return ''
   const lines = text.split('\n').map(l => l.trim()).filter(l => l !== '')
-  const ipRegex = /^(::1|::|(\d{1,3}\.){3}\d{1,3}([\/\d]+)?|[0-9a-fA-F:]+)$/
+  const ipRegex = /^(::1|::|(\d{1,3}\.){3}\d{1,3}([\/\d]+)?|\[[0-9a-fA-F:]+\]|[0-9a-fA-F:]+)$/
   for (const line of lines) {
     if (!ipRegex.test(line)) {
       return `IP 格式错误："${line}"`
@@ -401,9 +428,11 @@ const loadSystemConfig = () => {
       systemConfig.value.redisPassword = data.redisPassword || ''
       systemConfig.value.redisDB = data.redisDB !== undefined ? data.redisDB : 0
       systemConfig.value.defaultHomepage = data.defaultHomepage || 'ai'
+      systemConfig.value.roleCapabilityVersion = data.roleCapabilityVersion ?? 1
+      systemConfig.value.aiPolicyEnforce = !!data.aiPolicyEnforce
 
       if (data.allowedIP && Array.isArray(data.allowedIP)) {
-        systemConfig.value.allowedIP = data.allowedIP.join('\n')
+        systemConfig.value.allowedIP = data.allowedIP.map(normalizeIpLine).join('\n')
       }
 
       if (data.aiModelList && Array.isArray(data.aiModelList)) {
@@ -419,30 +448,38 @@ const loadSystemConfig = () => {
   })
 }
 
-const saveAllConfig = () => {
+const saveAllConfig = async () => {
   if (ipError.value) {
     ElMessage.warning('请修正 IP 格式错误后再保存')
     return
   }
   savingAll.value = true
-  const ips = systemConfig.value.allowedIP.split('\n').map(ip => ip.trim()).filter(ip => ip !== '')
+  const ips = systemConfig.value.allowedIP
+    .split('\n')
+    .map(normalizeIpLine)
+    .filter(ip => ip !== '')
 
-  saveSystemConfig({
-    aiModelList: aiModelList.value,
-    selectedModelId: systemConfig.value.selectedModelId,
-    outterUser: systemConfig.value.outterUser,
-    allowedIP: ips,
-    redisAddr: systemConfig.value.redisAddr,
-    redisPassword: systemConfig.value.redisPassword,
-    redisDB: systemConfig.value.redisDB,
-    defaultHomepage: systemConfig.value.defaultHomepage
-  }).then(() => {
+  try {
+    unwrap(await saveSystemConfig({
+      aiModelList: aiModelList.value,
+      selectedModelId: systemConfig.value.selectedModelId,
+      outterUser: systemConfig.value.outterUser,
+      allowedIP: ips,
+      redisAddr: systemConfig.value.redisAddr,
+      redisPassword: systemConfig.value.redisPassword,
+      redisDB: systemConfig.value.redisDB,
+      defaultHomepage: systemConfig.value.defaultHomepage,
+      roleCapabilityVersion: systemConfig.value.roleCapabilityVersion,
+      aiPolicyEnforce: systemConfig.value.aiPolicyEnforce
+    }))
     ElMessage.success("保存成功")
     storage.setItem('defaultHomepage', systemConfig.value.defaultHomepage)
     emit('config-saved', systemConfig.value)
-  }).finally(() => {
+  } catch (e) {
+    ElMessage.error(e?.message || '保存失败')
+  } finally {
     savingAll.value = false
-  })
+  }
 }
 
 const showAddModelDialog = () => {

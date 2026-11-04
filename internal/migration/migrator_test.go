@@ -122,8 +122,9 @@ func TestRunMigrations_PackagedFreshDB(t *testing.T) {
 	if err := db.Get(&applied, "select count(1) from t_schema_migration"); err != nil {
 		t.Fatalf("读取迁移记录失败：%v", err)
 	}
-	if applied != 5 {
-		t.Fatalf("应登记 5 个迁移版本，实际 %d", applied)
+	// 0001..0009：baseline + 8 个增量脚本
+	if applied != 9 {
+		t.Fatalf("应登记 9 个迁移版本，实际 %d", applied)
 	}
 
 	var row struct {

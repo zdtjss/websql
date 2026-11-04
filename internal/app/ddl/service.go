@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -172,9 +173,9 @@ func PlanHandler(c *gin.Context) {
 	}
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	db := conn.GetConn(req.ConnId, authorization)
-	if db == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用")
+	db, connErr := conn.GetConnWithReason(req.ConnId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
 		return
 	}
 
@@ -217,9 +218,9 @@ func ApplyHandler(c *gin.Context) {
 	userVal, _ := c.Get("currentUser")
 	user, _ := userVal.(*admin.User)
 
-	db := conn.GetConn(req.ConnId, authorization)
-	if db == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用")
+	db, connErr := conn.GetConnWithReason(req.ConnId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
 		return
 	}
 
@@ -230,7 +231,7 @@ func ApplyHandler(c *gin.Context) {
 	}
 	// 只读连接：DDL 属于写操作，需处于解锁窗口内
 	if allowed, reason := conn.CheckWritable(req.ConnId); !allowed {
-		response.WriteErr(c, 200, 403, reason)
+		response.WriteErr(c, http.StatusForbidden, http.StatusForbidden, reason)
 		return
 	}
 	if len(plan.Statements) == 0 {

@@ -16,6 +16,10 @@ export interface Role {
   /** 权限摘要（并发编辑乐观锁） */
   permissionDigest?: string
   powerList?: RolePower[]
+  /** 内置角色（不允许删除） */
+  isBuiltin?: number
+  /** 管理员角色（可进入管理面，数据权限全量） */
+  isAdmin?: number
 }
 
 /** 角色权限项（与后端 PowerDetail 对齐） */
@@ -47,7 +51,6 @@ export interface SaveRoleParams {
 export interface RoleCapability {
   capabilityVersion: number
   aiPolicyEnforce: boolean
-  maskVersion?: string
 }
 
 /** 权限树查询参数 */
@@ -75,6 +78,20 @@ export interface FindUserParams {
   roleId?: string
 }
 
+/** 用户分页查询参数（管理员全量浏览） */
+export interface FindUserPageParams extends FindUserParams {
+  page: number
+  pageSize: number
+}
+
+/** 用户分页结果 */
+export interface FindUserPageResult {
+  list: User[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 /** 用户信息 */
 export interface User {
   id?: string
@@ -94,6 +111,20 @@ export interface UserBase {
   [key: string]: unknown
 }
 
+/** 合并后的有效权限（管理员查看） */
+export interface EffectivePermission {
+  userId: string
+  userName: string
+  loginName: string
+  isAdmin: boolean
+  allowModify: boolean
+  aiAllowModify: boolean
+  aiModifyEffective: boolean
+  aiPolicyEnforce: boolean
+  roles: Role[]
+  powers: RolePower[]
+}
+
 /** 系统配置 */
 export interface SystemConfig {
   outterUser?: string
@@ -104,7 +135,14 @@ export interface SystemConfig {
   defaultHomepage?: string
   allowedIP?: string[] | string
   aiModelList?: AIModel[]
+  roleCapabilityVersion?: number
+  aiPolicyEnforce?: boolean
   [key: string]: unknown
+}
+
+/** 公开配置（仅 defaultHomepage，无需管理员） */
+export interface PublicSystemConfig {
+  defaultHomepage?: string
 }
 
 /** 保存 AI 模型参数 */
@@ -181,6 +219,11 @@ export function findUser(params: FindUserParams): Promise<AxiosResponse<ApiRespo
   return http.get('/findUser', { params })
 }
 
+/** 管理员全量分页查询用户，对应 GET /findUser?page=&pageSize= */
+export function findUserPage(params: FindUserPageParams): Promise<AxiosResponse<ApiResponse<FindUserPageResult>>> {
+  return http.get('/findUser', { params })
+}
+
 /** 保存用户，对应 POST /saveUser */
 export function saveUser(row: User): Promise<AxiosResponse<ApiResponse>> {
   return http.post('/saveUser', row)
@@ -201,9 +244,24 @@ export function findUserByLoginName(loginName: string): Promise<AxiosResponse<Ap
   return http.get('/findUserBase', { params: { loginName } })
 }
 
-/** 获取系统配置，对应 GET /system/config/all/get */
+/** 获取系统配置，对应 GET /system/config/all/get（管理员） */
 export function getSystemConfig(): Promise<AxiosResponse<ApiResponse<SystemConfig>>> {
   return http.get('/system/config/all/get')
+}
+
+/** 获取公开配置，对应 GET /system/config/public（登录用户） */
+export function getPublicConfig(): Promise<AxiosResponse<ApiResponse<PublicSystemConfig>>> {
+  return http.get('/system/config/public')
+}
+
+/** 按角色查询绑定用户，对应 GET /findUserByRole */
+export function getUsersByRole(roleId: string): Promise<AxiosResponse<ApiResponse<User[]>>> {
+  return http.get('/findUserByRole', { params: { roleId } })
+}
+
+/** 查询用户合并后的有效权限，对应 GET /userEffectivePermissions */
+export function getUserEffectivePermissions(userId: string): Promise<AxiosResponse<ApiResponse<EffectivePermission>>> {
+  return http.get('/userEffectivePermissions', { params: { userId } })
 }
 
 /** 保存系统配置，对应 POST /system/config/all/save */

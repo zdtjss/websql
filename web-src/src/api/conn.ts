@@ -115,6 +115,21 @@ export function showTree(params: ShowTreeParams): Promise<AxiosResponse<ApiRespo
   return http.get('/showTree', { params })
 }
 
+/** 当前用户对指定表的有效访问级别（full / column / none） */
+export interface TableAccessResult {
+  level: 'full' | 'column' | 'none'
+  allowedColumns: string[]
+}
+
+/** 查询表访问级别，对应 GET /tableAccess */
+export function getTableAccess(params: {
+  connId: string
+  schema: string
+  table: string
+}): Promise<AxiosResponse<ApiResponse<TableAccessResult>>> {
+  return http.get('/tableAccess', { params })
+}
+
 /** 列出表，对应 GET /listTable */
 export function listTable(connId: string, schema: string): Promise<AxiosResponse> {
   return http.get('/listTable', { params: { connId, schema } })

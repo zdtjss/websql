@@ -190,10 +190,10 @@
             style="width: 100%"
           />
         </el-form-item>
-        <el-form-item label="用户名">
+        <el-form-item v-if="connForm.dbType !== 'sqlite'" label="用户名">
           <el-input v-model="connForm.user" placeholder="请输入用户名" />
         </el-form-item>
-        <el-form-item label="密码">
+        <el-form-item v-if="connForm.dbType !== 'sqlite'" label="密码">
           <el-input
             v-model="connForm.pwd"
             type="password"
@@ -617,6 +617,14 @@ const connForm = ref({ id: '', name: '', dbType: 'mysql', parentId: '', user: ''
 const hasSavedSsh = ref(false)
 
 const connDialogTitle = computed(() => (connForm.value.id ? '编辑连接' : '添加连接'))
+
+// SQLite 使用文件路径，不需要用户名/密码；切换类型时清空避免把旧值带入提交
+watch(() => connForm.value.dbType, (dbType) => {
+  if (dbType === 'sqlite') {
+    connForm.value.user = ''
+    connForm.value.pwd = ''
+  }
+})
 
 // 「所属目录」下拉数据：仅目录节点
 const dirOptions = computed(() => {

@@ -17,6 +17,7 @@ type ConnRepo interface {
 	InsertConn(cfg *ConnCfg, dbSchema, dbVersion string) (string, error)
 	UpdateConn(cfg *ConnCfg, dbSchema, dbVersion string) error
 	UpdateConnWithPwd(cfg *ConnCfg, dbSchema, dbVersion string) error
+	CountConnByName(name, parentId, excludeId string) (int, error)
 	FindConnByIdWithParent(id string) ([]ConnCfg, error)
 	DeleteConn(id string) error
 	FindConnList(parentId string, userPower *admin.UserPower) ([]ConnCfg, error)
@@ -33,6 +34,19 @@ type connRepo struct {
 // NewConnRepo 创建 ConnRepo 实例，接受 *sqlx.DB 以便未来依赖注入
 func NewConnRepo(db *sqlx.DB) ConnRepo {
 	return &connRepo{db: db}
+}
+
+// CountConnByName 统计同目录下的同名连接数；excludeId 非空时排除自身（编辑场景）。
+func (r *connRepo) CountConnByName(name, parentId, excludeId string) (int, error) {
+	var count int
+	query := "select count(*) from t_conn where trim(name) = ? and coalesce(parent_id, '') = ?"
+	args := []any{strings.TrimSpace(name), parentId}
+	if excludeId != "" {
+		query += " and id <> ?"
+		args = append(args, excludeId)
+	}
+	err := r.db.Get(&count, query, args...)
+	return count, err
 }
 
 func (r *connRepo) InsertConn(cfg *ConnCfg, dbSchema, dbVersion string) (string, error) {

@@ -58,11 +58,12 @@
 </template>
 
 <script setup>
-import { ref, provide, onMounted } from 'vue'
+import { ref, provide, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { exportUserConfigSql } from '@/api/system'
+import { getSysMode } from '@/api/auth'
 import RolePermission from './RolePermission.vue'
 import PromptManagement from './PromptManagement.vue'
 import UserManagement from './UserManagement.vue'
@@ -109,9 +110,27 @@ const currentUser = ref(
 // 提供给子组件 SystemConfig.vue 使用
 provide('currentUser', currentUser)
 
-// 页面卸载时清理 sessionStorage
+// 部署模式兜底：即使 sessionStorage 暂时缺失，也以 /sysMode 结果为准。
+// 该值只决定「角色管理/用户管理」Tab 是否展示，不作为权限边界。
 onMounted(() => {
-  // 可选：在页面卸载时清理，或者保留以便刷新页面后仍能使用
+  getSysMode().then((resp) => {
+    const data = resp.data?.data ?? resp.data
+    if (data && typeof data.isRemote !== 'undefined') {
+      isRemote.value = !!data.isRemote
+      sessionStorage.setItem('isRemote', String(!!data.isRemote))
+    }
+  }).catch(() => { /* 保持现有值 */ })
+  window.addEventListener('session-expired', handleSessionExpired)
+})
+
+function handleSessionExpired(event) {
+  const message = event.detail?.message || '登录已过期，请重新登录'
+  ElMessage.warning(message)
+  router.push('/')
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('session-expired', handleSessionExpired)
 })
 </script>
 

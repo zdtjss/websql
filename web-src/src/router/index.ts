@@ -16,7 +16,7 @@ const routes: RouteRecordRaw[] = [
     path: '/system-management',
     name: 'SystemManagement',
     component: () => import('@/views/system/SystemManagement.vue'),
-    meta: { title: '系统管理' }
+    meta: { title: '系统管理', requiresAdmin: true }
   },
   {
     path: '/classical',
@@ -49,7 +49,7 @@ async function getDefaultHomepage(): Promise<string> {
   try {
     const auth = sessionStorage.getItem('authentication') || ''
     const apiBase = import.meta.env.VITE_API_URL || ''
-    const resp = await fetch(apiBase + '/system/config/all/get', {
+    const resp = await fetch(apiBase + '/system/config/public', {
       headers: { 'Authorization': auth }
     })
     if (resp.ok) {
@@ -66,9 +66,17 @@ async function getDefaultHomepage(): Promise<string> {
 }
 
 async function checkClassicViewPermission(): Promise<boolean> {
-  // 本地/桌面模式直接允许
-  if (sessionStorage.getItem("isRemote") !== "true") {
+  // 桌面模式直接允许（isDesktop 是权威判据）
+  if (sessionStorage.getItem('isDesktop') === 'true') {
     return true
+  }
+  // 本地 Web 模式（明确 isRemote=false）直接允许
+  if (sessionStorage.getItem('isRemote') === 'false') {
+    return true
+  }
+  // 远程模式或部署模式未知：必须先有登录态，再向后端确认
+  if (!sessionStorage.getItem('authentication')) {
+    return false
   }
   try {
     const auth = sessionStorage.getItem('authentication') || ''
@@ -85,6 +93,10 @@ async function checkClassicViewPermission(): Promise<boolean> {
 }
 
 router.beforeEach(async (to, _from) => {
+  if (to.meta.requiresAdmin) {
+    const user = JSON.parse(sessionStorage.getItem('currentUser') || '{}')
+    if (!user.isAdmin) return '/'
+  }
   if (to.meta.requiresClassicView) {
     const allowed = await checkClassicViewPermission()
     if (allowed) return true

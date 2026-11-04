@@ -42,6 +42,8 @@ func AuthMiddleware() gin.HandlerFunc {
 			"/api/logout",
 			"/api/healthCheck",
 			"/api/sysMode",
+			// 仅包含 defaultHomepage 等非敏感字段，登录前路由守卫也需要读取
+			"/api/system/config/public",
 		}
 
 		for _, skipPath := range skipPaths {

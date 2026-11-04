@@ -54,7 +54,11 @@ func queryAndWrite(c *gin.Context, table, schema string, connId string, authoriz
 		safeTable = fmt.Sprintf("`%s`", table)
 	}
 
-	connCtx := conn.GetConn(connId, authorization)
+	connCtx, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return
+	}
 	rows, err := connCtx.Query("SELECT * from " + safeTable)
 	if err != nil {
 		log.Printf("查询失败: %v", err)
@@ -135,7 +139,6 @@ func queryAndWrite(c *gin.Context, table, schema string, connId string, authoriz
 			colType := colTypeMap[allColumns[i]]
 			row = append(row, *database.ConvertCol(&driverName, &colType, &values[i], false))
 		}
-
 		count++
 		streamWriter.SetRow("A"+strconv.Itoa(count), row)
 	}
@@ -172,7 +175,11 @@ func ExportXlsxBySql(c *gin.Context) {
 	}
 
 	if schema == "" && connId != "" {
-		dc := conn.GetConn(connId, authorization)
+		dc, connErr := conn.GetConnWithReason(connId, authorization)
+		if connErr != nil {
+			conn.WriteConnError(c, connErr)
+			return
+		}
 		switch dc.DriverName() {
 		case "mysql", "mariadb":
 			dc.Get(&schema, "SELECT DATABASE()")
@@ -215,7 +222,11 @@ func ExportXlsxBySql(c *gin.Context) {
 func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName string, connId string, authorization string) error {
 	log.Println("正在导出SQL: ", sqlStr)
 
-	connCtx := conn.GetConn(connId, authorization)
+	connCtx, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return connErr
+	}
 	rows, err := connCtx.Query(sqlStr)
 	if err != nil {
 		log.Printf("查询失败: %v", err)
@@ -299,7 +310,6 @@ func queryAndWriteBySql(c *gin.Context, sqlStr string, schema string, tableName 
 			colType := colTypeMap[col]
 			row = append(row, *database.ConvertCol(&driverName, &colType, &values[i], false))
 		}
-
 		count++
 		streamWriter.SetRow("A"+strconv.Itoa(count), row)
 	}

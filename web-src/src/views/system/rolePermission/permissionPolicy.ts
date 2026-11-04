@@ -125,14 +125,18 @@ export function computeImplicitKeys(workingKeys: Iterable<string>, treeKeys: Set
   return implicit
 }
 
-/** 树展示需要勾选的 key：working + 隐式父级（仅限当前树中存在的节点）。 */
+/**
+ * 树展示需要勾选的 key：只返回 working 中真实存在的 key。
+ *
+ * 隐式父级（有下级但自身未授权）不再进入 checkedKeys，避免被渲染成「完全勾选」
+ * 与「子级已选」标签自相矛盾；这些 key 由 implicitKeys 单独标注。
+ */
 export function displayCheckedKeys(workingKeys: Iterable<string>, treeKeys: Set<string>): string[] {
   const workingSet = new Set(workingKeys)
-  const implicit = computeImplicitKeys(workingSet, treeKeys)
   const out: string[] = []
   for (const key of treeKeys) {
     if (key.startsWith('dir::')) continue
-    if (workingSet.has(key) || implicit.has(key)) out.push(key)
+    if (workingSet.has(key)) out.push(key)
   }
   return out
 }

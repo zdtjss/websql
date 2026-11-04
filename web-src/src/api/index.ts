@@ -49,13 +49,20 @@ http.interceptors.response.use(
       const isLoginExpired = !!sessionStorage.getItem('authentication')
       sessionStorage.removeItem('authentication')
       sessionStorage.removeItem('currentUser')
-      sessionStorage.removeItem('isRemote')
+      // 部署模式事实（isRemote/isDesktop）不随会话清理，避免系统管理 Tab 消失或路由守卫放宽
       dispatchSessionExpired({
         detail: {
           message: isLoginExpired ? (msg || '登录已过期，请重新登录') : ''
         }
       })
       return Promise.reject(new Error(''))
+    }
+    // 业务层权限拒绝（HTTP 200 + code 403）：只提示，不清会话
+    if (code === 403) {
+      if (!response.config?.skipGlobalError) {
+        ElMessage({ message: sanitizeError(msg) || '无权访问', type: 'warning' })
+      }
+      return Promise.reject(new Error(sanitizeError(msg) || '无权访问'))
     }
     if (code === 500) {
       // 调用方可通过 config.skipGlobalError 跳过全局弹窗，由调用方 handleError 统一展示
@@ -83,7 +90,7 @@ http.interceptors.response.use(
         const msg = error.response.data?.msg || '登录已过期，请重新登录'
         sessionStorage.removeItem('authentication')
         sessionStorage.removeItem('currentUser')
-        sessionStorage.removeItem('isRemote')
+        // 部署模式事实不随会话清理
         dispatchSessionExpired({
           detail: {
             message: isLoginExpired ? msg : ''

@@ -260,7 +260,7 @@
 </template>
 
 <script setup>
-import { showTree } from '@/api/conn'
+import { showTree, getTableAccess } from '@/api/conn'
 import { listDbObjects } from '@/api/sql'
 import {
   loginByPassword,
@@ -271,7 +271,7 @@ import {
   saveUserBio as saveUserBioApi,
   getSysMode,
 } from '@/api/auth'
-import { getSystemConfig } from '@/api/system'
+import { getPublicConfig } from '@/api/system'
 import { useDbSchemaStore } from '@/stores/dbSchema'
 import { useStorage } from '@/composables/useStorage'
 const dbSchemaProxy = useDbSchemaStore()
@@ -415,7 +415,7 @@ function openAiChat() {
 
 function navigateAfterLogin() {
   resetDefaultHomepageCache()
-  getSystemConfig().then(resp => {
+  getPublicConfig().then(resp => {
     if (resp.data && resp.data.data && resp.data.data.defaultHomepage) {
       const homepage = resp.data.data.defaultHomepage
       storage.setItem('defaultHomepage', homepage)
@@ -1036,7 +1036,31 @@ function patchTabConnNames() {
   })
 }
 
+/**
+ * 列级权限提示：经典视图按「列级降级为表级」放行。
+ * 首次打开仅有列级授权的表时提示一次（sessionStorage 按表去重，刷新/晚些再开不再打扰）。
+ */
+function maybeShowColumnLevelHint(connId, schema, tableName) {
+  if (!connId || !tableName) return
+  const hintKey = `classic_column_only_hint::${connId}::${schema || ''}::${tableName}`
+  if (sessionStorage.getItem(hintKey) === '1') return
+  getTableAccess({ connId, schema: schema || '', table: tableName })
+    .then((resp) => {
+      const data = resp.data && resp.data.data
+      if (!data || data.level !== 'column') return
+      sessionStorage.setItem(hintKey, '1')
+      ElMessage({
+        type: 'warning',
+        duration: 8000,
+        showClose: true,
+        message: `表「${tableName}」当前仅有列级授权：列级限制只约束 AI 对话，经典视图与 SQL 编辑器按表级授权放行。`,
+      })
+    })
+    .catch(() => { /* 权限提示失败不影响正常浏览 */ })
+}
+
 function openDataBrowser({ connId, schema, tableName, dbType, connName }) {
+  maybeShowColumnLevelHint(connId, schema, tableName)
   const tabId = 'databrowser-' + connId + '-' + schema + '-' + tableName
   const resolvedConnName = connName || connNameMap[connId] || ''
   const existing = editableTabs.value.find(t => t.tabId === tabId)

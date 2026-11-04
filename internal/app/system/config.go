@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,9 @@ type SystemConfigAll struct {
 	RedisPassword   string        `json:"redisPassword"`
 	RedisDB         int           `json:"redisDB"`
 	DefaultHomepage string        `json:"defaultHomepage"`
+	// AI 权限策略：指针用于区分「未提交」与显式关闭/设置。
+	RoleCapabilityVersion *int  `json:"roleCapabilityVersion,omitempty"`
+	AIPolicyEnforce       *bool `json:"aiPolicyEnforce,omitempty"`
 }
 
 type AIModelItem struct {
@@ -308,17 +312,38 @@ func SaveOutterUserToDB(url string) {
 func GetAllowedIPFromDB() []string {
 	ipJSON := GetSystemConfigValue("system.allowedIP")
 	if ipJSON == "" {
-		return []string{"[::1]", "127.0.0.1"}
+		return []string{"::1", "127.0.0.1"}
 	}
 	var ips []string
 	err := json.Unmarshal([]byte(ipJSON), &ips)
 	if err != nil {
-		return []string{"[::1]", "127.0.0.1"}
+		return []string{"::1", "127.0.0.1"}
 	}
-	return ips
+	// 兼容存量数据：历史播种值带方括号（[::1]），统一归一化为裸地址。
+	return normalizeAllowedIPs(ips)
+}
+
+// normalizeAllowedIPs 去除方括号、首尾空白与重复项，统一存储为裸 IP。
+// IPv6 的 [::1] 与 ::1 视为同一地址，避免前端校验与白名单匹配双重口径。
+func normalizeAllowedIPs(ips []string) []string {
+	out := make([]string, 0, len(ips))
+	seen := make(map[string]bool, len(ips))
+	for _, raw := range ips {
+		ip := strings.TrimSpace(raw)
+		if strings.HasPrefix(ip, "[") && strings.HasSuffix(ip, "]") {
+			ip = strings.TrimSpace(ip[1 : len(ip)-1])
+		}
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	return out
 }
 
 func SaveAllowedIPToDB(ips []string) {
+	ips = normalizeAllowedIPs(ips)
 	ipJSON, err := json.Marshal(ips)
 	if err != nil {
 		log.Printf("[SaveAllowedIPToDB] 序列化IP列表失败: %v", err)
@@ -470,6 +495,15 @@ func GetSystemConfig(c *gin.Context) {
 	response.WriteOK(c, configs)
 }
 
+// GetPublicConfigHandler 低权限配置：仅返回登录页/路由守卫需要的非敏感字段。
+//
+// 不能复用 /system/config/all/get：后者包含 AI apiKey、Redis 口令等敏感配置。
+func GetPublicConfigHandler(c *gin.Context) {
+	response.WriteOK(c, gin.H{
+		"defaultHomepage": GetSystemConfigValue("system.defaultHomepage"),
+	})
+}
+
 func GetAllSystemConfigHandler(c *gin.Context) {
 	logger.PrintErr(errors.New("开始获取所有系统配置"))
 
@@ -495,6 +529,9 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 			cfg.AIModelList = []AIModelItem{}
 		}
 	} else {
+		// 只读回退：旧版扁平配置尚未迁移时，在内存中组装一个模型项。
+		// 真正的迁移（写 ai.modelList 并删除旧键）由启动时 MigrateLegacyAIConfig 完成，
+		// GET 接口不再产生任何写副作用。
 		provider := GetSystemConfigValue("ai.provider")
 		baseURL := GetSystemConfigValue("ai.baseUrl")
 		model := GetSystemConfigValue("ai.model")
@@ -507,39 +544,26 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 			if temperatureStr != "" {
 				fmt.Sscanf(temperatureStr, "%f", &temperature)
 			}
-			enableThinking := enableThinkingStr == "true"
-
-			migratedModel := AIModelItem{
-				Id:             "migrated_" + fmt.Sprintf("%d", time.Now().Unix()),
+			cfg.AIModelList = []AIModelItem{{
+				Id:             "legacy_" + fmt.Sprintf("%d", time.Now().Unix()),
 				Provider:       provider,
 				BaseURL:        baseURL,
 				Model:          model,
 				ApiKey:         apiKey,
 				Temperature:    temperature,
-				EnableThinking: enableThinking,
+				EnableThinking: enableThinkingStr == "true",
 				IsDefault:      true,
-			}
-			cfg.AIModelList = []AIModelItem{migratedModel}
-			cfg.SelectedModelId = migratedModel.Id
-
-			modelListJSON, _ := json.Marshal(cfg.AIModelList)
-			SaveSystemConfig(&SystemConfigSave{
-				ConfigKey: "ai.modelList", ConfigValue: string(modelListJSON), ConfigType: "ai", Remark: "AI 模型配置列表",
-			})
-			SaveSystemConfig(&SystemConfigSave{
-				ConfigKey: "ai.selectedModelId", ConfigValue: cfg.SelectedModelId, ConfigType: "ai", Remark: "当前选中的模型ID",
-			})
-
-			if db := getDB(); db != nil {
-				db.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.enableThinking')")
-				logger.PrintErr(errors.New("已删除旧的 AI 配置字段"))
-			}
-
-			logger.PrintErr(errors.New("已将旧 AI 配置迁移到模型列表"))
+			}}
+			cfg.SelectedModelId = cfg.AIModelList[0].Id
 		} else {
 			cfg.AIModelList = []AIModelItem{}
 		}
 	}
+
+	version := admin.RoleCapabilityVersion()
+	enforce := admin.AIPolicyEnforced()
+	cfg.RoleCapabilityVersion = &version
+	cfg.AIPolicyEnforce = &enforce
 
 	logger.PrintErr(fmt.Errorf("获取模型列表：count=%d", len(cfg.AIModelList)))
 
@@ -549,13 +573,53 @@ func GetAllSystemConfigHandler(c *gin.Context) {
 		var ips []string
 		err := json.Unmarshal([]byte(ipStr), &ips)
 		if err == nil {
-			cfg.AllowedIP = ips
+			cfg.AllowedIP = normalizeAllowedIPs(ips)
 		}
 	}
 
 	// 不打印 cfg 全文：其中包含 AI apiKey、Redis 口令等敏感字段
 	logger.PrintErr(fmt.Errorf("返回系统配置：aiModelCount=%d, allowedIPCount=%d", len(cfg.AIModelList), len(cfg.AllowedIP)))
 	response.WriteOK(c, cfg)
+}
+
+// MigrateLegacyAIConfig 在启动时把旧版扁平 AI 配置迁移到模型列表。
+// 独立于 GET 接口，避免任意登录用户通过读取配置触发写库/删键。
+func MigrateLegacyAIConfig() {
+	modelListJSON := GetSystemConfigValue("ai.modelList")
+	if modelListJSON != "" && modelListJSON != "[]" {
+		return
+	}
+	provider := GetSystemConfigValue("ai.provider")
+	baseURL := GetSystemConfigValue("ai.baseUrl")
+	model := GetSystemConfigValue("ai.model")
+	if provider == "" && baseURL == "" && model == "" {
+		return
+	}
+	temperature := float32(0.7)
+	if s := GetSystemConfigValue("ai.temperature"); s != "" {
+		fmt.Sscanf(s, "%f", &temperature)
+	}
+	migrated := []AIModelItem{{
+		Id:             "migrated_" + fmt.Sprintf("%d", time.Now().Unix()),
+		Provider:       provider,
+		BaseURL:        baseURL,
+		Model:          model,
+		ApiKey:         GetSystemConfigValue("ai.apiKey"),
+		Temperature:    temperature,
+		EnableThinking: GetSystemConfigValue("ai.enableThinking") == "true",
+		IsDefault:      true,
+	}}
+	migratedJSON, _ := json.Marshal(migrated)
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "ai.modelList", ConfigValue: string(migratedJSON), ConfigType: "ai", Remark: "AI 模型配置列表",
+	})
+	SaveSystemConfig(&SystemConfigSave{
+		ConfigKey: "ai.selectedModelId", ConfigValue: migrated[0].Id, ConfigType: "ai", Remark: "当前选中的模型ID",
+	})
+	if db := getDB(); db != nil {
+		db.Exec("DELETE FROM t_system_config WHERE config_key IN ('ai.provider', 'ai.baseUrl', 'ai.model', 'ai.apiKey', 'ai.temperature', 'ai.enableThinking')")
+	}
+	logger.PrintErr(errors.New("已将旧 AI 配置迁移到模型列表"))
 }
 
 func SaveAllSystemConfigHandler(c *gin.Context) {
@@ -581,7 +645,7 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 		ConfigKey: "system.outterUser", ConfigValue: cfg.OutterUser, ConfigType: "system", Remark: "外部用户认证接口 URL",
 	})
 
-	ipJSON, _ := json.Marshal(cfg.AllowedIP)
+	ipJSON, _ := json.Marshal(normalizeAllowedIPs(cfg.AllowedIP))
 	SaveSystemConfig(&SystemConfigSave{
 		ConfigKey: "system.allowedIP", ConfigValue: string(ipJSON), ConfigType: "system", Remark: "允许的 IP 地址列表",
 	})
@@ -599,6 +663,22 @@ func SaveAllSystemConfigHandler(c *gin.Context) {
 	SaveSystemConfig(&SystemConfigSave{
 		ConfigKey: "system.defaultHomepage", ConfigValue: cfg.DefaultHomepage, ConfigType: "system", Remark: "默认首页",
 	})
+
+	// AI 权限策略：仅显式提交时写入，避免旧前端回传空对象把开关重置。
+	if cfg.RoleCapabilityVersion != nil {
+		v := *cfg.RoleCapabilityVersion
+		if v < 1 {
+			v = 1
+		}
+		SaveSystemConfig(&SystemConfigSave{
+			ConfigKey: admin.RoleCapabilityVersionKey, ConfigValue: fmt.Sprintf("%d", v), ConfigType: "ai", Remark: "角色能力版本",
+		})
+	}
+	if cfg.AIPolicyEnforce != nil {
+		SaveSystemConfig(&SystemConfigSave{
+			ConfigKey: admin.AIPolicyEnforceKey, ConfigValue: fmt.Sprintf("%t", *cfg.AIPolicyEnforce), ConfigType: "ai", Remark: "AI 写双门槛是否已生效",
+		})
+	}
 
 	response.WriteOK(c, "")
 }

@@ -567,7 +567,8 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 		roleColumnMap = getRoleColumnPermissions(roleId, connId, schemaName, tableName)
 	}
 
-	columnName, columnComment := "", ""
+	var columnName, columnType string
+	var columnComment sql.NullString
 	row, err := dc.Query(dialect.SQL_DIALECT[dc.DriverName()]["listColumns"], tableName)
 	if err != nil {
 		logger.PrintErr(err)
@@ -577,9 +578,13 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 
 	nodes := make([]*PermissionNode, 0)
 	for row.Next() {
-		if err := row.Scan(&columnName, &columnComment); err != nil {
+		if err := row.Scan(&columnName, &columnType, &columnComment); err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
+		}
+		commentStr := ""
+		if columnComment.Valid {
+			commentStr = columnComment.String
 		}
 		checked := false
 		if roleId != "" && roleColumnMap != nil {
@@ -601,7 +606,8 @@ func getColumnTree(connId, schema, table, authorization string, roleId string) [
 				"tableName":  tableName,
 				"column":     columnName,
 				"columnName": columnName,
-				"comment":    columnComment,
+				"columnType": columnType,
+				"comment":    commentStr,
 			},
 		})
 	}

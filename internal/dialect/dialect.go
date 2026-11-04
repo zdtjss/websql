@@ -18,7 +18,7 @@ var SQL_DIALECT = map[string]map[string]string{
 	"mysql": {
 		"listSchema":       "select schema_name from information_schema.schemata order by schema_name",
 		"listTable":        "select TABLE_NAME,TABLE_TYPE,table_comment from information_schema.tables WHERE table_schema = ? order by TABLE_NAME",
-		"listColumns":      "select concat(column_name,'  ', column_type) column_name,COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
+		"listColumns":      "select column_name, column_type, COLUMN_COMMENT from information_schema.COLUMNS where TABLE_NAME = ? order by ORDINAL_POSITION",
 		"listAllColumns":   "select TABLE_NAME, column_name, COLUMN_COMMENT from information_schema.COLUMNS where table_schema = ? order by TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION",
 		"listTableColumns": "select COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_COMMENT, COLUMN_KEY, ORDINAL_POSITION, CHARACTER_MAXIMUM_LENGTH from information_schema.COLUMNS where table_schema = ? and table_name = ? order by ORDINAL_POSITION",
 		"ColumnMap":        "SELECT COLUMN_NAME,column_comment FROM information_schema.COLUMNS WHERE lower(TABLE_NAME) = ? and lower(table_schema) = ?",
@@ -57,8 +57,8 @@ var SQL_DIALECT = map[string]map[string]string{
 	"sqlite": {
 		"listSchema": "SELECT 'main' AS schema_name",
 		"listTable":  "SELECT name AS TABLE_NAME, type AS TABLE_TYPE, '' AS table_comment FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND ?1 = ?1 ORDER BY name",
-		"listColumns": `SELECT ci.name || ' ' || ci.type AS column_name, '' AS COLUMN_COMMENT
-			FROM pragma_table_info(?1) AS ci`,
+		"listColumns": `SELECT ci.name, ci.type, '' AS COLUMN_COMMENT
+			FROM pragma_table_info(?1) AS ci ORDER BY ci.cid`,
 		"listAllColumns": `SELECT m.name AS TABLE_NAME, '' AS column_name, '' AS COLUMN_COMMENT
 			FROM sqlite_master m WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' AND ?1 = ?1 ORDER BY m.name`,
 		"listTableColumns": `SELECT ci.name AS COLUMN_NAME, ci.type AS COLUMN_TYPE,
@@ -104,9 +104,9 @@ var SQL_DIALECT = map[string]map[string]string{
 	"oracle": {
 		"listSchema": "select SYS_CONTEXT('USERENV','CURRENT_SCHEMA') schema_name from dual order by schema_name",
 		"listTable":  "select TABLE_NAME, table_type, COMMENTS table_comment from user_tab_comments where 'notexists' <> :1 order by TABLE_NAME",
-		"listColumns": `SELECT B.COLUMN_NAME || ' ' || B.DATA_TYPE as column_name, A.COMMENTS COLUMN_COMMENT
+		"listColumns": `SELECT B.COLUMN_NAME, B.DATA_TYPE, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
-			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1`,
+			WHERE a.COLUMN_NAME = b.COLUMN_NAME and A.TABLE_NAME = :1 ORDER BY B.COLUMN_ID`,
 		"listAllColumns": `SELECT a.TABLE_NAME,B.COLUMN_NAME, A.COMMENTS COLUMN_COMMENT
 			FROM USER_COL_COMMENTS A left join USER_TAB_COLUMNS B on A.TABLE_NAME = B.TABLE_NAME 
 			WHERE a.COLUMN_NAME = b.COLUMN_NAME and 'notexists' <> :1 order by a.TABLE_NAME,b.COLUMN_ID`,

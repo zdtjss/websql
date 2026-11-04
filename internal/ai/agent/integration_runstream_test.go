@@ -186,6 +186,9 @@ func TestResumeStream_ExecutedAfterApprovalReportsToolStatusExecuted(t *testing.
 		HasFullConnAccess: true, AllSchemasFull: true, FullAccessSchemas: map[string]bool{"main": true},
 		AllowedTables: map[string]bool{}, AllowedColumns: map[string]map[string]bool{},
 	}
+	// 全量授权场景：写范围与读范围一致（生产路径由 BuildPermissionScope 自动构建）。
+	writeScope := *scope
+	scope.WriteScope = &writeScope
 	sec := &RunSecurityContext{
 		Profile: ProfileWebRemote, UserID: "u1", DefaultConnID: "c1",
 		Scopes: map[string]*PermissionScope{"c1": scope},

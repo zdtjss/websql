@@ -754,16 +754,26 @@ func RollbackSync(c *gin.Context) {
 		return
 	}
 
-	// 权限校验：回滚等同于写操作
-	if !config.IsLocalMode() && !permission.CheckUserCanModify(authorization) {
-		response.WriteOK(c, map[string]any{"success": false, "message": "当前角色禁止修改数据，无法执行回滚"})
-		return
-	}
-
 	log.mu.Lock()
 	undoSQLs := make([]string, len(log.UndoSQLs))
 	copy(undoSQLs, log.UndoSQLs)
 	log.mu.Unlock()
+
+	// 权限校验：回滚等同于写操作，逐条按「可写角色自身的数据范围」校验，
+	// 防止只读角色的连接级授权被另一个角色的写开关放大。
+	if !config.IsLocalMode() {
+		for _, stmt := range undoSQLs {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" || strings.HasPrefix(stmt, "--") {
+				continue
+			}
+			permResult := permission.CheckAnalysisPermission(permission.AnalyzeSQL(stmt, log.Schema), log.ConnId, authorization)
+			if !permResult.Allowed {
+				response.WriteOK(c, map[string]any{"success": false, "message": permResult.Message})
+				return
+			}
+		}
+	}
 
 	// 逆序执行撤销 SQL
 	tx, err := dbConn.Beginx()

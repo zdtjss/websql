@@ -21,6 +21,7 @@ import (
 // ConnService 封装连接管理的业务逻辑：连接测试、权限校验、配置转换等
 type ConnService interface {
 	SaveConn(cfg *ConnCfg) (*ConnCfg, error)
+	GetConnWithReason(id, authorization string) (*sqlx.DB, error)
 	TestDbConn(cfg *ConnCfg) (string, string, string, error)
 	DeleteConn(id string)
 	ListConn(parentId string, userPower *admin.UserPower) []*Tree
@@ -52,8 +53,10 @@ func getDefaultConn() ConnService {
 
 // 连接相关错误，HTTP 处理函数通过 errors.Is 判断
 var (
-	ErrConnOpenFailed = errors.New("连接失败，无法打开数据库")
-	ErrConnPingFailed = errors.New("连接失败，请检查数据库配置")
+	ErrConnOpenFailed    = errors.New("连接失败，无法打开数据库")
+	ErrConnPingFailed    = errors.New("连接失败，请检查数据库配置")
+	ErrConnNameEmpty     = errors.New("连接名称不能为空")
+	ErrConnNameDuplicate = errors.New("同目录下已存在同名连接")
 )
 
 // connOpenError 保留 errors.Is(err, ErrConnOpenFailed) 语义，
@@ -127,6 +130,21 @@ func connTargetChanged(old, cur *ConnCfg) bool {
 
 // SaveConn 保存连接配置，返回保存后的配置（不含密码）
 func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
+	// 名称必填且同目录唯一：树/权限树只展示名称，同名连接无法区分。
+	name := strings.TrimSpace(strPtr(cfg.Name))
+	if name == "" {
+		return nil, ErrConnNameEmpty
+	}
+	cfg.Name = &name
+	count, err := s.repo.CountConnByName(name, cfg.ParentId.String(), cfg.Id)
+	if err != nil {
+		log.Printf("[SaveConn] 校验连接名称失败 - err=%v\n", err)
+		return nil, err
+	}
+	if count > 0 {
+		return nil, ErrConnNameDuplicate
+	}
+
 	// 目标变更检测需要在更新前读取旧配置（仅用于判断是否需要重建连接池）
 	dsnChanged := true
 	if cfg.Id != "" {
@@ -161,7 +179,7 @@ func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 		defer closeEphemeral()
 	}
 	var dbSchema, dbVersion, actualDbType string
-	err := database.WithTempConn(dbParam, func(db *sqlx.DB) error {
+	err = database.WithTempConn(dbParam, func(db *sqlx.DB) error {
 		dbSchema, dbVersion, actualDbType = getDbVersionAndSchema(db, cfg.DbType)
 		return nil
 	})
@@ -213,6 +231,9 @@ func (s *connService) SaveConn(cfg *ConnCfg) (*ConnCfg, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 内置管理员的数据权限由连接清单动态生成，连接变更后必须失效权限缓存，
+	// 否则最长 5 分钟内管理员看不到新连接。
+	admin.InvalidateAllAuthCache()
 	if len(saved) > 0 {
 		saved[0].Pwd = nil
 		return &saved[0], nil
@@ -264,6 +285,8 @@ func (s *connService) DeleteConn(id string) {
 	// 同步清理只读标记与 SSH 配置（含隧道），避免 id 复用时继承旧设置
 	DeleteReadOnlyFlag(id)
 	DeleteSSHConfig(id)
+	// 连接删除后管理员的全量权限视图需要立即刷新
+	admin.InvalidateAllAuthCache()
 }
 
 // ListConn 按父节点查询连接列表并构建树节点
@@ -344,23 +367,36 @@ func (s *connService) FilterTablesByPermission(tables []*Table, connId, schema s
 	return filtered
 }
 
-// GetConn 获取数据库连接（带权限校验）
+// 连接获取失败原因。调用方据此区分 403/404/500，避免把越权伪装成“连接不可用”。
+var (
+	ErrConnNotFound     = errors.New("连接不存在")
+	ErrConnNoPermission = errors.New("无权访问该连接")
+	ErrConnUnavailable  = errors.New("连接不可用，请检查连接配置或稍后重试")
+)
+
+// GetConn 获取数据库连接（带权限校验）。失败时返回 nil，仅供无需区分原因的调用方使用。
 func (s *connService) GetConn(id string, authorization string) *sqlx.DB {
+	db, _ := s.GetConnWithReason(id, authorization)
+	return db
+}
+
+// GetConnWithReason 获取数据库连接并返回可区分的失败原因。
+func (s *connService) GetConnWithReason(id string, authorization string) (*sqlx.DB, error) {
 	userPower := admin.GetUserPower(authorization)
 	if !config.IsLocalMode() {
 		if !admin.CheckConnAccess(userPower, id) {
 			logger.PrintErrf("无权访问连接: %s", nil, id)
-			return nil
+			return nil, ErrConnNoPermission
 		}
 	}
 	cfgList, err := s.repo.FindConnById(id)
 	if err != nil {
 		logger.PrintErrf("查询连接配置失败: %s", err, id)
-		return nil
+		return nil, ErrConnUnavailable
 	}
 	if len(cfgList) == 0 {
 		logger.PrintErrf("连接配置不存在: %s", nil, id)
-		return nil
+		return nil, ErrConnNotFound
 	}
 
 	pwd := ""
@@ -382,15 +418,16 @@ func (s *connService) GetConn(id string, authorization string) *sqlx.DB {
 	resolvedURL, tunnelErr := ResolveConnURL(id, cfgList[0].DbType, rawURL)
 	if tunnelErr != nil {
 		logger.PrintErrf("SSH 隧道建立失败: %s", tunnelErr, id)
-		return nil
+		return nil, ErrConnUnavailable
 	}
 	cfgList[0].Url = &resolvedURL
 
 	db := database.GetConn(ConvertToDBParam(&cfgList[0]))
 	if db == nil {
 		logger.PrintErrf("数据库连接创建失败: %s", nil, id)
+		return nil, ErrConnUnavailable
 	}
-	return db
+	return db, nil
 }
 
 // GetConnNoCheck 获取数据库连接（不带权限校验）
@@ -557,6 +594,11 @@ func FilterTablesByPermission(tables []*Table, connId, schema string, userPower 
 
 func GetConn(id string, authorization string) *sqlx.DB {
 	return getDefaultConn().GetConn(id, authorization)
+}
+
+// GetConnWithReason 导出版本：返回可区分的失败原因。
+func GetConnWithReason(id string, authorization string) (*sqlx.DB, error) {
+	return getDefaultConn().GetConnWithReason(id, authorization)
 }
 
 // GetUserConnIds 获取用户有权限的所有连接 ID 列表

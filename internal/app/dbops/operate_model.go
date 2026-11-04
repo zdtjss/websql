@@ -28,5 +28,6 @@ type tableRawRow struct {
 // columnRawRow 列原始行数据（名称、注释）
 type columnRawRow struct {
 	Name    string
+	Type    string
 	Comment string
 }

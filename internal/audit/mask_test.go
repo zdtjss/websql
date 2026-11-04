@@ -73,6 +73,53 @@ func TestMaskSQL(t *testing.T) {
 	}
 }
 
+func TestPreviewSQL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "结构保留且普通值部分可见",
+			in:   "UPDATE t SET status = 'settled' WHERE id = '1234567890'",
+			want: "UPDATE t SET status = 'settled' WHERE id = '12***90'",
+		},
+		{
+			name: "敏感列完全隐藏",
+			in:   "UPDATE t SET password = 'secret123', name = 'alice' WHERE token = 'abcdefg'",
+			want: "UPDATE t SET password = '***', name = 'alice' WHERE token = '***'",
+		},
+		{
+			name: "短值完整展示",
+			in:   "DELETE FROM t WHERE code = 'A1'",
+			want: "DELETE FROM t WHERE code = 'A1'",
+		},
+		{
+			name: "LIKE 运算符前的列名可识别",
+			in:   "SELECT * FROM t WHERE phone LIKE '13800138000'",
+			want: "SELECT * FROM t WHERE phone LIKE '13***00'",
+		},
+		{
+			name: "IN 列表无法归属列名时按普通值处理",
+			in:   "DELETE FROM t WHERE id IN ('1234567890')",
+			want: "DELETE FROM t WHERE id IN ('12***90')",
+		},
+		{
+			name: "空串与注释保持原样",
+			in:   "SELECT 1 -- '13800138000'\nFROM t WHERE a = ''",
+			want: "SELECT 1 -- '13800138000'\nFROM t WHERE a = ''",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := PreviewSQL(c.in); got != c.want {
+				t.Fatalf("PreviewSQL(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestMaskSQLTruncate(t *testing.T) {
 	long := strings.Repeat("SELECT 1 FROM t; ", 300) // 5700 字符，无字面量
 	got := MaskSQL(long)

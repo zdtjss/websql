@@ -7,7 +7,7 @@
       @click="emit('extract')"
     >
       <el-icon :size="14"><MagicStick /></el-icon>
-      <span class="prompt-suggestion-text">存为常用提示词？</span>
+      <span class="prompt-suggestion-text">存为常用提示词?</span>
     </button>
     <button
       type="button"

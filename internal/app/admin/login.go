@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,13 @@ func Login(c *gin.Context) {
 	var user *User
 	switch loginType {
 	case "pwd":
+		loginName = strings.TrimSpace(loginName)
+		// 空白凭证必须直接拒绝：否则会命中 login_name='' 的空白账号，
+		// 且空明文可能匹配 bcrypt('')，形成未认证登录。
+		if loginName == "" || strings.TrimSpace(pwd) == "" {
+			response.WriteErr(c, 200, 400, "用户名或密码不正确")
+			return
+		}
 		u, err := findByLoginName(loginName)
 		if err != nil {
 			log.Printf("查询用户失败: %v", err)
@@ -214,7 +222,12 @@ func Logout(c *gin.Context) {
 }
 
 func GetUserPower(authorization string) *UserPower {
-	_, power := GetCachedUserAndPower(authorization)
+	user, power := GetCachedUserAndPower(authorization)
+	// 内置管理员的连接权限由当前 t_conn 动态生成：登录时写入的 UserPower 快照
+	// 不包含之后新增的连接，这里每次按最新连接清单重算，避免管理员看不到新连接。
+	if user != nil && user.Id != "" && isUserAdmin(user.Id) {
+		return &UserPower{UserId: user.Id, Power: findUserPower(user.Id)}
+	}
 	return power
 }
 
@@ -233,23 +246,38 @@ func CheckAdminPower(c *gin.Context) bool {
 	if isUserAdmin(userPower.UserId) {
 		return true
 	}
-	response.WriteAuthErr(c, "无权访问")
-	// 必须中断后续 handler：仅写 401 响应不会阻止调用方继续执行，
+	// 已登录但权限不足使用 403：401 会让前端误判为会话过期并清空登录态。
+	response.WriteErr(c, http.StatusForbidden, http.StatusForbidden, "无权访问")
+	// 必须中断后续 handler：仅写响应不会阻止调用方继续执行，
 	// 曾导致忽略返回值的接口（如审计配置保存）在非管理员请求下继续落库
 	c.Abort()
 	return false
 }
 
-// isUserAdmin 检查用户是否拥有管理员角色
+// isUserAdmin 检查用户是否拥有管理员角色。
+//
+// 管理员身份以 t_role.is_admin 显式标志为准；名称匹配仅作为尚未执行
+// 角色标志迁移的存量库兜底，避免升级瞬间丢失管理入口。
 func isUserAdmin(userId string) bool {
 	roles := FindUserRoles(userId)
 	for _, role := range roles {
+		if role == nil {
+			continue
+		}
+		if role.IsAdmin > 0 {
+			return true
+		}
 		name := strings.ToLower(role.Name)
 		if name == "admin" || name == "管理员" || name == "administrator" {
 			return true
 		}
 	}
 	return false
+}
+
+// IsUserAdmin 导出版本：供权限合并逻辑识别内置管理员的全量数据授权。
+func IsUserAdmin(userId string) bool {
+	return isUserAdmin(userId)
 }
 
 func formatStoreKey(key string) string {

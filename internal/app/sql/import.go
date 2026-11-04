@@ -74,7 +74,12 @@ func ImportXlsx(c *gin.Context) {
 		}
 	}()
 
-	tx, err := conn.GetConn(connId, authorization).Beginx()
+	dbConn, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
+		return
+	}
+	tx, err := dbConn.Beginx()
 	if err != nil {
 		log.Printf("[ImportXlsx] 数据库连接失败 - err=%v\n", err)
 		response.WriteErr(c, http.StatusInternalServerError, 500, "数据库连接失败，请检查配置")

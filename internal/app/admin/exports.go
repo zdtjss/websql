@@ -327,11 +327,15 @@ func (r *RolePermResult) CanAccessColumn(schema, table, column string) bool {
 	return false
 }
 
-// ParseColumnName 解析列名：截取双空格前的部分，去除首尾空格，并统一转为小写。
+// ParseColumnName 解析列名：截取第一个空白前的部分，去除引号/首尾空格，并统一转为小写。
+//
+// 兼容历史数据：旧版权限树把「列名 + 类型」展示串存成 column_name，
+// 且不同方言的空格数量不一致（MySQL 双空格、SQLite/Oracle 单空格）。
 // 列名大小写归一化确保权限匹配不受数据库列名大小写差异影响。
 func ParseColumnName(raw string) string {
-	if idx := strings.Index(raw, "  "); idx > 0 {
-		return strings.ToLower(strings.TrimSpace(raw[:idx]))
+	s := strings.Trim(strings.TrimSpace(raw), "`\"[]")
+	if idx := strings.IndexAny(s, " \t"); idx > 0 {
+		s = s[:idx]
 	}
-	return strings.ToLower(strings.TrimSpace(raw))
+	return strings.ToLower(strings.Trim(s, "`\"[]"))
 }

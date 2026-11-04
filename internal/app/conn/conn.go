@@ -2,6 +2,8 @@ package conn
 
 import (
 	"errors"
+	"log"
+	"net/http"
 	"strconv"
 
 	"websql/internal/app/admin"
@@ -11,6 +13,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// WriteConnError 把连接获取失败原因映射为稳定的 HTTP 语义：
+// 无权访问 403、连接不存在 404、其余连接/隧道故障 500。
+func WriteConnError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, ErrConnNoPermission):
+		response.WriteErr(c, http.StatusForbidden, http.StatusForbidden, err.Error())
+	case errors.Is(err, ErrConnNotFound):
+		response.WriteErr(c, http.StatusNotFound, http.StatusNotFound, err.Error())
+	case err != nil:
+		response.WriteErr(c, 200, 500, err.Error())
+	default:
+		response.WriteErr(c, 200, 500, "连接不可用")
+	}
+}
 
 func SaveConn(c *gin.Context) {
 	if !admin.CheckAdminPower(c) {
@@ -24,9 +41,13 @@ func SaveConn(c *gin.Context) {
 
 	saved, err := getDefaultConn().SaveConn(cfg)
 	if err != nil {
-		if errors.Is(err, ErrConnOpenFailed) {
+		switch {
+		case errors.Is(err, ErrConnNameEmpty), errors.Is(err, ErrConnNameDuplicate):
+			response.WriteErr(c, 200, 400, err.Error())
+		case errors.Is(err, ErrConnOpenFailed):
 			response.WriteErr(c, 200, 500, err.Error())
-		} else {
+		default:
+			log.Printf("[SaveConn] 保存失败: %v", err)
 			response.WriteErr(c, 200, 500, "操作失败")
 		}
 		return

@@ -23,7 +23,11 @@
           <el-icon v-else-if="nodeData.level === 'column'"><Document /></el-icon>
           <span
             class="node-label"
-            :class="{ 'node-clickable': nodeData.level !== 'column' && nodeData.level !== 'dir' }"
+            :class="{
+              'node-clickable': nodeData.level !== 'column' && nodeData.level !== 'dir',
+              'node-implicit': isImplicitNode(nodeData.id),
+            }"
+            :title="isImplicitNode(nodeData.id) ? '该层级本身未授权，仅下级有权限配置' : ''"
           >{{ node.label }}</span>
           <el-tag v-if="isImplicitNode(nodeData.id)" size="small" type="warning" class="implicit-tag">子级已选</el-tag>
           <span v-if="nodeData.data && nodeData.data.comment" class="node-comment">{{ nodeData.data.comment }}</span>
@@ -96,6 +100,10 @@ defineExpose({ setCheckedKeys })
 }
 .node-clickable {
   cursor: pointer;
+}
+.node-implicit {
+  color: var(--el-color-warning);
+  border-bottom: 1px dashed var(--el-color-warning);
 }
 .implicit-tag {
   margin-left: 6px;

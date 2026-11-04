@@ -42,8 +42,15 @@ func DelRole(c *gin.Context) {
 	currentUser := GetUser(appctx.Ctx.GetAuthorization(c))
 	err := getDefaultRole().DeleteRole(id, currentUser.Id, currentUser.Name)
 	if err != nil {
-		log.Printf("删除角色失败: %v", err)
-		response.WriteErr(c, 200, 500, "操作失败")
+		switch {
+		case errors.Is(err, ErrRoleNotFound):
+			response.WriteErr(c, 200, 404, err.Error())
+		case errors.Is(err, ErrBuiltinRoleDelete), errors.Is(err, ErrLastAdminRoleDelete):
+			response.WriteErr(c, 200, 400, err.Error())
+		default:
+			log.Printf("删除角色失败: %v", err)
+			response.WriteErr(c, 200, 500, "操作失败")
+		}
 		return
 	}
 	response.WriteOK(c, "")
@@ -70,7 +77,11 @@ func RoleBaseList(c *gin.Context) {
 }
 
 func FindUserByRole(c *gin.Context) {
-	userList, err := getDefaultRole().FindUserByRole(c.PostForm("roleId"))
+	roleId := c.Query("roleId")
+	if roleId == "" {
+		roleId = c.PostForm("roleId")
+	}
+	userList, err := getDefaultRole().FindUserByRole(roleId)
 	if err != nil {
 		log.Printf("查询用户失败: %v", err)
 		response.WriteErr(c, 200, 500, "操作失败")
@@ -104,7 +115,7 @@ func SaveRolePermission(c *gin.Context) {
 //   - 其他：HTTP 200 + code 500
 func writeRoleSaveError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, ErrInvalidRoleSave):
+	case errors.Is(err, ErrInvalidRoleSave), errors.Is(err, ErrBuiltinRoleRename):
 		log.Printf("[Role] 参数校验失败 - err=%v", err)
 		response.WriteErr(c, 200, 400, err.Error())
 	case errors.Is(err, ErrRolePermissionConflict):
@@ -118,9 +129,8 @@ func writeRoleSaveError(c *gin.Context, err error) {
 
 // RoleCapabilityInfo 返回角色能力版本与 AI 策略开关，供前端决定是否展示 AI 开关。
 type RoleCapabilityInfo struct {
-	CapabilityVersion int    `json:"capabilityVersion"`
-	AIPolicyEnforce   bool   `json:"aiPolicyEnforce"`
-	MaskVersion       string `json:"maskVersion,omitempty"`
+	CapabilityVersion int  `json:"capabilityVersion"`
+	AIPolicyEnforce   bool `json:"aiPolicyEnforce"`
 }
 
 // GetRoleCapability 查询角色能力配置。
@@ -128,9 +138,6 @@ func GetRoleCapability(c *gin.Context) {
 	info := RoleCapabilityInfo{
 		CapabilityVersion: RoleCapabilityVersion(),
 		AIPolicyEnforce:   AIPolicyEnforced(),
-	}
-	if digest, err := MaskRulesDigest(); err == nil {
-		info.MaskVersion = digest
 	}
 	response.WriteOK(c, info)
 }

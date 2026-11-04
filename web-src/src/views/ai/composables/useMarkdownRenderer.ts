@@ -1745,7 +1745,8 @@ export function useMarkdownRenderer(deps: UseMarkdownRendererDeps) {
     try {
       const resp = await fetch(href)
       if (!resp.ok) {
-        ElMessage.error('下载失败（HTTP ' + resp.status + '）')
+        // 导出文件按用户归属校验，他人/过期文件统一 404；给出可理解的提示
+        ElMessage.error(resp.status === 404 ? '文件不存在或已过期' : '下载失败（HTTP ' + resp.status + '）')
         return
       }
       const objectUrl = URL.createObjectURL(await resp.blob())

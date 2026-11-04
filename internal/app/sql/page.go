@@ -76,9 +76,9 @@ func PageQuery(c *gin.Context) {
 	}
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	dbConn := conn.GetConn(connId, authorization)
-	if dbConn == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用")
+	dbConn, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
 		return
 	}
 

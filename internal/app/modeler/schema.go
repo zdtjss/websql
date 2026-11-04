@@ -97,9 +97,9 @@ func ERSchemaHandler(c *gin.Context) {
 	}
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	db := conn.GetConn(connID, authorization)
-	if db == nil {
-		response.WriteErr(c, 200, 500, "数据库连接失败或无权访问")
+	db, connErr := conn.GetConnWithReason(connID, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
 		return
 	}
 	dbType := db.DriverName()

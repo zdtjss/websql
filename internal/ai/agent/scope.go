@@ -33,6 +33,11 @@ type PermissionScope struct {
 	Revision uint64
 	// Profile 运行时 Profile（远程严格 / 桌面完整）。
 	Profile RuntimeProfile
+	// WriteScope 写范围：仅由「具备写能力」的角色构成的数据范围。
+	// 读范围可以按角色并集放大，但写范围不得由只读角色（allow_modify=0）的数据贡献；
+	// 否则「角色 A 连接级只读 + 角色 B 两表可写」会被放大为可写全库。
+	// nil 表示当前没有可写角色（远程模式下写操作一律拒绝）。
+	WriteScope *PermissionScope
 }
 
 type PermissionError struct {
@@ -47,7 +52,7 @@ func (e *PermissionError) Error() string {
 func BuildPermissionScope(userId, connId string, schemaNames []string) *PermissionScope {
 	// 提前判断：非远程模式无需加载角色/权限明细。
 	if !CurrentRuntimeProfile().Remote() {
-		return buildPermissionScopeWithData(userId, connId, schemaNames, nil, nil)
+		return buildPermissionScopeWithData(userId, connId, schemaNames, nil, nil, false)
 	}
 	return BuildPermissionScopeWithData(userId, connId, schemaNames,
 		admin.FindUserRoles(userId), admin.FindUserPowerDetails(userId))
@@ -58,10 +63,10 @@ func BuildPermissionScope(userId, connId string, schemaNames []string) *Permissi
 // 多连接会话中避免“每连接重复查同一用户的角色与权限明细”：
 // BuildRunSecurityContext 每用户只加载一次，再按连接传入。
 func BuildPermissionScopeWithData(userId, connId string, schemaNames []string, roles []*admin.Role, powerList []*admin.PowerDetail) *PermissionScope {
-	return buildPermissionScopeWithData(userId, connId, schemaNames, roles, powerList)
+	return buildPermissionScopeWithData(userId, connId, schemaNames, roles, powerList, true)
 }
 
-func buildPermissionScopeWithData(userId, connId string, schemaNames []string, roles []*admin.Role, powerList []*admin.PowerDetail) *PermissionScope {
+func buildPermissionScopeWithData(userId, connId string, schemaNames []string, roles []*admin.Role, powerList []*admin.PowerDetail, withWriteScope bool) *PermissionScope {
 	profile := CurrentRuntimeProfile()
 	scope := &PermissionScope{
 		UserID:            userId,
@@ -192,7 +197,70 @@ func buildPermissionScopeWithData(userId, connId string, schemaNames []string, r
 	log.Printf("[PermScope] 权限范围 - user=%s, conn=%s, schemas=%v, fullConn=%v, fullSchemas=%d, allFull=%v, tables=%d, columnTables=%d\n",
 		userId, connId, schemaNames, scope.HasFullConnAccess, len(scope.FullAccessSchemas), scope.AllSchemasFull, len(scope.AllowedTables), len(scope.AllowedColumns))
 
+	// 写范围独立收敛：只有具备写能力的角色可以授予可写数据。
+	// 读范围仍按全部角色取并集（并集授权模型）；写范围只取可写角色的自身范围，
+	// 防止只读角色的连接级授权把另一个角色的写开关放大到全库/全连接。
+	if withWriteScope && scope.IsRemote {
+		writeRoles := writableRolesForAI(roles, scope.AIPolicyEnforce)
+		if len(writeRoles) > 0 {
+			if admin.IsUserAdmin(userId) {
+				// 内置管理员的数据权限由 adminFullPowerDetails 动态生成（RoleId 为空），
+				// 不能按角色 ID 过滤；管理员数据全量，写范围与读范围一致。
+				ws := *scope
+				ws.WriteScope = nil
+				scope.WriteScope = &ws
+			} else {
+				scope.WriteScope = buildPermissionScopeWithData(
+					userId, connId, schemaNames,
+					writeRoles, filterPowerDetailsByRoles(powerList, writeRoles),
+					false,
+				)
+			}
+		}
+		log.Printf("[PermScope] 写范围 - user=%s, conn=%s, writableRoles=%d, hasWriteScope=%v\n",
+			userId, connId, len(writeRoles), scope.WriteScope != nil)
+	}
+
 	return scope
+}
+
+// writableRolesForAI 返回当前 AI 写策略下具备写能力的角色。
+//
+// 生效期（AIPolicyEnforce=true）要求同一角色同时允许 allow_modify 与 ai_allow_modify；
+// 兼容期沿用 allow_modify，保证升级前后行为一致。
+func writableRolesForAI(roles []*admin.Role, enforce bool) []*admin.Role {
+	out := make([]*admin.Role, 0, len(roles))
+	for _, role := range roles {
+		if role == nil {
+			continue
+		}
+		canWrite := role.AllowModify > 0
+		if enforce {
+			canWrite = role.AllowsAIModify()
+		}
+		if canWrite {
+			out = append(out, role)
+		}
+	}
+	return out
+}
+
+// filterPowerDetailsByRoles 只保留指定角色的权限明细，避免其它角色的 power 混入写范围。
+func filterPowerDetailsByRoles(powerList []*admin.PowerDetail, roles []*admin.Role) []*admin.PowerDetail {
+	allowed := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		if role != nil {
+			allowed[role.Id] = true
+		}
+	}
+	out := make([]*admin.PowerDetail, 0, len(powerList))
+	for _, p := range powerList {
+		if p == nil || !allowed[p.RoleId] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func firstNonEmpty(ss []string) string {
@@ -445,6 +513,49 @@ func (s *PermissionScope) columnAllowed(keys []string, column string) bool {
 
 func (s *PermissionScope) SkipChecks() bool {
 	return !s.IsRemote || s.HasFullConnAccess
+}
+
+// CanWriteTableRef 判定 SQL/工具参数中的表引用是否落在「可写角色」的数据范围内。
+// 读范围不参与判定，避免只读角色的连接级授权放大写范围。
+func (s *PermissionScope) CanWriteTableRef(ref string) bool {
+	if s == nil {
+		return false
+	}
+	if !s.IsRemote {
+		return true
+	}
+	if s.WriteScope == nil {
+		return false
+	}
+	return s.WriteScope.IsTableRefAllowed(ref)
+}
+
+// GetWriteTableAccessLevel 返回写范围内指定表的访问级别（full/column/none）。
+func (s *PermissionScope) GetWriteTableAccessLevel(table string) string {
+	if s == nil {
+		return "none"
+	}
+	if !s.IsRemote {
+		return "full"
+	}
+	if s.WriteScope == nil {
+		return "none"
+	}
+	return s.WriteScope.GetTableAccessLevel(table)
+}
+
+// IsWriteColumnAllowed 判定写范围内指定列是否可写。
+func (s *PermissionScope) IsWriteColumnAllowed(table, column string) bool {
+	if s == nil {
+		return false
+	}
+	if !s.IsRemote {
+		return true
+	}
+	if s.WriteScope == nil {
+		return false
+	}
+	return s.WriteScope.IsColumnAllowed(table, column)
 }
 
 func (s *PermissionScope) HasAnyAccess() bool {

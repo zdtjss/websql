@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -84,11 +85,12 @@ func ExecSQL(c *gin.Context) {
 	}
 
 	authorization := appctx.Ctx.GetAuthorization(c)
-	conn := conn.GetConn(connId, authorization)
-	if conn == nil {
-		response.WriteErr(c, 200, 500, "数据库连接不可用，请检查连接配置或稍后重试")
+	connDB, connErr := conn.GetConnWithReason(connId, authorization)
+	if connErr != nil {
+		conn.WriteConnError(c, connErr)
 		return
 	}
+	conn := connDB
 	userVal, _ := c.Get("currentUser")
 	user, _ := userVal.(*admin.User)
 
@@ -131,7 +133,7 @@ func ExecSQL(c *gin.Context) {
 	// 必须在执行前拦，避免多选语句时先执行了一部分才报错。
 	if containsWriteStatement(sqlStr) {
 		if allowed, reason := ensureConnWritable(connId); !allowed {
-			response.WriteErr(c, 200, 403, reason)
+			response.WriteErr(c, http.StatusForbidden, http.StatusForbidden, reason)
 			return
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	admin "websql/internal/app/admin"
 	"websql/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
@@ -162,6 +163,9 @@ func ResetSecurityMetrics() {
 //
 // 仅暴露聚合计数与阶段平均耗时，不含用户、连接、表、列与会话标识。
 func GetAISecurityMetrics(c *gin.Context) {
+	if !admin.CheckAdminPower(c) {
+		return
+	}
 	snapshot := SecurityMetricsSnapshot()
 	keys := make([]string, 0, len(snapshot))
 	for k := range snapshot {

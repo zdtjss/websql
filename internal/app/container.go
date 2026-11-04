@@ -1,7 +1,6 @@
 package app
 
 import (
-	"log"
 	"sync"
 
 	"websql/internal/ai/agent"
@@ -118,10 +117,6 @@ func registerAIConfigChangeHooks() {
 			case agent.PolicyRolloutConfigKey, admin.AIPolicyEnforceKey, admin.RoleCapabilityVersionKey, "ai.deploymentSalt":
 				agent.InvalidateRolloutCache()
 				admin.InvalidateAIPolicyCache()
-			case "ai.maskKey", "ai.maskKeyVersion":
-				if err := agent.GetMaskerProvider().Refresh(); err != nil {
-					log.Printf("[AIConfigHook] 脱敏密钥/规则刷新失败（保留上一已验证快照） - err=%v", err)
-				}
 			}
 		})
 	})

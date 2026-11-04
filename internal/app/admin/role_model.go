@@ -11,6 +11,10 @@ type Role struct {
 	AIAllowModify int `json:"aiAllowModify" db:"ai_allow_modify"`
 	// PermissionDigest 权限摘要，用于并发编辑的乐观锁；不含权限维度语义。
 	PermissionDigest string `json:"permissionDigest" db:"-"`
+	// IsBuiltin 内置角色标志：内置角色不允许删除。
+	IsBuiltin int `json:"isBuiltin" db:"is_builtin"`
+	// IsAdmin 管理员角色标志：拥有该角色的用户可进入管理面并视为全量数据授权。
+	IsAdmin int `json:"isAdmin" db:"is_admin"`
 }
 
 type UserRole struct {
