@@ -128,6 +128,10 @@ func TestDenyByCapability_ExportByCodeRequiresModify(t *testing.T) {
 	if exportByCodeAllowed(&PermissionScope{AllowModify: true, AIAllowModify: false, AIPolicyEnforce: true, HasFullConnAccess: true}) {
 		t.Fatal("exportByCodeAllowed must require CanAIModifyData")
 	}
+	// 远程模式即使具备完整连接权限、代码执行与 AI 写能力，也不得注册/执行高级导出。
+	if exportByCodeAllowed(&PermissionScope{IsRemote: true, AllowModify: true, AIAllowModify: true, AIPolicyEnforce: true, HasFullConnAccess: true}) {
+		t.Fatal("exportByCodeAllowed must be limited to desktop/local mode")
+	}
 }
 
 // TestUploadFSBackendCrossUserDenied 直接验证文件工具（read_file/ls 委托后端）不能跨用户访问。

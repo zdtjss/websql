@@ -462,7 +462,7 @@ func (m *PermissionMiddleware) WrapStreamableToolCall(
 
 // checkExportByCodeAccess 高级导出（export_by_code）权限校验。
 //
-// 该工具仅在「用户拥有连接完整权限」时才会注册（直连会绕过应用层表/列权限）；
+// 该工具仅在桌面/本地模式下才会注册（远程模式会绕过应用层表/列/写范围校验）；
 // 此处再 fail-closed 兜底，并记录审计（代码执行类操作，RiskLevel=medium）。
 func (m *PermissionMiddleware) checkExportByCodeAccess(ctx context.Context, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
 	return m.checkCodegenExportAccess(ctx, "export_by_code", args, endpoint, opts...)
@@ -474,11 +474,11 @@ func (m *PermissionMiddleware) checkRepairExportByCodeAccess(ctx context.Context
 }
 
 func (m *PermissionMiddleware) checkCodegenExportAccess(ctx context.Context, toolName, args string, endpoint adk.InvokableToolCallEndpoint, opts ...tool.Option) (string, error) {
-	// 防御性重算：Agent 可能来自缓存，构建后新增的脱敏规则不应被旧实例绕过。
+	// 防御性重算：Agent 可能来自缓存，构建后部署模式/权限变化不应被旧实例绕过。
 	if !exportByCodeAllowed(m.Scope) {
-		m.logDeny(toolName, "高级导出条件不满足（完整权限 / Python / OS 隔离 / 无生效脱敏规则）", nil)
+		m.logDeny(toolName, "高级导出条件不满足（非桌面/本地模式 / 代码执行 / AI 数据写 / Python / OS 隔离）", nil)
 		return "", &PermissionError{
-			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
+			Message: "高级导出仅在桌面/本地模式下、且具备 AI 数据修改与代码执行权限时开放",
 			Objects: []string{},
 		}
 	}
@@ -520,7 +520,7 @@ func (m *PermissionMiddleware) checkStreamCodegenExportAccess(ctx context.Contex
 	if !exportByCodeAllowed(m.Scope) {
 		m.logDeny(toolName+"(stream)", "高级导出条件不满足", nil)
 		return nil, &PermissionError{
-			Message: "高级导出仅对拥有完整连接权限、且不存在生效脱敏规则的用户开放",
+			Message: "高级导出仅在桌面/本地模式下、且具备 AI 数据修改与代码执行权限时开放",
 			Objects: []string{},
 		}
 	}

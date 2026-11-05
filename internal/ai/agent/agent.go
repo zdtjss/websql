@@ -886,11 +886,11 @@ func buildTools(ctx context.Context, connID, dbType, dbSchema string, schemas []
 
 	// 高级导出（export_by_code）：由模型编写 Python 连接「用户选中连接」（只读）查询并生成
 	// 任意格式文件。仅在满足以下条件时注册（fail-closed）：
-	//   1. 用户对该连接拥有完整权限（SkipChecks）——直连会绕过应用层表/列权限；
+	//   1. 桌面/本地模式（非远程）——远程模式会把真实连接凭据交给模型编写的子进程，
+	//      应用层表/列/写范围校验与写审批全部失效，一律不注册；
 	//   2. 允许代码执行且允许 AI 数据写（allow_modify + ai_allow_modify）；
 	//   3. 检测到可用的 Python 运行环境；
-	//   4. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）；
-	//   5. 不存在生效的脱敏规则（直连脚本无法传递脱敏策略）。
+	//   4. 存在可用的 OS 级隔离（Windows 低完整性令牌 / Linux bwrap）。
 	if exportByCodeAllowed(scope) {
 		if dbInfo := resolveCodegenDBInfo(connID, dbSchema); dbInfo != nil {
 			exportByCodeTool, _ := utils.InferTool(

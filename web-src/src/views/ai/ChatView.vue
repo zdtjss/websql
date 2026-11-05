@@ -125,8 +125,8 @@
                   <el-icon v-if="!fileUpload.uploading.value"><Upload /></el-icon>
                 </el-button>
               </el-upload>
-              <!-- 高级导出开关：报告级交付（Word/PPT/Excel/HTML 优先，自定义格式降级只读 Python），并支持对本次会话已导出文件做对话式局部修复 -->
-              <el-button class="toolbar-btn" size="small" :type="advancedExport ? 'primary' : 'default'"
+              <!-- 高级导出开关：仅桌面/本地模式提供（远程模式后端不注册 export_by_code，等同一律隐藏） -->
+              <el-button v-if="!isRemote" class="toolbar-btn" size="small" :type="advancedExport ? 'primary' : 'default'"
                 @click="handleAdvancedExportToggle"
                 :title="advancedExport ? '高级导出已开启：本轮按需求输出报告级文件——优先内置 Word/PPT/Excel/HTML（封面/目录/指标卡/图表/结论），四类格式不满足时才用只读 Python 生成自定义格式；已导出文件有问题可在对话中直接说明，AI 会定位原文件局部修复并返回新版本（点击关闭）' : '开启高级导出：生成可直接汇报的报告级文件——优先 Word/PPT/Excel/HTML 内置报告导出，自定义格式（PDF/CSV/XML/ZIP 等）再降级只读 Python 生成；已导出文件有问题可在对话中直接指出，AI 将局部修复并保留原文件'">
                 <el-icon><DataAnalysis /></el-icon>
@@ -135,6 +135,21 @@
               <el-popover placement="top" :width="380" trigger="click" v-model:visible="promptPopoverVisible"
                 @show="loadPrompts()">
                 <div class="prompt-popover-body">
+                  <!-- 从当前对话自动提取可复用提示词：与「我的/系统」同一行居右显示，不额外占用高度 -->
+                  <el-button
+                    v-if="activeTab === 'mine'"
+                    class="prompt-extract-btn"
+                    size="small"
+                    text
+                    type="primary"
+                    :loading="promptExtracting"
+                    :disabled="!canExtractPrompt"
+                    title="由 AI 从本次对话提炼可复用的提示词，确认后保存到「我的」"
+                    @click.stop="handleExtractPrompt"
+                  >
+                    <el-icon><MagicStick /></el-icon>
+                    <span>AI 提取</span>
+                  </el-button>
                   <el-tabs v-model="activeTab" class="prompt-tabs">
                     <el-tab-pane name="mine">
                       <template #label>
@@ -144,26 +159,12 @@
                           <el-icon :size="10" style="top: -10px;" @click="handlePromptAdd"><Plus /></el-icon>
                         </span>
                       </template>
-                      <!-- 搜索与对话提取合并为一行，避免额外占高 -->
-                      <div class="prompt-toolbar-row">
+                      <!-- 搜索行仅在需要时渲染，避免无搜索时白占高度 -->
+                      <div v-if="myPromptsTotal > promptPageSize || !!promptSearchKeyword" class="prompt-toolbar-row">
                         <el-input v-model="promptSearchKeyword" class="prompt-search-input" size="small" placeholder="按标题搜索" clearable
-                          v-if="myPromptsTotal > promptPageSize || !!promptSearchKeyword" @input="handlePromptSearchInput">
+                          @input="handlePromptSearchInput">
                           <template #prefix><el-icon><Search /></el-icon></template>
                         </el-input>
-                        <!-- 从当前对话自动提取可复用提示词：AI 生成后进入编辑确认，保存到「我的」 -->
-                        <el-button
-                          class="prompt-extract-btn"
-                          size="small"
-                          text
-                          type="primary"
-                          :loading="promptExtracting"
-                          :disabled="!canExtractPrompt"
-                          title="由 AI 从本次对话提炼可复用的提示词，确认后保存到「我的」"
-                          @click.stop="handleExtractPrompt"
-                        >
-                          <el-icon><MagicStick /></el-icon>
-                          <span>AI 提取</span>
-                        </el-button>
                       </div>
                       <div class="prompt-list">
                         <div v-if="myPromptLoading && myPrompts.length === 0" style="text-align: center; padding: 10px;">
@@ -1106,6 +1107,11 @@ function handleAdvancedExportToggle(): void {
   })
 }
 
+// 远程模式不提供高级导出（后端不注册 export_by_code）；部署模式变化时立即清空开关状态。
+watch(isRemote, (remote) => {
+  if (remote) advancedExport.value = false
+})
+
 // 开关模式下的发送：开启高级导出且输入为空时补一条默认指令，等价于“一键高级导出”；
 // 输入非空时保持用户原文不变（由后端按开关注入高级导出约束）。
 function handleSend(): void {
@@ -1744,6 +1750,7 @@ onUnmounted(() => {
 
 /* 提示词弹窗 */
 .prompt-popover-body {
+  position: relative;
   display: flex;
   flex-direction: column;
 }
@@ -1766,9 +1773,12 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+/* 提取按钮悬浮在 Tabs 标题行右侧（标题行高 36px），不占用额外高度 */
 .prompt-popover-body .prompt-extract-btn {
-  flex-shrink: 0;
-  margin-left: auto;
+  position: absolute;
+  top: 6px;
+  right: 0;
+  z-index: 2;
   height: 24px;
   padding: 0 4px;
   font-size: 12px;

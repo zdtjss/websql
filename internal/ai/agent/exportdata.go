@@ -184,11 +184,14 @@ func hasExportTextArg(args string) bool {
 
 // exportByCodeAllowed 判断高级导出是否允许注册/执行。
 //
-// 条件：代码执行能力（allow_modify + AI 数据写）+ 完整连接权限 + Python 可用 +
-// OS 级隔离可用 + 不存在生效脱敏规则。
-// 前两项缺一不可：直连脚本会绕过应用层表/列权限，且会执行任意 Python 代码。
+// 条件：桌面/本地模式（非远程）+ 代码执行能力（allow_modify + AI 数据写）+
+// Python 可用 + OS 级隔离可用。
+//
+// 远程模式一律禁止：该工具会把真实连接凭据注入「模型编写的 Python 子进程」，
+// 应用层表/列/写范围校验与写审批全部失效，等同于把数据库账号交给任意代码执行通道；
+// 桌面/本地模式本身没有多用户权限隔离，才允许保留该能力。
 func exportByCodeAllowed(scope *PermissionScope) bool {
-	if scope == nil || !scope.AllowModify || !scope.CanAIModifyData() || !scope.SkipChecks() {
+	if scope == nil || scope.IsRemote || !scope.AllowModify || !scope.CanAIModifyData() {
 		return false
 	}
 	if !export.IsPythonAvailable() || !export.CodegenIsolationAvailable() {
