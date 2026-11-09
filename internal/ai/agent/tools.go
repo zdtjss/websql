@@ -403,8 +403,10 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		// issuedSQL 保留模型原始输入：服务端可能追加行数上限，
 		// 出错时要把改写后的真实语句回传给模型，避免报错位置对不上。
 		issuedSQL := sql
+		// 多取 1 行用于精确判断是否被截断：读取器仍只返回 readLimit 行，
+		// 但能看到第 readLimit+1 行时才能把 truncated 正确置为 true。
 		if sqlutil.FirstKeyword(sql) == "SELECT" || sqlutil.FirstKeyword(sql) == "WITH" {
-			sql = applyRowLimit(sql, conn.DriverName(), connDBVersion(targetConnID), readLimit)
+			sql = applyRowLimit(sql, conn.DriverName(), connDBVersion(targetConnID), readLimit+1)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
@@ -437,7 +439,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
 					if kw := sqlutil.FirstKeyword(altRawSQL); kw == "SELECT" || kw == "WITH" {
-						altSQL = applyRowLimit(altSQL, altConn.DriverName(), connDBVersion(altConnID), readLimit)
+						altSQL = applyRowLimit(altSQL, altConn.DriverName(), connDBVersion(altConnID), readLimit+1)
 					}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, altSQL)
 					if altErr == nil {
@@ -2401,9 +2403,6 @@ func queryExecError(issuedSQL, executedSQL string, err error) error {
 	return fmt.Errorf("query failed: %w\n[服务端已改写 SQL] 实际执行语句：%s", err, actual)
 }
 
-// reOracleRowNum 识别 Oracle 老版本的 ROWNUM 行数限制谓词。
-var reOracleRowNum = regexp.MustCompile(`(?i)\bROWNUM\b`)
-
 // applyRowLimit 给 SELECT 加行数上限，未带顶层限制时附加。
 //
 // 支持检测 LIMIT / FETCH FIRST|NEXT / SELECT TOP；子查询内的 LIMIT 不算。
@@ -2420,8 +2419,9 @@ func applyRowLimit(sql, driverName, dbVersion string, maxRows int) string {
 	if sqlguard.HasTopLevelLimit(trimmed) {
 		return sql
 	}
-	// Oracle 老版本常用 ROWNUM 谓词限制行数；已有该谓词时不再追加。
-	if driverName == "oracle" && reOracleRowNum.MatchString(trimmed) {
+	// 只认最外层的 ROWNUM 上界谓词；子查询里的 ROWNUM、
+	// 以及 ROWNUM > 0 这类不限制行数的写法都不能跳过安全上限。
+	if driverName == "oracle" && sqlguard.HasTopLevelRowNumLimit(trimmed) {
 		return sql
 	}
 	switch driverName {

@@ -1213,7 +1213,9 @@ func getLastKey(conn *sqlx.DB, dbType, schema, table string, keyColumns []string
 	var sql string
 	switch dbType {
 	case "oracle":
-		sql = fmt.Sprintf("SELECT %s FROM \"%s\" ORDER BY %s DESC OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY", selectCols, table, orderBy)
+		// 用 ROWNUM 包装而不是 OFFSET/FETCH：后者是 Oracle 12c+ 语法，
+		// 11g 上会直接报 ORA-00933；ROWNUM 写法在所有版本都可用，且内层 ORDER BY 先生效。
+		sql = fmt.Sprintf("SELECT * FROM (SELECT %s FROM \"%s\" ORDER BY %s DESC) WHERE ROWNUM <= 1", selectCols, table, orderBy)
 	default:
 		sql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` ORDER BY %s DESC LIMIT 1", selectCols, schema, table, orderBy)
 	}

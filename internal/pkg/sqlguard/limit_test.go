@@ -35,3 +35,39 @@ func TestHasTopLevelLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestHasTopLevelRowNumLimit 覆盖 Oracle 行数上限的「是否已有限制」判断：
+// 只认顶层且能限制行数的 ROWNUM 上界谓词，避免子查询/ROWNUM > 0 跳过安全上限。
+func TestHasTopLevelRowNumLimit(t *testing.T) {
+	limited := []string{
+		"SELECT * FROM t WHERE ROWNUM <= 5",
+		"SELECT * FROM t WHERE ROWNUM < 5",
+		"SELECT * FROM t WHERE ROWNUM = 1",
+		"SELECT * FROM t WHERE ROWNUM between 1 and 5",
+		"SELECT * FROM (SELECT * FROM t) x WHERE ROWNUM <= 10",
+	}
+	for _, s := range limited {
+		if !HasTopLevelRowNumLimit(s) {
+			t.Errorf("应判定为已有 ROWNUM 上界: %q", s)
+		}
+	}
+
+	unlimited := []string{
+		"",
+		"SELECT * FROM t",
+		"SELECT ROWNUM FROM t",
+		"SELECT ROWNUM AS rn FROM t",
+		"SELECT * FROM t WHERE ROWNUM > 0",
+		"SELECT * FROM t WHERE ROWNUM >= 1",
+		"SELECT * FROM (SELECT * FROM t WHERE ROWNUM <= 5) x",
+		"SELECT * FROM t WHERE id IN (SELECT id FROM x WHERE ROWNUM <= 5)",
+		"SELECT * FROM t WHERE name = 'ROWNUM <= 5'",
+		"SELECT * FROM t -- ROWNUM <= 5",
+		"SELECT * FROM t /* ROWNUM <= 5 */",
+	}
+	for _, s := range unlimited {
+		if HasTopLevelRowNumLimit(s) {
+			t.Errorf("应判定为没有 ROWNUM 上界: %q", s)
+		}
+	}
+}
