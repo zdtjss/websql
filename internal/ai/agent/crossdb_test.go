@@ -424,7 +424,7 @@ func TestCrossDBJoinEndToEnd(t *testing.T) {
 	}
 
 	// 1. 左侧取数：带 where 过滤（仅 PAID 且 amount >= 50）
-	leftRows, leftTrunc, err := fetchJoinRows(ctx, ldb, "sqlite", "orders", []string{"id", "user_id", "amount"}, "status = 'PAID' AND amount >= 50", 100)
+	leftRows, leftTrunc, err := fetchJoinRows(ctx, ldb, "sqlite", "", "orders", []string{"id", "user_id", "amount"}, "status = 'PAID' AND amount >= 50", 100)
 	if err != nil {
 		t.Fatalf("左侧取数失败: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestCrossDBJoinEndToEnd(t *testing.T) {
 	}
 
 	// 2. 右侧取数
-	rightRows, rightTrunc, err := fetchJoinRows(ctx, rdb, "sqlite", "users", []string{"id", "name"}, "", 100)
+	rightRows, rightTrunc, err := fetchJoinRows(ctx, rdb, "sqlite", "", "users", []string{"id", "name"}, "", 100)
 	if err != nil {
 		t.Fatalf("右侧取数失败: %v", err)
 	}

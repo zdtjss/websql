@@ -162,7 +162,7 @@ func NewSQLAgent(ctx context.Context, cfg *system.AIConfig, connID, dbType, dbSc
 	// 失败时降级为不注册，主 agent 仍可直接使用原有工具。
 	// 纯文件分析（无连接）不注册：子 agent 的取数/权限链路依赖数据库连接。
 	if connID != "" && os.Getenv("AGENT_ANALYZE_DATA") != "0" {
-		if analyzeTool, analyzeErr := buildAnalyzeDataTool(ctx, cm, connID, dbType, dbSchema, schemas, auditCtx, scope, permAgentTool, reductionMW, datasetMW); analyzeErr != nil {
+		if analyzeTool, analyzeErr := buildAnalyzeDataTool(ctx, cm, connID, dbType, dbSchema, dbVersion, schemas, auditCtx, scope, permAgentTool, reductionMW, datasetMW); analyzeErr != nil {
 			recordAgentMetric("ai_analyze_data_registered", "failed")
 			log.Printf("[Agent] 创建 analyze_data 子 agent 失败，已跳过 - err=%v\n", analyzeErr)
 		} else if analyzeTool != nil {

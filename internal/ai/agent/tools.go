@@ -281,6 +281,19 @@ func loadConnCfgCached(connID string) (*connpkg.ConnCfg, error) {
 	return &cp, nil
 }
 
+// connDBVersion 返回连接保存的数据库版本；拿不到时返回空字符串。
+// 方言兼容性判断必须在版本未知时选择最保守的写法，不能默认高版本。
+func connDBVersion(connID string) string {
+	if connID == "" || getDBOrNil() == nil {
+		return ""
+	}
+	cfg, err := loadConnCfgCached(connID)
+	if err != nil || cfg == nil || cfg.DbVersion == nil {
+		return ""
+	}
+	return strings.TrimSpace(*cfg.DbVersion)
+}
+
 func buildConnLookup(schemas []SchemaRef) map[string]string {
 	connLookup := make(map[string]string)
 	for _, s := range schemas {
@@ -366,7 +379,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		}
 		// 方言兼容性预检：在执行前检测不兼容语法（如 MySQL 上的 PERCENTILE_CONT），
 		// 避免无谓的数据库往返，同时给 LLM 提供精确的替代写法
-		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType); len(dialectErrs) > 0 {
+		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType, connDBVersion(targetConnID)); len(dialectErrs) > 0 {
 			errMsg := sqlutil.FormatDialectErrors(dialectErrs)
 			log.Printf("[Tool:query_data] 方言预检失败 - dbType=%s, errors=%d\n", dbType, len(dialectErrs))
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), errMsg)
@@ -387,8 +400,11 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 		if readLimit > querySafetyRowLimitHard {
 			readLimit = querySafetyRowLimitHard
 		}
+		// issuedSQL 保留模型原始输入：服务端可能追加行数上限，
+		// 出错时要把改写后的真实语句回传给模型，避免报错位置对不上。
+		issuedSQL := sql
 		if sqlutil.FirstKeyword(sql) == "SELECT" || sqlutil.FirstKeyword(sql) == "WITH" {
-			sql = applyRowLimit(sql, conn.DriverName(), readLimit)
+			sql = applyRowLimit(sql, conn.DriverName(), connDBVersion(targetConnID), readLimit)
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
@@ -420,8 +436,8 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 					altSQL := qualifyBareTableNames(altRawSQL, altConn.DriverName(), altSchema)
 					altQueryCtx, altCancel := context.WithTimeout(ctx, 60*time.Second)
 					defer altCancel()
-					if kw := sqlutil.FirstKeyword(sql); kw == "SELECT" || kw == "WITH" {
-						altSQL = applyRowLimit(altSQL, altConn.DriverName(), readLimit)
+					if kw := sqlutil.FirstKeyword(altRawSQL); kw == "SELECT" || kw == "WITH" {
+						altSQL = applyRowLimit(altSQL, altConn.DriverName(), connDBVersion(altConnID), readLimit)
 					}
 					altRows, altErr := altConn.QueryxContext(altQueryCtx, altSQL)
 					if altErr == nil {
@@ -457,7 +473,7 @@ func NewQueryFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, us
 				}
 			}
 			recordQueryAudit(auditCtx, input.SQL, targetConnID, "failed", 0, int(time.Since(startTime).Milliseconds()), audit.FormatErrorWithStack(err))
-			return nil, fmt.Errorf("query failed: %w", err)
+			return nil, queryExecError(issuedSQL, sql, err)
 		}
 		defer rows.Close()
 		cols, _ := rows.Columns()
@@ -799,7 +815,7 @@ func NewExecFunc(connId string, schemas []SchemaRef, auditCtx *ExecAuditCtx, use
 		}
 
 		// 方言兼容性预检
-		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType); len(dialectErrs) > 0 {
+		if dialectErrs := sqlutil.CheckDialectCompatibility(sql, dbType, connDBVersion(targetConnID)); len(dialectErrs) > 0 {
 			errMsg := sqlutil.FormatDialectErrors(dialectErrs)
 			log.Printf("[Tool:exec_sql] 方言预检失败 - dbType=%s, errors=%d\n", dbType, len(dialectErrs))
 			return nil, errors.New(errMsg)
@@ -2365,14 +2381,38 @@ func buildQueryOutput(columns []string, data []map[string]any, truncated bool) *
 	return out
 }
 
+// queryExecError 在服务端改写了 SQL 时把追加内容一并回传。
+// Oracle 的 ORA 错误 position 按实际执行语句计算：若只回传原始错误，
+// 模型会误判自己的 SQL 有语法问题（历史问题：11g 上追加 FETCH 导致 ORA-00933 排查风暴）。
+func queryExecError(issuedSQL, executedSQL string, err error) error {
+	if executedSQL == "" || executedSQL == issuedSQL {
+		return fmt.Errorf("query failed: %w", err)
+	}
+	if strings.HasPrefix(executedSQL, issuedSQL) {
+		if suffix := strings.TrimSpace(executedSQL[len(issuedSQL):]); suffix != "" {
+			return fmt.Errorf("query failed: %w\n[服务端已自动追加行数限制] 实际追加内容：%s（报错位置按追加后的语句计算）", err, suffix)
+		}
+	}
+	// 兜底回传完整语句，但限制长度，避免超长 SQL 反复失败时把错误消息撑爆上下文。
+	actual := executedSQL
+	if r := []rune(actual); len(r) > 4000 {
+		actual = string(r[:4000]) + "…(已截断)"
+	}
+	return fmt.Errorf("query failed: %w\n[服务端已改写 SQL] 实际执行语句：%s", err, actual)
+}
+
 // reOracleRowNum 识别 Oracle 老版本的 ROWNUM 行数限制谓词。
 var reOracleRowNum = regexp.MustCompile(`(?i)\bROWNUM\b`)
 
-// applyRowLimit 给 SELECT 加 LIMIT，未带顶层 LIMIT 时附加。
+// applyRowLimit 给 SELECT 加行数上限，未带顶层限制时附加。
 //
 // 支持检测 LIMIT / FETCH FIRST|NEXT / SELECT TOP；子查询内的 LIMIT 不算。
-// Oracle 12c+ 使用 OFFSET 0 ROWS FETCH NEXT N ROWS ONLY（保留 ORDER BY 语义）。
-func applyRowLimit(sql, driverName string, maxRows int) string {
+// Oracle 按连接版本选择语法：
+//   - 12c+：OFFSET 0 ROWS FETCH NEXT N ROWS ONLY
+//   - 12c 之前或版本未知：SELECT * FROM (sql) WHERE ROWNUM <= N（所有版本可用）
+//
+// 版本未知时不能默认 12c+，否则 11g 上每条被改写的 SELECT 都会报 ORA-00933。
+func applyRowLimit(sql, driverName, dbVersion string, maxRows int) string {
 	// 先剥注释，避免注释中的 LIMIT 干扰判断；再用词法级 HasTopLevelLimit
 	// 只识别最外层 LIMIT/FETCH/TOP，子查询内的 LIMIT 不算。
 	stripped := sqlutil.StripSQLComments(sql)
@@ -2380,14 +2420,17 @@ func applyRowLimit(sql, driverName string, maxRows int) string {
 	if sqlguard.HasTopLevelLimit(trimmed) {
 		return sql
 	}
-	// Oracle 老版本常用 ROWNUM 谓词限制行数；已有该谓词时不再追加 FETCH。
+	// Oracle 老版本常用 ROWNUM 谓词限制行数；已有该谓词时不再追加。
 	if driverName == "oracle" && reOracleRowNum.MatchString(trimmed) {
 		return sql
 	}
 	switch driverName {
 	case "oracle":
-		// Oracle 12c+ 使用标准 OFFSET/FETCH 语法，避免 ROWNUM 破坏 ORDER BY
-		return fmt.Sprintf("%s OFFSET 0 ROWS FETCH NEXT %d ROWS ONLY", trimmed, maxRows)
+		if sqlutil.OracleSupportsRowLimiting(dbVersion) {
+			return fmt.Sprintf("%s OFFSET 0 ROWS FETCH NEXT %d ROWS ONLY", trimmed, maxRows)
+		}
+		// 标准 Top-N 写法：内层 ORDER BY 先生效，再由外层 ROWNUM 截断。
+		return fmt.Sprintf("SELECT * FROM (%s) WHERE ROWNUM <= %d", trimmed, maxRows)
 	default:
 		return fmt.Sprintf("%s LIMIT %d", trimmed, maxRows)
 	}

@@ -99,6 +99,8 @@ func NewContainerWithDB(db *sqlx.DB) *Container {
 	// 权限修订号对账：远程模式启动 500ms 轮询（桌面/本地模式内部自动跳过）。
 	// 必须在管理库与 config 就绪后启动，否则无法判断运行时 Profile。
 	admin.StartPermissionRevisionWatcher()
+	// Oracle 连接版本回填：方言选择（12c 前后 FETCH/ROWNUM）依赖 db_version。
+	conn.StartOracleVersionBackfill()
 	registerAIConfigChangeHooks()
 	return c
 }

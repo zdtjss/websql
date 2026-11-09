@@ -1,10 +1,12 @@
 package conn
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"websql/internal/app/admin"
@@ -14,6 +16,7 @@ import (
 	"websql/internal/pkg/crypto"
 	"websql/internal/pkg/lazyinit"
 	"websql/internal/pkg/mask"
+	"websql/internal/pkg/safego"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -556,6 +559,90 @@ func getDbVersionAndSchema(db *sqlx.DB, dbType string) (string, string, string) 
 	}
 
 	return schema, version, actualDbType
+}
+
+var oracleVersionBackfillOnce sync.Once
+
+// StartOracleVersionBackfill 在后台补写 db_version 为空的 Oracle 连接版本。
+//
+// 版本是方言选择的依据（如 Oracle 12c 前后的 FETCH/ROWNUM）；版本探测上线前
+// 保存的连接 db_version 一直为空。补写失败只记日志，不影响启动与查询。
+func StartOracleVersionBackfill() {
+	oracleVersionBackfillOnce.Do(func() {
+		safego.GoWithName("conn-version-backfill", func() {
+			// 让迁移、连接初始化等启动关键路径先完成。
+			time.Sleep(3 * time.Second)
+			backfillOracleVersions()
+		})
+	})
+}
+
+func backfillOracleVersions() {
+	db := getDBOrNil()
+	if db == nil {
+		return
+	}
+	var ids []string
+	if err := db.Select(&ids, "select id from t_conn where lower(db_type) = 'oracle' and (db_version is null or trim(db_version) = '')"); err != nil {
+		log.Printf("[ConnVersionBackfill] 查询待补写连接失败 - err=%v\n", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	log.Printf("[ConnVersionBackfill] 开始补写 Oracle 连接版本 - count=%d\n", len(ids))
+	updated := 0
+	for _, connID := range ids {
+		version, err := detectOracleVersion(connID)
+		if err != nil {
+			log.Printf("[ConnVersionBackfill] 探测失败 - connId=%s, err=%s\n", connID, mask.MaskSecret(err.Error()))
+			continue
+		}
+		if strings.TrimSpace(version) == "" {
+			continue
+		}
+		res, err := db.Exec("update t_conn set db_version = ? where id = ? and (db_version is null or trim(db_version) = '')", version, connID)
+		if err != nil {
+			log.Printf("[ConnVersionBackfill] 写入失败 - connId=%s, err=%v\n", connID, err)
+			continue
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			updated++
+		}
+	}
+	log.Printf("[ConnVersionBackfill] 补写完成 - updated=%d\n", updated)
+}
+
+// detectOracleVersion 用一次性连接读取 V$VERSION，避免污染共享连接池。
+func detectOracleVersion(connID string) (string, error) {
+	cfg, err := GetConnCfgWithPwd(connID)
+	if err != nil {
+		return "", err
+	}
+	dbParam := ConvertToDBParam(cfg)
+	// 后台任务：连接不可达时也不能长时间占用启动资源。
+	dbParam.ConnectTimeoutSec = 8
+	dbParam.QueryTimeoutSec = 10
+
+	resolved, err := ResolveConnURL(connID, cfg.DbType, strPtr(cfg.Url))
+	if err != nil {
+		return "", err
+	}
+	dbParam.Url = resolved
+
+	var version string
+	err = database.WithTempConn(dbParam, func(db *sqlx.DB) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if pingErr := db.PingContext(ctx); pingErr != nil {
+			return pingErr
+		}
+		return db.GetContext(ctx, &version, "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1")
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(version), nil
 }
 
 func checkPowerByParam(powerDetails []*admin.PowerDetail, param *admin.PowerCheckParam) bool {

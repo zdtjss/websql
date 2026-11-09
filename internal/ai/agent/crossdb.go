@@ -301,11 +301,11 @@ func NewCrossDBJoinFunc(defaultConnID string, schemas []SchemaRef, auditCtx *Exe
 
 			// 3. 两侧取数（服务端，方言 LIMIT 由 applyRowLimit 统一处理；
 			//    取 limit+1 行用于精确判断是否发生截断）
-			leftRows, leftTruncated, err := fetchJoinRows(queryCtx, lconn, ltype, input.LeftTable, input.LeftSelect, input.LeftWhere, limit)
+			leftRows, leftTruncated, err := fetchJoinRows(queryCtx, lconn, ltype, connDBVersion(leftConnID), input.LeftTable, input.LeftSelect, input.LeftWhere, limit)
 			if err != nil {
 				return nil, fmt.Errorf("左侧表查询失败 (%s): %w", input.LeftTable, err)
 			}
-			rightRows, rightTruncated, err := fetchJoinRows(queryCtx, rconn, rtype, input.RightTable, input.RightSelect, input.RightWhere, limit)
+			rightRows, rightTruncated, err := fetchJoinRows(queryCtx, rconn, rtype, connDBVersion(rightConnID), input.RightTable, input.RightSelect, input.RightWhere, limit)
 			if err != nil {
 				return nil, fmt.Errorf("右侧表查询失败 (%s): %w", input.RightTable, err)
 			}
@@ -531,7 +531,7 @@ func maskCrossDBJoinResult(sec *RunSecurityContext, payload string, leftScope, r
 // fetchJoinRows 取一侧数据。取 limit+1 行以精确判断是否被截断：
 // 返回 truncated=true 表示表内行数超过 limit（结果属抽样）。
 // where 为可选过滤条件（已由 validateWhereClause 校验，直接拼接）。
-func fetchJoinRows(ctx context.Context, conn *sqlx.DB, dbType, tableRef string, cols []string, where string, limit int) ([]map[string]any, bool, error) {
+func fetchJoinRows(ctx context.Context, conn *sqlx.DB, dbType, dbVersion, tableRef string, cols []string, where string, limit int) ([]map[string]any, bool, error) {
 	schema, table := splitSchemaTable(tableRef, "")
 	colList := "*"
 	if len(cols) > 0 {
@@ -550,8 +550,8 @@ func fetchJoinRows(ctx context.Context, conn *sqlx.DB, dbType, tableRef string, 
 	if strings.TrimSpace(where) != "" {
 		sql += " WHERE " + where
 	}
-	// 方言 LIMIT：MySQL/SQLite 追加 LIMIT n，Oracle 12c+ 追加 FETCH FIRST n ROWS ONLY
-	sql = applyRowLimit(sql, dbType, limit+1)
+	// 方言 LIMIT：MySQL/SQLite 追加 LIMIT n；Oracle 按连接版本选择 FETCH 或 ROWNUM 包装
+	sql = applyRowLimit(sql, dbType, dbVersion, limit+1)
 
 	rows, err := conn.QueryxContext(ctx, sql)
 	if err != nil {

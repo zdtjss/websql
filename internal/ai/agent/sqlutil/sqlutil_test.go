@@ -1,6 +1,9 @@
 package sqlutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStripSQLComments(t *testing.T) {
 	tests := []struct {
@@ -211,5 +214,65 @@ func TestContainsMultipleStatements(t *testing.T) {
 				t.Errorf("ContainsMultipleStatements(%q) = %v, want %v", tt.sql, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOracleSupportsRowLimiting(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"", false},
+		{"Oracle Database 11g Enterprise Edition Release 11.2.0.4.0 - 64bit Production", false},
+		{"11.2.0.4.0", false},
+		{"Oracle Database 12c Enterprise Edition Release 12.1.0.2.0", true},
+		{"Oracle Database 19c Enterprise Edition Release 19.0.0.0.0", true},
+		{"unknown-build", false},
+	}
+	for _, tt := range tests {
+		if got := OracleSupportsRowLimiting(tt.version); got != tt.want {
+			t.Errorf("OracleSupportsRowLimiting(%q) = %v, want %v", tt.version, got, tt.want)
+		}
+	}
+}
+
+func TestCheckDialectCompatibilityVersionAware(t *testing.T) {
+	const v11 = "Oracle Database 11g Enterprise Edition Release 11.2.0.4.0"
+	const v12 = "Oracle Database 12c Enterprise Edition Release 12.1.0.2.0"
+
+	// 11g：LIMIT 的替代方案必须是 ROWNUM，不能推荐不可用的 FETCH
+	errs := CheckDialectCompatibility("SELECT * FROM t LIMIT 10", "oracle", v11)
+	if len(errs) != 1 {
+		t.Fatalf("11g LIMIT 期望 1 个错误，实际 %d", len(errs))
+	}
+	if !strings.Contains(errs[0].Alternative, "ROWNUM") || strings.Contains(errs[0].Alternative, "FETCH NEXT") {
+		t.Fatalf("11g 不应推荐 FETCH，实际替代方案：%s", errs[0].Alternative)
+	}
+
+	// 12c：可以推荐 FETCH
+	errs = CheckDialectCompatibility("SELECT * FROM t LIMIT 10", "oracle", v12)
+	if len(errs) != 1 || !strings.Contains(errs[0].Alternative, "FETCH NEXT") {
+		t.Fatalf("12c 应推荐 FETCH，实际：%+v", errs)
+	}
+
+	// 11g 上 OFFSET/FETCH 应被预检拦截
+	errs = CheckDialectCompatibility("SELECT * FROM t OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY", "oracle", v11)
+	if len(errs) != 1 || !strings.Contains(errs[0].Feature, "FETCH") {
+		t.Fatalf("11g 上 FETCH 应被拦截，实际：%+v", errs)
+	}
+
+	// 12c 上 OFFSET/FETCH 合法
+	if errs = CheckDialectCompatibility("SELECT * FROM t OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY", "oracle", v12); len(errs) != 0 {
+		t.Fatalf("12c 上 FETCH 不应报错，实际：%+v", errs)
+	}
+
+	// 版本未知按保守处理
+	if errs = CheckDialectCompatibility("SELECT * FROM t OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY", "oracle", ""); len(errs) != 1 {
+		t.Fatalf("版本未知时 FETCH 应被拦截，实际：%+v", errs)
+	}
+
+	// MySQL 的 LIMIT 合法，不应报错
+	if errs = CheckDialectCompatibility("SELECT * FROM t LIMIT 10", "mysql", ""); len(errs) != 0 {
+		t.Fatalf("MySQL LIMIT 不应报错，实际：%+v", errs)
 	}
 }

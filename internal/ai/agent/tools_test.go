@@ -1,15 +1,20 @@
 package agent
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestApplyRowLimit(t *testing.T) {
 	tests := []struct {
-		name     string
-		sql      string
-		driver   string
-		maxRows  int
-		want     string
-		noChange bool // expect exact same string
+		name      string
+		sql       string
+		driver    string
+		dbVersion string
+		maxRows   int
+		want      string
+		noChange  bool // expect exact same string
 	}{
 		{
 			name:    "MySQL 无 LIMIT → 追加",
@@ -47,32 +52,67 @@ func TestApplyRowLimit(t *testing.T) {
 			noChange: true,
 		},
 		{
-			name:     "Oracle 12c+ FETCH → 不追加",
-			sql:      "SELECT * FROM users ORDER BY id FETCH FIRST 50 ROWS ONLY",
-			driver:   "oracle",
-			maxRows:  500,
-			noChange: true,
+			name:      "Oracle 12c+ FETCH → 不追加",
+			sql:       "SELECT * FROM users ORDER BY id FETCH FIRST 50 ROWS ONLY",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 12c Enterprise Edition Release 12.1.0.2.0",
+			maxRows:   500,
+			noChange:  true,
 		},
 		{
-			name:     "Oracle 12c+ NEXT ROWS ONLY → 不追加",
-			sql:      "SELECT * FROM users ORDER BY id FETCH NEXT 50 ROWS ONLY",
-			driver:   "oracle",
-			maxRows:  500,
-			noChange: true,
+			name:      "Oracle 12c+ NEXT ROWS ONLY → 不追加",
+			sql:       "SELECT * FROM users ORDER BY id FETCH NEXT 50 ROWS ONLY",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 12c Enterprise Edition Release 12.1.0.2.0",
+			maxRows:   500,
+			noChange:  true,
 		},
 		{
-			name:     "Oracle ROWNUM 谓词 → 不追加",
-			sql:      "SELECT * FROM users WHERE ROWNUM <= 100",
-			driver:   "oracle",
-			maxRows:  500,
-			noChange: true,
+			name:      "Oracle ROWNUM 谓词 → 不追加",
+			sql:       "SELECT * FROM users WHERE ROWNUM <= 100",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 11g Enterprise Edition Release 11.2.0.4.0",
+			maxRows:   500,
+			noChange:  true,
 		},
 		{
-			name:    "Oracle 无任何 LIMIT 形式 → 追加 OFFSET/FETCH",
-			sql:     "SELECT * FROM users",
+			name:      "Oracle 12c 无任何 LIMIT → 追加 OFFSET/FETCH",
+			sql:       "SELECT * FROM users",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 12c Enterprise Edition Release 12.1.0.2.0",
+			maxRows:   500,
+			want:      "SELECT * FROM users OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+		},
+		{
+			name:      "Oracle 19c 无任何 LIMIT → 追加 OFFSET/FETCH",
+			sql:       "SELECT * FROM users",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 19c Enterprise Edition Release 19.0.0.0.0",
+			maxRows:   500,
+			want:      "SELECT * FROM users OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+		},
+		{
+			name:      "Oracle 11g 无任何 LIMIT → ROWNUM 包装（11g 不支持 FETCH）",
+			sql:       "SELECT * FROM users ORDER BY id",
+			driver:    "oracle",
+			dbVersion: "Oracle Database 11g Enterprise Edition Release 11.2.0.4.0 - 64bit Production",
+			maxRows:   500,
+			want:      "SELECT * FROM (SELECT * FROM users ORDER BY id) WHERE ROWNUM <= 500",
+		},
+		{
+			name:    "Oracle 版本未知 → 默认 ROWNUM 包装（保守兜底）",
+			sql:     "SELECT COUNT(*) FROM users GROUP BY dept",
 			driver:  "oracle",
 			maxRows: 500,
-			want:    "SELECT * FROM users OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+			want:    "SELECT * FROM (SELECT COUNT(*) FROM users GROUP BY dept) WHERE ROWNUM <= 500",
+		},
+		{
+			name:      "Oracle 无法解析的版本号 → 默认 ROWNUM 包装",
+			sql:       "SELECT * FROM users",
+			driver:    "oracle",
+			dbVersion: "unknown-build",
+			maxRows:   500,
+			want:      "SELECT * FROM (SELECT * FROM users) WHERE ROWNUM <= 500",
 		},
 		{
 			name:    "尾部带分号 → 去掉后再判断",
@@ -106,7 +146,7 @@ func TestApplyRowLimit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := applyRowLimit(tt.sql, tt.driver, tt.maxRows)
+			got := applyRowLimit(tt.sql, tt.driver, tt.dbVersion, tt.maxRows)
 			if tt.noChange {
 				if got != tt.sql {
 					t.Errorf("noChange expected, but got modified:\n in:  %q\n got: %q", tt.sql, got)
@@ -117,6 +157,40 @@ func TestApplyRowLimit(t *testing.T) {
 				t.Errorf("\n in:   %q\n want: %q\n got:  %q", tt.sql, tt.want, got)
 			}
 		})
+	}
+}
+
+// TestQueryExecError 验证服务端改写 SQL 后，错误里能看到实际追加内容，
+// 避免 ORA 错误 position 与模型原始 SQL 对不上导致误排查。
+func TestQueryExecError(t *testing.T) {
+	base := errors.New("ORA-00933: SQL command not properly ended")
+	issued := "SELECT * FROM users"
+	executed := "SELECT * FROM users OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY"
+
+	err := queryExecError(issued, executed, base)
+	if !strings.Contains(err.Error(), "ORA-00933") {
+		t.Fatalf("应保留数据库原始错误，got=%v", err)
+	}
+	if !strings.Contains(err.Error(), "OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY") {
+		t.Fatalf("应回传实际追加内容，got=%v", err)
+	}
+
+	unchanged := queryExecError(issued, issued, base)
+	if strings.Contains(unchanged.Error(), "服务端已") {
+		t.Fatalf("未改写时不应附加说明，got=%v", unchanged)
+	}
+
+	// ROWNUM 包装不保留原始前缀，应回传完整实际执行语句
+	wrapped := queryExecError(issued, "SELECT * FROM ("+issued+") WHERE ROWNUM <= 500", base)
+	if !strings.Contains(wrapped.Error(), "实际执行语句") || !strings.Contains(wrapped.Error(), "ROWNUM <= 500") {
+		t.Fatalf("ROWNUM 包装应回传实际执行语句，got=%v", wrapped)
+	}
+
+	// 超长语句应截断，避免反复失败时撑爆上下文
+	longSQL := "SELECT * FROM (" + strings.Repeat("a", 5000) + ")"
+	capped := queryExecError("SELECT 1", longSQL, base)
+	if !strings.Contains(capped.Error(), "已截断") {
+		t.Fatalf("超长 SQL 错误应截断，got len=%d", len(capped.Error()))
 	}
 }
 

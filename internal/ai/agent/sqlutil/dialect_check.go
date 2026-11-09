@@ -10,15 +10,16 @@ package sqlutil
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 // DialectError 描述一个方言不兼容问题
 type DialectError struct {
-	Feature    string // 不兼容的特性名，如 "PERCENTILE_CONT"
-	Reason     string // 为什么不兼容
+	Feature     string // 不兼容的特性名，如 "PERCENTILE_CONT"
+	Reason      string // 为什么不兼容
 	Alternative string // 正确的替代写法
-	Position   string // 在 SQL 中的大致位置（用于错误定位）
+	Position    string // 在 SQL 中的大致位置（用于错误定位）
 }
 
 func (e *DialectError) Error() string {
@@ -35,6 +36,38 @@ type dialectPattern struct {
 	feature     string
 	reason      string
 	alternative string
+	// alternativeByVersion 按数据库版本生成替代写法（目前仅 Oracle 使用）。
+	alternativeByVersion func(dbVersion string) string
+	// skipFor 返回 true 时跳过该检查（如 12c+ 支持 FETCH，不应报不兼容）。
+	skipFor func(dbVersion string) bool
+}
+
+// reOracleDottedVersion 从 BANNER 中提取点分版本号（如 11.2.0.4.0 / 19.0.0.0.0）。
+var reOracleDottedVersion = regexp.MustCompile(`\b(\d{1,2})(?:\.\d+){1,4}\b`)
+
+// OracleSupportsRowLimiting 判断 Oracle 是否支持 12c+ 的 OFFSET/FETCH 行限制语法。
+// 版本未知或无法解析时返回 false：ROWNUM 写法在所有版本都可用，是安全兜底。
+func OracleSupportsRowLimiting(dbVersion string) bool {
+	v := strings.ToLower(strings.TrimSpace(dbVersion))
+	if v == "" {
+		return false
+	}
+	// BANNER 里先看明确的代际标识，避免 "11g ... Release 11.2.0.4.0" 被误判。
+	for _, legacy := range []string{"10g", "11g", "9i", "8i"} {
+		if strings.Contains(v, legacy) {
+			return false
+		}
+	}
+	if m := reOracleDottedVersion.FindStringSubmatch(v); len(m) > 1 {
+		major, err := strconv.Atoi(m[1])
+		return err == nil && major >= 12
+	}
+	for _, modern := range []string{"12c", "18c", "19c", "21c", "23c", "23ai"} {
+		if strings.Contains(v, modern) {
+			return true
+		}
+	}
+	return false
 }
 
 // MySQL 不兼容的模式（PostgreSQL/Oracle 专有语法）
@@ -188,16 +221,35 @@ var oracleIncompatiblePatterns = []dialectPattern{
 		alternative: "用 TO_CHAR(date, 'YYYY-MM-DD') 替代",
 	},
 	{
-		regex:       regexp.MustCompile(`(?i)\bLIMIT\s+\d+`),
-		feature:     "LIMIT",
-		reason:      "Oracle 不支持 LIMIT（12c 之前）",
-		alternative: "用 ROWNUM <= n（12c 之前）或 OFFSET n ROWS FETCH NEXT m ROWS ONLY（12c+）",
+		regex:   regexp.MustCompile(`(?i)\bLIMIT\s+\d+`),
+		feature: "LIMIT",
+		reason:  "Oracle 不支持 LIMIT",
+		alternativeByVersion: func(dbVersion string) string {
+			if OracleSupportsRowLimiting(dbVersion) {
+				return "用 OFFSET 0 ROWS FETCH NEXT n ROWS ONLY（当前为 12c+）或 ROWNUM <= n"
+			}
+			return "用 ROWNUM 实现：SELECT * FROM (原查询) WHERE ROWNUM <= n（当前为 12c 之前或版本未知，OFFSET/FETCH 不可用）"
+		},
 	},
 	{
-		regex:       regexp.MustCompile(`(?i)\bAUTO_INCREMENT\b`),
-		feature:     "AUTO_INCREMENT",
-		reason:      "Oracle 不支持 AUTO_INCREMENT",
-		alternative: "用 SEQUENCE + TRIGGER 或 IDENTITY 列（12c+）",
+		regex:       regexp.MustCompile(`(?i)\bOFFSET\s+\d+\s+ROWS?\b|\bFETCH\s+(?:FIRST|NEXT)\s+\d+\s+ROWS?\s+ONLY`),
+		feature:     "OFFSET/FETCH 行限制语法",
+		reason:      "当前 Oracle 版本不支持 12c 才引入的 OFFSET/FETCH 行限制语法",
+		alternative: "用 ROWNUM 实现 Top-N：SELECT * FROM (原查询) WHERE ROWNUM <= n（内层 ORDER BY 会先生效）；分页用两层 ROWNUM 包装",
+		skipFor: func(dbVersion string) bool {
+			return OracleSupportsRowLimiting(dbVersion)
+		},
+	},
+	{
+		regex:   regexp.MustCompile(`(?i)\bAUTO_INCREMENT\b`),
+		feature: "AUTO_INCREMENT",
+		reason:  "Oracle 不支持 AUTO_INCREMENT",
+		alternativeByVersion: func(dbVersion string) string {
+			if OracleSupportsRowLimiting(dbVersion) {
+				return "用 IDENTITY 列（12c+）或 SEQUENCE + TRIGGER"
+			}
+			return "用 SEQUENCE + TRIGGER（当前版本不支持 IDENTITY；IDENTITY 需 12c+）"
+		},
 	},
 }
 
@@ -234,10 +286,12 @@ var sqliteIncompatiblePatterns = []dialectPattern{
 // 参数：
 //   - sql: 待执行的 SQL 语句
 //   - dbType: 数据库类型（mysql/mariadb/oracle/sqlite）
+//   - dbVersion: 连接保存的数据库版本；版本相关写法（如 Oracle 12c 的 OFFSET/FETCH）
+//     依赖该值。为空时按低版本/未知处理，返回最保守的替代方案。
 //
 // 返回：
 //   - []*DialectError: 发现的不兼容问题列表（空表示无问题）
-func CheckDialectCompatibility(sql, dbType string) []*DialectError {
+func CheckDialectCompatibility(sql, dbType, dbVersion string) []*DialectError {
 	cleaned := StripSQLComments(sql)
 	var patterns []dialectPattern
 
@@ -257,11 +311,18 @@ func CheckDialectCompatibility(sql, dbType string) []*DialectError {
 		if p.feature == "" {
 			continue
 		}
+		if p.skipFor != nil && p.skipFor(dbVersion) {
+			continue
+		}
 		if loc := p.regex.FindStringIndex(cleaned); loc != nil {
+			alternative := p.alternative
+			if p.alternativeByVersion != nil {
+				alternative = p.alternativeByVersion(dbVersion)
+			}
 			errors = append(errors, &DialectError{
 				Feature:     p.feature,
 				Reason:      p.reason,
-				Alternative: p.alternative,
+				Alternative: alternative,
 				Position:    fmt.Sprintf("位置 %d-%d", loc[0], loc[1]),
 			})
 		}
