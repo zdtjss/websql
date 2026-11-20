@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// TestFromDatabase 错误分类：每类驱动原文都应映射到稳定错误码与可读文案。
+// TestFromDatabase 错误分类：每类驱动原文都应映射到稳定错误码，
+// 且用户文案需带上数据库返回的具体原因，便于页面直接展示与自助排查。
 func TestFromDatabase(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -21,6 +22,7 @@ func TestFromDatabase(t *testing.T) {
 		{"权限", errors.New("Error 1142: SELECT command denied to user 'app'@'%'"), CodeDBPermission},
 		{"死锁", errors.New("Error 1213: Deadlock found when trying to get lock"), CodeDBLockWait},
 		{"重复键", errors.New("Error 1062: Duplicate entry '1' for key 'PRIMARY'"), CodeDBDuplicate},
+		{"重复列", errors.New("Error 1060 (42S21): Duplicate column name 'access_mode'"), CodeDBUnknown},
 		{"表不存在", errors.New("Error 1146: Table 'demo.t_user' doesn't exist"), CodeDBObjectAbsent},
 		{"数据超长", errors.New("Error 1406: Data too long for column 'name'"), CodeDBDataRange},
 		{"连接拒绝", errors.New("dial tcp 10.0.0.1:3306: connect: connection refused"), CodeDBConnRefused},
@@ -47,9 +49,9 @@ func TestFromDatabase(t *testing.T) {
 			if got.Msg == "" || got.Hint == "" {
 				t.Errorf("应同时给出描述与建议，实际 msg=%q hint=%q", got.Msg, got.Hint)
 			}
-			// 面向用户的文案不得包含驱动原文里的对象名/主机等细节
-			if strings.Contains(got.Msg, "Error 1") || strings.Contains(got.Msg, "tcp ") {
-				t.Errorf("用户文案不应包含驱动原文: %q", got.Msg)
+			// 面向用户的文案需保留驱动原文中的具体原因
+			if !strings.Contains(got.Msg, tc.err.Error()) {
+				t.Errorf("用户文案应包含具体错误原因: msg=%q err=%q", got.Msg, tc.err.Error())
 			}
 			if got.Cause == nil {
 				t.Error("应保留原始错误用于日志")

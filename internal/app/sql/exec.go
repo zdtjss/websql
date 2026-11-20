@@ -256,9 +256,9 @@ func ExecSQL(c *gin.Context) {
 }
 
 func writeSQLError(c *gin.Context, err error) {
-	// 驱动原文只进服务端日志；前端只拿到分类后的描述与建议
+	// 分类后的描述会带上驱动原文，便于页面直接展示真实原因
 	appErr := apperror.FromDatabase(err)
-	logger.PrintErrf("SQL 执行失败 - code=%s, err=%v", err, appErr.Code)
+	logger.PrintErrf("SQL 执行失败 - code=%s", err, appErr.Code)
 	response.WriteAppErr(c, appErr)
 }
 

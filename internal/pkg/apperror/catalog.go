@@ -1,12 +1,11 @@
 // Package apperror 提供面向用户的错误分类与稳定错误码。
 //
 // 背景（缺陷：错误契约缺失）：原先数据库驱动错误被原文透传给前端，
-// 既可能泄露主机、库名、SQL 片段，用户也拿不到「下一步该做什么」。
-// 现在统一经 FromDatabase 分类为：
+// 用户拿不到「下一步该做什么」。现在统一经 FromDatabase 分类为：
 //   - Code：稳定错误码（WEBSQL-DB-xxxx），前端可按码做引导；
-//   - Msg：可直接展示的中文描述（不含驱动原文）；
+//   - Msg：可直接展示的描述，附带数据库返回的具体原因（便于自助排查）；
 //   - Hint：建议动作；
-//   - Cause：原始错误，只写服务端日志。
+//   - Cause：原始错误。
 package apperror
 
 import (
@@ -127,25 +126,35 @@ var dbErrRules = []dbErrRule{
 }
 
 // FromDatabase 把数据库驱动返回的错误分类为应用错误。
-// 未命中任何规则时归入 CodeDBUnknown，只给出通用提示。
+// Msg 保留分类描述，并追加数据库返回的具体原因，避免页面只看到笼统提示；
+// 未命中任何规则时归入 CodeDBUnknown。
 func FromDatabase(err error) *Error {
 	if err == nil {
 		return nil
 	}
-	msg := strings.ToLower(err.Error())
+	detail := strings.TrimSpace(err.Error())
+	msg := strings.ToLower(detail)
 	for _, rule := range dbErrRules {
 		for _, needle := range rule.needles {
 			if strings.Contains(msg, needle) {
-				return &Error{Code: rule.code, Msg: rule.msg, Hint: rule.hint, Cause: err}
+				return &Error{Code: rule.code, Msg: withDetail(rule.msg, detail), Hint: rule.hint, Cause: err}
 			}
 		}
 	}
 	return &Error{
 		Code:  CodeDBUnknown,
-		Msg:   "数据库执行失败",
-		Hint:  "请查看服务端日志中的详细信息，或联系管理员",
+		Msg:   withDetail("数据库执行失败", detail),
+		Hint:  "请根据错误详情调整 SQL 或对象状态后重试",
 		Cause: err,
 	}
+}
+
+// withDetail 把数据库返回的具体原因拼到分类描述后，detail 为空时只返回描述。
+func withDetail(msg, detail string) string {
+	if detail == "" {
+		return msg
+	}
+	return msg + "：" + detail
 }
 
 // As 从错误链中取回应用错误。
